@@ -1,143 +1,82 @@
 ---
 name: debrief
-description: Reconstruct context for a returning human, synthesize status, and prompt for direction via structured Q&A. Minimizes cognitive load - they just scan and pick.
+description: Reconstruct context and present next steps when a user returns to a conversation after a break. Synthesizes status into scannable summaries with actionable options.
 ---
 
-# Debrief
+# Debrief Mode
 
-You are debriefing your commander who just returned and has limited memory of where things stand. Do the cognitive work so they can just scan, pick, and move on.
+The user is returning cold. They've delegated cognitive labor to you. Make it effortless.
 
-## The Pattern
+## Your Job
 
-The human is delegating not just work, but **cognitive labor**:
+Mine the conversation, synthesize status, present options. The user should scan, pick, and go — not re-read or think hard about what's next.
 
-| Burden | You handle it |
-|--------|---------------|
-| Recall | What did they ask you to do? |
-| Tracking | What's done vs pending? |
-| Analysis | What are the options now? |
-| Framing | How should they think about the decision? |
+## On Activation
 
-Human's remaining role: **scan, pick, confirm**
+**1. Mine the conversation for:**
+- What was accomplished (concrete wins, completed work)
+- What's in progress (started but not finished)
+- What's blocked (and why)
+- Decisions that were made (so they don't re-litigate)
+- Open questions or pending items
+- Implicit commitments ("we should also...", "don't forget...")
 
-## Procedure
+**2. Synthesize into scannable status:**
 
-### 1. Reconstruct Context (offload MEMORY)
-
-Mine the conversation and task system for:
-- **Original goal** — what were we trying to accomplish?
-- **Key decisions** — choices that shaped direction
-- **Work completed** — what's done and verified
-- **Work in progress** — started but not finished
-- **Blockers / open questions** — what stopped progress or remains ambiguous
-- **Relevant artifacts** — files, branches, URLs
-
-Present as 2-4 bullet points. Not a wall of text.
-
-### 2. Synthesize Status (offload TRACKING)
-
-Check `TaskList` if tasks exist. Present a scannable report:
+Use tables and bullets. No walls of text.
 
 ```
-**Completed:** Task A, Task B
-**In Progress:** Task C (was working on X)
-**Blocked:** Task D — waiting on [blocker]
-**Open Questions:** Question 1?
+## Status
+
+| Category | Item | Notes |
+|----------|------|-------|
+| Done | Feature X | Merged to main |
+| Done | Fixed bug Y | Tests passing |
+| In Progress | API refactor | 60% complete, paused mid-file |
+| Blocked | Deploy | Waiting on credentials |
+| Pending | Update docs | Not started |
+
+**Key decisions made:**
+- Chose approach A over B because [reason]
+- Agreed to defer X until after launch
+
+**Open questions:**
+- Still need to decide on [thing]
 ```
 
-Human should grasp status in 10 seconds. Use a table if helpful.
+**3. Present clear next-step options:**
 
-### 3. Generate Options (offload ANALYSIS)
-
-Identify 2-4 reasonable next actions. YOU figure out what the options are.
-
-**Good options:**
-- "Continue implementing feature X (pick up where we left off)"
-- "Fix the failing test in auth.spec.ts first"
-- "Revisit the architecture decision about Y"
-- "Wrap up and summarize what we learned"
-
-**Bad options:**
-- "Continue?" (too vague)
-- "What would you like to do?" (makes them think)
-- Five similar variations (decision paralysis)
-
-### 4. Prompt via Q&A (offload DECISION-FRAMING)
-
-Use `AskUserQuestion` with clear options. Human should be able to pick without reading anything else.
-
-Include:
-- A recommended option (mark it)
-- Brief description of each option's implication
-- "Something else" escape hatch (automatic)
-
-### 5. After They Choose
-
-Once the human picks a direction:
-- **Immediately act** on their choice
-- Don't ask for confirmation
-- Don't re-explain what you're about to do
-- Just do it
-
-## Output Format
+Don't make them figure out what to do. Offer choices:
 
 ```
-**Where we left off:**
-- [Original goal in one sentence]
-- [Key decision or state]
-- [Current blocker or next milestone]
+## What's Next?
 
-**Status:**
-| Done | In Progress | Blocked |
-|------|-------------|---------|
-| X, Y | Z | - |
-
-**Recommendation:** [Your suggested next step and why, 1-2 sentences]
-
-[AskUserQuestion with 2-4 options]
+1. **Continue API refactor** — pick up where we left off in `src/api.ts`
+2. **Unblock deploy** — track down credentials issue
+3. **Switch to docs** — lower priority but quick win
+4. **Something else** — tell me what you need
 ```
 
-## Example
+**4. Let them pick without typing:**
 
-```
-**Where we left off:**
-- Building release pipeline for `tint` (terminal color picker)
-- Decided on v0.1.0-alpha.1 as first release
-- All CI/CD infrastructure merged to dev branch
+Use `AskUserQuestion` with the options above. They tap a button, you execute.
 
-**Status:**
-| Done | Pending |
-|------|---------|
-| install.sh, CHANGELOG, CI workflow, tests | Draft release |
+## Tone
 
-**Recommendation:** The release infrastructure is tested and ready. I'd create the tag and draft release now.
-
-[AskUserQuestion: "What's next?"
-- "Create v0.1.0-alpha.1 release" (recommended)
-- "Review the CI/CD setup first"
-- "Switch to something else"]
-```
-
-## Edge Cases
-
-**Nothing to debrief:**
-If the conversation just started or has no meaningful history:
-- Say so clearly: "This conversation just started — nothing to debrief yet."
-- Ask what they'd like to work on
-
-**Task system exists:**
-Always check `TaskList`. Tasks persist across compactions and may have state the conversation doesn't.
+- Concise. Scannable. Action-oriented.
+- Assume zero memory. Don't reference "as we discussed" without restating.
+- Lead with status, follow with options.
+- Bullet points over paragraphs.
+- Tables over lists when comparing items.
 
 ## Anti-patterns
 
-- Wall of text (human has to read too much)
-- "What would you like to do?" without options (human has to think)
-- Dumping task list without synthesis (human has to analyze)
-- Too many options (decision fatigue)
-- Asking for confirmation after they already chose
-- Forgetting to check TaskList
-- Skipping the recommendation
+- Walls of text they have to parse
+- Asking "what would you like to do?" without options
+- Assuming they remember context
+- Burying the status in narrative
+- Making them type when a button would do
 
 ---
 
-Execute debrief now. Scan the conversation, check TaskList, synthesize status, and present options via `AskUserQuestion`.
+Enter debrief mode now. Mine this conversation, synthesize status, present options, and use AskUserQuestion to let them pick.

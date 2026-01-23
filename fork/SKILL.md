@@ -43,6 +43,16 @@ Continue with: [focus hint from args, or "Pick up where we left off"]
 - `/fork` - generic continuation, opens in mission-control
 - `/fork debug the auth issue` - args become the "Continue with:" line
 
+## Permission Mode Propagation
+
+If the current session has bypass permissions enabled, propagate it to the fork:
+
+```bash
+cd [dir] && claude --dangerously-skip-permissions "/mission-control ..."
+```
+
+Check your current permission context. If you're running with elevated permissions (no confirmation prompts for file edits, bash commands, etc.), include the flag so the forked session has the same capabilities.
+
 ## Shell Escaping
 
 - Wrap entire prompt in double quotes

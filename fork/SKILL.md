@@ -19,7 +19,8 @@ Generate a context handoff for a new Claude session. No tool calls needed - synt
 
 **Paste in new terminal:**
 ```bash
-cd [target directory] && claude "/mission-control [escaped prompt here]"
+cd [target directory]
+claude "/mission-control [escaped prompt here]"
 ```
 
 *This conversation continues here. The fork runs independently.*
@@ -48,7 +49,8 @@ Continue with: [focus hint from args, or "Pick up where we left off"]
 If the current session has bypass permissions enabled, propagate it to the fork:
 
 ```bash
-cd [dir] && claude --dangerously-skip-permissions "/mission-control ..."
+cd [dir]
+claude --dangerously-skip-permissions "/mission-control ..."
 ```
 
 Check your current permission context. If you're running with elevated permissions (no confirmation prompts for file edits, bash commands, etc.), include the flag so the forked session has the same capabilities.

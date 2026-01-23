@@ -19,7 +19,7 @@ Generate a context handoff for a new Claude session. No tool calls needed - synt
 
 **Paste in new terminal:**
 ```bash
-cd [target directory] && claude "[escaped prompt here]"
+cd [target directory] && claude "[/skill if needed] [escaped prompt here]"
 ```
 
 *This conversation continues here. The fork runs independently.*
@@ -30,7 +30,7 @@ cd [target directory] && claude "[escaped prompt here]"
 Generate a shell command with this prompt structure:
 
 ```
-Context from forked conversation:
+[/skill-name if specified] Context from forked conversation:
 - Working on: [description]
 - Files: [list]
 - Key context: [important decisions, findings, state]
@@ -38,10 +38,13 @@ Context from forked conversation:
 Continue with: [focus hint from args, or "Pick up where we left off"]
 ```
 
+If the forked task benefits from a specific skill (e.g., `/mission-control` for coordination, `/plan` for design), prefix the prompt with that skill invocation.
+
 ## Args Handling
 
 - `/fork` - generic continuation
 - `/fork debug the auth issue` - args become the "Continue with:" line
+- `/fork /mission-control coordinate the refactor` - if args start with a skill name, the forked session opens in that skill
 
 ## Shell Escaping
 

@@ -1,6 +1,6 @@
 ---
 name: loop-codex-review
-description: Automated code review loop with progressive reasoning levels. Runs 3 parallel Codex reviews, Claude fixes issues, climbs from low→xhigh reasoning until fixed point (3 consecutive clean). Human approval at each iteration.
+description: Automated code review loop with progressive reasoning levels. Runs N parallel Codex reviews, Claude fixes issues, climbs from low→xhigh reasoning until fixed point (N consecutive clean, configurable via -n). Human approval at each iteration.
 ---
 
 # Loop: Codex Review
@@ -104,7 +104,7 @@ reasoning_level: "low"             # Current: low | medium | high | xhigh
 reasoning_strategy: "progressive"  # progressive | fixed
 consecutive_clean_at_level: 0      # Resets on any finding
 consecutive_clean_target: 3        # -n flag (default 3, max 10)
-reviews_per_batch: 3               # Run 3 in parallel
+# Note: Run -n reviews in parallel. If all clean, fixed point reached in one batch.
 
 # Level history (for reporting)
 level_history:
@@ -152,7 +152,7 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 
 **Args examples:**
 ```bash
-# Default: progressive low → xhigh, 3 consecutive clean per level
+# Default: progressive low → xhigh, n consecutive clean per level (n=3 default)
 /codex-review-loop                          # --uncommitted, full climb
 /codex-review-loop --base master            # Review vs master, full climb
 
@@ -189,15 +189,17 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 
 **This runs the actual `codex review` CLI command — NOT a Claude agent.**
 
-### Always Run 3 Reviews in Parallel
+### Always Run N Reviews in Parallel
 
-Spawn 3 simultaneous reviews at the current reasoning level:
+Use the `Bash` tool directly with `run_in_background: true` — NOT Task agents:
 
 ```
-Task(subagent_type: "Bash", run_in_background: true, prompt: "codex review --base master -c model_reasoning_effort=\"low\"")
-Task(subagent_type: "Bash", run_in_background: true, prompt: "codex review --base master -c model_reasoning_effort=\"low\"")
-Task(subagent_type: "Bash", run_in_background: true, prompt: "codex review --base master -c model_reasoning_effort=\"low\"")
+Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true)
+Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true)
+Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true)
 ```
+
+⚠️ **Why Bash, not Task?** Task spawns an agent that interprets the prompt and may use unpredictable strategies (like `tail -f` which blocks forever). Bash runs the command directly with predictable output.
 
 **Fixed point = n consecutive clean (default 3).** If ANY review finds bugs, fix and restart the count.
 
@@ -213,31 +215,18 @@ Task(subagent_type: "Bash", run_in_background: true, prompt: "codex review --bas
 
 **Important:** When in a Graphite stack, always review against the parent branch, not master.
 
-### Example: Launch 3 Parallel Reviews
+### Example: Launch 10 Parallel Reviews
 
 ```python
-# In a single message, spawn all 3:
-Task(
-  description: "Codex review 1/3 (high)",
-  prompt: "Run: codex review --base master -c model_reasoning_effort=\"high\" 2>&1",
-  subagent_type: "Bash",
-  run_in_background: true
-)
-Task(
-  description: "Codex review 2/3 (high)",
-  prompt: "Run: codex review --base master -c model_reasoning_effort=\"high\" 2>&1",
-  subagent_type: "Bash",
-  run_in_background: true
-)
-Task(
-  description: "Codex review 3/3 (high)",
-  prompt: "Run: codex review --base master -c model_reasoning_effort=\"high\" 2>&1",
-  subagent_type: "Bash",
-  run_in_background: true
-)
+# In a single message, launch all reviews:
+Bash(command: "codex review --base master -c model_reasoning_effort=\"high\" 2>&1", run_in_background: true, description: "Codex review 1/10 (high)")
+Bash(command: "codex review --base master -c model_reasoning_effort=\"high\" 2>&1", run_in_background: true, description: "Codex review 2/10 (high)")
+# ... repeat for all N reviews
 ```
 
-**Record the task IDs** from each launch (e.g., `a1b2c3d`). Notifications are unreliable — you'll need to poll the output files directly. See "Handling Zombie Tasks" section.
+Each call returns a `task_id` and `output_file` path. Record these for polling.
+
+**Polling:** Use `cat` or `tail -n` (NOT `tail -f`) to check output files. See "Handling Zombie Tasks" section.
 
 ## Phase: Parse Output
 
@@ -249,14 +238,14 @@ Codex review outputs markdown with issues. Parse into tracker:
 | CR-001 | src/auth.js | 42 | major | SQL injection | open | R1 | high |
 ```
 
-### Evaluate 3 Parallel Results
+### Evaluate N Parallel Results
 
 ```
-results = [review_1, review_2, review_3]
+results = [review_1, review_2, ..., review_n]
 
 if ALL results are clean:
-    consecutive_clean_at_level += 3
-    if consecutive_clean_at_level >= 3:
+    consecutive_clean_at_level += n
+    if consecutive_clean_at_level >= n:
         # Fixed point at this level!
         if reasoning_level == "xhigh":
             → DONE (full fixed point reached)
@@ -332,9 +321,9 @@ The goal is to reconstruct the full picture before acting. Understand the system
 
 **Exit check first:**
 ```
-if consecutive_clean_at_level >= 3 AND reasoning_level == "xhigh":
+if consecutive_clean_at_level >= n AND reasoning_level == "xhigh":
     → Done (full fixed point reached)
-if consecutive_clean_at_level >= 3:
+if consecutive_clean_at_level >= n:
     → Escalate to next reasoning level
 if iteration_count >= max_iterations:
     → Ask user how to proceed
@@ -469,24 +458,24 @@ A **true fixed point** requires BOTH:
 If 1 in 10 reviewers misunderstands your code, that's a 10% confusion rate. Fix it by adding comments until the confusion rate hits 0%. Don't dismiss — clarify, then re-run to verify.
 
 ### Per-Level Fixed Point
-When `consecutive_clean_at_level >= 3` at any level:
+When `consecutive_clean_at_level >= n` at any level:
 ```
-3 parallel reviews at [level] found nothing.
+n parallel reviews at [level] found nothing.
 Fixed point at [level]. Escalating to [next level]...
 ```
 
 ### Full Fixed Point
-When `consecutive_clean_at_level >= 3` at `xhigh`:
+When `consecutive_clean_at_level >= n` at `xhigh`:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  FULL FIXED POINT REACHED                               │
 ├─────────────────────────────────────────────────────────┤
-│  low:    3/3 clean ✓                                    │
-│  medium: 3/3 clean ✓                                    │
-│  high:   3/3 clean ✓                                    │
-│  xhigh:  3/3 clean ✓                                    │
+│  low:    n/n clean ✓                                    │
+│  medium: n/n clean ✓                                    │
+│  high:   n/n clean ✓                                    │
+│  xhigh:  n/n clean ✓                                    │
 ├─────────────────────────────────────────────────────────┤
-│  Total reviews: 12  |  Bugs found & fixed: N            │
+│  Total reviews: 4n  |  Bugs found & fixed: X            │
 │  Code has been validated at all reasoning depths.       │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -523,22 +512,21 @@ Statuses: `open` | `fixing` | `fixed` | `wontfix`
 
 **The Pattern:**
 
-1. **Record IDs when launching** — Note the task IDs from each Task() call
+1. **Record IDs when launching** — Note the task IDs from each Bash() call
 2. **Wait briefly** — Give tasks time to run (~3-5 min for medium, ~15 min for xhigh)
 3. **Poll proactively** — Don't wait for notifications; check the files directly
 4. **If user says "tasks are done"** — Trust them and poll immediately
 
 **Polling Recipe:**
 ```bash
-# Check if task is complete (type=assistant means done, type=progress means running)
-tail -1 /tmp/claude/.../tasks/<id>.output | python3 -c "import sys,json; print(json.load(sys.stdin).get('type','unknown'))"
-
-# Extract result from completed task
-tail -1 /tmp/claude/.../tasks/<id>.output | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['message']['content'][0]['text'][-1500:])"
+# Check if task is complete (look for final JSON line with result)
+tail -1 /tmp/claude/.../tasks/<id>.output
 
 # Batch check all tasks
-for id in <id1> <id2> <id3>; do echo "=== $id ==="; <extract command>; done
+for id in <id1> <id2> <id3>; do echo "=== $id ==="; tail -1 "/tmp/claude/.../tasks/${id}.output"; done
 ```
+
+⚠️ **NEVER use `tail -f`** — it blocks forever. Always use `cat` or `tail -n` which terminate after reading.
 
 **Key insight:** Treat notifications as hints, not guarantees. When in doubt, poll.
 
@@ -558,12 +546,12 @@ Contradictory findings usually indicate underspecified requirements, not wrong r
 
 - Running Claude agents to "review" — USE `codex review` CLI
 - Skipping human approval checkpoint
-- Committing without reaching fixed point (3 clean at current level)
+- Committing without reaching fixed point (n clean at current level)
 - Running codex review without `run_in_background` (takes 3-20 min)
 - Fixing issues user marked `wontfix`
 - Infinite loops without max_iterations guard
 - **Forgetting to set `-c model_reasoning_effort`** — always explicit
-- **Running reviews sequentially** — always 3 in parallel
+- **Running reviews sequentially** — always run N in parallel (where N = -n flag)
 - **Trusting low/medium clean reviews as "done"** — always climb to at least high
 - **Not verifying findings before fixing** — especially at lower reasoning levels
 - **Stopping at first fixed point** — default is full climb to xhigh
@@ -572,4 +560,4 @@ Contradictory findings usually indicate underspecified requirements, not wrong r
 
 ---
 
-Enter codex-review-loop mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch 3 parallel `codex review` commands via Task tool with `run_in_background: true`. Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI.
+Enter codex-review-loop mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch N parallel `codex review` commands via Bash tool with `run_in_background: true` (where N = -n flag, default 3). Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI.

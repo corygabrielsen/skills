@@ -34,6 +34,8 @@ Execution plan:
 
 ## Options
 
+**Fallback:** If `AskUserQuestion` is unavailable, present options as a numbered list and wait for user to respond with their choice number or label.
+
 ```
 AskUserQuestion(
   questions: [{
@@ -56,8 +58,9 @@ AskUserQuestion(
 **If user selects "Modify":**
 1. Prompt: "Describe what changes you'd like to the task breakdown."
 2. End turn, wait for user input.
-3. Interpret user feedback (at any level of detail) and make appropriate TaskUpdate calls or create new tasks. Mission control proposes and executes changes based on user's intent.
-4. Re-present Plan Approval (loop until Approve or Abort).
+3. If user provides empty/unclear input or cancels ("nevermind"), re-present options.
+4. Otherwise, interpret user feedback and make appropriate TaskUpdate calls or create new tasks.
+5. Re-present Plan Approval (loop until Approve or Abort).
 
 **If user selects "Abort":**
 1. Mark all pending tasks as `ABORTED - User cancelled`.

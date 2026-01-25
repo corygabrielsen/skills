@@ -35,6 +35,8 @@ AskUserQuestion(
 **If user selects "Approve":** Proceed to Address phase.
 
 **If user selects "Modify":**
+Users can change HOW issues are addressed (different wording, alternative fixes), not WHETHER—all flagged issues still require document changes per Core Philosophy.
+
 1. Acknowledge selection and prompt: "Please describe what changes to the plan you'd like (adjust proposed fixes, change resolution types, etc.)."
 2. End turn (stop responding and wait for user input).
 3. When user provides input, revise the proposed fixes based on user feedback (don't re-run Synthesize/Triage phases; just adjust the fix proposals directly).

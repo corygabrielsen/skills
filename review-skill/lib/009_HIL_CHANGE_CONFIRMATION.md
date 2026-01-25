@@ -40,8 +40,8 @@ AskUserQuestion(
 3. If diff output is empty: run `git status {target_file}` to distinguish cause:
    - File is tracked with no unstaged changes: report "No unstaged changes to show."
    - File is untracked: report "File is untracked (not yet committed)."
-4. If `git diff` fails unexpectedly: report the error.
-5. After handling any of the above, re-present confirmation options.
+4. If `git diff` fails unexpectedly: report error and re-present options.
+5. After handling any case, re-present confirmation options.
 
 **If user selects "Revert":**
 1. Warn user: "This will discard unstaged changes to {target_file}. Staged changes are not affected—use `git restore --staged {target_file}` first if needed."

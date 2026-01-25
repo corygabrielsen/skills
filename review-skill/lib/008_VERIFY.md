@@ -5,7 +5,7 @@
 ## Do:
 - Use Read tool on `{target_file}` to verify changes appear correctly in context
 - Check that surrounding text still makes sense with the edits
-- Ensure all issues are `fixed` or `clarified`. If an edit didn't apply correctly, re-read the file, diagnose, and make a follow-up edit before marking as fixed/clarified.
+- Ensure all issues are `fixed` or `clarified`. If an edit didn't apply correctly, re-read the file, diagnose, and make a follow-up edit before marking as fixed/clarified. Re-verify each follow-up edit by reading the file again. If an edit repeatedly fails after 2 attempts, halt and report the issue.
 
 ## Don't:
 - Skip verification

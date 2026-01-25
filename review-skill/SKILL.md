@@ -1,6 +1,6 @@
 ---
 name: review-skill
-description: Review a skill document using specialized lenses. Each lens finds specific issue types. Clean from all lenses = no issues.
+description: Review a skill document using specialized lenses. Each lens finds specific issue types.
 ---
 
 # Review Skill
@@ -9,7 +9,7 @@ Review skill documents using specialized lenses. Each lens is tuned to find spec
 
 ## Lenses
 
-Each lens asks a focused question. An issue from any lens is signal. Clean from all lenses means no issues.
+Each lens asks a focused question. An issue from any lens is signal.
 
 | Lens | Question | Finds |
 |------|----------|-------|
@@ -26,7 +26,7 @@ Each lens asks a focused question. An issue from any lens is signal. Clean from 
 
 ### Do:
 - Accept target skill file path from args
-- Validate file exists and path ends with `/SKILL.md`
+- Validate file exists and is named `SKILL.md`
 - Read the full file content for lens prompts
 - Store `target_file` path for use in later phases
 
@@ -99,7 +99,7 @@ ISSUES:
 
 OR
 
-NO ISSUES - all checks pass.
+NO ISSUES
 ```
 
 **Lens: contradictions**
@@ -124,7 +124,7 @@ ISSUES:
 
 OR
 
-NO CONTRADICTIONS
+NO ISSUES
 ```
 
 **Lens: terminology**
@@ -145,7 +145,7 @@ ISSUES:
 
 OR
 
-NO ISSUES - terminology is consistent.
+NO ISSUES
 ```
 
 **Lens: adversarial**
@@ -157,13 +157,13 @@ Try to find ways to misinterpret this document that would lead to wrong behavior
 If you CAN'T find a plausible misinterpretation, the document is robust.
 
 Output:
-EXPLOITABLE AMBIGUITIES:
+ISSUES:
 1. Line X: Could be read as "[bad interpretation]" leading to [wrong behavior]
 ...
 
 OR
 
-ROBUST - no exploitable ambiguities found.
+NO ISSUES
 ```
 
 **Lens: gaps**
@@ -176,13 +176,13 @@ Look for places where options are presented but handling is incomplete:
 - Edge cases mentioned but not handled
 
 Output:
-GAPS:
+ISSUES:
 1. Line X: [option/branch] has no handling instructions
 ...
 
 OR
 
-NO GAPS - all paths handled.
+NO ISSUES
 ```
 
 ---
@@ -202,15 +202,11 @@ NO GAPS - all paths handled.
 
 ### Evaluate Results
 
-A lens is "clean" if its output starts with one of:
-- `NO ISSUES`
-- `NO CONTRADICTIONS`
-- `ROBUST`
-- `NO GAPS`
+A lens has no issues if its output starts with `NO ISSUES`.
 
 ```
-if ALL 6 lenses are clean:
-    → Present "All lenses clean." and proceed to Epilogue
+if ALL 6 lenses output NO ISSUES:
+    → Report "No issues." and proceed to Epilogue
 else:
     → Merge issues into tracker
     → Proceed to Synthesize
@@ -304,7 +300,7 @@ AskUserQuestion(
 
 ### Don't:
 - Deviate from approved plan
-- Skip any finding
+- Skip any issue
 
 ---
 
@@ -366,19 +362,19 @@ AskUserQuestion(
 **Report results and end.**
 
 ### Do:
-- Report outcome (clean or issues addressed)
+- Report outcome
 - End the skill
 
 ### Don't:
 - Skip the completion message
 - Continue after reporting
 
-**All lenses clean:**
+**No issues found:**
 ```
-All lenses clean. No issues.
+No issues.
 ```
 
-**Findings addressed:**
+**Issues addressed:**
 ```
 Review complete.
 Issues: {count} addressed across {lens_count} lenses.
@@ -403,4 +399,4 @@ Issues: {count} addressed across {lens_count} lenses.
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. If all return clean, report "All lenses clean." and end. Otherwise: synthesize issues into themes, triage, get Plan Approval, execute edits, verify, and get Change Confirmation.
+Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. If all return NO ISSUES, report "No issues." and end. Otherwise: synthesize issues into themes, triage, get Plan Approval, execute edits, verify, and get Change Confirmation.

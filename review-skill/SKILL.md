@@ -15,7 +15,7 @@ When a reviewer flags something, the document changes. Always:
 - **Real issue** → fix it
 - **False positive** → add clarifying text
 
-**Fixed point** = no reviewer can flag anything. (Aspiration; use `-n` for multiple passes.)
+**Fixed point** = no reviewer can flag anything. (Aspiration; may not be reached in N passes.)
 
 ---
 
@@ -24,7 +24,7 @@ When a reviewer flags something, the document changes. Always:
 **Correctness** — will this do the wrong thing?
 | Reviewer | Question | Finds |
 |----------|----------|-------|
-| execution | "Would this cause wrong behavior?" | Logic errors, missing steps, broken flows |
+| execution | "Would this cause wrong behavior?" | Logic errors, missing steps, broken flows (all treated equally; no severity levels) |
 | contradictions | "Does A contradict B?" | Conflicting instructions |
 | coverage | "Is every option/branch handled?" | Unhandled branches, missing handlers |
 

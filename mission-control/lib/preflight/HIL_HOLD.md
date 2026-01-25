@@ -6,6 +6,7 @@ Like NASA's launch hold: stop, assess, decide whether to scrub, hold, or resolve
 
 ## Entry
 - One or more tasks evaluated as NO-GO in EVALUATE phase
+- GO tasks from the same evaluation batch remain ready---they wait while NO-GOs are resolved
 
 ## Do:
 - Present NO-GO summary with reasons

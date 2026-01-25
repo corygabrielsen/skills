@@ -75,3 +75,5 @@ if --auto:
         → no forward progress possible without intervention
         → exit auto mode, present options to human
 ```
+
+**Auto mode exit is permanent:** Once `--auto` exits for human intervention (failure, NO-GO, or deadlock), it remains disabled for the rest of the session. Human must explicitly pass `--auto` on next `/mission-control` invocation to re-enable.

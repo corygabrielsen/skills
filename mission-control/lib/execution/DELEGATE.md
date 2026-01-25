@@ -44,18 +44,19 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty. See RULES.md 
 
 **Note:** In --fg mode, DELEGATE handles all blocking. MONITOR phase is skipped (pass-through).
 
-## Agent Prompt Template
+## Agent Launch Syntax
 
+Use the `Task` tool with these parameters:
 ```
-You are executing task {task_id}: {task_subject}
-
-{task_description}
-
-When complete:
-- Report what you accomplished
-- Note any issues encountered
-- Confirm verification criteria are met
+Task(
+  prompt: "You are executing task {task_id}: {task_subject}\n\n{task_description}\n\nWhen complete:\n- Report what you accomplished\n- Note any issues encountered\n- Confirm verification criteria are met",
+  description: "{brief task summary for logs}",
+  subagent_type: "general-purpose",
+  run_in_background: true
+)
 ```
+
+The `Task` tool returns an agent ID. Store it in task metadata: `TaskUpdate(taskId: T-001, metadata: {agent_id: "returned_id"})`.
 
 ## Launch Failure Handling
 

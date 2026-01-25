@@ -2,7 +2,7 @@
 
 **Launch agents for ready tasks.**
 
-A task is "ready" when: status=`pending` AND `blockedBy` is empty. See RULES.md Definitions.
+A task is "ready" when: status=`pending` AND `blockedBy` is empty.
 
 ## Do:
 - Identify all ready tasks (no blockers, not in_progress, not completed)

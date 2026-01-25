@@ -50,41 +50,6 @@ This skill requires task system tools (typically provided by the agent framework
 
 ---
 
-## Structure
-
-```
-mission-control/
-├── SKILL.md
-├── RULES.md              ← Mission Rules + Flight Rules
-└── lib/
-    ├── setup/
-    │   ├── PHASE.md
-    │   ├── INITIALIZE.md
-    │   ├── BOOTSTRAP.md
-    │   ├── DECOMPOSE.md
-    │   └── HIL_PLAN_APPROVAL.md
-    │
-    ├── preflight/
-    │   ├── PHASE.md
-    │   ├── EVALUATE.md
-    │   ├── HIL_HOLD.md
-    │   └── FIX.md
-    │
-    ├── execution/
-    │   ├── PHASE.md
-    │   ├── DELEGATE.md
-    │   ├── MONITOR.md
-    │   └── VERIFY.md
-    │
-    └── control/
-        ├── PHASE.md
-        ├── HIL_ANOMALY.md
-        ├── CHECKPOINT.md
-        ├── REPORT.md
-        ├── HIL_NEXT_ACTION.md
-        └── HANDOFF.md
-```
-
 ## Quick Reference
 
 | Composite | Sub-phases | Purpose |
@@ -166,35 +131,6 @@ pending --> in_progress --> completed
 
 ---
 
-## NASA-Inspired Practices
-
-| Practice | Implementation |
-|----------|----------------|
-| Mission Rules | Inviolable constraints (MR-1 through MR-6 in RULES.md) |
-| Flight Rules | Pre-planned decisions by section (FR-A* through FR-E* in RULES.md) |
-| Go/No-Go Polls | preflight/EVALUATE checks before every launch |
-| Anomaly Resolution | STOP → ASSESS → CLASSIFY → RESPOND in control/HIL_ANOMALY |
-| Shift Handoffs | control/HANDOFF captures state for resumption |
-| Single Voice | Mission control synthesizes, user gets one interface |
-| Status Checks | control/CHECKPOINT polls all stations |
-
----
-
-## Tool Reference
-
-| Tool | Purpose | Key Parameters |
-|------|---------|----------------|
-| `TaskCreate` | Create a task record in the task system | `subject`, `description`, `metadata` |
-| `TaskUpdate` | Modify task (status, description, dependencies) | `taskId`, `status`, `addBlockedBy` |
-| `TaskList` | List all tasks with summary info | — |
-| `TaskGet` | Get full details of a specific task | `taskId` |
-| `Task` | Spawn a background agent to execute work | `run_in_background: true` for async |
-
-| `TaskOutput` | Read output from a spawned agent | `task_id`, `block: true/false` |
-| `AskUserQuestion` | Present options to human for decision | `questions` array |
-
-**Note:** `Task` spawns agents; `TaskCreate` creates records. Create task first, then spawn. See DELEGATE.md for full launch syntax including agent ID storage.
-
----
-
 Begin at setup/INITIALIZE. Follow composite phase flows. Honor HIL unless `--auto` AND nominal (all GO, no failures).
+
+**Note on examples:** Task IDs like "T-001" in examples are placeholders. Actual IDs are system-generated strings returned by `TaskCreate`.

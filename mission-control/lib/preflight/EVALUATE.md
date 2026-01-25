@@ -26,7 +26,7 @@
 ## Output Format
 
 ```markdown
-## Pre-Flight Evaluation
+## Preflight Evaluation
 
 | Task | Scope | Context | Criteria | Deps | Size | Status |
 |------|-------|---------|----------|------|------|--------|

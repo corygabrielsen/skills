@@ -192,8 +192,7 @@ NO ISSUES
 **Gather results from all lenses.**
 
 ### Do:
-- Use `TaskOutput` for each lens
-- Wait for all to complete
+- Use `TaskOutput` with `block: true` for each lens to wait for completion
 - Parse each lens's output format
 
 ### Don't:
@@ -220,6 +219,8 @@ else:
 | F-001 | execution | 42 | [description] | open |
 | F-002 | gaps | 156 | [description] | open |
 ```
+
+**Status progression:** `open` → `planned` (in Triage) → `fixed` (in Address)
 
 ---
 
@@ -283,7 +284,7 @@ AskUserQuestion(
 
 **If user selects "Approve":** Proceed to Address phase.
 
-**If user selects "Modify":** User will type their changes. Update plan accordingly, re-present for approval.
+**If user selects "Modify":** Wait for user to type their changes in the next message. Update plan accordingly, re-present Plan Approval options.
 
 **If user selects "Abort":** End skill without changes.
 
@@ -351,9 +352,9 @@ AskUserQuestion(
 
 **If user selects "Confirm":** Proceed to Epilogue.
 
-**If user selects "View diff":** Run `git diff {target_file}`, show output, re-present confirmation options.
+**If user selects "View diff":** Run `git diff {target_file}`, show output (or "No diff available" if file is untracked), re-present confirmation options.
 
-**If user selects "Revert":** Run `git checkout {target_file}`, report "Changes reverted.", end skill.
+**If user selects "Revert":** Run `git checkout {target_file}` to restore last committed version, report "Changes reverted.", end skill. (Warns: this discards all uncommitted changes.)
 
 ---
 
@@ -399,4 +400,4 @@ Issues: {count} addressed across {lens_count} lenses.
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. If all return NO ISSUES, report "No issues." and end. Otherwise: synthesize issues into themes, triage, get Plan Approval, execute edits, verify, and get Change Confirmation.
+Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. If all return NO ISSUES, proceed to Epilogue and report "No issues." Otherwise: synthesize issues into themes, triage, get Plan Approval, execute edits, verify, get Change Confirmation, then Epilogue.

@@ -33,6 +33,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 | terminology | "Is term X used consistently?" | Naming inconsistencies |
 | adversarial | "Where would a reasonable LLM go wrong?" | Fixable ambiguities, missing info |
 | coverage | "Is every option/branch handled?" | Unhandled branches, missing handlers |
+| portability | "Would this break on non-Claude models?" | Provider-specific assumptions |
 
 ---
 
@@ -72,4 +73,4 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all reviewers output NO ISSUES, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Stage → Commit → Epilogue.
+Begin /review-skill now. Parse args for target file. Launch all 7 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all reviewers output NO ISSUES, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Stage → Commit → Epilogue.

@@ -5,7 +5,7 @@
 ## Do:
 - Propose ONE fix per theme
 - For each issue, determine resolution type (all edits are to `{target_file}`, the document being reviewed):
-  - **Real issue** → propose document fix
+  - **Real issue** → propose document change
   - **False positive** → propose clarifying text (comment, note, or rewording that makes intent obvious)
 - Immediately after proposing a fix for a theme, update that theme's issues from `open` to `planned`
 

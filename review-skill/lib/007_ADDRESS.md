@@ -7,7 +7,7 @@
 - Update tracker status based on resolution type:
   - `planned` → `fixed` (real issue was corrected)
   - `planned` → `clarified` (false positive addressed with clarifying text)
-- Use `Edit` tool for changes
+- Use `Edit` tool for edits
 
 ## Don't:
 - Deviate from approved plan

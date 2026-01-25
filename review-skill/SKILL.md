@@ -43,7 +43,7 @@ Each reviewer asks a focused question.
 | Reviewer | Question | Finds |
 |----------|----------|-------|
 | checklist | "Do these specific checks pass?" | Structural issues, missing sections |
-| portability | "Would this break on non-Claude models?" | Provider-specific assumptions |
+| portability | "Would this break on other LLM providers?" | Provider-specific assumptions |
 
 ---
 
@@ -68,6 +68,8 @@ Follow each phase in sequence:
 ---
 
 ## Quick Reference
+
+At-a-glance phase overview (see @lib/ files for full details):
 
 | Phase | Purpose |
 |-------|---------|

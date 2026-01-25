@@ -4,7 +4,7 @@
 
 ## Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
-- **Substitute `{target_file}`** in each reviewer prompt with the actual target file path **before** passing to Task
+- **Substitute `{target_file}`** (the file path, not content) in each reviewer prompt with the actual target file path **before** passing to Task
   - Perform literal string replacement: replace ALL instances of `{target_file}` in the prompt text with the actual path
   - Pass the fully-substituted prompt as the `prompt` parameter
 - Launch all 8 reviewers in a **single assistant turn** (one message containing 8 parallel Task tool calls)

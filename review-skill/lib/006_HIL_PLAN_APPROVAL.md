@@ -35,7 +35,7 @@ AskUserQuestion(
 **If user selects "Approve":** Proceed to Address phase.
 
 **If user selects "Modify":**
-Users can change HOW issues are addressed (different wording, alternative fixes), not WHETHER—all flagged issues still require document changes per Core Philosophy.
+Users can change HOW issues are addressed (different wording, alternative fixes), not WHETHER—all flagged issues still require document changes per Core Philosophy. If user requests dismissing an issue without a document change, remind them of Core Philosophy and ask for an alternative resolution.
 
 1. Acknowledge selection and prompt: "Please describe what changes to the plan you'd like (adjust proposed fixes, change resolution types, etc.)."
 2. Pause here and wait for user input (do not continue to Address phase yet).

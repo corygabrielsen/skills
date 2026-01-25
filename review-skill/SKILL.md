@@ -79,7 +79,7 @@ Run specialized reviewers against a skill document to find correctness, clarity,
 
 | Flag | Behavior |
 |------|----------|
-| `--auto` | Skip HIL prompts (still displays plan/summary) |
+| `--auto` | Skip HIL checkpoints (still displays plan/summary) |
 | `-n N` | Do N passes (default: 1) |
 | `--reviewer <category>` | Run only `correctness`, `clarity`, or `conformance` reviewers |
 

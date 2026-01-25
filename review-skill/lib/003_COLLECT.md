@@ -3,7 +3,7 @@
 **Gather results from all reviewers.**
 
 ## Do:
-- Use `TaskOutput` with `task_id: <id>` for each reviewer that successfully launched, **in a single assistant turn with up to 8 parallel TaskOutput calls** (if fewer than 8 launched, only call TaskOutput for those that did). TaskOutput blocks until completion, so this turn waits for all reviewers to finish.
+- Use `TaskOutput` with `task_id: <id>` for each reviewer that launched, **in a single turn with parallel calls** (up to 8). TaskOutput blocks until completion.
 - Parse each reviewer's output into tracker rows. For each numbered issue:
   - If it starts with "Line X:", extract X into Line column and the text after the colon into Issue column
   - If no "Line X:" prefix (some reviewers like checklist omit line numbers), use "-" for Line column
@@ -19,7 +19,7 @@
 - Exactly `NO ISSUES` (reviewer found nothing)
 - `ISSUES:` followed by numbered items (`1. ...`, `2. ...`, etc.)—items may or may not have "Line X:" prefix
 
-**Malformed output** (neither pattern above) or **task execution error**: record a single tracker entry with Issue="Reviewer output error: [description]", Line="-". Proceed to Synthesize.
+**Malformed output or task error**: record tracker entry with Issue="Reviewer output error: [description]", Line="-", then proceed to Synthesize.
 
 ```
 if ALL successfully-launched reviewers output NO ISSUES AND no launch failures were recorded:
@@ -29,9 +29,9 @@ else:
     → Proceed to Synthesize
 ```
 
-If any reviewer failed to launch, proceed to Synthesize for visibility, but launch failures are infrastructure errors—skip them during Triage (no document fix needed).
+Launch failures are infrastructure errors (not document issues per Core Philosophy)—they appear in Synthesize for visibility but skip Triage.
 
-## Issue Tracker Format
+## Tracker Format
 
 ```markdown
 | ID | Reviewer | Line | Issue | Fix | Status |
@@ -40,9 +40,8 @@ If any reviewer failed to launch, proceed to Synthesize for visibility, but laun
 | I-002 | coverage | 156 | [description] | Added X | clarified |
 ```
 
-- **Line**: Line number from reviewer output. For multi-line issues (e.g., contradictions reporting "Lines X and Y"), use the first line number; mention additional line numbers in the Issue description (e.g., "Lines 42 and 78 contradict...").
-- **Issue**: Brief description of what was flagged
-- **Fix**: Short prose snippet of change made (use "—" while `open` or `planned`)
+- **Line**: Line number from reviewer output. For multi-line issues, use first line; mention others in Issue description.
+- **Fix**: Change made (use "—" for `open`/`planned`)
 
 **Status progression:** `open` → `planned` (in Triage) → `fixed` or `clarified` (in Address)
 

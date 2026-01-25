@@ -97,3 +97,13 @@ AskUserQuestion(
 1. Keep task `in_progress` (preserve state)
 2. → control/HANDOFF
 3. End skill
+
+## Multiple Failures
+
+When multiple tasks fail verification in the same batch:
+
+1. Present all failures in a single Anomaly Report (list each task with its classification)
+2. Offer batch actions: "Same action for all" or "Handle individually"
+3. If "Same action for all": apply chosen action to all failed tasks, then proceed
+4. If "Handle individually": iterate through each failed task, presenting options one at a time
+5. After all failures handled → next phase based on last action taken

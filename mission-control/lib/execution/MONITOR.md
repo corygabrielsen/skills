@@ -61,3 +61,10 @@ Background task notifications are unreliable (~50% lost). If user says "tasks ar
 1. Trust them
 2. Poll TaskOutput for all in_progress tasks immediately
 3. Proceed with results
+
+## Agent Crash/Error Handling
+
+If `TaskOutput` returns an error (agent crashed, terminated abnormally, or returned malformed output):
+1. Record the error in task metadata
+2. Keep task `in_progress` (do not mark complete)
+3. → control/HIL_ANOMALY with Classification: Transient (if transient error) or Fatal (if unrecoverable)

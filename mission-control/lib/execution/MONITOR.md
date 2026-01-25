@@ -67,4 +67,6 @@ Background task notifications are unreliable (~50% lost). If user says "tasks ar
 If `TaskOutput` returns an error (agent crashed, terminated abnormally, or returned malformed output):
 1. Record the error in task metadata
 2. Keep task `in_progress` (do not mark complete)
-3. → control/HIL_ANOMALY with Classification: Transient (if transient error) or Fatal (if unrecoverable)
+3. → control/HIL_ANOMALY with Classification:
+   - **Transient**: timeout, network error, resource exhaustion (retryable)
+   - **Fatal**: crash, assertion failure, unrecoverable state (needs replan or abort)

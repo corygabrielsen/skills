@@ -11,7 +11,7 @@
 
 ## Don't:
 - Make edits before approval
-- Skip this checkpoint (unless `--auto`)
+- Skip showing the plan (even in `--auto` mode, always show the plan before proceeding)
 
 ## Options
 

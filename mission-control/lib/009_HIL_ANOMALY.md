@@ -1,0 +1,91 @@
+# HIL: Anomaly
+
+**Structured failure handling with human decision.**
+
+Triggered when: agent fails, unexpected output, verification fails, task blocked unexpectedly.
+
+NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make it worse.
+
+## Do:
+- STOP: Pause affected task, don't retry blindly
+- ASSESS: Gather information about what happened
+- CLASSIFY: Determine failure type
+- Present classification and options to human
+- Execute human's chosen response
+
+## Don't:
+- Immediately retry (might repeat failure)
+- Ignore and continue (cascading failures)
+- Panic-fix without understanding
+- Make autonomous decisions on non-trivial failures
+
+## Classification
+
+| Type | Meaning | Suggested Response |
+|------|---------|-------------------|
+| Transient | Flaky, might work on retry | Retry once |
+| Systematic | Approach is wrong | Replan task |
+| Blocking | Need info we don't have | Escalate, ask user |
+| Fatal | Cannot recover | Abort task with explanation |
+
+## Assessment Format
+
+```markdown
+## Anomaly Report
+
+**Task:** T-003 - Implement auth middleware
+**Phase:** Verify (agent completed, verification failed)
+
+### What Happened
+Agent reported success, but tests fail with: `AuthError: token undefined`
+
+### Assessment
+- Agent implemented middleware but didn't wire it to request context
+- Tests expect `req.user` to be populated after auth
+
+### Classification: Systematic
+Approach was incomplete. Agent needs clearer requirements about request context integration.
+
+### Recommended Response
+Create follow-up task with explicit wiring requirements.
+```
+
+## Options
+
+```
+AskUserQuestion(
+  questions: [{
+    question: "How should we handle this anomaly?",
+    header: "Anomaly",
+    options: [
+      {label: "Retry", description: "Try the same task again"},
+      {label: "Replan", description: "Create new task with different approach"},
+      {label: "Skip", description: "Mark task ABORTED, continue with others"},
+      {label: "Halt", description: "Stop mission, investigate manually"}
+    ],
+    multiSelect: false
+  }]
+)
+```
+
+## Handlers
+
+**If "Retry":**
+1. Reset task to `pending`
+2. Return to Delegate phase
+
+**If "Replan":**
+1. Mark original task `ABORTED - Replanning`
+2. Prompt user: "Describe the new approach or I'll propose one."
+3. Create new task with revised approach
+4. Return to Pre-Flight
+
+**If "Skip":**
+1. Mark task `ABORTED - Skipped after anomaly`
+2. Check if downstream tasks are now blocked
+3. Return to Checkpoint → Report
+
+**If "Halt":**
+1. Mark task `in_progress` (preserve state)
+2. Trigger Handoff phase (capture state for later)
+3. End skill

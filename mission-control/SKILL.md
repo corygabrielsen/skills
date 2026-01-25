@@ -34,24 +34,75 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 @lib/001_INITIALIZE.md
 @lib/002_BOOTSTRAP.md
 @lib/003_DECOMPOSE.md
-@lib/004_DELEGATE.md
-@lib/005_MONITOR.md
-@lib/006_VERIFY.md
-@lib/007_REPORT.md
+@lib/004_HIL_PLAN_APPROVAL.md
+@lib/005_PRE_FLIGHT.md
+@lib/006_DELEGATE.md
+@lib/007_MONITOR.md
+@lib/008_VERIFY.md
+@lib/009_HIL_ANOMALY.md
+@lib/010_CHECKPOINT.md
+@lib/011_REPORT.md
+@lib/012_HIL_NEXT_ACTION.md
+@lib/013_HANDOFF.md
 
 ---
 
 ## Quick Reference
 
-| Phase | Purpose |
-|-------|---------|
-| Initialize | Run TaskList, parse args for mode |
-| Bootstrap | Mine conversation for work (if TaskList empty + history exists) |
-| Decompose | Break request into discrete tasks with dependencies |
-| Delegate | Launch agents for ready tasks |
-| Monitor | Track progress, collect results |
-| Verify | Validate completed work matches expectations |
-| Report | Status table, determine next action |
+| Phase | Type | Purpose |
+|-------|------|---------|
+| Initialize | Auto | Run TaskList, parse args for mode |
+| Bootstrap | Auto | Mine conversation for work (if TaskList empty + history exists) |
+| Decompose | Auto | Break request into discrete tasks with dependencies |
+| HIL: Plan Approval | HIL | Human approves task breakdown (skipped with `--auto`) |
+| Pre-Flight | Auto | Go/no-go checks before launching |
+| Delegate | Auto | Launch agents for ready tasks |
+| Monitor | Auto | Track progress, collect results |
+| Verify | Auto | Validate completed work matches expectations |
+| HIL: Anomaly | HIL | Structured failure handling with human decision |
+| Checkpoint | Auto | Periodic status poll |
+| Report | Auto | Status table |
+| HIL: Next Action | HIL | Human decides continuation (skipped with `--auto`) |
+| Handoff | Auto | Capture state for resumption |
+
+## Phase Flow
+
+```
+INITIALIZE ──► BOOTSTRAP (if needed) ──► DECOMPOSE
+                                              │
+                                              ▼
+                              ┌──── HIL: PLAN APPROVAL
+                              │              │
+                              │              ▼
+                              │        PRE-FLIGHT ◄───── fix NO-GOs
+                              │              │
+                              │              ▼
+                              │          DELEGATE
+                              │              │
+                              │              ▼
+                              │          MONITOR
+                              │              │
+                              │              ▼
+                              │          VERIFY ────► HIL: ANOMALY
+                              │              │              │
+                              │              ▼              │
+                              │        CHECKPOINT ◄────────┘
+                              │              │
+                              │              ▼
+                              │          REPORT
+                              │              │
+                              │              ▼
+                              │     HIL: NEXT ACTION
+                              │        │    │    │
+                              │   continue  │   complete
+                              │        │   pause   │
+                              └────────┘    │      ▼
+                                            ▼    END
+                                        HANDOFF
+                                            │
+                                            ▼
+                                          END
+```
 
 ---
 
@@ -96,4 +147,17 @@ pending --> in_progress --> completed
 
 ---
 
-Begin /mission-control now. Run `TaskList` to check state. Parse args for `--fg`/`--bg`/`--auto`. Follow phase flow: if tasks exist, resume coordination; if empty with history, bootstrap; otherwise await decomposition of user request.
+## NASA-Inspired Practices
+
+| Practice | Implementation |
+|----------|----------------|
+| Go/No-Go Polls | Pre-Flight phase checks before every launch |
+| Flight Rules | Error handlers in Verify and Anomaly phases |
+| Anomaly Resolution | STOP → ASSESS → CLASSIFY → RESPOND |
+| Shift Handoffs | Handoff phase captures state for resumption |
+| Single Voice | Mission control synthesizes, user gets one interface |
+| Status Checks | Checkpoint phase polls all stations |
+
+---
+
+Begin /mission-control now. Run `TaskList` to check state. Parse args for `--fg`/`--bg`/`--auto`. Follow phase flow: if tasks exist, resume from appropriate phase (Monitor if in-progress, Verify if waiting); if empty with history, Bootstrap; otherwise await Decompose of user request. Honor HIL checkpoints unless `--auto`.

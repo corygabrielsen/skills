@@ -34,16 +34,12 @@
 - `completed`: Done and verified
 - `ABORTED - [reason]`: Cancelled (always include reason in subject)
 
-## Next Action Logic
+## After Report
 
 ```
 --fg mode:
-    if more ready tasks:
-        → Return to Delegate (loop continues)
-    else if all tasks completed:
-        → Report final status, end skill
-    else if tasks are blocked with no progress possible:
-        → Report blockers, end skill (or prompt user)
+    → Proceed to HIL: Next Action (human decides)
+    (If --auto: HIL: Next Action auto-continues or auto-completes)
 
 --bg mode:
     → Report status

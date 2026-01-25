@@ -30,18 +30,18 @@
 ```
 if verification fails:
     1. Do NOT mark task completed
-    2. Create new task: "Fix {original_task}: {failure_reason}"
-    3. Set new task blocked_by: [] (ready immediately)
-    4. Return to Delegate
+    2. Record failure details
+    3. → Proceed to HIL: Anomaly (human decides response)
 ```
+
+Do NOT automatically create follow-up tasks. Let HIL: Anomaly handle failure classification and response.
 
 ## After Verification
 
 ```
-if all tasks completed and verified:
-    → Proceed to Report
-else if more ready tasks exist:
-    → Return to Delegate
-else if tasks are blocked:
-    → Proceed to Report (show blocked status)
+if verification passed for all checked tasks:
+    → Proceed to Checkpoint
+
+if verification failed for any task:
+    → Proceed to HIL: Anomaly
 ```

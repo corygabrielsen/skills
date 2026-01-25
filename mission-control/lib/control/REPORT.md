@@ -4,7 +4,7 @@
 
 ## Do:
 - Report status as table for scannability
-- Show: task, status, blocked-by, owner
+- Show: task, status, blockedBy, owner
 - Call out: ready, blocked, needs attention
 - Determine next action based on mode and state
 
@@ -42,8 +42,8 @@
     (If --auto: auto-continues or auto-completes)
 
 --bg mode:
-    → Report status, return control to human
-    → Human resumes with /mission-control
+    → Report status, end skill, return control to human
+    → Human resumes with /mission-control (re-enters at INITIALIZE)
 ```
 
 ## Final Report Template (All Work Complete)

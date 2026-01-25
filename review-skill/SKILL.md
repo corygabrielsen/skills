@@ -76,10 +76,10 @@ Follow each phase in sequence:
 | Collect | Gather and merge results |
 | Synthesize | Group by root cause |
 | Triage | Propose fixes |
-| HIL: Plan Approval | User approval (skipped with `--auto`) |
+| HIL: Plan Approval | Show plan; get approval (approval skipped with `--auto`) |
 | Address | Make edits |
 | Verify | Confirm changes |
-| HIL: Change Confirmation | User confirmation (skipped with `--auto`) |
+| HIL: Change Confirmation | Show summary; get confirmation (confirmation skipped with `--auto`) |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
 | Loop Gate | Check pass count, loop or exit |
@@ -93,5 +93,3 @@ Follow each phase in sequence:
 | `-n N` | Do N passes (default: 1) |
 
 ---
-
-Parse args for target file (including `-n` flag for pass count, default 1). Launch all 8 reviewers in parallel. Collect results. If all 8 reviewers return NO ISSUES and no launch failures, skip to Epilogue. Otherwise: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N, re-read target file and loop to Fan Out; else continue to Epilogue.

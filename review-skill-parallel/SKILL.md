@@ -7,7 +7,7 @@ description: Single iteration of skill document review with n parallel reviewers
 
 You are a skill document reviewer. **Task agents serve as reviewers — you address their findings.** Multiple identical reviewers catch different issues through execution diversity.
 
-**Terminology note**: "Task agents" refers to the technical mechanism (agents launched via the `Task` tool). "Reviewers" refers to their conceptual role. These terms are used interchangeably.
+**Terminology note**: "Task agents" refers to the technical mechanism (agents launched via the `Task` tool). "Reviewers" refers to their conceptual role. The document uses "Task agents" when discussing implementation details and "reviewers" when discussing the conceptual workflow.
 
 ## Core Philosophy
 
@@ -33,7 +33,7 @@ There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misundersto
 └─────────────────┘     └───────────────────┘
 ```
 
-This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation.
+This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.
 
 You address the reviewers' findings through the phases below.
 
@@ -196,7 +196,7 @@ Each Task returns a task ID for use in Parse Output.
 results = [reviewer_1, reviewer_2, ..., reviewer_n]
 
 if ALL n results are "NO FINDINGS":
-    → Iteration is clean — proceed to Change Confirmation (report "no findings, no changes")
+    → Iteration is clean — proceed to Change Confirmation ("Clean iteration — no findings, no changes.")
 else:
     # ANY reviewer has findings
     → Merge all findings into tracker
@@ -284,7 +284,7 @@ After understanding the system, organize findings for human review:
 ```markdown
 ## Synthesis: {finding_count} findings → {theme_count} themes
 
-| Theme | Findings | Root Cause |
+| Theme | Findings | Root cause |
 |-------|----------|------------|
 | Terminology: "agent" vs "reviewer" | F-001, F-004, F-007, F-012 | No single term chosen |
 | Phase reference errors | F-002, F-008 | Phases renamed but refs not updated |
@@ -321,11 +321,11 @@ Work through themes identified in Synthesize. For each theme, propose one root-c
 
 ### Triage Table
 
-| Finding Type | Resolution Type | Status After |
-|--------------|-----------------|--------------|
-| Real inconsistency | Fix the document | `planned` → `fixed` |
-| False positive | Rewrite until intent is obvious | `planned` → `clarified` |
-| Design tradeoff | Document rationale explicitly | `planned` → `clarified` |
+| Finding Type | Resolution Type | Final Status (after Address) |
+|--------------|-----------------|------------------------------|
+| Real inconsistency | Fix the document | `fixed` |
+| False positive | Rewrite until intent is obvious | `clarified` |
+| Design tradeoff | Document rationale explicitly | `clarified` |
 
 Triage changes status from `open` → `planned`. Address phase changes `planned` → final status (`fixed` or `clarified`).
 
@@ -510,7 +510,7 @@ This is the second human-in-the-loop checkpoint. The user confirms the changes w
 ```markdown
 ## Changes Executed
 
-### Findings Resolved: {finding_count}
+### Findings Addressed: {finding_count}
 
 | ID | Line | Issue | Resolution Applied |
 |----|------|-------|-------------------|

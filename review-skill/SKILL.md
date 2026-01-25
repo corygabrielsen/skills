@@ -44,10 +44,10 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 @lib/003_COLLECT.md
 @lib/004_SYNTHESIZE.md
 @lib/005_TRIAGE.md
-@lib/006_PLAN_APPROVAL.md
+@lib/006_HIL_PLAN_APPROVAL.md
 @lib/007_ADDRESS.md
 @lib/008_VERIFY.md
-@lib/009_CHANGE_CONFIRMATION.md
+@lib/009_HIL_CHANGE_CONFIRMATION.md
 @lib/010_STAGE.md
 @lib/011_COMMIT.md
 @lib/012_EPILOGUE.md
@@ -63,14 +63,14 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 | Collect | Gather and merge results |
 | Synthesize | Group by root cause |
 | Triage | Propose fixes |
-| Plan Approval | Human checkpoint (skipped with `--auto`) |
+| HIL: Plan Approval | Human checkpoint (skipped with `--auto`) |
 | Address | Make edits |
 | Verify | Confirm changes |
-| Change Confirmation | Human checkpoint (skipped with `--auto`) |
+| HIL: Change Confirmation | Human checkpoint (skipped with `--auto`) |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
 | Epilogue | Report and end |
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 7 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all reviewers output NO ISSUES, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Stage → Commit → Epilogue.
+Begin /review-skill now. Parse args for target file. Launch all 7 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all reviewers output NO ISSUES, skip to Epilogue; otherwise continue Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Epilogue.

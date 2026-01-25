@@ -6,7 +6,7 @@
 - Run `TaskList` to see current task state
 - Parse args for mode flags: `--fg`, `--bg`, `--auto`
 - Default to `--bg` if no mode flag specified
-- Store mode on the handoff task (`metadata.mode`). If no handoff task exists yet, create one during DECOMPOSE or first HANDOFF. Read it back after compaction via `metadata.type: "handoff"`.
+- Store mode on the handoff task (`metadata.mode`). If no handoff task exists yet, create one during MATERIALIZE or first HANDOFF. Read it back after compaction via `metadata.type: "handoff"`.
 
 ## Don't:
 - Skip TaskList check

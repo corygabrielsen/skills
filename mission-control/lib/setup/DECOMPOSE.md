@@ -41,4 +41,4 @@ T-002 ──┴── T-004
 
 Tasks T-001 and T-002 run in parallel. T-003 and T-004 wait for their blockers.
 
-After decomposition, proceed to Delegate.
+After decomposition, proceed to HIL_PLAN_APPROVAL for user approval.

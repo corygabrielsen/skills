@@ -43,8 +43,8 @@
 
 ```
 if all ready tasks are GO:
-    → exit preflight, proceed to execution/DELEGATE
+    → execution/DELEGATE
 
 if any task is NO-GO:
-    → proceed to preflight/HIL_HOLD
+    → preflight/HIL_HOLD
 ```

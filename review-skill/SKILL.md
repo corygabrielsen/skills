@@ -243,11 +243,14 @@ else:
 ### Issue Tracker Format
 
 ```markdown
-| ID | Reviewer | Line | Issue | Status |
-|:--:|:--------:|:----:|:------|:------:|
-| I-001 | execution | 42 | [description] | open |
-| I-002 | coverage | 156 | [description] | open |
+| ID | Reviewer | Line | Issue | Fix | Status |
+|:--:|:--------:|:----:|:------|:----|:------:|
+| I-001 | execution | 42 | [description] | — | open |
+| I-002 | coverage | 156 | [description] | Added X | clarified |
 ```
+
+- **Issue**: Brief description of what was flagged
+- **Fix**: Short prose snippet of change made (use "—" while `open` or `planned`)
 
 **Status progression:** `open` → `planned` (in Triage) → `fixed` or `clarified` (in Address)
 

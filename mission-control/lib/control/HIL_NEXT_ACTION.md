@@ -43,7 +43,7 @@ AskUserQuestion(
 4. If all tasks blocked with no in_progress tasks → **deadlock detected**:
    - Circular dependencies (A blockedBy B, B blockedBy A) → HIL_ANOMALY (Classification: Blocking)
    - Stale blockers (blockedBy tasks that are ABORTED/completed) → offer to clear; if user accepts, clear and → preflight/EVALUATE; if user declines, re-present options
-   - Otherwise, present AskUserQuestion: "Unblock manually" (user will explain) or "Abort blocked tasks" (mark all blocked as ABORTED). After resolution → preflight/EVALUATE or control/REPORT if nothing remains
+   - Otherwise, present AskUserQuestion: "Unblock manually" or "Abort blocked tasks". If "Unblock manually": prompt for explanation, apply user's fix, → preflight/EVALUATE. If "Abort blocked tasks": mark all blocked as ABORTED, → control/REPORT if nothing remains
 5. If all tasks complete → proceed to "Complete" handler
 
 **If "Pause":**

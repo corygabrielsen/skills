@@ -14,7 +14,7 @@ Inviolable constraints. No exceptions without explicit user override.
 | MR-2 | No agent launch without preflight GO |
 | MR-3 | No task marked complete without verification (exception: work discovered during bootstrap from pre-existing conversation history—this represents historical context, not agent deliverables) |
 | MR-4 | Never delete tasks; use ABORTED status |
-| MR-5 | Never downgrade agent model from mission control's model |
+| MR-5 | Never downgrade agent model (if framework supports model selection) |
 | MR-6 | Descriptions must survive context compaction |
 
 ---

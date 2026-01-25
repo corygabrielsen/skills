@@ -18,10 +18,7 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 ## Prerequisites
 
-This skill requires task system tools (typically provided by the agent framework):
-- `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` - task record management
-- `Task`, `TaskOutput` - background agent spawning and output retrieval
-- `AskUserQuestion` - human-in-the-loop prompts
+**Required tools:** `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `Task`, `TaskOutput`, `AskUserQuestion`
 
 ## Mindset
 
@@ -52,7 +49,7 @@ This skill requires task system tools (typically provided by the agent framework
 
 ## Quick Reference
 
-| Composite | Sub-phases | Purpose |
+| Phase | Sub-phases | Purpose |
 |-----------|------------|---------|
 | **setup** | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_PLAN_APPROVAL | Initialize and plan work |
 | **preflight** | EVALUATE, HIL_HOLD, FIX | Go/no-go checks before launch |
@@ -88,7 +85,7 @@ This skill requires task system tools (typically provided by the agent framework
   *(Work-related = action requests, file paths for requested work, or recorded decisions)*
 - No tasks + no work-related history → setup/DECOMPOSE
 
-See each composite's PHASE.md for internal flow details.
+See each phase's PHASE.md for internal flow details.
 
 ---
 
@@ -131,6 +128,6 @@ pending --> in_progress --> completed
 
 ---
 
-Begin at setup/INITIALIZE. Follow composite phase flows. Honor HIL unless `--auto` AND nominal (all GO, no failures).
+Begin at setup/INITIALIZE. Follow phase flows. Honor HIL unless `--auto` with all GO.
 
-**Note on examples:** Task IDs like "T-001" in examples are placeholders. Actual IDs are system-generated strings returned by `TaskCreate`.
+**Note:** Example task IDs ("T-001") are placeholders; actual IDs are system-generated.

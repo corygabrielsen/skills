@@ -7,6 +7,20 @@ description: Review a skill document using specialized reviewers. Each reviewer 
 
 Review skill documents using specialized reviewers. Each reviewer is tuned to find specific issue types with high signal and low noise.
 
+## Core Philosophy
+
+**Every finding demands a document change. No exceptions.**
+
+When a reviewer flags something, the document changes. Always. Either:
+- **Real issue** → fix the document
+- **False positive** → the document was unclear; add clarifying text until the intent is obvious
+
+There is no "dismiss," no "already documented," no "tool behavior." If a reviewer misunderstood, that's a signal the document isn't self-evident—another LLM would misunderstand too. The document must become clearer.
+
+**Fixed point** = no reviewer can find *anything* to flag. Not because you argued them down, but because the document is both **correct** AND **unambiguous**.
+
+---
+
 ## Reviewers
 
 Each reviewer asks a focused question. An issue from any reviewer is signal.
@@ -28,7 +42,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 - Accept target skill file path from args
 - Validate file exists and has basename `SKILL.md`
 - Read the full file content for reviewer prompts
-- Store `target_file` path for use in later phases
+- Store `target_file` path in working memory for substitution into prompts and commands
 
 ### Don't:
 - Start without a target file
@@ -47,7 +61,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 
 ### Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
-- Launch all 6 reviewers in a **single assistant turn** (6 separate Task tool calls, one per reviewer)
+- Launch all 6 reviewers in a **single assistant turn** (one message containing 6 parallel Task tool calls)
 - Store all 6 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage
 - Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue
 
@@ -162,10 +176,11 @@ Focus on issues FIXABLE by improving the document:
 - Easy-to-miss qualifiers or conditions
 
 Do NOT flag issues outside the document's control:
-- Tool behavior (assume standard tools work correctly)
+- Tool behavior (assume standard tools work correctly—Task returns IDs in order, TaskOutput blocks, Edit produces unstaged changes)
 - User actions outside the skill's flow
 - Environment variations
-- Misreadings that require ignoring surrounding context
+- Misreadings that require ignoring explicit statements in surrounding context
+- Concerns already addressed by explicit instructions elsewhere in the document
 
 Before flagging, ask: "What edit to this document would fix this?"
 If you can't answer, don't flag it.
@@ -215,7 +230,7 @@ NO ISSUES
 
 ### Evaluate Results
 
-A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed output (neither "NO ISSUES" nor valid "ISSUES: 1. Line X..." format) or failed reviewer output (task execution error) as having issues—record "Reviewer failed: [error]" in the Issue field and follow the normal issue path (proceed to Synthesize).
+A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed output (neither "NO ISSUES" nor valid "ISSUES: 1. Line X..." format) or failed reviewer output (task execution error) as having issues—record "Reviewer failed: [error]" in the Issue field (use "-" for Line column) and follow the normal issue path (proceed to Synthesize).
 
 ```
 if ALL 6 reviewers output NO ISSUES:
@@ -234,7 +249,10 @@ else:
 | I-002 | coverage | 156 | [description] | open |
 ```
 
-**Status progression:** `open` → `planned` (in Triage) → `fixed` (in Address)
+**Status progression:** `open` → `planned` (in Triage) → `fixed` or `clarified` (in Address)
+
+- `fixed` = real issue was corrected
+- `clarified` = false positive addressed by adding clarifying text
 
 ---
 
@@ -261,12 +279,15 @@ A single root cause may be caught by multiple reviewers. Group them.
 
 ### Do:
 - Propose ONE fix per theme
-- Categorize: real issue, ambiguity, or missing content
-- After proposing a fix for each theme, update that theme's issues from `open` to `planned`
+- For each issue, determine resolution type:
+  - **Real issue** → propose document fix
+  - **False positive** → propose clarifying text (comment, note, or rewording that makes intent obvious)
+- Immediately after proposing a fix for a theme, update that theme's issues from `open` to `planned`
 
 ### Don't:
 - Make edits during triage
-- Dismiss issues
+- Dismiss issues as "not actionable" or "tool behavior"—every finding gets a document change
+- Skip issues because they seem minor—if a reviewer flagged it, the document can be clearer
 
 ---
 
@@ -306,7 +327,7 @@ AskUserQuestion(
 1. Acknowledge selection and prompt: "Please describe your changes."
 2. End turn (stop responding and wait for user input).
 3. When user provides input, update plan accordingly.
-4. Show updated plan to user.
+4. Show updated plan to user (same format as original Triage output).
 5. Re-present Plan Approval options (repeat until user selects Approve or Abort).
 
 **If user selects "Abort":** End skill without changes.
@@ -318,12 +339,16 @@ AskUserQuestion(
 **Execute the approved plan.**
 
 ### Do:
-- Process each theme: make one or more edits as needed, then update tracker status (`planned` → `fixed`)
+- Process each theme: make one or more edits as needed
+- Update tracker status based on resolution type:
+  - `planned` → `fixed` (real issue was corrected)
+  - `planned` → `clarified` (false positive addressed with clarifying text)
 - Use `Edit` tool for changes
 
 ### Don't:
 - Deviate from approved plan
 - Skip any issue
+- Leave any issue without a document change
 
 ---
 
@@ -332,9 +357,9 @@ AskUserQuestion(
 **Confirm changes were made correctly.**
 
 ### Do:
-- Re-read modified sections
-- Check for unintended side effects
-- Ensure all issues are `fixed`
+- Use Read tool on `{target_file}` to verify changes appear correctly in context
+- Check that surrounding text still makes sense with the edits
+- Ensure all issues are `fixed` or `clarified`
 
 ### Don't:
 - Skip verification
@@ -347,7 +372,7 @@ AskUserQuestion(
 **Get user confirmation of executed changes.**
 
 ### Do:
-- Present summary of changes made
+- Present summary: issue tracker showing final statuses, plus brief prose summary of key changes
 - Use AskUserQuestion with clear options
 - Wait for explicit confirmation
 
@@ -412,10 +437,12 @@ No issues.
 **Issues addressed:**
 ```
 Review complete.
-Issues: {count} addressed (from {reviewers_with_issues} reviewers).
+Issues: {fixed_count} fixed, {clarified_count} clarified (from {reviewers_with_issues} reviewers).
 ```
 
-`{reviewers_with_issues}` = count of reviewers that reported at least one issue.
+- `{fixed_count}` = issues where real problems were corrected
+- `{clarified_count}` = false positives addressed by adding clarifying text
+- `{reviewers_with_issues}` = count of reviewers that reported at least one issue
 
 ---
 
@@ -436,4 +463,4 @@ Issues: {count} addressed (from {reviewers_with_issues} reviewers).
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all clean, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.
+Begin /review-skill now. Parse args for target file. Launch all 6 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all reviewers output NO ISSUES, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.

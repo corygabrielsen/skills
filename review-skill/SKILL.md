@@ -76,7 +76,7 @@ At-a-glance phase overview (see @lib/ files for full details):
 | Initialize | Parse args, validate target |
 | Fan Out | Launch all reviewers in parallel |
 | Collect | Gather and merge results |
-| Synthesize | Group by root cause |
+| Synthesize | Group into themes |
 | Triage | Propose fixes |
 | HIL: Plan Approval | Show plan; get approval (approval skipped with `--auto`) |
 | Address | Make edits |

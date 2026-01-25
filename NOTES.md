@@ -42,6 +42,63 @@ Works for any LLM-readable artifact:
 
 **Non-monotonic is fine**: Findings may fluctuate (68 → 55 → 62 → 40). Track the trend, not individual counts. The criterion is "expected findings approaches zero."
 
+## The Oscillation Trap
+
+Multiple reviewers can chase each other in circles:
+
+```
+Fix conciseness → remove text → create ambiguity
+Fix adversarial → add clarifying text → create verbosity
+Fix correctness → add edge case handling → more text
+→ Back to conciseness...
+```
+
+**The escape**: Aggressive consolidation. Don't add clarifying text—rewrite to be both shorter AND clearer. Less surface area = fewer things to flag = stability.
+
+## Convergence Data
+
+`review-skill` fixed-point run (Jan 2026, 3 reviewers: adversarial/conciseness/correctness):
+
+| Iteration | Issues | Pattern |
+|:---------:|:------:|:--------|
+| 3-7 | 4-18 | Oscillating |
+| 8 | 29 | Peak |
+| 9-13 | 0 | Stable |
+
+**Breakthrough at iteration 8→9**: Consolidated Core Philosophy from 7 lines to 1. The cycle broke because there was nothing left to cut or clarify.
+
+## The Nash Equilibrium
+
+The fixed point is where three competing pressures balance:
+
+```
+           Correctness
+           (complete)
+              ▲
+             /|\
+            / | \
+           /  ●  \  ← Fixed point
+          /   |   \
+         ▼────┴────▼
+   Conciseness    Adversarial
+    (minimal)    (unambiguous)
+```
+
+Movement in any direction makes something worse. The document can't be shorter without losing correctness, can't be longer without triggering conciseness, can't be reworded without creating ambiguity.
+
+## The Noise Floor
+
+Simple reviewers converge; deep reviewers always find something.
+
+| Reviewer Depth | Result at Fixed Point |
+|----------------|----------------------|
+| Simple/fast | NO ISSUES |
+| Deep/thorough | ~13 borderline issues |
+
+The "borderline issues" are stable across runs—same findings, not oscillating. They represent the noise floor: real but diminishing-returns improvements.
+
+**Practical criterion**: Simple reviewers return clean. Deep analysis is for auditing, not iteration.
+
 ## The Self-Evident Criterion
 
 Every finding demands improvement. No exceptions.

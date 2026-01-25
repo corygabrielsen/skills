@@ -3,8 +3,11 @@
 **Gather results from all reviewers.**
 
 ## Do:
-- Use `TaskOutput` with `task_id: <id>` for each reviewer that successfully launched, **in a single assistant turn** (one message with up to 8 TaskOutput calls), to wait for completion (if fewer than 8 launched, only call TaskOutput for those that did). TaskOutput blocks until completion, so this turn waits for all reviewers to finish.
-- Parse each reviewer's output: extract line number from "Line X:" prefix into Line column, extract description after the colon into Issue column, assign sequential IDs (I-001, I-002...; IDs reset each pass), set Fix to "—" and Status to `open`. Note: Some reviewers (e.g., checklist) output issues without line numbers—use "-" for the Line column when no line number is present.
+- Use `TaskOutput` with `task_id: <id>` for each reviewer that successfully launched, **in a single assistant turn with up to 8 parallel TaskOutput calls** (if fewer than 8 launched, only call TaskOutput for those that did). TaskOutput blocks until completion, so this turn waits for all reviewers to finish.
+- Parse each reviewer's output into tracker rows. For each numbered issue:
+  - If it starts with "Line X:", extract X into Line column and the text after the colon into Issue column
+  - If no "Line X:" prefix (some reviewers like checklist omit line numbers), use "-" for Line column
+  - Assign sequential IDs (I-001, I-002...; IDs reset each pass), set Fix to "—" and Status to `open`
 
 ## Don't:
 - Proceed before all reviewers complete
@@ -12,7 +15,11 @@
 
 ## Evaluate Results
 
-A reviewer has no issues if its output contains `NO ISSUES`. Valid issue format: starts with `ISSUES:` followed by numbered items (e.g., `1. Line X: ...`). Treat malformed output (neither "NO ISSUES" nor valid issue format) or failed reviewer output (task execution error) as having issues—record "Reviewer output error: [error description]" in the Issue field (use "-" for Line column) and follow the normal issue path (proceed to Synthesize). Do not attempt partial parsing of malformed output; treat the entire response as a single error entry.
+**Valid reviewer output** is one of:
+- Exactly `NO ISSUES` (reviewer found nothing)
+- `ISSUES:` followed by numbered items (`1. ...`, `2. ...`, etc.)—items may or may not have "Line X:" prefix
+
+**Malformed output** (neither pattern above) or **task execution error**: record a single tracker entry with Issue="Reviewer output error: [description]", Line="-". Proceed to Synthesize.
 
 ```
 if ALL successfully-launched reviewers output NO ISSUES AND no launch failures were recorded:

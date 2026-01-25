@@ -26,8 +26,9 @@ Each lens asks a focused question. A finding from any lens is signal. Clean from
 
 ### Do:
 - Accept target skill file path from args
-- Validate file exists and is a SKILL.md
+- Validate file exists and ends with `SKILL.md`
 - Read the full file content for lens prompts
+- Store `target_file` path for use in later phases
 
 ### Don't:
 - Start without a target file
@@ -35,6 +36,8 @@ Each lens asks a focused question. A finding from any lens is signal. Clean from
 
 **Args:**
 - First positional arg: path to SKILL.md (required)
+
+**If validation fails:** Report error and end skill.
 
 ---
 
@@ -199,8 +202,14 @@ NO GAPS - all paths handled.
 
 ### Evaluate Results
 
+A lens is "clean" if its output starts with one of:
+- `NO FINDINGS`
+- `NO CONTRADICTIONS`
+- `ROBUST`
+- `NO GAPS`
+
 ```
-if ALL lenses return clean (NO FINDINGS / NO CONTRADICTIONS / ROBUST / etc.):
+if ALL 6 lenses are clean:
     → Present "All lenses clean." and proceed to Epilogue
 else:
     → Merge findings into tracker
@@ -276,7 +285,9 @@ AskUserQuestion(
 )
 ```
 
-**If user selects "Modify":** Wait for user input, update plan accordingly, re-present for approval.
+**If user selects "Approve":** Proceed to Address phase.
+
+**If user selects "Modify":** User will type their changes. Update plan accordingly, re-present for approval.
 
 **If user selects "Abort":** End skill without changes.
 
@@ -342,9 +353,11 @@ AskUserQuestion(
 )
 ```
 
-**If user selects "View diff":** Run `git diff {target_file}`, show output, re-ask.
+**If user selects "Confirm":** Proceed to Epilogue.
 
-**If user selects "Revert":** Run `git checkout {target_file}`, confirm revert, end skill.
+**If user selects "View diff":** Run `git diff {target_file}`, show output, re-present confirmation options.
+
+**If user selects "Revert":** Run `git checkout {target_file}`, report "Changes reverted.", end skill.
 
 ---
 

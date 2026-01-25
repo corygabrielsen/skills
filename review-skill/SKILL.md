@@ -42,7 +42,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 - Accept target skill file path from args
 - Validate file exists and has basename `SKILL.md`
 - Read the full file content for reviewer prompts
-- Store `target_file` path in working memory for substitution into prompts and commands
+- Store `target_file` path in working memory for substitution into prompts, commands, and output templates
 
 ### Don't:
 - Start without a target file
@@ -63,7 +63,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
 - Launch all 6 reviewers in a **single assistant turn** (one message containing 6 parallel Task tool calls)
 - Store all 6 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage
-- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue. The skill proceeds with available reviewers.
+- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue. The skill proceeds with available reviewers. (Note: Launch failures become issues in the tracker, so the skill always takes the "else" branch in Collect—never the no-issues path.)
 
 ### Don't:
 - Run reviewers sequentially
@@ -263,7 +263,7 @@ else:
 A single root cause may be caught by multiple reviewers. Group them.
 
 ### Do:
-- Look for issues that point to the same underlying issue (e.g., if terminology flags "X vs Y" inconsistency and execution flags wrong behavior caused by that naming, they share root cause "inconsistent naming")
+- Look for issues that point to the same underlying issue—issues share root cause if they reference the same lines, discuss the same concept, or if fixing one would resolve the other (e.g., if terminology flags "X vs Y" inconsistency and execution flags wrong behavior caused by that naming, they share root cause "inconsistent naming")
 - Name themes clearly (2-5 words)
 - List truly unrelated issues separately
 
@@ -281,7 +281,7 @@ Proceed to Triage.
 
 ### Do:
 - Propose ONE fix per theme
-- For each issue, determine resolution type:
+- For each issue, determine resolution type (all edits are to `{target_file}`, the document being reviewed):
   - **Real issue** → propose document fix
   - **False positive** → propose clarifying text (comment, note, or rewording that makes intent obvious)
 - Immediately after proposing a fix for a theme, update that theme's issues from `open` to `planned`
@@ -326,7 +326,7 @@ AskUserQuestion(
 **If user selects "Approve":** Proceed to Address phase.
 
 **If user selects "Modify":**
-1. Acknowledge selection and prompt: "Please describe your changes."
+1. Acknowledge selection and prompt: "Please describe what changes to the plan you'd like (adjust proposed fixes, change resolution types, etc.)."
 2. End turn (stop responding and wait for user input).
 3. When user provides input, update plan accordingly.
 4. Show updated plan to user (same format as original Triage output).
@@ -341,7 +341,7 @@ AskUserQuestion(
 **Execute the approved plan.**
 
 ### Do:
-- Process each theme: make one or more edits as needed
+- Process each theme sequentially (not in parallel, to avoid line-number shifts affecting subsequent edits): make one or more edits as needed
 - Update tracker status based on resolution type:
   - `planned` → `fixed` (real issue was corrected)
   - `planned` → `clarified` (false positive addressed with clarifying text)
@@ -361,7 +361,7 @@ AskUserQuestion(
 ### Do:
 - Use Read tool on `{target_file}` to verify changes appear correctly in context
 - Check that surrounding text still makes sense with the edits
-- Ensure all issues are `fixed` or `clarified`
+- Ensure all issues are `fixed` or `clarified`. If an edit didn't apply correctly, re-read the file, diagnose, and make a follow-up edit before marking as fixed/clarified.
 
 ### Don't:
 - Skip verification
@@ -404,8 +404,8 @@ AskUserQuestion(
 **If user selects "View diff":**
 1. Run `git diff {target_file}` to show unstaged changes (Edit tool produces unstaged changes).
 2. Show the diff output to user.
-3. Handle edge cases:
-   - If diff is empty: report "No unstaged changes to show."
+3. Handle edge cases (use `git status {target_file}` to distinguish untracked from no changes if diff is empty):
+   - If diff is empty and file is tracked: report "No unstaged changes to show."
    - If file is untracked: report "File is untracked (not yet committed)."
    - If `git diff` fails unexpectedly: report the error.
 4. Re-present confirmation options.

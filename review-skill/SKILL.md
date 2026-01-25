@@ -1,17 +1,17 @@
 ---
 name: review-skill
-description: Review a skill document using specialized lenses. Each lens finds specific issue types.
+description: Review a skill document using specialized reviewers. Each reviewer finds specific issue types.
 ---
 
 # Review Skill
 
-Review skill documents using specialized lenses. Each lens is tuned to find specific issue types with high signal and low noise.
+Review skill documents using specialized reviewers. Each reviewer is tuned to find specific issue types with high signal and low noise.
 
-## Lenses
+## Reviewers
 
-Each lens asks a focused question. An issue from any lens is signal.
+Each reviewer asks a focused question. An issue from any reviewer is signal.
 
-| Lens | Question | Finds |
+| Reviewer | Question | Finds |
 |------|----------|-------|
 | execution | "Would this cause wrong behavior?" | Logic errors, missing steps, broken flows |
 | checklist | "Do these specific checks pass?" | Structural issues, missing sections |
@@ -27,7 +27,7 @@ Each lens asks a focused question. An issue from any lens is signal.
 ### Do:
 - Accept target skill file path from args
 - Validate file exists and has basename `SKILL.md`
-- Read the full file content for lens prompts
+- Read the full file content for reviewer prompts
 - Store `target_file` path for use in later phases
 
 ### Don't:
@@ -43,21 +43,21 @@ Each lens asks a focused question. An issue from any lens is signal.
 
 ## Phase: Fan Out
 
-**Launch all lenses in parallel. Each lens gets a specialized prompt.**
+**Launch all reviewers in parallel. Each reviewer gets a specialized prompt.**
 
 ### Do:
-- Use `Task` tool with `run_in_background: true` and `prompt: <lens prompt>`
-- Launch all 6 lenses in a **single assistant turn** (6 parallel Task tool calls)
+- Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
+- Launch all 6 reviewers in a **single assistant turn** (6 separate Task tool calls, one per reviewer)
 - Store all 6 task IDs (from tool response) for collection
 
 ### Don't:
-- Run lenses sequentially
-- Combine multiple lenses into one prompt
-- Use identical prompts (each lens is specialized)
+- Run reviewers sequentially
+- Combine multiple reviewers into one prompt
+- Use identical prompts (each reviewer is specialized)
 
-### Lens Prompts
+### Reviewer Prompts
 
-**Lens: execution**
+**Reviewer: execution**
 ```
 Review {target_file} for execution correctness.
 
@@ -81,7 +81,7 @@ OR
 NO ISSUES
 ```
 
-**Lens: checklist**
+**Reviewer: checklist**
 ```
 Review {target_file} with this checklist.
 
@@ -102,7 +102,7 @@ OR
 NO ISSUES
 ```
 
-**Lens: contradictions**
+**Reviewer: contradictions**
 ```
 Review {target_file} for contradictions.
 
@@ -127,7 +127,7 @@ OR
 NO ISSUES
 ```
 
-**Lens: terminology**
+**Reviewer: terminology**
 ```
 Review {target_file} for terminology consistency.
 
@@ -148,7 +148,7 @@ OR
 NO ISSUES
 ```
 
-**Lens: adversarial**
+**Reviewer: adversarial**
 ```
 Review {target_file} adversarially.
 
@@ -166,7 +166,7 @@ OR
 NO ISSUES
 ```
 
-**Lens: gaps**
+**Reviewer: gaps**
 ```
 Review {target_file} for missing handlers.
 
@@ -189,22 +189,22 @@ NO ISSUES
 
 ## Phase: Collect
 
-**Gather results from all lenses.**
+**Gather results from all reviewers.**
 
 ### Do:
-- Use `TaskOutput` with `task_id: <id>` and `block: true` for each lens to wait for completion
-- Parse each lens's output format
+- Use `TaskOutput` with `task_id: <id>` and `block: true` for each reviewer to wait for completion
+- Parse each reviewer's output format
 
 ### Don't:
-- Proceed before all lenses complete
-- Ignore any lens's issues
+- Proceed before all reviewers complete
+- Ignore any reviewer's issues
 
 ### Evaluate Results
 
-A lens has no issues if its output contains `NO ISSUES`. Treat malformed or failed lens output as having issues (note the failure in tracker).
+A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed or failed reviewer output as having issues—record "Reviewer failed: [error]" in the Issue field and follow the normal issue path (proceed to Synthesize).
 
 ```
-if ALL 6 lenses output NO ISSUES:
+if ALL 6 reviewers output NO ISSUES:
     → Proceed to Epilogue (no-issues path)
 else:
     → Merge issues into tracker
@@ -214,8 +214,8 @@ else:
 ### Issue Tracker Format
 
 ```markdown
-| ID | Lens | Line | Issue | Status |
-|:--:|:----:|:----:|:------|:------:|
+| ID | Reviewer | Line | Issue | Status |
+|:--:|:--------:|:----:|:------|:------:|
 | F-001 | execution | 42 | [description] | open |
 | F-002 | gaps | 156 | [description] | open |
 ```
@@ -226,9 +226,9 @@ else:
 
 ## Phase: Synthesize
 
-**Group issues by root cause, not by lens.**
+**Group issues by root cause, not by reviewer.**
 
-A single root cause may be caught by multiple lenses. Group them.
+A single root cause may be caught by multiple reviewers. Group them.
 
 ### Do:
 - Look for issues that point to the same underlying issue
@@ -236,7 +236,7 @@ A single root cause may be caught by multiple lenses. Group them.
 - List truly unrelated issues separately
 
 ### Don't:
-- Group by lens (lenses are detection methods, not categories)
+- Group by reviewer (reviewers are detection methods, not categories)
 - Force unrelated issues into themes
 
 ---
@@ -288,7 +288,7 @@ AskUserQuestion(
 
 **If user selects "Approve":** Proceed to Address phase.
 
-**If user selects "Modify":** Acknowledge selection and prompt: "Please describe your changes." Wait for user's next message. Update plan accordingly, re-present Plan Approval options.
+**If user selects "Modify":** Acknowledge selection and prompt: "Please describe your changes." Wait for user's next message. After receiving their input, update plan accordingly, then re-present Plan Approval options.
 
 **If user selects "Abort":** End skill without changes.
 
@@ -299,7 +299,7 @@ AskUserQuestion(
 **Execute the approved plan.**
 
 ### Do:
-- Process each theme: make edit, then update tracker status (`planned` → `fixed`)
+- Process each theme: make one or more edits as needed, then update tracker status (`planned` → `fixed`)
 - Use `Edit` tool for changes
 
 ### Don't:
@@ -355,9 +355,9 @@ AskUserQuestion(
 
 **If user selects "Confirm":** Proceed to Epilogue.
 
-**If user selects "View diff":** Run `git diff {target_file}`, show output. If empty or file is untracked, report "No changes to show." Re-present confirmation options.
+**If user selects "View diff":** Run `git diff {target_file}`, show output. If empty (no unstaged changes), report "No changes to show." If file is untracked, report "File is untracked (not yet committed)." Re-present confirmation options.
 
-**If user selects "Revert":** First warn user: "This will discard all uncommitted changes to {target_file}." Then run `git checkout {target_file}` to restore last committed version (fails gracefully if file was never committed), report "Changes reverted." or error message, end skill.
+**If user selects "Revert":** First warn user: "This will discard unstaged changes to {target_file}. Staged changes require `git restore --staged` first." Then run `git checkout {target_file}` to restore last committed version (fails gracefully if file was never committed), report "Changes reverted." or error message, end skill.
 
 ---
 
@@ -381,7 +381,7 @@ No issues.
 **Issues addressed:**
 ```
 Review complete.
-Issues: {count} addressed (from {lenses_with_issues} lenses).
+Issues: {count} addressed (from {reviewers_with_issues} reviewers).
 ```
 
 ---
@@ -391,7 +391,7 @@ Issues: {count} addressed (from {lenses_with_issues} lenses).
 | Phase | Purpose |
 |-------|---------|
 | Initialize | Parse args, validate target |
-| Fan Out | Launch all lenses in parallel |
+| Fan Out | Launch all reviewers in parallel |
 | Collect | Gather and merge results |
 | Synthesize | Group by root cause |
 | Triage | Propose fixes |
@@ -403,4 +403,4 @@ Issues: {count} addressed (from {lenses_with_issues} lenses).
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. Follow phase flow based on results: if all clean, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.
+Begin /review-skill now. Parse args for target file. Launch all 6 reviewers in parallel with their specialized prompts. Follow phase flow based on results: if all clean, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.

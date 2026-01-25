@@ -117,7 +117,7 @@ Look for:
 - Structural issues (missing sections, formatting inconsistencies)
 - Philosophy not consistently applied
 
-Read the full file carefully. Report ANY findings, no matter how small.
+Read the full file carefully. Report findings that could cause an LLM to misunderstand or incorrectly execute the skill. Ignore stylistic preferences.
 
 Output format:
 FINDINGS:
@@ -379,9 +379,8 @@ These have no shared root cause; list individually:
 ---
 
 ### Summary
-- {theme_count} themes (covering {n} findings) + {n} unrelated = {total} findings
-- {theme_count} root-cause fixes resolve {n} findings
-- {n} standalone point fixes
+- {theme_count} themes covering {themed_findings} findings + {unrelated_count} unrelated = {total} findings
+- {themed_findings} resolved via root-cause fixes, {unrelated_count} via standalone fixes
 ```
 
 ### Plan Approval Options

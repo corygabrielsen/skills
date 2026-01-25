@@ -48,7 +48,8 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 ### Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
 - Launch all 6 reviewers in a **single assistant turn** (6 separate Task tool calls, one per reviewer)
-- Store all 6 task IDs (from tool response) for collection
+- Store all 6 task IDs (from tool response) for collection, mapping each ID to its reviewer name
+- Verify 6 task IDs were returned; if fewer, identify missing reviewer by comparing returned IDs to expected list and record "Reviewer [name] failed to launch" as an issue
 
 ### Don't:
 - Run reviewers sequentially
@@ -288,7 +289,7 @@ AskUserQuestion(
 
 **If user selects "Approve":** Proceed to Address phase.
 
-**If user selects "Modify":** Acknowledge selection and prompt: "Please describe your changes." Wait for user's next message. After receiving their input, update plan accordingly, then re-present Plan Approval options.
+**If user selects "Modify":** Acknowledge selection and prompt: "Please describe your changes." End turn. When user provides input, update plan accordingly, then re-present Plan Approval options.
 
 **If user selects "Abort":** End skill without changes.
 
@@ -355,9 +356,9 @@ AskUserQuestion(
 
 **If user selects "Confirm":** Proceed to Epilogue.
 
-**If user selects "View diff":** Run `git diff {target_file}`, show output. If empty (no unstaged changes), report "No changes to show." If file is untracked, report "File is untracked (not yet committed)." Re-present confirmation options.
+**If user selects "View diff":** Run `git diff {target_file}` to show unstaged changes (Edit tool produces unstaged changes). Show the diff output to user. If empty, report "No changes to show." If file is untracked, report "File is untracked (not yet committed)." Then re-present confirmation options.
 
-**If user selects "Revert":** First warn user: "This will discard unstaged changes to {target_file}. Staged changes require `git restore --staged` first." Then run `git checkout {target_file}` to restore last committed version (fails gracefully if file was never committed), report "Changes reverted." or error message, end skill.
+**If user selects "Revert":** First warn user: "This will discard unstaged changes to {target_file}. Staged changes are not affected—use `git restore --staged {target_file}` first if needed." Then run `git checkout -- {target_file}` to restore the file (restores to staged version if staged, otherwise to last committed version). If file was never committed and has no staged version, git will error with "pathspec did not match"—report this error and end skill. On success, report "Changes reverted." and end skill.
 
 ---
 
@@ -383,6 +384,8 @@ No issues.
 Review complete.
 Issues: {count} addressed (from {reviewers_with_issues} reviewers).
 ```
+
+`{reviewers_with_issues}` = count of reviewers that reported at least one issue.
 
 ---
 

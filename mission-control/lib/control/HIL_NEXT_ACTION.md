@@ -39,11 +39,12 @@ AskUserQuestion(
 **If "Continue":**
 1. Check for ready tasks (pending, empty blockedBy)
 2. If ready tasks exist → preflight/EVALUATE
-3. If all tasks blocked with no in_progress tasks → **deadlock detected**:
+3. If no ready tasks but in_progress tasks exist → execution/MONITOR (wait for running agents)
+4. If all tasks blocked with no in_progress tasks → **deadlock detected**:
    - Circular dependencies (A blockedBy B, B blockedBy A) → HIL_ANOMALY (Classification: Blocking)
    - Stale blockers (blockedBy tasks that are ABORTED/completed) → offer to clear; if user accepts, clear and → preflight/EVALUATE; if user declines, re-present options
    - Otherwise, present AskUserQuestion: "Unblock manually" (user will explain) or "Abort blocked tasks" (mark all blocked as ABORTED). After resolution → preflight/EVALUATE or control/REPORT if nothing remains
-4. If all tasks complete → proceed to "Complete" handler
+5. If all tasks complete → proceed to "Complete" handler
 
 **If "Pause":**
 1. → control/HANDOFF

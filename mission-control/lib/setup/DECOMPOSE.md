@@ -18,6 +18,7 @@
 - Rely on context that won't survive compaction
 - Skip dependency setup when tasks have ordering requirements
 - Create tasks you plan to do yourself---all work is delegated
+- Create circular dependencies (A blockedBy B, B blockedBy A)---check before adding `addBlockedBy`
 
 ## Task Size Heuristic
 

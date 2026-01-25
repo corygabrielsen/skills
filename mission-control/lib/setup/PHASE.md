@@ -27,7 +27,7 @@
                                             │      │      ▼
                                             │      │     END
                                             │      │
-                                            │      └─► DECOMPOSE (loop)
+                                            │      └─► re-present HIL_PLAN_APPROVAL
                                             │
                                             ▼
                                     preflight/PHASE

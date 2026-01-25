@@ -2,7 +2,7 @@
 
 **Present plan to user BEFORE making edits.**
 
-**If `--auto` mode:** Show the plan (themes and proposed fixes), then proceed directly to Address (skip AskUserQuestion but still display the plan). Note: "plan" = proposed changes before editing; distinct from "summary" in Change Confirmation which shows results after editing.
+**If `--auto` mode:** Show the plan (themes and proposed fixes), then proceed directly to Address (skip AskUserQuestion but still display the plan).
 
 ## Do:
 - Show themes and proposed fixes (always—even in `--auto` mode)

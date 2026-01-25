@@ -15,7 +15,7 @@ When a reviewer flags something, the document changes. Always. Either:
 - **Real issue** → fix the document
 - **False positive** → add clarifying text until the intent is obvious
 
-**Fixed point** = no reviewer can flag anything because the document is correct and unambiguous.
+**Fixed point** = no reviewer can flag anything.
 
 ---
 
@@ -87,5 +87,6 @@ When a reviewer flags something, the document changes. Always. Either:
 |------|----------|
 | `--auto` | Skip HIL prompts (still displays plan/summary) |
 | `-n N` | Do N passes (default: 1) |
+| `--reviewer <category>` | Run only reviewers from category: `correctness`, `clarity`, or `conformance` |
 
 ---

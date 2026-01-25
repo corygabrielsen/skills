@@ -2,7 +2,7 @@
 
 **Get user confirmation of executed changes.**
 
-**If `--auto` mode:** Display the summary (tracker with final statuses + prose summary), then proceed directly to Stage (skip AskUserQuestion). Note: "summary" = results after editing; distinct from "plan" in Plan Approval which shows proposed changes before editing.
+**If `--auto` mode:** Display the summary (tracker with final statuses + prose summary), then proceed directly to Stage (skip AskUserQuestion).
 
 ## Do:
 - Present summary: issue tracker showing final statuses, plus brief prose summary of key changes
@@ -50,4 +50,3 @@ AskUserQuestion(
    - Success: report "Changes reverted." and end skill.
    - File never committed (git errors "pathspec did not match"): report this error and end skill.
    - Other git error: report the error and end skill.
-   - Note: If changes were staged, `git checkout --` has no effect (file already matches staged version). The warning in step 1 informs user of this.

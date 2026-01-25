@@ -5,7 +5,7 @@ description: Review a skill document using specialized reviewers. Each reviewer 
 
 # Review Skill
 
-Review skill documents using specialized reviewers. Each reviewer finds specific issue types.
+Run specialized reviewers against a skill document to find correctness, clarity, and conformance issues.
 
 ## Core Philosophy
 
@@ -15,9 +15,9 @@ When a reviewer flags something, the document changes. Always. Either:
 - **Real issue** → fix the document
 - **False positive** → the document was unclear; add clarifying text until the intent is obvious
 
-There is no "dismiss," no "already documented," no "tool behavior." If a reviewer misunderstood, that's a signal the document isn't self-evident—another LLM would misunderstand too. The document must become clearer.
+Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. Make it clearer.
 
-**Fixed point** = no reviewer can find *anything* to flag. Not because you argued them down, but because the document is both **correct** AND **unambiguous**.
+**Fixed point** = no reviewer can flag anything because the document is correct and unambiguous.
 
 ---
 

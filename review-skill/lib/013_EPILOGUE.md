@@ -12,7 +12,7 @@
 
 ## Output Templates
 
-**No issues found:**
+**No issues found (or only launch failures):**
 ```
 No issues.
 ```

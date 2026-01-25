@@ -68,7 +68,9 @@ No hard-coded timeouts. Agent capabilities evolve rapidly.
 
 **Relative timing:** If similar tasks completed in X time, 3-5X without progress is worth surfacing.
 
-**Default when no baseline exists:** Surface to user rather than assuming stalled. Present a status question: "T-004 has been running for [duration] with no visible output. Continue waiting or investigate?" This question is asked within CHECKPOINT. If user confirms task is stalled, proceed to control/HIL_ANOMALY with Classification: Stalled.
+**Default when no baseline exists:** Surface to user rather than assuming stalled. Present a status question: "T-004 has been running for [duration] with no visible output. Continue waiting or investigate?" This question is asked within CHECKPOINT.
+- If user says "continue waiting" → control/REPORT (normal flow, task stays in_progress)
+- If user says "investigate" or confirms stalled → control/HIL_ANOMALY with Classification: Stalled
 
 ## After Checkpoint
 

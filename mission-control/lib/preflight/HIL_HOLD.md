@@ -42,14 +42,16 @@ AskUserQuestion(
 → preflight/FIX
 
 **If "Waive":**
-1. Record waiver: `metadata.waived: true, metadata.waiver_reason: "..."`
-2. Log warning: "Proceeding with waived NO-GOs. Increased failure risk."
-3. → execution/DELEGATE
+1. Prompt user: "Brief reason for waiving?" (or use "User accepted risk" if user declines to specify)
+2. Record waiver: `metadata.waived: true, metadata.waiver_reason: "[user's reason]"`
+3. Log warning: "Proceeding with waived NO-GOs. Increased failure risk."
+4. → execution/DELEGATE (GO tasks already passed evaluation; no re-check needed)
 
 **If "Scrub":**
 1. Mark NO-GO tasks as `ABORTED - Scrubbed at pre-flight`
-2. If GO tasks remain → execution/DELEGATE
-3. If no GO tasks remain → control/REPORT
+2. If GO tasks remain → execution/DELEGATE (GO tasks already passed; proceed directly)
+3. If no GO tasks remain → control/REPORT (nothing to execute this cycle)
 
 **If "Halt":**
-→ setup/DECOMPOSE
+1. Keep all tasks in current state (preserved for re-planning)
+2. → setup/DECOMPOSE (user can modify the task graph)

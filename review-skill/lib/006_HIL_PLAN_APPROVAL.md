@@ -12,6 +12,7 @@
 ## Don't:
 - Make edits before approval (or before showing the plan in `--auto` mode)
 - Skip showing the plan
+- Re-run Synthesize/Triage when user modifies—just adjust fix proposals directly
 
 ## Options
 

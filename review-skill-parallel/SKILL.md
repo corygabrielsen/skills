@@ -5,9 +5,7 @@ description: Review a skill document with n parallel reviewers. Synthesizes find
 
 # Review Skill (Parallel)
 
-You are a skill document reviewer. **Task agents serve as reviewers — you address their findings.** Multiple identical reviewers catch different issues through execution diversity.
-
-**Terminology note**: "Task agents" refers to the technical mechanism (agents launched via the `Task` tool). "Reviewers" refers to their conceptual role. The document uses "Task agents" when discussing implementation details and "reviewers" when discussing the conceptual workflow.
+You are a skill document reviewer. **You launch reviewers and address their findings.** Multiple identical reviewers catch different issues through execution diversity.
 
 ## Core Philosophy
 
@@ -20,7 +18,7 @@ When a reviewer flags something, the document changes. Always. Either:
 
 There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misunderstood, that's a signal the document isn't self-evident — another LLM executing this skill would misunderstand too. The document must become clearer.
 
-**Fixed point** = no reviewer can find *anything* to flag. Not because you argued them down, but because the document is both **correct** AND **self-evident**.
+**The goal**: a document so clear that no reviewer can find *anything* to flag. Not because you argued them down, but because the document is both **correct** AND **self-evident**.
 
 ---
 
@@ -28,7 +26,7 @@ There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misundersto
 
 ```
 ┌─────────────────┐     ┌───────────────────┐
-│  n Task agents  │────▶│  You address      │
+│  n reviewers    │────▶│  You address      │
 │  (fungible)     │     │                   │
 └─────────────────┘     └───────────────────┘
 ```
@@ -89,17 +87,17 @@ This skill uses standard Claude Code tools without detailed explanation:
 
 ## Phase: Review
 
-**Launch n parallel Task agents to review the skill document. All agents are fungible — identical prompt.**
+**Launch n parallel reviewers. All reviewers are fungible — identical prompt.**
 
 ### Do:
 - Use `Task` tool with `run_in_background: true`
-- Launch all n Task agents in a **single message** (parallel)
-- Use identical prompt for all agents
+- Launch all n reviewers in a **single message** (parallel)
+- Use identical prompt for all reviewers
 - Record all task IDs for result collection
 
 ### Don't:
 - ❌ Run reviews sequentially — always parallel
-- ❌ Do the review yourself — delegate to Task agents
+- ❌ Do the review yourself — delegate to reviewers
 - ❌ Customize prompts per reviewer — all reviewers are fungible
 
 ### Review Prompt Template
@@ -110,7 +108,7 @@ All reviewers receive the same prompt:
 You are reviewing {target_file} for internal consistency and clarity issues.
 
 This is a skill document that instructs an LLM how to perform a task.
-We want to reach a "fixed point" where no reviewer can find anything to flag.
+The goal is a document so clear that no reviewer finds anything to flag.
 
 Look for:
 - Terminology inconsistencies (e.g., same concept with different names)
@@ -132,7 +130,7 @@ OR
 NO FINDINGS - document is internally consistent.
 ```
 
-### Example: Launch n=3 Task agents in a Single Message
+### Example: Launch n=3 Reviewers in a Single Message
 
 ```
 Task(
@@ -164,7 +162,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 **Collect results from all n reviewers and merge into the issue tracker.**
 
 ### Do:
-- Use `TaskOutput` tool to collect results from each Task agent:
+- Use `TaskOutput` tool to collect results from each reviewer:
   ```
   TaskOutput(task_id: "task_id_here", block: true, timeout: 120000)
   ```
@@ -172,7 +170,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 - Merge into issue tracker, deduplicating similar findings (same line + similar description = one finding)
 - Record which reviewers found each issue
 
-**No findings = all n reviewers return "NO FINDINGS".** (The full output is "NO FINDINGS - document is internally consistent." — checking whether the output starts with "NO FINDINGS" is sufficient.) If ANY reviewer has findings, proceed to Synthesize.
+**No findings = all n reviewers return "NO FINDINGS".** If ANY reviewer has findings, proceed to Synthesize.
 
 ### Don't:
 - ❌ Skip findings because they seem minor — every finding gets tracked
@@ -239,7 +237,7 @@ Skill documents have interconnected sections, implicit contracts between phases,
 
 ### Group by Theme
 
-After understanding the system, organize findings for triage (and subsequent human-in-the-loop checkpoint in Plan Approval):
+After understanding the system, organize findings for triage:
 
 - Review all findings together as a set
 - Identify themes and patterns (e.g., "terminology inconsistency" appears in 8 findings)
@@ -580,4 +578,4 @@ AskUserQuestion(
 
 ---
 
-Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents in a single message with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present "No findings." and proceed to Epilogue. Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.
+Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel reviewers in a single message with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present "No findings." and proceed to Epilogue. Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.

@@ -1,19 +1,15 @@
 ---
 name: review-skill
-description: Review a skill document using specialized lenses. Each lens finds specific issue types. Clean from all lenses = done.
+description: Review a skill document using specialized lenses. Each lens finds specific issue types. Clean from all lenses = no findings.
 ---
 
 # Review Skill
 
 Review skill documents using specialized lenses. Each lens is tuned to find specific issue types with high signal and low noise.
 
-## Core Philosophy
-
-**Diversity of perspective beats diversity of execution.**
-
-Instead of running n identical "find everything" reviewers, run specialized lenses that each ask a focused question. A finding from any lens is signal. Clean from all lenses means done.
-
 ## Lenses
+
+Each lens asks a focused question. A finding from any lens is signal. Clean from all lenses means no findings.
 
 | Lens | Question | Finds |
 |------|----------|-------|
@@ -48,11 +44,12 @@ Instead of running n identical "find everything" reviewers, run specialized lens
 
 ### Do:
 - Use `Task` tool with `run_in_background: true`
-- Launch all lenses in a **single message**
-- Store task IDs for collection
+- Launch all 6 lenses in a **single message** (6 separate Task calls, one per lens)
+- Store all 6 task IDs in a list for collection
 
 ### Don't:
 - Run lenses sequentially
+- Combine multiple lenses into one prompt
 - Use identical prompts (each lens is specialized)
 
 ### Lens Prompts
@@ -63,10 +60,13 @@ Review {target_file} for execution correctness.
 
 Question: Would an LLM following this document do the wrong thing?
 
+Assume standard Claude Code tools exist (Task, TaskOutput, Edit, AskUserQuestion, Bash, Read, etc.).
+
 Only report issues where the answer is YES. Ignore:
 - Stylistic preferences
 - Minor wording variations
 - Things that are clear from context
+- Tool existence (assume standard tools work)
 
 Output:
 FINDINGS:
@@ -306,11 +306,24 @@ AskUserQuestion(
 - Check for unintended side effects
 - Ensure all findings are `fixed`
 
+### Don't:
+- Skip verification
+- Proceed with unaddressed findings
+
 ---
 
 ## Phase: Change Confirmation
 
 **Get user confirmation of executed changes.**
+
+### Do:
+- Present summary of changes made
+- Use AskUserQuestion with clear options
+- Wait for explicit confirmation
+
+### Don't:
+- Skip this checkpoint
+- Assume confirmation
 
 ### Confirmation Options
 
@@ -338,6 +351,14 @@ AskUserQuestion(
 ## Phase: Epilogue
 
 **Report results and end.**
+
+### Do:
+- Report outcome (clean or findings addressed)
+- End the skill
+
+### Don't:
+- Skip the completion message
+- Continue after reporting
 
 **All lenses clean:**
 ```

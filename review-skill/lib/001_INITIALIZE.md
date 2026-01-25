@@ -17,6 +17,6 @@
 ## Args:
 - First positional arg: path to SKILL.md (required)
 - `--auto`: Skip HIL checkpoints. Edits proceed without user approval.
-- `-n N`: Number of passes (default: 1)
+- `-n N`: Number of passes (default: 1). Reject non-positive or non-integer values.
 
 **If validation fails:** Report error and end skill.

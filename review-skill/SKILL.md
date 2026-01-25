@@ -9,13 +9,7 @@ Run specialized reviewers against a skill document to find correctness, clarity,
 
 ## Core Philosophy
 
-**Every issue demands a document change. No exceptions.**
-
-When a reviewer flags something, the document changes. Always:
-- **Real issue** → fix it
-- **False positive** → add clarifying text
-
-**Fixed point** = no reviewer can flag anything. (Aspiration; may not be reached in N passes.)
+**Every issue demands a document change:** real issue → fix it; false positive → add clarifying text.
 
 ---
 
@@ -45,7 +39,7 @@ When a reviewer flags something, the document changes. Always:
 
 ## Phases
 
-`@lib/...` references are expanded inline by the skill loader before execution. Read each phase file sequentially as you reach that phase.
+`@lib/...` references are expanded inline by the skill loader.
 
 @lib/001_INITIALIZE.md
 @lib/002_FAN_OUT.md
@@ -64,8 +58,6 @@ When a reviewer flags something, the document changes. Always:
 ---
 
 ## Quick Reference
-
-Summary for quick lookup (see `@lib/...` files for full details):
 
 | Phase | Purpose |
 |-------|---------|
@@ -89,6 +81,6 @@ Summary for quick lookup (see `@lib/...` files for full details):
 |------|----------|
 | `--auto` | Skip HIL prompts (still displays plan/summary) |
 | `-n N` | Do N passes (default: 1) |
-| `--reviewer <category>` | Run only reviewers from one category (`correctness`, `clarity`, or `conformance`); others excluded |
+| `--reviewer <category>` | Run only `correctness`, `clarity`, or `conformance` reviewers |
 
 ---

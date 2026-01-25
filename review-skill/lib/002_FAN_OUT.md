@@ -4,7 +4,7 @@
 
 ## Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
-- **Substitute `{target_file}`** in each reviewer prompt with the actual target file path before passing to Task
+- **Substitute `{target_file}`** in each reviewer prompt with the actual target file path before passing to Task (literally replace the string `{target_file}` in the prompt text with the path)
 - Launch all 7 reviewers in a **single assistant turn** (one message containing 7 parallel Task tool calls)
 - Launch in this exact order: execution, checklist, contradictions, terminology, adversarial, coverage, portability (position-based tracking depends on this order)
 - Store all 7 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage, (7) portability

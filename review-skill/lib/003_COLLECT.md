@@ -3,7 +3,7 @@
 **Gather results from all reviewers.**
 
 ## Do:
-- Use `TaskOutput` with `task_id: <id>` for each reviewer, **in a single assistant turn (7 parallel TaskOutput calls)**, to wait for completion
+- Use `TaskOutput` with `task_id: <id>` for each reviewer that successfully launched, **in a single assistant turn**, to wait for completion (if fewer than 7 launched, only call TaskOutput for those that did)
 - Parse each reviewer's output: extract line number from "Line X:" prefix into Line column, extract description after the colon into Issue column, assign sequential IDs (I-001, I-002...), set Fix to "—" and Status to `open`
 
 ## Don't:
@@ -31,7 +31,7 @@ else:
 | I-002 | coverage | 156 | [description] | Added X | clarified |
 ```
 
-- **Line**: Line number from reviewer output. For multi-line issues (e.g., contradictions reporting "Lines X and Y"), use the first line number or format as "X,Y".
+- **Line**: Line number from reviewer output. For multi-line issues (e.g., contradictions reporting "Lines X and Y"), use the first line number; include additional lines in the Issue description if needed.
 - **Issue**: Brief description of what was flagged
 - **Fix**: Short prose snippet of change made (use "—" while `open` or `planned`)
 

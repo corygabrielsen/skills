@@ -11,3 +11,5 @@
 - Stage unrelated changes
 - Stage secrets or credentials (.env, *.pem, etc.)
 - Use `git add -A` without reviewing first
+
+Proceed to Commit.

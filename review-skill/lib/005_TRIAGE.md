@@ -13,3 +13,5 @@
 - Make edits during triage
 - Dismiss issues as "not actionable" or "tool behavior"—every issue gets a document change
 - Skip issues because they seem minor—if a reviewer flagged it, the document can be clearer
+
+Proceed to HIL: Plan Approval.

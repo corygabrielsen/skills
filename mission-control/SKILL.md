@@ -16,6 +16,13 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 **HIL** = Human-In-the-Loop: sub-phases where mission control pauses for human decision.
 
+## Prerequisites
+
+This skill requires Claude Code's task system tools:
+- `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` - task record management
+- `Task`, `TaskOutput` - background agent spawning and output retrieval
+- `AskUserQuestion` - human-in-the-loop prompts
+
 ## Mindset
 
 - The **task system is your source of truth**, not your context
@@ -110,7 +117,7 @@ mission-control/
 
 **Entry points after resume:**
 - Tasks in-progress → execution/MONITOR
-- Tasks pending/ready (unblocked) → preflight/EVALUATE
+- Ready tasks (pending with empty blockedBy) → preflight/EVALUATE
 - Tasks pending but all blocked → control/REPORT
 - All tasks completed/ABORTED → control/REPORT
 - No tasks + work-related history → setup/BOOTSTRAP (see INITIALIZE.md for "history" definition)

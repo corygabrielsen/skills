@@ -31,7 +31,7 @@ else:
 | I-002 | coverage | 156 | [description] | Added X | clarified |
 ```
 
-- **Line**: Line number from reviewer output. For multi-line issues (e.g., contradictions reporting "Lines X and Y"), use the first line number; include additional lines in the Issue description if needed.
+- **Line**: Line number from reviewer output. For multi-line issues (e.g., contradictions reporting "Lines X and Y"), use the first line number; mention additional line numbers in the Issue description (e.g., "Lines 42 and 78 contradict...").
 - **Issue**: Brief description of what was flagged
 - **Fix**: Short prose snippet of change made (use "—" while `open` or `planned`)
 

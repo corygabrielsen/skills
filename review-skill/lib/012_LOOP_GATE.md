@@ -24,6 +24,6 @@ OTHERWISE:
 ```
 
 ## On loop:
-- Re-read the target file (it has changed)
+- Re-read the target file (it has changed)—this updated content is what gets passed to reviewer prompts in Fan Out
 - Reset per-pass state: clear issue tracker, reset reviewer results
 - Preserve cumulative stats (total fixed/clarified counts across all passes)

@@ -63,7 +63,8 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
 - Launch all 6 reviewers in a **single assistant turn** (one message containing 6 parallel Task tool calls)
 - Store all 6 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage
-- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue. The skill proceeds with available reviewers. (Note: Launch failures become issues in the tracker, so the skill always takes the "else" branch in Collect—never the no-issues path.)
+- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID
+- **Handle launch failures:** Record "Reviewer [name] failed to launch: [error]" as an issue in the tracker (use "-" for Line column). The skill proceeds with available reviewers. Launch failures guarantee the "else" branch in Collect—never the no-issues path.
 
 ### Don't:
 - Run reviewers sequentially
@@ -333,7 +334,7 @@ AskUserQuestion(
 2. End turn (stop responding and wait for user input).
 3. When user provides input, update plan accordingly.
 4. Show updated plan to user (same format as original Triage output).
-5. Re-present Plan Approval options (repeat from step 1 until user selects Approve or Abort).
+5. Re-present Plan Approval options (loop back to step 1 of this Modify handler until user selects Approve or Abort).
 
 **If user selects "Abort":** End skill without changes.
 
@@ -406,12 +407,12 @@ AskUserQuestion(
 
 **If user selects "View diff":**
 1. Run `git diff {target_file}` to show unstaged changes (Edit tool produces unstaged changes).
-2. Show the diff output to user.
-3. Handle edge cases (use `git status {target_file}` to distinguish untracked from no changes if diff is empty):
-   - If diff is empty and file is tracked: report "No unstaged changes to show."
-   - If file is untracked: report "File is untracked (not yet committed)."
-   - If `git diff` fails unexpectedly: report the error.
-4. Re-present confirmation options.
+2. If diff output is non-empty: show it to user.
+3. If diff output is empty: run `git status {target_file}` to distinguish cause:
+   - File is tracked with no unstaged changes: report "No unstaged changes to show."
+   - File is untracked: report "File is untracked (not yet committed)."
+4. If `git diff` fails unexpectedly: report the error.
+5. Re-present confirmation options.
 
 **If user selects "Revert":**
 1. Warn user: "This will discard unstaged changes to {target_file}. Staged changes are not affected—use `git restore --staged {target_file}` first if needed."

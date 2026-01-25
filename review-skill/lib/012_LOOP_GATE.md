@@ -4,7 +4,7 @@
 
 ## Do:
 - Check if current pass < N
-- If looping: increment pass counter, re-read target file, reset per-pass state, then jump to Fan Out
+- If looping: increment pass counter, re-read target file, reset per-pass state (clear issue tracker and reviewer results), then jump to Fan Out
 - If not looping: continue to Epilogue
 
 ## Don't:

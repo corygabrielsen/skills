@@ -18,7 +18,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 | contradictions | "Does A contradict B?" | Conflicting instructions |
 | terminology | "Is term X used consistently?" | Naming inconsistencies |
 | adversarial | "Can this be misinterpreted?" | Ambiguities, edge cases |
-| gaps | "What's missing for each option/path?" | Unhandled branches, missing handlers |
+| coverage | "Is every option/branch handled?" | Unhandled branches, missing handlers |
 
 ---
 
@@ -166,9 +166,9 @@ OR
 NO ISSUES
 ```
 
-**Reviewer: gaps**
+**Reviewer: coverage**
 ```
-Review {target_file} for missing handlers.
+Review {target_file} for complete handler coverage.
 
 Look for places where options are presented but handling is incomplete:
 - AskUserQuestion options without instructions for what to do when selected
@@ -217,7 +217,7 @@ else:
 | ID | Reviewer | Line | Issue | Status |
 |:--:|:--------:|:----:|:------|:------:|
 | F-001 | execution | 42 | [description] | open |
-| F-002 | gaps | 156 | [description] | open |
+| F-002 | coverage | 156 | [description] | open |
 ```
 
 **Status progression:** `open` → `planned` (in Triage) → `fixed` (in Address)

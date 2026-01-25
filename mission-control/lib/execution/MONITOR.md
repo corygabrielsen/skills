@@ -19,7 +19,7 @@
 --fg (foreground):
     Blocking already happened in Delegate phase.
     This phase is a pass-through.
-    → Proceed to Verify
+    → execution/VERIFY
 
 --bg (background):
     This phase triggers when:
@@ -30,7 +30,7 @@
     1. Run TaskList to see current state
     2. Check TaskOutput for any completed tasks
     3. Collect results
-    → Proceed to Verify
+    → execution/VERIFY
 ```
 
 ## Polling Pattern

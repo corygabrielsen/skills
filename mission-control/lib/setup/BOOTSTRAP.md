@@ -41,4 +41,4 @@ Only runs when: TaskList is empty AND conversation has history.
 | T-003 | [depends on T-002] | T-002 |
 ```
 
-After reporting, proceed to Delegate.
+After reporting, proceed to HIL_PLAN_APPROVAL for user approval of the bootstrapped graph.

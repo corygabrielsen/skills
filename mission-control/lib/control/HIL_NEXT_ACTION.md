@@ -36,20 +36,20 @@ AskUserQuestion(
 
 **If "Continue":**
 1. Check for ready tasks (pending, empty blockedBy)
-2. If ready tasks exist → Return to Pre-Flight
-3. If all tasks blocked → Report blockers, re-present options
-4. If all tasks complete → Proceed to "Complete" handler
+2. If ready tasks exist → preflight/EVALUATE
+3. If all tasks blocked → report blockers, re-present options
+4. If all tasks complete → proceed to "Complete" handler
 
 **If "Pause":**
-1. Trigger Handoff phase (capture state)
+1. → control/HANDOFF
 2. Report: "State saved. Resume with `/mission-control`."
-3. End skill, return control to human
+3. End skill
 
 **If "Add work":**
 1. Prompt: "Describe the additional work."
 2. End turn, wait for user input.
-3. Return to Decompose phase with new input
-4. New tasks get added to existing graph
+3. → setup/DECOMPOSE with new input
+4. New tasks added to existing graph
 
 **If "Complete":**
 1. Verify all tasks are completed or ABORTED
@@ -62,12 +62,12 @@ AskUserQuestion(
 ```
 if --auto:
     if ready_tasks exist:
-        → Continue (return to Pre-Flight)
+        → preflight/EVALUATE
     else if in_progress_tasks exist:
-        → Continue monitoring (return to Monitor)
+        → execution/MONITOR
     else if all_tasks completed:
-        → Complete (generate summary, end)
+        → generate summary, end skill
     else:
-        → All tasks blocked with no progress possible
-        → Exit auto mode, present options to human
+        → all tasks blocked, no progress possible
+        → exit auto mode, present options to human
 ```

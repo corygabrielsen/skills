@@ -36,15 +36,15 @@ Catches slow-developing problems before they become crises.
 ```markdown
 ## Checkpoint
 
-| Task | Status | Duration | Notes |
-|------|--------|----------|-------|
-| T-001 | completed | 2m | Verified |
-| T-002 | in_progress | 5m | Agent running |
-| T-003 | blocked | --- | Waiting on T-002 |
-| T-004 | stalled | 12m | No output, may need intervention |
+| Task | Status | Notes |
+|------|--------|-------|
+| T-001 | completed | Verified |
+| T-002 | in_progress | Agent actively working |
+| T-003 | blocked | Waiting on T-002 |
+| T-004 | in_progress | No recent output, monitoring |
 
 ### Attention Needed
-- T-004 appears stalled (12m with no progress)
+- T-004: No visible progress, may need investigation
 
 ### Resource Status
 - Context: ~40% capacity
@@ -53,14 +53,20 @@ Catches slow-developing problems before they become crises.
 
 ## Stall Detection
 
-```
-A task is stalled if:
-    - Status is in_progress
-    - No output received in threshold time:
-        - Simple tasks: 5 minutes
-        - Complex tasks: 15 minutes
-        - Research tasks: 20 minutes
-```
+No hard-coded timeouts. Agent capabilities evolve rapidly.
+
+**Stall indicators (use judgment):**
+- Agent has stopped producing output mid-task
+- Task is blocking others with no visible progress
+- User expresses concern
+- Pattern differs from similar previous tasks
+
+**Not stalled (patience required):**
+- Agent actively working (tool calls visible)
+- Complex research or multi-file edits in progress
+- Agent explicitly indicated long-running work
+
+When uncertain, surface to user rather than assuming stall.
 
 ## After Checkpoint
 

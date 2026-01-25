@@ -7,7 +7,7 @@ args:
   - name: --bg
     description: Background mode (default). Launch agents and return control to human. Human gets notified on completion.
   - name: --auto
-    description: Skip human checkpoints in foreground mode.
+    description: Skip human checkpoints in foreground mode. If used with --bg, forces --fg.
 ---
 
 # Mission Control
@@ -126,7 +126,7 @@ pending --> in_progress --> completed
 ```
 
 - To abort: update subject to `ABORTED - [reason]`, mark completed
-- Never delete context; always leave a trail
+- Never delete task data; always leave a trail in descriptions/metadata
 
 ## Delegation Philosophy
 
@@ -134,9 +134,9 @@ pending --> in_progress --> completed
 - Writing or editing files
 - Running commands to verify something
 - Research or exploration
-- Any work that takes more than a few seconds
+- Any substantive work (not trivial verification like checking a file exists)
 
-...then delegate it to a background agent. Don't do it yourself.
+...then delegate it to a background agent. Don't do it yourself. Brief verification checks (confirming an artifact exists, reading a single line) can be done directly by mission control.
 
 **Your job is to:**
 1. Create the task

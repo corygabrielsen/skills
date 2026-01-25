@@ -21,9 +21,27 @@
 
 ```
 if TaskList returns tasks:
-    → Load existing state, proceed to Monitor (check in-progress tasks)
+    Check task states and route:
+
+    if any tasks are in_progress:
+        → Proceed to Monitor (agents are running)
+
+    else if any tasks are pending with empty blockedBy:
+        → Proceed to Pre-Flight (ready tasks waiting)
+
+    else if any tasks are pending but all blocked:
+        → Proceed to Report (show blocked status)
+
+    else if all tasks completed or ABORTED:
+        → Proceed to Report (show final status)
+
 else if conversation has history:
     → Proceed to Bootstrap (mine conversation for work)
+
 else:
     → Proceed to Decompose (fresh start, await user request)
 ```
+
+## Handoff Detection
+
+If a task with `metadata.type: "handoff"` exists, read it first to recover mission state (mode, decisions, open questions).

@@ -9,7 +9,7 @@ Review skill documents using specialized reviewers. Each reviewer is tuned to fi
 
 ## Core Philosophy
 
-**Every finding demands a document change. No exceptions.**
+**Every issue demands a document change. No exceptions.**
 
 When a reviewer flags something, the document changes. Always. Either:
 - **Real issue** → fix the document
@@ -63,7 +63,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
 - Launch all 6 reviewers in a **single assistant turn** (one message containing 6 parallel Task tool calls)
 - Store all 6 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage
-- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue
+- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue. The skill proceeds with available reviewers.
 
 ### Don't:
 - Run reviewers sequentially
@@ -271,6 +271,8 @@ A single root cause may be caught by multiple reviewers. Group them.
 - Group by reviewer (reviewers are detection methods, not categories)
 - Force unrelated issues into themes
 
+Proceed to Triage.
+
 ---
 
 ## Phase: Triage
@@ -286,7 +288,7 @@ A single root cause may be caught by multiple reviewers. Group them.
 
 ### Don't:
 - Make edits during triage
-- Dismiss issues as "not actionable" or "tool behavior"—every finding gets a document change
+- Dismiss issues as "not actionable" or "tool behavior"—every issue gets a document change
 - Skip issues because they seem minor—if a reviewer flagged it, the document can be clearer
 
 ---
@@ -328,7 +330,7 @@ AskUserQuestion(
 2. End turn (stop responding and wait for user input).
 3. When user provides input, update plan accordingly.
 4. Show updated plan to user (same format as original Triage output).
-5. Re-present Plan Approval options (repeat until user selects Approve or Abort).
+5. Re-present Plan Approval options (repeat from step 1 until user selects Approve or Abort).
 
 **If user selects "Abort":** End skill without changes.
 
@@ -405,6 +407,7 @@ AskUserQuestion(
 3. Handle edge cases:
    - If diff is empty: report "No unstaged changes to show."
    - If file is untracked: report "File is untracked (not yet committed)."
+   - If `git diff` fails unexpectedly: report the error.
 4. Re-present confirmation options.
 
 **If user selects "Revert":**

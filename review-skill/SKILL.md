@@ -25,14 +25,24 @@ There is no "dismiss," no "already documented," no "tool behavior." If a reviewe
 
 Each reviewer asks a focused question. An issue from any reviewer is signal.
 
+**Correctness** — will this do the wrong thing?
 | Reviewer | Question | Finds |
-|------|----------|-------|
+|----------|----------|-------|
 | execution | "Would this cause wrong behavior?" | Logic errors, missing steps, broken flows |
-| checklist | "Do these specific checks pass?" | Structural issues, missing sections |
 | contradictions | "Does A contradict B?" | Conflicting instructions |
-| terminology | "Is term X used consistently?" | Naming inconsistencies |
-| adversarial | "Where would a reasonable LLM go wrong?" | Fixable ambiguities, missing info |
 | coverage | "Is every option/branch handled?" | Unhandled branches, missing handlers |
+
+**Clarity** — will this be misunderstood?
+| Reviewer | Question | Finds |
+|----------|----------|-------|
+| adversarial | "Where would a reasonable LLM go wrong?" | Fixable ambiguities, missing info |
+| terminology | "Is term X used consistently?" | Naming inconsistencies |
+| conciseness | "Is everything here necessary?" | Verbosity, redundancy, over-explanation |
+
+**Conformance** — does this follow conventions?
+| Reviewer | Question | Finds |
+|----------|----------|-------|
+| checklist | "Do these specific checks pass?" | Structural issues, missing sections |
 | portability | "Would this break on non-Claude models?" | Provider-specific assumptions |
 
 ---
@@ -84,4 +94,4 @@ Each `@lib/...` reference is a phase document to follow in sequence:
 
 ---
 
-Begin /review-skill now. Parse args for target file (including `-n` flag, default 1). Launch all 7 reviewers in parallel. Collect results. If all 7 reviewers return NO ISSUES and no launch failures were recorded, skip to Epilogue. If any issues or launch failures: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N (pass counter and N established in Initialize), loop back to Fan Out; otherwise continue to Epilogue.
+Begin /review-skill now. Parse args for target file (including `-n` flag, default 1). Launch all 8 reviewers in parallel. Collect results. If all 8 reviewers return NO ISSUES and no launch failures were recorded, skip to Epilogue. If any issues or launch failures: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N (pass counter and N established in Initialize), loop back to Fan Out; otherwise continue to Epilogue.

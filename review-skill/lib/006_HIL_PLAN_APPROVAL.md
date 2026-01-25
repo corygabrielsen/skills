@@ -2,7 +2,7 @@
 
 **Present plan to user BEFORE making edits.**
 
-**If `--auto` mode:** Show the plan (themes and proposed fixes), then proceed directly to Address (skip AskUserQuestion but still display the plan).
+**If `--auto` mode:** Show the plan (themes and proposed fixes), then proceed directly to Address (no AskUserQuestion).
 
 ## Do:
 - Show themes and proposed fixes (always—even in `--auto` mode)

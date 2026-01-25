@@ -15,7 +15,7 @@ When a reviewer flags something, the document changes. Always. Either:
 - **Real issue** → fix the document
 - **False positive** → add clarifying text until the intent is obvious
 
-**Fixed point** = no reviewer can flag anything.
+**Fixed point** = no reviewer can flag anything. (Aspiration; skill runs N passes per `-n` flag.)
 
 ---
 

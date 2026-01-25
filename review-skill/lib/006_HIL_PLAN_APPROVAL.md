@@ -2,16 +2,16 @@
 
 **Present plan to user BEFORE making edits.**
 
-**If `--auto` mode:** Show themes and proposed fixes, then proceed directly to Address (skip AskUserQuestion).
+**If `--auto` mode:** Show themes and proposed fixes, then proceed directly to Address (skip AskUserQuestion but still display the plan).
 
 ## Do:
-- Show themes and proposed fixes
-- Use AskUserQuestion with clear options
-- Wait for explicit approval
+- Show themes and proposed fixes (always—even in `--auto` mode)
+- Use AskUserQuestion with clear options (unless `--auto`)
+- Wait for explicit approval (unless `--auto`)
 
 ## Don't:
-- Make edits before approval
-- Skip showing the plan (even in `--auto` mode, always show the plan before proceeding)
+- Make edits before approval (or before showing the plan in `--auto` mode)
+- Skip showing the plan
 
 ## Options
 
@@ -37,7 +37,7 @@ AskUserQuestion(
 **If user selects "Modify":**
 1. Acknowledge selection and prompt: "Please describe what changes to the plan you'd like (adjust proposed fixes, change resolution types, etc.)."
 2. End turn (stop responding and wait for user input).
-3. When user provides input, update plan accordingly.
+3. When user provides input, revise the proposed fixes based on user feedback (don't re-run Synthesize/Triage phases; just adjust the fix proposals directly).
 4. Show updated plan to user (same format as original Triage output).
 5. Re-present Plan Approval options (repeat from step 1 until user selects Approve or Abort).
 

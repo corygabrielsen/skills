@@ -2,6 +2,10 @@
 
 **Create commit with proper message format.**
 
+## Do:
+- Create commit with subject and body following the rules below
+- Use the heredoc pattern shown in Command section
+
 ## Message Rules
 
 1. Subject ≤42 chars (room for ` (#NNNN)` suffix → 50 char limit)
@@ -27,3 +31,5 @@ EOF
 - Exceed character limits (count them!)
 - Skip the body for non-trivial changes
 - Forget backticks around technical terms
+
+Proceed to Loop Gate.

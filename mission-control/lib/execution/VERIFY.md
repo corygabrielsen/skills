@@ -8,7 +8,7 @@
   - If files were created: check they exist and have expected content
   - If changes were made: validate the changes are correct
 - Mark task as `completed` only after verification passes
-- If verification fails: proceed to HIL: Anomaly
+- If verification fails: proceed to control/HIL_ANOMALY
 
 ## Don't:
 - Trust agent summaries without verification
@@ -31,10 +31,10 @@
 if verification fails:
     1. Do NOT mark task completed
     2. Record failure details
-    3. → Proceed to HIL: Anomaly (human decides response)
+    3. → control/HIL_ANOMALY (human decides response)
 ```
 
-Do NOT automatically create follow-up tasks. Let HIL: Anomaly handle failure classification and response.
+Do NOT automatically create follow-up tasks. Let control/HIL_ANOMALY handle failure classification and response.
 
 ## After Verification
 

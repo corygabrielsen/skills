@@ -16,28 +16,24 @@
         │
         ├── tasks exist? ──► exit to appropriate phase
         │
-        ├── history exists? ──► BOOTSTRAP ─────┐
-        │                                      │
-        └── fresh start ─────► DECOMPOSE ◄─────┤
-                                    │          │
-                                    ▼          │
-                            HIL_PLAN_APPROVAL  │
-                               │    │    │     │
-                           approve modify abort│
-                               │    │    │     │
-                               │    │    ▼     │
-                               │    │   END    │
-                               │    │          │
-                               │    └──────────┘
-                               │
-                               ▼
-                              EXIT
-                               │
-                               ▼
-                        preflight/PHASE
+        ├── history exists? ──► BOOTSTRAP ──► HIL_PLAN_APPROVAL
+        │                                          │
+        └── fresh start ─────► DECOMPOSE ──────────┤
+                                                   │
+                                            ┌──────┴──────┐
+                                            │      │      │
+                                         approve modify abort
+                                            │      │      │
+                                            │      │      ▼
+                                            │      │     END
+                                            │      │
+                                            │      └─► DECOMPOSE (loop)
+                                            │
+                                            ▼
+                                    preflight/PHASE
 ```
 
-Note: BOOTSTRAP also proceeds to HIL_PLAN_APPROVAL (via DECOMPOSE path or directly).
+Both BOOTSTRAP and DECOMPOSE proceed to HIL_PLAN_APPROVAL for user approval before execution.
 
 ## Entry Conditions
 - Skill invoked with `/mission-control`

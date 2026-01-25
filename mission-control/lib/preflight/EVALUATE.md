@@ -1,4 +1,4 @@
-# Pre-Flight: Evaluate
+# Preflight: Evaluate
 
 **Run go/no-go checks on all ready tasks.**
 

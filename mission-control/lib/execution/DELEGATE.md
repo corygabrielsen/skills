@@ -25,8 +25,15 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty. See RULES.md 
 ```
 --fg (foreground):
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
-    2. After ALL agents launched, call TaskOutput(block: true) for each
-    3. → execution/VERIFY when all complete
+       - Task(run_in_background: true) for T1
+       - Task(run_in_background: true) for T2
+       - Task(run_in_background: true) for T3
+    2. After ALL agents launched, block serially on each:
+       - TaskOutput(task_id=T1, block=true)
+       - TaskOutput(task_id=T2, block=true)
+       - TaskOutput(task_id=T3, block=true)
+       (Agents run in parallel; waiting is serial—this is optimal)
+    3. → execution/VERIFY when all complete (skip MONITOR in --fg mode)
 
 --bg (background):
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
@@ -35,7 +42,7 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty. See RULES.md 
     4. On resume → execution/MONITOR
 ```
 
-**Note:** In --fg mode, launch ALL agents first (parallel), THEN block on each (serial wait). Don't block before launching all.
+**Note:** In --fg mode, DELEGATE handles all blocking. MONITOR phase is skipped (pass-through).
 
 ## Agent Prompt Template
 

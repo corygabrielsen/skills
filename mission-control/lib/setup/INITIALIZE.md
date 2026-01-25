@@ -23,10 +23,11 @@
 
 ```
 if TaskList returns tasks:
-    Check task states and route:
+    Check task states and route (in priority order):
 
     if any tasks are in_progress:
-        → execution/MONITOR (agents are running)
+        → execution/MONITOR (check on running agents first)
+        Note: If ready tasks also exist, MONITOR will cycle back to delegate them
 
     else if any tasks are pending with empty blockedBy:
         → preflight/EVALUATE (ready tasks waiting)
@@ -37,8 +38,11 @@ if TaskList returns tasks:
     else if all tasks completed or ABORTED:
         → control/REPORT (show final status)
 
-else if conversation has history (user discussed work before invoking /mission-control):
+else if conversation has work-related history:
     → setup/BOOTSTRAP (mine conversation for work)
+    "Work-related history" means: technical discussion, task mentions, decisions,
+    or context beyond greetings/skill invocation. If user only said "hi" then
+    "/mission-control", that's a fresh start, not bootstrap.
 
 else:
     → setup/DECOMPOSE (fresh start, await user request)

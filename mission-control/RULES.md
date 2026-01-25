@@ -12,7 +12,7 @@ Inviolable constraints. No exceptions without explicit user override.
 |------|------------|
 | MR-1 | Task system is source of truth, not context |
 | MR-2 | No agent launch without preflight GO |
-| MR-3 | No task marked complete without verification (exception: bootstrapped tasks from conversation history) |
+| MR-3 | No task marked complete without verification (exception: work discovered during bootstrap from pre-existing conversation history—this represents historical context, not agent deliverables) |
 | MR-4 | Never delete tasks; use ABORTED status |
 | MR-5 | Never downgrade agent model from mission control's model |
 | MR-6 | Descriptions must survive context compaction |
@@ -39,7 +39,7 @@ Inviolable constraints. No exceptions without explicit user override.
 |-----------|--------|-----------|
 | Task tool returns error instead of agent ID | Record in task metadata | Launch failures are signal |
 | | Mark task: `BLOCKED - Launch failed: [error]` | Preserves error context |
-| | → HIL: Anomaly | Human decides retry vs replan |
+| | → control/HIL_ANOMALY | Human decides retry vs replan |
 
 #### FR-A002: Agent Progress
 
@@ -48,7 +48,7 @@ Inviolable constraints. No exceptions without explicit user override.
 | No notification received | Poll via TaskOutput | Notifications unreliable (~50% lost) |
 | Poll shows agent still running | Continue waiting | Agent capabilities vary; avoid premature interruption |
 | Poll shows agent completed | Proceed to Verify | Normal flow |
-| User reports concern about agent | → HIL: Anomaly | Human intuition matters |
+| User reports concern about agent | → control/HIL_ANOMALY | Human intuition matters |
 
 **Note:** No hard-coded timeouts. Agent capabilities evolve. A task that takes 5 minutes today may take 2 hours with a more capable model, or 30 seconds with a faster one. Trust the agent until there's signal it's stuck. User can always intervene.
 
@@ -58,7 +58,7 @@ Inviolable constraints. No exceptions without explicit user override.
 |-----------|--------|-----------|
 | Output not parseable | Record raw output in task metadata | Preserve evidence |
 | | Do NOT mark complete | Cannot verify success |
-| | → HIL: Anomaly | Human must interpret |
+| | → control/HIL_ANOMALY | Human must interpret |
 
 ---
 
@@ -71,7 +71,7 @@ Inviolable constraints. No exceptions without explicit user override.
 | Tests fail after agent reports success | Do NOT mark task complete | Agent introduced bugs or misunderstood |
 | | Do NOT auto-retry | Same approach may repeat failure |
 | | Record failure details | Evidence for diagnosis |
-| | → HIL: Anomaly | Human decides: retry, replan, skip |
+| | → control/HIL_ANOMALY | Human decides: retry, replan, skip |
 
 #### FR-B002: Verification Cannot Run
 
@@ -79,7 +79,7 @@ Inviolable constraints. No exceptions without explicit user override.
 |-----------|--------|-----------|
 | No tests exist for task type | Document in task metadata | Acknowledge gap |
 | | Apply spot-check verification | Some verification > none |
-| | → HIL: Anomaly if uncertain | Human accepts risk or adds verification |
+| | → control/HIL_ANOMALY if uncertain | Human accepts risk or adds verification |
 
 #### FR-B003: Partial Success
 
@@ -98,7 +98,7 @@ Inviolable constraints. No exceptions without explicit user override.
 | Condition | Indicator | Action | Rationale |
 |-----------|-----------|--------|-----------|
 | Task scope exceeds single agent capacity | Multiple distinct deliverables | Split into subtasks | Each agent needs clear focus |
-| | Scope feels unbounded | Flag at Pre-Flight | Vague tasks drift |
+| | Scope feels unbounded | Flag at preflight | Vague tasks drift |
 | | Would require multiple tool-use cycles | Consider decomposition | Atomic tasks are clearer |
 
 **Note:** No hard time/size limits. Agent capabilities vary. Focus on clarity and atomicity, not arbitrary thresholds.
@@ -107,10 +107,10 @@ Inviolable constraints. No exceptions without explicit user override.
 
 | Condition | Action | Rationale |
 |-----------|--------|-----------|
-| Missing file paths | NO-GO at Pre-Flight | Agent will guess wrong |
-| Missing success criteria | NO-GO at Pre-Flight | Cannot verify completion |
-| Ambiguous scope | NO-GO at Pre-Flight | Agent may over/under-deliver |
-| References context not in description | NO-GO at Pre-Flight | Won't survive compaction |
+| Missing file paths | NO-GO at preflight | Agent will guess wrong |
+| Missing success criteria | NO-GO at preflight | Cannot verify completion |
+| Ambiguous scope | NO-GO at preflight | Agent may over/under-deliver |
+| References context not in description | NO-GO at preflight | Won't survive compaction |
 
 #### FR-C003: Circular Dependencies
 

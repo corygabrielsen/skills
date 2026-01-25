@@ -1,4 +1,4 @@
-# Pre-Flight: HIL Hold
+# Preflight: HIL Hold
 
 **Human decides how to handle NO-GO conditions.**
 

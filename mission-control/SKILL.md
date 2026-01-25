@@ -29,6 +29,10 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 | `--fg` | Launch agents, block until complete, continue to next batch |
 | `--auto` | With `--fg`: skip human checkpoints, fully autonomous loop |
 
+## Rules
+
+@RULES.md
+
 ## Phases (Hierarchical)
 
 @lib/setup/PHASE.md
@@ -43,6 +47,7 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 ```
 mission-control/
 ├── SKILL.md
+├── RULES.md              ← Mission Rules + Flight Rules
 └── lib/
     ├── setup/
     │   ├── PHASE.md
@@ -156,12 +161,13 @@ pending --> in_progress --> completed
 
 | Practice | Implementation |
 |----------|----------------|
-| Go/No-Go Polls | Pre-Flight phase checks before every launch |
-| Flight Rules | Error handlers in Verify and Anomaly phases |
-| Anomaly Resolution | STOP → ASSESS → CLASSIFY → RESPOND |
-| Shift Handoffs | Handoff phase captures state for resumption |
+| Mission Rules | Inviolable constraints (MR-1 through MR-6 in RULES.md) |
+| Flight Rules | Pre-planned decisions by section (FR-A* through FR-E* in RULES.md) |
+| Go/No-Go Polls | preflight/EVALUATE checks before every launch |
+| Anomaly Resolution | STOP → ASSESS → CLASSIFY → RESPOND in control/HIL_ANOMALY |
+| Shift Handoffs | control/HANDOFF captures state for resumption |
 | Single Voice | Mission control synthesizes, user gets one interface |
-| Status Checks | Checkpoint phase polls all stations |
+| Status Checks | control/CHECKPOINT polls all stations |
 
 ---
 

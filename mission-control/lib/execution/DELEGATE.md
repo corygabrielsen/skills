@@ -2,7 +2,7 @@
 
 **Launch agents for ready tasks.**
 
-A task is "ready" when its `blockedBy` list is empty.
+A task is "ready" when: status=`pending` AND `blockedBy` is empty. See RULES.md Definitions.
 
 ## Do:
 - Identify all ready tasks (no blockers, not in_progress, not completed)
@@ -25,7 +25,7 @@ A task is "ready" when its `blockedBy` list is empty.
 ```
 --fg (foreground):
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
-    2. Immediately call TaskOutput(block: true) for each launched task
+    2. After ALL agents launched, call TaskOutput(block: true) for each
     3. → execution/VERIFY when all complete
 
 --bg (background):
@@ -34,6 +34,8 @@ A task is "ready" when its `blockedBy` list is empty.
     3. Return control to human
     4. On resume → execution/MONITOR
 ```
+
+**Note:** In --fg mode, launch ALL agents first (parallel), THEN block on each (serial wait). Don't block before launching all.
 
 ## Agent Prompt Template
 
@@ -48,6 +50,15 @@ When complete:
 - Confirm verification criteria are met
 ```
 
+## Launch Failure Handling
+
+If `Task` tool returns an error instead of an agent ID:
+1. Record error in task metadata
+2. Mark task: `BLOCKED - Launch failed: [error]`
+3. → control/HIL_ANOMALY
+
+See FR-A001 in RULES.md for full details.
+
 ## Output Format (--bg mode)
 
 ```markdown
@@ -58,5 +69,5 @@ When complete:
 | T-002 | agent-1 | [brief] |
 | T-004 | agent-2 | [brief] |
 
-Waiting for completion notifications. Resume with `/mission-control` to check status.
+Agents running. Notifications may be lost (~50%)—poll with `/mission-control` to check status.
 ```

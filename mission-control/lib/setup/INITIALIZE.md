@@ -6,7 +6,7 @@
 - Run `TaskList` to see current task state
 - Parse args for mode flags: `--fg`, `--bg`, `--auto`
 - Default to `--bg` if no mode flag specified
-- Store mode in working memory for later phases
+- Store mode in task metadata (e.g., on a handoff task or first task) to survive compaction
 
 ## Don't:
 - Skip TaskList check
@@ -15,7 +15,9 @@
 ## Args:
 - `--fg`: Foreground mode. Launch agents but block on them.
 - `--bg`: Background mode (default). Launch agents and return control to human.
-- `--auto`: Skip human checkpoints in foreground mode.
+- `--auto`: Skip human checkpoints. Requires `--fg`; if used with `--bg`, treat as `--fg --auto`.
+
+**Note:** `--auto` only applies to foreground mode. Background mode inherently returns control to human.
 
 ## State Check
 
@@ -35,7 +37,7 @@ if TaskList returns tasks:
     else if all tasks completed or ABORTED:
         → control/REPORT (show final status)
 
-else if conversation has history:
+else if conversation has history (user discussed work before invoking /mission-control):
     → setup/BOOTSTRAP (mine conversation for work)
 
 else:

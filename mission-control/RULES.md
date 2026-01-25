@@ -11,11 +11,21 @@ Inviolable constraints. No exceptions without explicit user override.
 | Rule | Constraint |
 |------|------------|
 | MR-1 | Task system is source of truth, not context |
-| MR-2 | No agent launch without Pre-Flight GO |
-| MR-3 | No task marked complete without verification |
+| MR-2 | No agent launch without preflight GO |
+| MR-3 | No task marked complete without verification (exception: bootstrapped tasks from conversation history) |
 | MR-4 | Never delete tasks; use ABORTED status |
 | MR-5 | Never downgrade agent model from mission control's model |
 | MR-6 | Descriptions must survive context compaction |
+
+---
+
+## Definitions
+
+| Term | Definition |
+|------|------------|
+| Ready task | status=`pending` AND `blockedBy` is empty. This is the canonical definition. |
+| Spot-check verification | Read key output files, check expected artifacts exist, verify no obvious errors. Not exhaustive, but confirms work was attempted. |
+| End skill | Output a final summary, do not proceed to further phases, conclude response. Conversation continues but mission control is no longer active. |
 
 ---
 

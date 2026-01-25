@@ -2,7 +2,7 @@
 
 **Structured failure handling with human decision.**
 
-Triggered when: agent fails, unexpected output, verification fails, task blocked unexpectedly.
+Triggered when: agent fails, unexpected output, verification fails, task blocked unexpectedly, or task appears stalled.
 
 NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make it worse.
 
@@ -23,10 +23,13 @@ NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make 
 
 | Type | Meaning | Suggested Response |
 |------|---------|-------------------|
-| Transient | Flaky, might work on retry | Retry once |
+| Transient | Flaky, might work on retry | Suggest retry to human |
 | Systematic | Approach is wrong | Replan task |
 | Blocking | Need info we don't have | Escalate, ask user |
+| Stalled | No progress, unclear if stuck | Wait longer or investigate |
 | Fatal | Cannot recover | Abort task with explanation |
+
+**Note:** All responses require human approval. "Suggest retry" means present Retry option; don't auto-retry (see FR-B001).
 
 ## Assessment Format
 

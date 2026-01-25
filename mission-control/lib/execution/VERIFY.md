@@ -40,8 +40,13 @@ Do NOT automatically create follow-up tasks. Let HIL: Anomaly handle failure cla
 
 ```
 if verification passed for all checked tasks:
+    Mark each as `completed`
     → control/CHECKPOINT
 
 if verification failed for any task:
-    → control/HIL_ANOMALY
+    Mark passed tasks as `completed` (they succeeded)
+    Do NOT mark failed tasks
+    → control/HIL_ANOMALY (for failed tasks only)
 ```
+
+**Mixed results:** When some tasks pass and some fail, mark passed tasks complete first, then proceed to HIL_ANOMALY for the failed ones. Passed work is preserved.

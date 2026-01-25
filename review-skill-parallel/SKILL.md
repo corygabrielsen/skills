@@ -55,7 +55,7 @@ Track during this iteration:
 target_file: ""              # Path to skill file being edited
 parallel_review_count: 3     # -n flag (default 3)
 task_ids: []                 # Task IDs for result collection
-# issue_tracker is maintained as a markdown table (see Phase: Parse Output)
+# issue_tracker is maintained as a markdown table (see Parse Output phase)
 ```
 
 The issue tracker is conceptual — maintained in your working context during the iteration, not persisted to disk.
@@ -167,7 +167,7 @@ Task(
 )
 ```
 
-Each Task returns a task ID for use in Phase: Parse Output.
+Each Task returns a task ID for use in Parse Output.
 
 ---
 
@@ -354,7 +354,7 @@ This is the first human-in-the-loop checkpoint. The user can:
 
 ### Plan Summary Template
 
-Build on the Theme Summary Format from Synthesize by adding proposed fixes for each theme. Present by theme, not by individual finding. This makes review tractable for humans.
+Transform the Theme Summary Format from Synthesize into a plan by adding proposed fixes for each theme. Present by theme, not by individual finding. This makes review tractable for humans.
 
 ```markdown
 ## Review Findings: {finding_count} findings in {theme_count} themes
@@ -386,8 +386,8 @@ These have no shared root cause; list individually:
 **F-003** (line 299): "code sections" should be "document sections"
 - Fix: Change "code" to "document"
 
-**F-005** (line 452): "Pre-flight checklist" at end of document
-- Fix: Remove "Pre-flight" prefix
+**F-005** (line 452): Missing example for clean iteration
+- Fix: Add clean iteration example to Change Confirmation
 
 **F-006** (line 437): "approves" vs "confirms" inconsistency
 - Fix: Change to "confirms"
@@ -578,4 +578,4 @@ When user confirms:
 
 ---
 
-Begin review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents with identical review prompts. Wait for all to complete, synthesize findings into themes, triage by theme (unrelated findings are triaged individually), get plan approval from human, execute the plan, verify changes, and get human confirmation.
+Begin review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents with identical review prompts. Wait for all to complete, synthesize findings into themes, triage by theme (unrelated findings are handled individually), get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.

@@ -3,9 +3,10 @@
 **Review what will be committed.**
 
 ## Do:
-- Run `git status {target_file}` to see changes to the target document
-- Run `git diff {target_file}` to review staged/unstaged changes
+- Run `git diff {target_file}` to review unstaged changes (before staging)
+- Run `git status {target_file}` to see overall state
 - Stage only the target file using `git add {target_file}` (this skill only edits the target document)
+- Optionally run `git diff --staged {target_file}` to verify what will be committed
 
 ## Don't:
 - Stage unrelated changes

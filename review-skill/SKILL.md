@@ -39,6 +39,8 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 
 ## Phases
 
+Each `@lib/...` reference is a phase document to follow in sequence:
+
 @lib/001_INITIALIZE.md
 @lib/002_FAN_OUT.md
 @lib/003_COLLECT.md
@@ -64,7 +66,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 | Collect | Gather and merge results |
 | Synthesize | Group by root cause |
 | Triage | Propose fixes |
-| HIL: Plan Approval | Human checkpoint (skipped with `--auto`) |
+| HIL (Human In the Loop): Plan Approval | Human checkpoint (skipped with `--auto`) |
 | Address | Make edits |
 | Verify | Confirm changes |
 | HIL: Change Confirmation | Human checkpoint (skipped with `--auto`) |
@@ -82,4 +84,4 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 
 ---
 
-Begin /review-skill now. Parse args for target file (including `-n` flag, default 1). Launch all 7 reviewers in parallel. Collect results. If all reviewers return NO ISSUES and no launch failures occurred, skip to Epilogue. Otherwise: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N, loop back to Fan Out; otherwise continue to Epilogue.
+Begin /review-skill now. Parse args for target file (including `-n` flag, default 1). Launch all 7 reviewers in parallel. Collect results. If all 7 reviewers return NO ISSUES and no launch failures were recorded, skip to Epilogue. If any issues or launch failures: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N (pass counter and N established in Initialize), loop back to Fan Out; otherwise continue to Epilogue.

@@ -23,13 +23,13 @@
 
 ```
 if ALL successfully-launched reviewers output NO ISSUES AND no launch failures were recorded:
-    → Proceed to Epilogue (no-issues path)
+    → Skip Synthesize through Commit; proceed directly to Epilogue
 else:
     → Merge issues into tracker
     → Proceed to Synthesize
 ```
 
-If any reviewer failed to launch, always proceed to Synthesize even if remaining reviewers found no issues.
+If any reviewer failed to launch, always proceed to Synthesize even if remaining reviewers found no issues. (Launch failures are infrastructure errors recorded in the tracker for visibility, not document issues to address.)
 
 ## Issue Tracker Format
 

@@ -10,7 +10,7 @@
 ## Don't:
 - Skip re-reading the target file when looping (it has changed)
 - Forget to clear issue tracker and reset reviewer results on loop
-- Lose cumulative stats (total fixed/clarified counts across all passes)
+- Lose cumulative stats (total fixed/clarified counts across all passes—tracked separately from per-pass issue IDs which reset)
 
 ## Logic:
 

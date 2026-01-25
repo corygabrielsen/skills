@@ -31,14 +31,16 @@ Inviolable constraints. No exceptions without explicit user override.
 | | Mark task: `BLOCKED - Launch failed: [error]` | Preserves error context |
 | | → HIL: Anomaly | Human decides retry vs replan |
 
-#### FR-A002: Agent Timeout
+#### FR-A002: Agent Progress
 
-| Condition | Threshold | Action | Rationale |
-|-----------|-----------|--------|-----------|
-| No output received | >5 min (simple task) | Poll via TaskOutput | Notifications unreliable (~50% lost) |
-| No output received | >15 min (complex task) | Poll via TaskOutput | Complex work takes longer |
-| No output after poll | Still running | Continue waiting | Agent may be mid-execution |
-| No output after poll | Task appears stalled | → HIL: Anomaly | Human decides next action |
+| Condition | Action | Rationale |
+|-----------|--------|-----------|
+| No notification received | Poll via TaskOutput | Notifications unreliable (~50% lost) |
+| Poll shows agent still running | Continue waiting | Agent capabilities vary; avoid premature interruption |
+| Poll shows agent completed | Proceed to Verify | Normal flow |
+| User reports concern about agent | → HIL: Anomaly | Human intuition matters |
+
+**Note:** No hard-coded timeouts. Agent capabilities evolve. A task that takes 5 minutes today may take 2 hours with a more capable model, or 30 seconds with a faster one. Trust the agent until there's signal it's stuck. User can always intervene.
 
 #### FR-A003: Agent Output Malformed
 
@@ -85,9 +87,11 @@ Inviolable constraints. No exceptions without explicit user override.
 
 | Condition | Indicator | Action | Rationale |
 |-----------|-----------|--------|-----------|
-| Task scope exceeds single agent capacity | Description >500 words | Flag at Pre-Flight | Large tasks fail more often |
-| | Multiple distinct deliverables | Split into subtasks | Each agent needs clear focus |
-| | Estimated >30min work | Consider decomposition | Long tasks risk timeout |
+| Task scope exceeds single agent capacity | Multiple distinct deliverables | Split into subtasks | Each agent needs clear focus |
+| | Scope feels unbounded | Flag at Pre-Flight | Vague tasks drift |
+| | Would require multiple tool-use cycles | Consider decomposition | Atomic tasks are clearer |
+
+**Note:** No hard time/size limits. Agent capabilities vary. Focus on clarity and atomicity, not arbitrary thresholds.
 
 #### FR-C002: Task Description Insufficient
 

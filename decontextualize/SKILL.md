@@ -13,7 +13,7 @@ When you have rich context (current task, domain jargon, specific examples), you
 
 ## Symptoms
 
-- Examples drawn from current work ("Add errors docs to S&T sdk")
+- Examples drawn from current work ("Add validation to the user signup flow")
 - Domain jargon the reader won't know
 - Phrasing that mirrors the user's exact words instead of standing alone
 - References that require conversation history to understand
@@ -40,8 +40,8 @@ If any example, term, or reference requires conversation history—replace it.
 
 | Before (context-bound) | After (portable) |
 |------------------------|------------------|
-| "Fix the S&T auth bug" | "Fix authentication timeout" |
-| "Add docs to RpcClient" | "Add docs to public API" |
+| "Fix the auth bug in UserService" | "Fix authentication timeout" |
+| "Update the Client class" | "Update the API client" |
 | "like we discussed" | [remove or specify] |
 
 **4. Check your language**

@@ -69,8 +69,6 @@ Follow each phase in sequence:
 
 ## Quick Reference
 
-At-a-glance phase overview (see @lib/ files for full details):
-
 | Phase | Purpose |
 |-------|---------|
 | Initialize | Parse args, validate target |
@@ -78,10 +76,10 @@ At-a-glance phase overview (see @lib/ files for full details):
 | Collect | Gather and merge results |
 | Synthesize | Group into themes |
 | Triage | Propose fixes |
-| HIL: Plan Approval | Show plan; get approval (approval skipped with `--auto`) |
+| HIL: Plan Approval | Show plan; get approval (plan shown, approval skipped with `--auto`) |
 | Address | Make edits |
 | Verify | Confirm changes |
-| HIL: Change Confirmation | Show summary; get confirmation (confirmation skipped with `--auto`) |
+| HIL: Change Confirmation | Show summary; get confirmation (summary shown, confirmation skipped with `--auto`) |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
 | Loop Gate | Check pass count, loop or exit |

@@ -56,7 +56,7 @@ Mark T-003 as: ABORTED - Split into T-003a, T-003b, T-003c, T-003d
 
 ## Fix Iteration Limit
 
-Track fix attempts in task metadata: `metadata.fix_attempts`. If a task returns NO-GO after 2+ fix attempts, surface this to the user: "Task {id} has been NO-GO after {n} fix attempts. Consider Waive, Scrub, or manual intervention."
+Track fix attempts in task metadata: `metadata.fix_attempts`. If a task returns NO-GO after 2+ fix attempts, surface this to the user: "Task {id} has been NO-GO after {n} fix attempts. Consider Waive, Scrub, or manual intervention." After surfacing, proceed to preflight/HIL_HOLD with the persistent NO-GO as a pre-filled item.
 
 ## Transitions
 

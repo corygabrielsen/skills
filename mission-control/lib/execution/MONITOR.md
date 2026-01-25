@@ -34,6 +34,7 @@
     if some tasks completed, some still in_progress:
         Verify completed tasks first (→ execution/VERIFY)
         Remaining in_progress tasks continue monitoring on next cycle
+        (via VERIFY → CHECKPOINT → REPORT → resume → MONITOR)
 
     if all in_progress tasks completed:
         → execution/VERIFY

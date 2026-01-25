@@ -67,7 +67,7 @@ if --auto:
     if ready_tasks exist (pending with empty blockedBy):
         → preflight/EVALUATE
     else if in_progress_tasks exist:
-        → execution/MONITOR (agents working, may unblock others when done)
+        → execution/MONITOR (covers tasks already running from previous batches)
     else if all_tasks completed:
         → generate summary, end skill
     else:

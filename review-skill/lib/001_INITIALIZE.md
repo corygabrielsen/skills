@@ -18,5 +18,6 @@
 - First positional arg: path to SKILL.md (required)
 - `--auto`: Skip HIL checkpoints. Edits proceed without user approval.
 - `-n N`: Number of passes (default: 1). Reject non-positive or non-integer values.
+- `--reviewer <category>`: Run only reviewers from one category: `correctness`, `clarity`, or `conformance`. Reject invalid values.
 
 **If validation fails:** Report error and end skill.

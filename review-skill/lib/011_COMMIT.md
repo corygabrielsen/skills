@@ -33,7 +33,7 @@ EOF
 - Forget backticks around technical terms
 
 ## If commit fails:
-- **Pre-commit hook failure**: Fix the issue (usually formatting/linting), re-stage if needed, create a NEW commit (do not amend)
+- **Pre-commit hook failure**: Fix the issue (usually formatting/linting), re-stage if needed, create a NEW commit with the same message (do not amend—the original commit didn't happen)
 - **No staged changes**: Return to Stage phase to diagnose
 - **Other git error**: Report the error and end the skill
 

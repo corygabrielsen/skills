@@ -41,6 +41,6 @@ Users can change HOW issues are addressed (different wording, alternative fixes)
 2. Pause here and wait for user input (do not continue to Address phase yet).
 3. When user provides input, revise the proposed fixes based on user feedback (don't re-run Synthesize/Triage phases; just adjust the fix proposals directly). If feedback is empty or unclear, ask for clarification; once clarified, continue with this step (revise fixes).
 4. Show updated plan to user (same format as original Triage output).
-5. Re-present Plan Approval options (repeat from step 1 until user selects Approve or Abort).
+5. Re-present Plan Approval options (repeat from step 1 until user selects Approve or Abort). Note: This Modify flow is only reachable in non-auto mode since `--auto` skips AskUserQuestion.
 
 **If user selects "Abort":** End skill without changes.

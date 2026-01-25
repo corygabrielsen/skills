@@ -12,7 +12,6 @@
   - What "done" looks like (verification criteria)
   - Any relevant decisions or constraints from conversation
 - Set up dependencies with `TaskUpdate` + `addBlockedBy`
-- Use `activeForm` for visible progress ("Decomposing work", "Planning tasks")
 
 ## Don't:
 - Create tasks too large or vague for a single agent

@@ -2,15 +2,15 @@
 
 **Present plan to user BEFORE making edits.**
 
-**If `--auto` mode:** Show the plan (themes and proposed fixes), then proceed directly to Address (no AskUserQuestion).
+**If `--auto` mode:** Show the plan, then proceed to Address (skip AskUserQuestion).
 
 ## Do:
-- Show themes and proposed fixes (always—even in `--auto` mode)
+- Show themes and proposed fixes (always)
 - Use AskUserQuestion with clear options (unless `--auto`)
 - Wait for explicit approval (unless `--auto`)
 
 ## Don't:
-- Make edits before approval (or before showing the plan in `--auto` mode)
+- Make edits before approval/showing plan
 - Skip showing the plan
 - Re-run Synthesize/Triage when user modifies—just adjust fix proposals directly
 
@@ -36,12 +36,12 @@ AskUserQuestion(
 **If user selects "Approve":** Proceed to Address phase.
 
 **If user selects "Modify":**
-Users can change HOW issues are addressed (different wording, alternative fixes), not WHETHER—all flagged issues still require document changes per Core Philosophy. Handle dismissal attempts: remind user of Core Philosophy, then ask for an alternative resolution that includes a document change.
+Users can change HOW issues are addressed, not WHETHER—all flagged issues require document changes (Core Philosophy). If user dismisses: remind of Core Philosophy, ask for alternative that includes a document change.
 
-1. Prompt: "Describe changes to the plan (adjust fixes, change resolution types)."
-2. Wait for user input.
-3. If input empty/unclear, ask for clarification (max 2 rounds, then treat as Abort). Otherwise, revise fix proposals.
+1. Prompt: "Describe changes to the plan."
+2. Wait for input.
+3. If empty/unclear, ask for clarification (max 2 rounds → Abort). Otherwise, revise.
 4. Show updated plan.
-5. Re-present options (loop until Approve or Abort).
+5. Re-present options. If user selects Modify 3+ times, suggest aborting.
 
 **If user selects "Abort":** End skill without changes.

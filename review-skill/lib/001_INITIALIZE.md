@@ -1,11 +1,11 @@
 # Initialize
 
-**Parse args and validate target.**
+**Parse args, validate target.**
 
 ## Do:
 - Accept target skill file path from args
 - Parse flags (see below)
-- Validate file exists and has basename `SKILL.md`
+- Validate file exists with basename `SKILL.md`
 - Read the full file content for reviewer prompts
 - Store `target_file` path in working memory
 - Initialize pass counter to 1
@@ -16,8 +16,8 @@
 
 ## Args:
 - First positional arg: path to SKILL.md (required)
-- `--auto`: Skip HIL checkpoints. Edits proceed without user approval.
-- `-n N`: Number of passes (default: 1). Reject non-positive or non-integer values.
-- `--reviewer <category>`: Run only reviewers from one category: `correctness`, `clarity`, or `conformance`. Individual reviewer names (e.g., `adversarial`) are not valid. Reject invalid values.
+- `--auto`: Skip HIL checkpoints (edits proceed without approval)
+- `-n N`: N passes where N is a positive integer (default: 1)
+- `--reviewer <category>`: Run only `correctness`, `clarity`, or `conformance` reviewers. Reject individual reviewer names (e.g., `adversarial`).
 
 **If validation fails:** Report error and end skill.

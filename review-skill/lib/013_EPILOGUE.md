@@ -30,7 +30,7 @@ Passes: {pass_count}
 Issues: {fixed_count} fixed, {clarified_count} clarified (cumulative).
 ```
 
-- `{pass_count}` = number of review passes completed
-- `{fixed_count}` = issues where real problems were corrected (cumulative)
-- `{clarified_count}` = false positives addressed by adding clarifying text (cumulative)
-- `{reviewers_with_issues}` = count of reviewers that reported at least one issue
+- `{pass_count}` = passes completed
+- `{fixed_count}` = real issues corrected (cumulative)
+- `{clarified_count}` = false positives clarified (cumulative)
+- `{reviewers_with_issues}` = reviewers reporting issues

@@ -66,7 +66,7 @@ This skill uses standard Claude Code tools without detailed explanation:
 - `Task` — Launch background agents; returns task_id (`description`, `prompt`, `subagent_type`, `run_in_background`)
 - `TaskOutput` — Retrieve agent results (`task_id`, `block`, `timeout`)
 - `Edit` — Modify files (`file_path`, `old_string`, `new_string`)
-- `AskUserQuestion` — Present options to user (`questions` array containing objects with `question`, `header`, `options`, `multiSelect`)
+- `AskUserQuestion` — Present options to user (`questions` array—always an array, even for single questions—containing objects with `question`, `header`, `options`, `multiSelect`)
 
 ---
 
@@ -167,7 +167,7 @@ Task(
 )
 ```
 
-Each Task returns a task ID for use in Parse Output.
+Each Task returns a task_id for use in Parse Output.
 
 ---
 
@@ -196,7 +196,7 @@ Each Task returns a task ID for use in Parse Output.
 results = [reviewer_1, reviewer_2, ..., reviewer_n]
 
 if ALL n results are "NO FINDINGS":
-    → Iteration is clean — proceed to Change Confirmation ("Clean iteration — no findings, no changes.")
+    → Iteration is clean — skip Synthesize/Triage/Plan Approval/Address/Verify; proceed directly to Change Confirmation ("Clean iteration — no findings, no changes.")
 else:
     # ANY reviewer has findings
     → Merge all findings into tracker
@@ -218,7 +218,7 @@ Statuses:
 - `open` — finding identified, not yet addressed
 - `planned` — resolution proposed, awaiting human approval
 - `fixed` — real inconsistency corrected
-- `clarified` — wording improved or rationale documented to prevent future misunderstanding (for false positives or design tradeoffs)
+- `clarified` — wording improved (for false positives) or rationale documented (for design tradeoffs) to prevent future misunderstanding
 
 ---
 
@@ -226,7 +226,7 @@ Statuses:
 
 **Zoom out. Understand the document as a system before addressing any finding.**
 
-⚠️ **This step is not optional, and it's not just for "complex" findings.**
+**This step is not optional, and it's not just for "complex" findings.**
 
 Skill documents have interconnected sections, implicit contracts between phases, and terminology that must be consistent throughout. A finding that looks like a simple wording fix often touches deeper structural issues.
 
@@ -251,7 +251,7 @@ Skill documents have interconnected sections, implicit contracts between phases,
 
 ### Group by Theme
 
-After understanding the system, organize findings for human review:
+After understanding the system, organize findings for triage (and eventual human review in Plan Approval):
 
 - Review all findings together as a set
 - Identify themes and patterns (e.g., "terminology inconsistency" appears in 8 findings)
@@ -268,7 +268,7 @@ After understanding the system, organize findings for human review:
 ### Don't:
 - ❌ Skip straight to triaging findings one-by-one — always synthesize first
 - ❌ Group mechanically without understanding — themes should reflect *why* findings exist
-- ❌ Force unrelated findings into themes — list them individually instead
+- ❌ Force unrelated findings into themes — list them individually instead (see Triage phase for handling details)
 
 ### Common Theme Patterns
 
@@ -426,7 +426,7 @@ AskUserQuestion(
 
 ### Do:
 - Address all planned findings from the tracker
-- Use Edit tool for targeted changes
+- Use `Edit` for targeted changes
 - Update tracker status as you go
 
 ### Don't:
@@ -548,6 +548,8 @@ AskUserQuestion(
 ---
 
 ## Epilogue: Iteration Complete
+
+The Epilogue is a post-phase wrap-up, not a numbered phase with Do/Don't sections.
 
 When user confirms:
 

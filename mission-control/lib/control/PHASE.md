@@ -17,14 +17,20 @@
                     │                             │
                     ▼                             │
              HIL_ANOMALY ◄── verification fail    │
-                    │                             │
-            ┌───────┼───────┐                     │
-            │       │       │                     │
-         retry   replan   skip                    │
+                    │        or stall detected    │
+            ┌───────┼───────┬───────┐             │
+            │       │       │       │             │
+         retry   replan   skip    halt            │
+            │       │       │       │             │
+            │       │       │       ▼             │
+            │       │       │    HANDOFF          │
+            │       │       │       │             │
+            │       │       │       ▼             │
+            │       │       │      END            │
             │       │       │                     │
             │       │       ▼                     │
-            │       │   CHECKPOINT                │
-            │       │       │                     │
+            │       │   CHECKPOINT ───────────────┤
+            │       │       │         (stall/ctx) │
             │       │       ▼                     │
             │       │    REPORT                   │
             │       │       │                     │
@@ -47,6 +53,8 @@
                     ▼   ▼
               preflight/PHASE
 ```
+
+Note: CHECKPOINT can route to HIL_ANOMALY (stall) or HANDOFF (context limit) instead of REPORT.
 
 ## Entry Conditions
 - Coming from execution/VERIFY (pass or fail)

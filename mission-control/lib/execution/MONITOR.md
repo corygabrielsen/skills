@@ -18,7 +18,7 @@
 ```
 --fg (foreground):
     Blocking already happened in Delegate phase.
-    This phase is a pass-through.
+    This phase is a pass-through; proceed immediately to VERIFY.
     → execution/VERIFY
 
 --bg (background):
@@ -28,9 +28,18 @@
 
     Actions:
     1. Run TaskList to see current state
-    2. Check TaskOutput for any completed tasks
-    3. Collect results
-    → execution/VERIFY
+    2. Check TaskOutput for any in_progress tasks
+    3. Collect results for completed tasks
+
+    if some tasks completed, some still in_progress:
+        Verify completed tasks first (→ execution/VERIFY)
+        Remaining in_progress tasks continue monitoring on next cycle
+
+    if all in_progress tasks completed:
+        → execution/VERIFY
+
+    if no tasks completed yet:
+        Report status and return control to human
 ```
 
 ## Polling Pattern

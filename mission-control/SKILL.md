@@ -108,7 +108,9 @@ mission-control/
 
 **Entry points after resume:**
 - Tasks in-progress → EXECUTION/MONITOR
-- Tasks pending/ready → PREFLIGHT/EVALUATE
+- Tasks pending/ready (unblocked) → PREFLIGHT/EVALUATE
+- Tasks pending but all blocked → CONTROL/REPORT
+- All tasks completed/ABORTED → CONTROL/REPORT
 - No tasks + history → SETUP/BOOTSTRAP
 - Fresh start → SETUP/DECOMPOSE
 
@@ -171,9 +173,27 @@ pending --> in_progress --> completed
 
 ---
 
+## Tool Reference
+
+| Tool | Purpose |
+|------|---------|
+| `TaskCreate` | Create a task record in the task system |
+| `TaskUpdate` | Modify task (status, description, dependencies) |
+| `TaskList` | List all tasks with summary info |
+| `TaskGet` | Get full details of a specific task |
+| `Task` | Spawn a background agent to execute work |
+| `TaskOutput` | Read output from a spawned agent |
+| `AskUserQuestion` | Present options to human for decision |
+
+**Note:** `Task` (spawns agent) is distinct from `TaskCreate` (creates task record). Always create the task first, then spawn an agent to execute it.
+
+---
+
 Begin /mission-control now. Enter setup/INITIALIZE: Run `TaskList`, parse args. Route based on state:
 - Tasks in-progress → execution/MONITOR
-- Tasks pending/ready → preflight/EVALUATE
+- Tasks pending/ready (unblocked) → preflight/EVALUATE
+- Tasks pending but all blocked → control/REPORT
+- All completed/ABORTED → control/REPORT
 - No tasks + history → setup/BOOTSTRAP
 - Fresh start → setup/DECOMPOSE
 

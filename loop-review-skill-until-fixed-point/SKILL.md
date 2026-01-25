@@ -238,14 +238,4 @@ If max iterations hit:
 
 ---
 
-## Quick Reference
-
-| Phase | Action |
-|-------|--------|
-| Initialize | Parse target, set counters, verify target exists |
-| Loop | Call /review-skill --auto, record metrics, output iteration summary, check for fixed point |
-| Report | Show iteration count, convergence trend table, and final state |
-
----
-
-Begin now. Parse target from arguments. Initialize state. Enter loop: invoke `/review-skill <target> --auto`, check result, repeat until fixed point or max iterations. Report final state.
+Begin now.

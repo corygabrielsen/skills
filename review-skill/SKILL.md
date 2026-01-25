@@ -355,7 +355,7 @@ AskUserQuestion(
 
 **If user selects "Confirm":** Proceed to Epilogue.
 
-**If user selects "View diff":** Run `git diff {target_file}`, show output. If empty (no staged changes) or file is untracked, report "No changes to show." Re-present confirmation options.
+**If user selects "View diff":** Run `git diff {target_file}`, show output. If empty or file is untracked, report "No changes to show." Re-present confirmation options.
 
 **If user selects "Revert":** First warn user: "This will discard all uncommitted changes to {target_file}." Then run `git checkout {target_file}` to restore last committed version (fails gracefully if file was never committed), report "Changes reverted." or error message, end skill.
 
@@ -403,4 +403,4 @@ Issues: {count} addressed (from {lenses_with_issues} lenses).
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. Follow phase flow based on results: if all clean, Epilogue; otherwise Synthesize through Epilogue.
+Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. Follow phase flow based on results: if all clean, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.

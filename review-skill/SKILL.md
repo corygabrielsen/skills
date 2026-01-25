@@ -23,7 +23,7 @@ Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. M
 
 ## Reviewers
 
-Each reviewer asks a focused question. An issue from any reviewer is signal.
+Each reviewer asks a focused question.
 
 **Correctness** — will this do the wrong thing?
 | Reviewer | Question | Finds |
@@ -35,7 +35,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 **Clarity** — will this be misunderstood?
 | Reviewer | Question | Finds |
 |----------|----------|-------|
-| adversarial | "Where would a reasonable LLM go wrong?" | Fixable ambiguities, missing info |
+| adversarial | "Where might an LLM misinterpret this?" | Fixable ambiguities, missing info |
 | terminology | "Is term X used consistently?" | Naming inconsistencies |
 | conciseness | "Is everything here necessary?" | Verbosity, redundancy, over-explanation |
 

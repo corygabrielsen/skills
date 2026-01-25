@@ -14,7 +14,7 @@ args:
 
 You are mission control, not the astronaut. Coordinate, delegate, verify.
 
-**HIL** = Human-In-the-Loop: sub-phases where mission control pauses for human decision.
+**HIL** = Human-In-the-Loop checkpoint (human decision required).
 
 ## Prerequisites
 
@@ -25,8 +25,7 @@ This skill requires task system tools (typically provided by the agent framework
 
 ## Mindset
 
-- The **task system is your source of truth**, not your context
-- Your context will compact; tasks persist across sessions
+- **Task system is source of truth** (context compacts; tasks persist)
 - After compaction, reconstruct state from `TaskList` before acting
 - You manage agents; you don't do their jobs
 
@@ -36,7 +35,7 @@ This skill requires task system tools (typically provided by the agent framework
 |------|----------|
 | `--bg` (default) | Launch agents, return control to human, resume on notification |
 | `--fg` | Launch agents, block until complete, continue to next batch |
-| `--auto` | With `--fg`: skip human checkpoints, fully autonomous loop |
+| `--auto` | With `--fg`: skip HIL on nominal; exits to HIL on any failure/NO-GO |
 
 ## Rules
 
@@ -115,12 +114,13 @@ mission-control/
 
 **Normal flow:** SETUP → PREFLIGHT → EXECUTION → CONTROL → (continue?) → PREFLIGHT...
 
-**Entry points after resume (in priority order):**
+**Entry points after resume (first match wins):**
 - Tasks in-progress → execution/MONITOR
 - Ready tasks (pending with empty blockedBy) → preflight/EVALUATE
 - Tasks pending but all blocked → control/REPORT
 - All tasks completed/ABORTED → control/REPORT
-- No tasks + work-related history → setup/BOOTSTRAP (see INITIALIZE.md for "history" definition)
+- No tasks + work-related history → setup/BOOTSTRAP
+  *(Work-related = action requests, file paths for requested work, or recorded decisions)*
 - No tasks + no work-related history → setup/DECOMPOSE
 
 See each composite's PHASE.md for internal flow details.
@@ -131,7 +131,8 @@ See each composite's PHASE.md for internal flow details.
 
 ```
 pending --> in_progress --> completed
-                       \-> ABORTED - [reason]
+   ^                   \-> ABORTED - [reason]
+   └─── (on Retry)
 ```
 
 - To abort: update subject to `ABORTED - [reason]`, mark completed
@@ -146,19 +147,12 @@ pending --> in_progress --> completed
 - Research or exploration
 - Any substantive work
 
-**Do directly** (mission control handles these):
+**Do directly:**
 - Checking if a file exists
 - Reading a single line to confirm content
 - Other trivial verification checks
 
-**Your job is to:**
-1. Create the task
-2. Write a clear prompt for the agent
-3. Spawn the agent
-4. Track progress
-5. Verify results
-
-**You are not the worker.** You are the coordinator.
+**You are the coordinator, not the worker.**
 
 ## Anti-patterns
 
@@ -196,17 +190,11 @@ pending --> in_progress --> completed
 | `TaskGet` | Get full details of a specific task | `taskId` |
 | `Task` | Spawn a background agent to execute work | `run_in_background: true` for async |
 
-**Agent ID timing:** `Task` returns agent ID immediately at launch.
-
 | `TaskOutput` | Read output from a spawned agent | `task_id`, `block: true/false` |
 | `AskUserQuestion` | Present options to human for decision | `questions` array |
 
-**Note:** `Task` spawns agents; `TaskCreate` creates task records. Create task first, then spawn agent.
-
-**TaskOutput blocking:** `block: true` waits for completion (--fg). `block: false` polls without waiting (--bg).
+**Note:** `Task` spawns agents; `TaskCreate` creates records. Create task first, then spawn. See DELEGATE.md for full launch syntax including agent ID storage.
 
 ---
 
-Begin /mission-control now. Enter setup/INITIALIZE for state detection and routing.
-
-Follow composite phase flows. Honor HIL sub-phases unless `--auto` AND nominal (FR-E003).
+Begin at setup/INITIALIZE. Follow composite phase flows. Honor HIL unless `--auto` AND nominal (all GO, no failures).

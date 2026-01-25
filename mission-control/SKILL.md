@@ -29,79 +29,150 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 | `--fg` | Launch agents, block until complete, continue to next batch |
 | `--auto` | With `--fg`: skip human checkpoints, fully autonomous loop |
 
-## Phases
+## Phases (Hierarchical)
 
-@lib/001_INITIALIZE.md
-@lib/002_BOOTSTRAP.md
-@lib/003_DECOMPOSE.md
-@lib/004_HIL_PLAN_APPROVAL.md
-@lib/005_PRE_FLIGHT.md
-@lib/006_DELEGATE.md
-@lib/007_MONITOR.md
-@lib/008_VERIFY.md
-@lib/009_HIL_ANOMALY.md
-@lib/010_CHECKPOINT.md
-@lib/011_REPORT.md
-@lib/012_HIL_NEXT_ACTION.md
-@lib/013_HANDOFF.md
+@lib/setup/PHASE.md
+@lib/preflight/PHASE.md
+@lib/execution/PHASE.md
+@lib/control/PHASE.md
 
 ---
 
+## Structure
+
+```
+mission-control/
+├── SKILL.md
+└── lib/
+    ├── setup/
+    │   ├── PHASE.md
+    │   ├── INITIALIZE.md
+    │   ├── BOOTSTRAP.md
+    │   ├── DECOMPOSE.md
+    │   └── HIL_PLAN_APPROVAL.md
+    │
+    ├── preflight/
+    │   ├── PHASE.md
+    │   ├── EVALUATE.md
+    │   ├── HIL_HOLD.md
+    │   └── FIX.md
+    │
+    ├── execution/
+    │   ├── PHASE.md
+    │   ├── DELEGATE.md
+    │   ├── MONITOR.md
+    │   └── VERIFY.md
+    │
+    └── control/
+        ├── PHASE.md
+        ├── HIL_ANOMALY.md
+        ├── CHECKPOINT.md
+        ├── REPORT.md
+        ├── HIL_NEXT_ACTION.md
+        └── HANDOFF.md
+```
+
 ## Quick Reference
 
-| Phase | Type | Purpose |
-|-------|------|---------|
-| Initialize | Auto | Run TaskList, parse args for mode |
-| Bootstrap | Auto | Mine conversation for work (if TaskList empty + history exists) |
-| Decompose | Auto | Break request into discrete tasks with dependencies |
-| HIL: Plan Approval | HIL | Human approves task breakdown (skipped with `--auto`) |
-| Pre-Flight | Auto | Go/no-go checks before launching |
-| Delegate | Auto | Launch agents for ready tasks |
-| Monitor | Auto | Track progress, collect results |
-| Verify | Auto | Validate completed work matches expectations |
-| HIL: Anomaly | HIL | Structured failure handling with human decision |
-| Checkpoint | Auto | Periodic status poll |
-| Report | Auto | Status table |
-| HIL: Next Action | HIL | Human decides continuation (skipped with `--auto`) |
-| Handoff | Auto | Capture state for resumption |
+| Composite | Sub-phases | Purpose |
+|-----------|------------|---------|
+| **setup** | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_PLAN_APPROVAL | Initialize and plan work |
+| **preflight** | EVALUATE, HIL_HOLD, FIX | Go/no-go checks before launch |
+| **execution** | DELEGATE, MONITOR, VERIFY | Launch agents, collect results |
+| **control** | HIL_ANOMALY, CHECKPOINT, REPORT, HIL_NEXT_ACTION, HANDOFF | Handle failures, decide next |
 
 ## Phase Flow
 
 ```
-INITIALIZE ──► BOOTSTRAP (if needed) ──► DECOMPOSE
-                                              │
-                                              ▼
-                              ┌──── HIL: PLAN APPROVAL
-                              │              │
-                              │              ▼
-                              │        PRE-FLIGHT ◄───── fix NO-GOs
-                              │              │
-                              │              ▼
-                              │          DELEGATE
-                              │              │
-                              │              ▼
-                              │          MONITOR
-                              │              │
-                              │              ▼
-                              │          VERIFY ────► HIL: ANOMALY
-                              │              │              │
-                              │              ▼              │
-                              │        CHECKPOINT ◄────────┘
-                              │              │
-                              │              ▼
-                              │          REPORT
-                              │              │
-                              │              ▼
-                              │     HIL: NEXT ACTION
-                              │        │    │    │
-                              │   continue  │   complete
-                              │        │   pause   │
-                              └────────┘    │      ▼
-                                            ▼    END
-                                        HANDOFF
-                                            │
-                                            ▼
-                                          END
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                  SETUP                                      │
+│                                                                             │
+│   INITIALIZE ──► BOOTSTRAP ──► DECOMPOSE ──► HIL_PLAN_APPROVAL             │
+│        │              │              │              │                       │
+│        │              │              │         ┌────┴────┐                  │
+│        │              │              │      approve   abort                 │
+│        │              │              │         │         │                  │
+│        │              │              ◄─ modify─┘         ▼                  │
+│        │              │                                 END                 │
+│   existing tasks?     │                                                     │
+│        │              │                                                     │
+└────────┼──────────────┼─────────────────────────────────────────────────────┘
+         │              │                        │
+         │              │                        ▼
+         │              │ ┌─────────────────────────────────────────────────┐
+         │              │ │                  PREFLIGHT                      │
+         │              │ │                                                 │
+         │              │ │            ┌───────────────────┐                │
+         │              │ │            │                   │                │
+         │              │ │            ▼                   │                │
+         │              │ │        EVALUATE                │                │
+         │              │ │       │        │               │                │
+         │              │ │    all GO    any NO-GO         │                │
+         │              │ │       │        │               │                │
+         │              │ │       │        ▼               │                │
+         │              │ │       │    HIL_HOLD            │                │
+         │              │ │       │    │  │  │  │          │                │
+         │              │ │       │  fix waive scrub halt  │                │
+         │              │ │       │    │  │    │    │      │                │
+         │              │ │       │    ▼  │    │    │      │                │
+         │              │ │       │   FIX─┘    │    │      │                │
+         │              │ │       │    │       │    │      │                │
+         │              │ │       │    └───────┼────┼──────┘                │
+         │              │ │       │            │    │                       │
+         │              │ └───────┼────────────┼────┼───────────────────────┘
+         │              │         │            │    │
+         │              │         │            │    └──► setup/DECOMPOSE
+         │              │         │            │
+         │              │         ▼            ▼
+         │              │ ┌─────────────────────────────────────────────────┐
+         │              │ │                 EXECUTION                       │
+         │              │ │                                                 │
+         │              │ │   DELEGATE ──► MONITOR ──► VERIFY               │
+         │              │ │       │            │          │                 │
+         │              │ │   --bg mode    --bg mode   ┌──┴──┐              │
+         │              │ │       │            │     pass   fail            │
+         │              │ │       ▼            ▼       │      │             │
+         └──────────────┼─┼► [human] ◄────────┘       │      │             │
+                        │ │       │                    │      │             │
+                        │ │       ▼ (resume)           │      │             │
+                        │ │   MONITOR ─────────────────┘      │             │
+                        │ │                                   │             │
+                        │ └───────────────────────────────────┼─────────────┘
+                        │                                     │
+                        │                                     ▼
+                        │ ┌─────────────────────────────────────────────────┐
+                        │ │                   CONTROL                       │
+                        │ │                                                 │
+                        │ │   HIL_ANOMALY ◄───────────────────┘             │
+                        │ │       │                                         │
+                        │ │   ┌───┼───┬───────┐                             │
+                        │ │ retry │ replan  skip                            │
+                        │ │   │   │    │      │                             │
+                        │ │   │   │    │      ▼                             │
+                        │ │   │   │    │  CHECKPOINT                        │
+                        │ │   │   │    │      │                             │
+                        │ │   │   │    │      ▼                             │
+                        │ │   │   │    │   REPORT                           │
+                        │ │   │   │    │      │                             │
+                        │ │   │   │    │      ▼                             │
+                        │ │   │   │    │  HIL_NEXT_ACTION                   │
+                        │ │   │   │    │   │    │    │    │                 │
+                        │ │   │   │    │ cont pause add complete            │
+                        │ │   │   │    │   │    │    │    │                 │
+                        │ │   │   │    │   │    ▼    │    ▼                 │
+                        │ │   │   │    │   │ HANDOFF │   END                │
+                        │ │   │   │    │   │    │    │                      │
+                        │ │   │   │    │   │    ▼    │                      │
+                        │ │   │   │    │   │   END   │                      │
+                        │ │   │   │    │   │         │                      │
+                        └─┼───┴───┴────┴───┘         │                      │
+                          │                          │                      │
+                          │          ┌───────────────┘                      │
+                          │          │                                      │
+                          │          ▼                                      │
+                          │   setup/DECOMPOSE                               │
+                          │                                                 │
+                          └─────────────────────────────────────────────────┘
 ```
 
 ---
@@ -160,4 +231,10 @@ pending --> in_progress --> completed
 
 ---
 
-Begin /mission-control now. Run `TaskList` to check state. Parse args for `--fg`/`--bg`/`--auto`. Follow phase flow: if tasks exist, resume from appropriate phase (Monitor if in-progress, Verify if waiting); if empty with history, Bootstrap; otherwise await Decompose of user request. Honor HIL checkpoints unless `--auto`.
+Begin /mission-control now. Enter setup/INITIALIZE: Run `TaskList`, parse args. Route based on state:
+- Tasks in-progress → execution/MONITOR
+- Tasks pending/ready → preflight/EVALUATE
+- No tasks + history → setup/BOOTSTRAP
+- Fresh start → setup/DECOMPOSE
+
+Follow composite phase flows. Honor HIL sub-phases unless `--auto`.

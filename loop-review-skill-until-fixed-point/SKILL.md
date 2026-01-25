@@ -1,16 +1,16 @@
 ---
-name: quineify-review-skill
-description: Run /review-skill on its own SKILL.md until it reaches a fixed point. Self-referential review loop.
+name: loop-review-skill-until-fixed-point
+description: Iterate /review-skill on a target until fixed point. Runs review passes until all reviewers return NO ISSUES.
 ---
 
-# Quineify Review Skill
+# Loop Review Skill Until Fixed Point
 
-Run `/review-skill` on its own SKILL.md until it reaches a fixed point. A skill that reviews itself until it can't find anything to improve.
+Run `/review-skill` on a target document repeatedly until fixed point—when all reviewers return NO ISSUES.
 
 ## Core Concept
 
 ```
-/review-skill @review-skill/SKILL.md --auto
+/review-skill <target> --auto
          │
          ▼
     ┌─────────┐
@@ -20,10 +20,18 @@ Run `/review-skill` on its own SKILL.md until it reaches a fixed point. A skill 
     yes ─┴─ no
      │      │
      ▼      ▼
-  repeat   done
+  repeat   done (fixed point)
 ```
 
-This is a quine-like pattern: the review skill examining its own definition until stable.
+Fixed point = the document is both correct AND unambiguous. No reviewer can find anything to flag.
+
+---
+
+## Arguments
+
+| Arg | Required | Description |
+|-----|----------|-------------|
+| `<target>` | yes | Path to SKILL.md to review |
 
 ---
 
@@ -32,16 +40,17 @@ This is a quine-like pattern: the review skill examining its own definition unti
 ```yaml
 max_iterations: 10        # Safety limit
 iteration_count: 0        # Current iteration
-target: "@review-skill/SKILL.md"
+target: "<from args>"     # Target SKILL.md path
 ```
 
 ---
 
 ## Phase: Initialize
 
-1. Set `iteration_count = 0`
-2. Set `max_iterations = 10`
-3. Confirm target exists: `/home/cory/code/claude-skills/review-skill/SKILL.md`
+1. Parse target path from arguments
+2. Set `iteration_count = 0`
+3. Set `max_iterations = 10`
+4. Confirm target exists
 
 ---
 
@@ -51,9 +60,9 @@ target: "@review-skill/SKILL.md"
 while iteration_count < max_iterations:
     iteration_count += 1
 
-    1. Run: /review-skill @review-skill/SKILL.md --auto
+    1. Run: /review-skill <target> --auto
     2. Parse result
-    3. If result is "No issues" or equivalent → FIXED POINT, exit loop
+    3. If all reviewers return "NO ISSUES" → FIXED POINT, exit loop
     4. Else → issues were addressed, continue loop
 ```
 
@@ -71,18 +80,19 @@ while iteration_count < max_iterations:
 Present final state:
 
 ```markdown
-## Quineify Complete
+## Loop Complete
 
 | Metric | Value |
 |--------|-------|
+| Target | {target} |
 | Iterations | {iteration_count} |
 | Fixed point reached | yes/no |
 | Final state | clean / max iterations hit |
 ```
 
 If fixed point reached:
-> review-skill/SKILL.md has reached a fixed point after {N} iterations.
-> The skill document is now internally consistent and self-evident.
+> {target} has reached a fixed point after {N} iterations.
+> The document is now internally consistent and unambiguous.
 
 If max iterations hit:
 > Safety limit reached after {max_iterations} iterations.
@@ -94,10 +104,10 @@ If max iterations hit:
 
 | Phase | Action |
 |-------|--------|
-| Initialize | Set counters, verify target exists |
+| Initialize | Parse target, set counters, verify target exists |
 | Loop | Call /review-skill --auto, check for fixed point |
 | Report | Show iteration count and final state |
 
 ---
 
-Begin quineify-review-skill now. Initialize state. Enter loop: invoke `/review-skill @review-skill/SKILL.md --auto`, check result, repeat until fixed point or max iterations. Report final state.
+Begin now. Parse target from arguments. Initialize state. Enter loop: invoke `/review-skill <target> --auto`, check result, repeat until fixed point or max iterations. Report final state.

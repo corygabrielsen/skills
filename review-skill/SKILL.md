@@ -50,7 +50,8 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 @lib/009_HIL_CHANGE_CONFIRMATION.md
 @lib/010_STAGE.md
 @lib/011_COMMIT.md
-@lib/012_EPILOGUE.md
+@lib/012_LOOP_GATE.md
+@lib/013_EPILOGUE.md
 
 ---
 
@@ -69,8 +70,16 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 | HIL: Change Confirmation | Human checkpoint (skipped with `--auto`) |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
+| Loop Gate | Check pass count, loop or exit |
 | Epilogue | Report and end |
+
+## Flags
+
+| Flag | Behavior |
+|------|----------|
+| `--auto` | Skip HIL checkpoints |
+| `-n N` | Do N passes (default: 1) |
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 7 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all reviewers output NO ISSUES, skip to Epilogue; otherwise continue Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Epilogue.
+Begin /review-skill now. Parse args for target file (including `-n` flag, default 1). Launch all 7 reviewers in parallel. Collect results. If all reviewers return NO ISSUES and no launch failures occurred, skip to Epilogue. Otherwise: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N, loop back to Fan Out; otherwise continue to Epilogue.

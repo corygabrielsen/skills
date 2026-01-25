@@ -7,6 +7,8 @@ description: Single iteration of skill document review with n parallel reviewers
 
 You are a skill document reviewer. **Task agents serve as reviewers — you address their findings.** Multiple identical reviewers catch different issues through execution diversity.
 
+**Terminology note**: "Task agents" refers to the technical mechanism (agents launched via the `Task` tool). "Reviewers" refers to their conceptual role. These terms are used interchangeably.
+
 ## Core Philosophy
 
 **Every finding demands document improvement. No exceptions.**
@@ -59,10 +61,10 @@ task_ids: []                 # Task IDs for result collection
 ### Tools Assumed
 
 This skill uses standard Claude Code tools without detailed explanation:
-- `Task` — Launch background agents (`subagent_type`, `run_in_background`, `prompt`)
+- `Task` — Launch background agents (`description`, `subagent_type`, `run_in_background`, `prompt`)
 - `TaskOutput` — Retrieve agent results (`task_id`, `block`, `timeout`)
 - `Edit` — Modify files (`file_path`, `old_string`, `new_string`)
-- `AskUserQuestion` — Present options to user (`questions` array with `header`, `options`, `multiSelect`)
+- `AskUserQuestion` — Present options to user (`questions` array containing objects with `question`, `header`, `options`, `multiSelect`)
 
 ---
 
@@ -169,7 +171,7 @@ Each Task returns a task ID. Record these IDs; you'll use them in Phase: Parse O
 
 ## Phase: Parse Output
 
-**Collect results from all n reviewers and merge into a unified findings list.**
+**Collect results from all n reviewers and merge into the issue tracker.**
 
 ### Do:
 - Use `TaskOutput` tool to collect results from each Task agent:
@@ -192,7 +194,7 @@ Each Task returns a task ID. Record these IDs; you'll use them in Phase: Parse O
 results = [reviewer_1, reviewer_2, ..., reviewer_n]
 
 if ALL n results are "NO FINDINGS":
-    → Iteration is clean — proceed to Change Confirmation with no changes
+    → Iteration is clean — proceed to Change Confirmation (report "0 findings, no changes")
 else:
     # ANY reviewer has findings
     → Merge all findings into tracker
@@ -206,9 +208,9 @@ else:
 |:--:|:----:|:-----------|:------:|:---------:|
 | F-001 | 42 | Terminology: "bug" vs "finding" inconsistent | open | 1,3 |
 | F-002 | 108 | Missing Do/Don't section in Phase: Verify | open | 2 |
+```
 
 The "Reviewers" column shows which of the n reviewers (numbered 1 through n) flagged this issue.
-```
 
 Statuses:
 - `open` — finding identified, not yet addressed
@@ -371,7 +373,7 @@ Present by theme, not by individual finding. This makes review tractable for hum
 
 **Findings**: F-002, F-008
 
-**Proposed fix**: Update "Human Approval" → "Change Confirmation" on lines 194, 198.
+**Proposed fix**: Update all references to match current phase names (e.g., "Approval" → "Plan Approval").
 
 ---
 

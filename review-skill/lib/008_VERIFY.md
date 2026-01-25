@@ -1,0 +1,12 @@
+# Verify
+
+**Confirm changes were made correctly.**
+
+## Do:
+- Use Read tool on `{target_file}` to verify changes appear correctly in context
+- Check that surrounding text still makes sense with the edits
+- Ensure all issues are `fixed` or `clarified`. If an edit didn't apply correctly, re-read the file, diagnose, and make a follow-up edit before marking as fixed/clarified.
+
+## Don't:
+- Skip verification
+- Proceed with unaddressed issues

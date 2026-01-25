@@ -23,7 +23,7 @@ Inviolable constraints. No exceptions without explicit user override.
 
 | Term | Definition |
 |------|------------|
-| Ready task | status=`pending` AND `blockedBy` is empty. This is the canonical definition. |
+| Ready task | status=`pending` (not `in_progress`, not `completed`) AND `blockedBy` is empty. This is the canonical definition. |
 | Spot-check verification | Read key output files, check expected artifacts exist, verify no obvious errors. Not exhaustive, but confirms work was attempted. |
 | End skill | Output a final summary, do not proceed to further phases, conclude response. Conversation continues but mission control is no longer active. |
 

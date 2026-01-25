@@ -74,7 +74,7 @@ AskUserQuestion(
 ## Handlers
 
 **If "Retry":**
-1. Reset task to `pending`
+1. Reset task to `pending` (if task was `in_progress`, the previous agent's work is abandoned—it may complete but results are ignored)
 2. → preflight/EVALUATE
 
 **If "Replan":**

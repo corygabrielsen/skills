@@ -6,7 +6,7 @@ Only runs when: TaskList is empty AND conversation has history.
 
 ## Do:
 - Mine the conversation for:
-  - Work already completed (create and immediately mark completed; MR-3 verification applies to agent work, not bootstrapped history)
+  - Work already completed (create and immediately mark completed; see MR-3 exception in RULES.md)
   - Explicit user requests
   - Implicit tasks ("we should also...", "don't forget to...")
   - Decisions made (capture in task descriptions)

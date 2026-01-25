@@ -28,7 +28,7 @@
 
     Actions:
     1. Run TaskList to see current state
-    2. Check TaskOutput for any in_progress tasks
+    2. Check TaskOutput(task_id, block: false) for any in_progress tasks (non-blocking poll)
     3. Collect results for completed tasks
 
     if some tasks completed, some still in_progress:

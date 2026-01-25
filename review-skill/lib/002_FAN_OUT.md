@@ -11,7 +11,7 @@ If `--reviewer <category>` was specified, launch only reviewers from that catego
 - Launch reviewers in a **single assistant turn** (one message containing parallel Task tool calls)
 - Launch in this order (filtered by `--reviewer` if specified): execution, contradictions, coverage, adversarial, terminology, conciseness, checklist, portability.
 - Store task IDs from the Task tool responses. Each Task call returns a task ID string. Store IDs in launch order to match TaskOutput results back to reviewer names.
-- Verify expected task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record an issue in the tracker with Reviewer=[name], Line="-", Issue="Launch failure: [error]". The skill proceeds with available reviewers.
+- Verify expected task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record in the tracker with Reviewer=[name], Line="-", Issue="Launch failure: [error]". Launch failures are infrastructure errors, not document issues; they trigger the Synthesize path for visibility but don't require document fixes.
 - Continue to Collect phase with the reviewers that did launch successfully.
 
 ## Don't:

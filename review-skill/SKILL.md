@@ -11,11 +11,11 @@ Run specialized reviewers against a skill document to find correctness, clarity,
 
 **Every issue demands a document change. No exceptions.**
 
-When a reviewer flags something, the document changes. Always. Either:
-- **Real issue** → fix the document
-- **False positive** → add clarifying text until the intent is obvious
+When a reviewer flags something, the document changes. Always:
+- **Real issue** → fix it
+- **False positive** → add clarifying text
 
-**Fixed point** = no reviewer can flag anything. (Aspiration; skill runs N passes per `-n` flag.)
+**Fixed point** = no reviewer can flag anything. (Aspiration; use `-n` for multiple passes.)
 
 ---
 
@@ -45,7 +45,7 @@ When a reviewer flags something, the document changes. Always. Either:
 
 ## Phases
 
-`@lib/...` references phase definitions loaded inline.
+`@lib/...` references are expanded inline by the skill loader before execution. Read each phase file sequentially as you reach that phase.
 
 @lib/001_INITIALIZE.md
 @lib/002_FAN_OUT.md
@@ -64,6 +64,8 @@ When a reviewer flags something, the document changes. Always. Either:
 ---
 
 ## Quick Reference
+
+Summary for quick lookup (see `@lib/...` files for full details):
 
 | Phase | Purpose |
 |-------|---------|
@@ -87,6 +89,6 @@ When a reviewer flags something, the document changes. Always. Either:
 |------|----------|
 | `--auto` | Skip HIL prompts (still displays plan/summary) |
 | `-n N` | Do N passes (default: 1) |
-| `--reviewer <category>` | Run only reviewers from category: `correctness`, `clarity`, or `conformance` |
+| `--reviewer <category>` | Run only reviewers from one category (`correctness`, `clarity`, or `conformance`); others excluded |
 
 ---

@@ -216,8 +216,8 @@ else:
 ```markdown
 | ID | Reviewer | Line | Issue | Status |
 |:--:|:--------:|:----:|:------|:------:|
-| F-001 | execution | 42 | [description] | open |
-| F-002 | coverage | 156 | [description] | open |
+| I-001 | execution | 42 | [description] | open |
+| I-002 | coverage | 156 | [description] | open |
 ```
 
 **Status progression:** `open` → `planned` (in Triage) → `fixed` (in Address)

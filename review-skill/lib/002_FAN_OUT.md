@@ -1,17 +1,16 @@
 # Fan Out
 
-**Launch reviewers in parallel. Each reviewer gets a specialized prompt.**
+**Launch reviewers in parallel with specialized prompts.**
 
 If `--reviewer <category>` was specified, launch only reviewers from that category. Otherwise launch all 8.
 
 ## Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
-- **Substitute `{target_file}` with the file path** in each reviewer prompt. Replace all `{target_file}` placeholders with the actual path. (Reviewer prompts don't contain example code with literal `{target_file}`; all instances are placeholders.)
-  - Pass the fully-substituted prompt as the `prompt` parameter
+- **Substitute `{target_file}` with the actual file path** in each reviewer prompt (all instances are placeholders)
 - Launch reviewers in a **single assistant turn** (one message containing parallel Task tool calls)
 - Launch in this order (filtered by `--reviewer` if specified): execution, contradictions, coverage, adversarial, terminology, conciseness, checklist, portability.
 - Store task IDs from the Task tool responses. Each Task call returns a task ID string. Store IDs in launch order to match TaskOutput results back to reviewer names.
-- Verify expected task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record in the tracker with Reviewer=[name], Line="-", Issue="Launch failure: [error]". Launch failures are infrastructure errors, not document issues; they trigger the Synthesize path for visibility but don't require document fixes.
+- Verify expected task IDs were returned. If fewer, the result at that index in the parallel call sequence contains an error message instead of a task ID—store the failure info (Reviewer=[name], error message) for Collect to add to the tracker. Launch failures are infrastructure errors, not document issues; they trigger Synthesize for visibility but skip Triage.
 - Continue to Collect phase with the reviewers that did launch successfully.
 
 ## Don't:

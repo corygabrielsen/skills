@@ -5,7 +5,7 @@
 ## Do:
 - Use Read tool on the target file to verify changes appear correctly in context
 - Check that surrounding text still makes sense with the edits
-- Ensure all issues are `fixed` or `clarified`. If an edit didn't apply correctly, re-read the file, diagnose, and make a follow-up edit before marking as fixed/clarified. Re-verify each follow-up edit by reading the file again. If Edit tool continues to fail after 2 follow-up edits on that specific issue (attempt 1, retry 1, retry 2 = 3 total), report the issue and end the skill. No partial commits: either all issues are resolved or none are committed.
+- Ensure all issues are `fixed` or `clarified`. If edit failed: re-read, diagnose, make follow-up edit, re-verify. After 3 failed attempts (initial + 2 retries) on any issue, report and end. No partial commits.
 
 ## Don't:
 - Skip verification

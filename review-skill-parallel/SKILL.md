@@ -33,7 +33,7 @@ There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misundersto
 └─────────────────┘     └───────────────────┘
 ```
 
-This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.
+This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue. (Epilogue is a post-phase wrap-up — see that section for details.)
 
 You address the reviewers' findings through the phases below.
 
@@ -63,10 +63,10 @@ The issue tracker is conceptual — maintained in your working context during th
 ### Tools Assumed
 
 This skill uses standard Claude Code tools without detailed explanation:
-- `Task` — Launch background agents; returns task_id (`description`, `prompt`, `subagent_type`, `run_in_background`)
+- `Task` — Launch background agents; takes `description`, `prompt`, `subagent_type`, `run_in_background`; returns `task_id`
 - `TaskOutput` — Retrieve agent results (`task_id`, `block`, `timeout`)
 - `Edit` — Modify files (`file_path`, `old_string`, `new_string`)
-- `AskUserQuestion` — Present options to user (`questions` array—always an array, even for single questions—containing objects with `question`, `header`, `options`, `multiSelect`)
+- `AskUserQuestion` — Present options to user; takes `questions` array (always an array, even for single questions) containing objects with `question`, `header`, `options` (array of `{label, description}`), `multiSelect`
 
 ---
 
@@ -101,11 +101,11 @@ This skill uses standard Claude Code tools without detailed explanation:
 
 ## Phase: Review
 
-**Launch n parallel Task agents to review the skill document. All agents are fungible — same prompt.**
+**Launch n parallel Task agents to review the skill document. All agents are fungible — identical prompt.**
 
 ### Do:
 - Use `Task` tool with `run_in_background: true`
-- Launch all n Task agents in a **single message** (parallel)
+- Launch all n Task agents in a **single response** (parallel)
 - Use identical prompt for all agents
 - Record all task IDs for result collection
 
@@ -144,7 +144,7 @@ OR
 NO FINDINGS - document is internally consistent.
 ```
 
-### Example: Launch n=3 Parallel Review Agents
+### Example: Launch n=3 parallel Task agents
 
 ```
 Task(
@@ -167,7 +167,7 @@ Task(
 )
 ```
 
-Each Task returns a task_id for use in Parse Output.
+Each Task tool invocation returns a task_id (store these in `task_ids` for use in Parse Output).
 
 ---
 
@@ -184,7 +184,7 @@ Each Task returns a task_id for use in Parse Output.
 - Merge into issue tracker, deduplicating similar findings (same line + similar description = one finding)
 - Record which reviewers found each issue
 
-**Clean iteration = all n reviewers return "NO FINDINGS".** If ANY review has findings, proceed to Synthesize.
+**Clean iteration = all n reviewers return "NO FINDINGS".** (The full output is "NO FINDINGS - document is internally consistent." — checking for "NO FINDINGS" works as a prefix match.) If ANY review has findings, proceed to Synthesize.
 
 ### Don't:
 - ❌ Skip findings because they seem minor — every finding gets tracked
@@ -196,7 +196,7 @@ Each Task returns a task_id for use in Parse Output.
 results = [reviewer_1, reviewer_2, ..., reviewer_n]
 
 if ALL n results are "NO FINDINGS":
-    → Iteration is clean — skip Synthesize/Triage/Plan Approval/Address/Verify; proceed directly to Change Confirmation ("Clean iteration — no findings, no changes.")
+    → Iteration is clean — skip Synthesize/Triage/Plan Approval/Address/Verify/Change Confirmation; present "Clean iteration — no findings, no changes." and proceed directly to Epilogue (no AskUserQuestion needed)
 else:
     # ANY reviewer has findings
     → Merge all findings into tracker
@@ -216,7 +216,7 @@ The "Reviewers" column shows which of the n reviewers (numbered 1 through n) fla
 
 Statuses:
 - `open` — finding identified, not yet addressed
-- `planned` — resolution proposed, awaiting human approval
+- `planned` — resolution proposed, awaiting human approval in Plan Approval phase
 - `fixed` — real inconsistency corrected
 - `clarified` — wording improved (for false positives) or rationale documented (for design tradeoffs) to prevent future misunderstanding
 
@@ -251,7 +251,7 @@ Skill documents have interconnected sections, implicit contracts between phases,
 
 ### Group by Theme
 
-After understanding the system, organize findings for triage (and eventual human review in Plan Approval):
+After understanding the system, organize findings for triage (and subsequent human-in-the-loop checkpoint in Plan Approval):
 
 - Review all findings together as a set
 - Identify themes and patterns (e.g., "terminology inconsistency" appears in 8 findings)
@@ -264,11 +264,12 @@ After understanding the system, organize findings for triage (and eventual human
 - Map how sections interconnect
 - Find root causes, not just surface patterns
 - Note how many findings each theme covers
+- List unrelated findings separately (don't force into themes)
 
 ### Don't:
 - ❌ Skip straight to triaging findings one-by-one — always synthesize first
 - ❌ Group mechanically without understanding — themes should reflect *why* findings exist
-- ❌ Force unrelated findings into themes — list them individually instead (see Triage phase for handling details)
+- ❌ Force unrelated findings into themes — list them individually instead (see Plan Summary Template for formatting)
 
 ### Common Theme Patterns
 
@@ -286,14 +287,14 @@ After understanding the system, organize findings for triage (and eventual human
 
 | Theme | Findings | Root cause |
 |-------|----------|------------|
-| Terminology: "agent" vs "reviewer" | F-001, F-004, F-007, F-012 | No single term chosen |
-| Phase reference errors | F-002, F-008 | Phases renamed but refs not updated |
-| Missing status transitions | F-003, F-005, F-006 | Status flow never documented |
+| Terminology: "agent" vs "reviewer" | F-001, F-002, F-003, F-004 | No single term chosen |
+| Phase reference errors | F-005, F-006 | Phases renamed but refs not updated |
+| Missing status transitions | F-007, F-008, F-009 | Status flow never documented |
 
 **Unrelated findings** (no shared root cause):
-- F-009: [individual description and fix]
-- F-010: [individual description and fix]
-- F-011: [individual description and fix]
+- F-010: [individual description]
+- F-011: [individual description]
+- F-012: [individual description]
 ```
 
 Addressing one theme often resolves multiple findings simultaneously. Understanding *why* the theme exists prevents incomplete fixes.
@@ -312,11 +313,12 @@ Work through themes identified in Synthesize. For each theme, propose one root-c
 - Propose ONE resolution per theme (not per finding)
 - Categorize: real inconsistency, false positive, or design tradeoff
 - Update all findings in theme to `planned` status
+- Handle unrelated findings individually (not by theme)
 
 ### Don't:
 - ❌ Make edits during triage — propose only
 - ❌ Dismiss findings — every finding gets a proposed resolution
-- ❌ Triage findings within a theme one-by-one — work by theme (unrelated findings are handled individually)
+- ❌ Triage findings within a theme one-by-one — work by theme
 - ❌ Blame the reviewer — if an LLM got confused, another will too
 
 ### Triage Table
@@ -335,7 +337,7 @@ Triage changes status from `open` → `planned`. Address phase changes `planned`
 
 **Present findings and proposed resolutions to user BEFORE making any edits.**
 
-This is the first human-in-the-loop checkpoint. The user can:
+This is the first human-in-the-loop checkpoint in this iteration. The user can:
 - Approve the plan and proceed to edits
 - Modify proposed resolutions
 - Add context or requirements
@@ -354,7 +356,7 @@ This is the first human-in-the-loop checkpoint. The user can:
 
 ### Plan Summary Template
 
-Transform the Theme Summary Format from Synthesize into a plan by adding proposed fixes for each theme. Present by theme, not by individual finding. This makes review tractable for humans.
+Present the themes and proposed fixes from Triage. Present by theme; unrelated findings are listed individually. This makes review tractable for users.
 
 ```markdown
 ## Review Findings: {finding_count} findings in {theme_count} themes
@@ -363,7 +365,7 @@ Transform the Theme Summary Format from Synthesize into a plan by adding propose
 
 **Root cause**: Document uses both terms interchangeably.
 
-**Findings**: F-001, F-004, F-007, F-012
+**Findings**: F-001, F-002, F-003, F-004
 
 **Proposed fix**: Standardize on "reviewer" throughout. One search-and-replace resolves all 4.
 
@@ -373,7 +375,7 @@ Transform the Theme Summary Format from Synthesize into a plan by adding propose
 
 **Root cause**: Phases were renamed but cross-references not updated.
 
-**Findings**: F-002, F-008
+**Findings**: F-005, F-006
 
 **Proposed fix**: Update all references to match current phase names (e.g., "Approval" → "Plan Approval").
 
@@ -383,19 +385,19 @@ Transform the Theme Summary Format from Synthesize into a plan by adding propose
 
 These have no shared root cause; list individually:
 
-**F-003** (line 299): "code sections" should be "document sections"
+**F-007** (line 299): "code sections" should be "document sections"
 - Fix: Change "code" to "document"
 
-**F-005** (line 452): Missing example for clean iteration
+**F-008** (line 452): Missing example for clean iteration
 - Fix: Add clean iteration example to Change Confirmation
 
-**F-006** (line 437): "approves" vs "confirms" inconsistency
+**F-009** (line 437): "approves" vs "confirms" inconsistency
 - Fix: Change to "confirms"
 
 ---
 
 ### Summary
-- 3 themes covering 9 findings
+- 2 themes (covering 6 findings) + 3 unrelated findings = 9 total findings
 - 2 root-cause fixes resolve 6 findings
 - 3 standalone point fixes
 ```
@@ -427,7 +429,8 @@ AskUserQuestion(
 ### Do:
 - Address all planned findings from the tracker
 - Use `Edit` for targeted changes
-- Update tracker status as you go
+- Update tracker status as you go (`planned` → `fixed` or `clarified`)
+- Process unrelated findings individually
 
 ### Don't:
 - ❌ Deviate from approved plan — execute what was approved
@@ -442,7 +445,7 @@ For each theme (or individual unrelated finding):
 1. **Read context** — Read the section(s) containing the finding
 2. **Identify resolution** — Fix, clarify, or document rationale
 3. **Make edit** — Use Edit tool with precise old_string/new_string
-4. **Update tracker** — Mark as `fixed` or `clarified`
+4. **Update tracker** — Mark as `fixed` or `clarified` (from `planned`)
 
 ### Example: Addressing a Finding
 
@@ -491,9 +494,7 @@ Update tracker: F-001 status → fixed
 
 **Present executed changes to user and get explicit confirmation.**
 
-This is the second human-in-the-loop checkpoint. The user confirms the changes were executed correctly.
-
-**Clean iteration (0 findings)**: If all reviewers returned "NO FINDINGS," present a minimal confirmation: "Clean iteration — no findings, no changes."
+This is the second human-in-the-loop checkpoint in this iteration. The user confirms the changes were executed correctly.
 
 ### Do:
 - Present summary of changes made (not proposed — actually executed)
@@ -504,6 +505,8 @@ This is the second human-in-the-loop checkpoint. The user confirms the changes w
 ### Don't:
 - ❌ Skip this checkpoint — human confirmation is mandatory
 - ❌ Assume confirmation — wait for explicit response
+
+Note: For clean iterations (no findings), Change Confirmation is skipped entirely — see Parse Output phase for the clean iteration flow.
 
 ### Change Summary Template
 
@@ -549,9 +552,11 @@ AskUserQuestion(
 
 ## Epilogue: Iteration Complete
 
-The Epilogue is a post-phase wrap-up, not a numbered phase with Do/Don't sections.
+Epilogue is listed for completeness but is a post-phase wrap-up, not a standard phase.
 
-When user confirms:
+**For clean iterations** (no findings): Present "Clean iteration — no findings, no changes." and end the skill. No user confirmation needed.
+
+**For non-clean iterations** (after user confirms changes):
 
 1. Report iteration results:
    ```
@@ -565,6 +570,8 @@ When user confirms:
 ---
 
 ## Quick Reference: Don'ts
+
+*Summary table — see each phase section for full context and rationale.*
 
 | Phase | Don't |
 |-------|-------|
@@ -580,4 +587,4 @@ When user confirms:
 
 ---
 
-Begin review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents with identical review prompts. Wait for all to complete, synthesize findings into themes, triage by theme (unrelated findings are handled individually), get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.
+Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents in a single response with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present clean iteration statement and proceed directly to Epilogue (skipping all intermediate phases including Change Confirmation). Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.

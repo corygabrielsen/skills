@@ -288,7 +288,7 @@ AskUserQuestion(
 
 **If user selects "Approve":** Proceed to Address phase.
 
-**If user selects "Modify":** Wait for user to type their changes in the next message. Update plan accordingly, re-present Plan Approval options.
+**If user selects "Modify":** Acknowledge selection and prompt: "Please describe your changes." Wait for user's next message. Update plan accordingly, re-present Plan Approval options.
 
 **If user selects "Abort":** End skill without changes.
 
@@ -358,7 +358,7 @@ AskUserQuestion(
 
 **If user selects "View diff":** Run `git diff {target_file}`, show output (or "No diff available" if file is untracked), re-present confirmation options.
 
-**If user selects "Revert":** Run `git checkout {target_file}` to restore last committed version, report "Changes reverted.", end skill. (Warns: this discards all uncommitted changes.)
+**If user selects "Revert":** First warn user: "This will discard all uncommitted changes to {target_file}." Then run `git checkout {target_file}` to restore last committed version (fails gracefully if file was never committed), report "Changes reverted." or error message, end skill.
 
 ---
 

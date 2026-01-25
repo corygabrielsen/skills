@@ -23,6 +23,7 @@ Only runs when: TaskList is empty AND conversation has history.
 - Ask "would you like me to create tasks?"---that's why mission control was summoned
 - Create vague or context-dependent task descriptions
 - Skip completed work (it shows momentum and leaves a trail)
+- Create duplicate tasks---before creating, check TaskList for similar existing tasks
 
 ## Output Format
 

@@ -33,7 +33,7 @@ There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misundersto
 └─────────────────┘     └───────────────────┘
 ```
 
-This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue. (Epilogue is a post-phase wrap-up — see that section for details.)
+This diagram is conceptual — the phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.
 
 You address the reviewers' findings through the phases below.
 
@@ -54,11 +54,9 @@ Track during this iteration:
 ```yaml
 target_file: ""              # Path to skill file being edited
 parallel_review_count: 3     # -n flag (default 3)
-task_ids: []                 # Task IDs for result collection
-# issue_tracker is maintained as a markdown table (see Parse Output phase)
+task_ids: []                 # Task IDs for result collection (working context, not persisted)
+# issue_tracker: markdown table (see Parse Output phase); working context, not persisted
 ```
-
-The issue tracker is conceptual — maintained in your working context during the iteration, not persisted to disk.
 
 ### Tools Assumed
 
@@ -105,18 +103,18 @@ This skill uses standard Claude Code tools without detailed explanation:
 
 ### Do:
 - Use `Task` tool with `run_in_background: true`
-- Launch all n Task agents in a **single response** (parallel)
+- Launch all n Task agents in a **single message** (parallel)
 - Use identical prompt for all agents
 - Record all task IDs for result collection
 
 ### Don't:
 - ❌ Run reviews sequentially — always parallel
 - ❌ Do the review yourself — delegate to Task agents
-- ❌ Customize prompts per agent — all reviewers are fungible
+- ❌ Customize prompts per reviewer — all reviewers are fungible
 
 ### Review Prompt Template
 
-All agents receive the same prompt:
+All reviewers receive the same prompt:
 
 ```
 You are reviewing {target_file} for internal consistency and clarity issues.
@@ -144,7 +142,7 @@ OR
 NO FINDINGS - document is internally consistent.
 ```
 
-### Example: Launch n=3 parallel Task agents
+### Example: Launch n=3 Task agents in a Single Message
 
 ```
 Task(
@@ -184,7 +182,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 - Merge into issue tracker, deduplicating similar findings (same line + similar description = one finding)
 - Record which reviewers found each issue
 
-**Clean iteration = all n reviewers return "NO FINDINGS".** (The full output is "NO FINDINGS - document is internally consistent." — checking for "NO FINDINGS" works as a prefix match.) If ANY review has findings, proceed to Synthesize.
+**Clean iteration = all n reviewers return "NO FINDINGS".** (The full output is "NO FINDINGS - document is internally consistent." — checking whether the output starts with "NO FINDINGS" is sufficient.) If ANY review has findings, proceed to Synthesize.
 
 ### Don't:
 - ❌ Skip findings because they seem minor — every finding gets tracked
@@ -269,7 +267,7 @@ After understanding the system, organize findings for triage (and subsequent hum
 ### Don't:
 - ❌ Skip straight to triaging findings one-by-one — always synthesize first
 - ❌ Group mechanically without understanding — themes should reflect *why* findings exist
-- ❌ Force unrelated findings into themes — list them individually instead (see Plan Summary Template for formatting)
+- ❌ Force unrelated findings into themes — list them individually instead
 
 ### Common Theme Patterns
 
@@ -283,7 +281,7 @@ After understanding the system, organize findings for triage (and subsequent hum
 ### Theme Summary Format
 
 ```markdown
-## Synthesis: {finding_count} findings → {theme_count} themes
+## Synthesize: {finding_count} findings → {theme_count} themes
 
 | Theme | Findings | Root cause |
 |-------|----------|------------|
@@ -550,9 +548,18 @@ AskUserQuestion(
 
 ---
 
-## Epilogue: Iteration Complete
+## Phase: Epilogue
 
-Epilogue is listed for completeness but is a post-phase wrap-up, not a standard phase.
+**Wrap up the iteration and report results.**
+
+### Do:
+- For clean iterations: Present "Clean iteration — no findings, no changes." and end
+- For non-clean iterations: Report findings addressed and iteration status
+- End the skill cleanly
+
+### Don't:
+- ❌ Skip the completion message — always report iteration outcome
+- ❌ Continue after reporting — the iteration is complete
 
 **For clean iterations** (no findings): Present "Clean iteration — no findings, no changes." and end the skill. No user confirmation needed.
 
@@ -573,7 +580,7 @@ Epilogue is listed for completeness but is a post-phase wrap-up, not a standard 
 
 *Summary table — see each phase section for full context and rationale.*
 
-| Phase | Don't |
+| Phase | Don'ts |
 |-------|-------|
 | Initialize | Start without target file, review non-skill files |
 | Review | Run sequentially, do the review yourself, customize prompts per reviewer |
@@ -584,7 +591,8 @@ Epilogue is listed for completeness but is a post-phase wrap-up, not a standard 
 | Address | Deviate from plan, skip findings, edit without reading context, over-edit |
 | Verify | Skip verification, proceed with unaddressed findings |
 | Change Confirmation | Skip checkpoint, assume confirmation |
+| Epilogue | Skip completion message, continue after reporting |
 
 ---
 
-Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents in a single response with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present clean iteration statement and proceed directly to Epilogue (skipping all intermediate phases including Change Confirmation). Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.
+Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents in a single message with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present clean iteration statement and proceed directly to Epilogue (skipping Synthesize/Triage/Plan Approval/Address/Verify/Change Confirmation). Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.

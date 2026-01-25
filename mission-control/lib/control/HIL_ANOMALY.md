@@ -71,6 +71,8 @@ AskUserQuestion(
 )
 ```
 
+**Fallback:** If `AskUserQuestion` is unavailable, present options as a numbered list and ask user to reply with their choice.
+
 ## Handlers
 
 **If "Retry":**

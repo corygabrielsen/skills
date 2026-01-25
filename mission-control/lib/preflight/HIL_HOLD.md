@@ -36,6 +36,8 @@ AskUserQuestion(
 )
 ```
 
+**Fallback:** If `AskUserQuestion` is unavailable, present options as a numbered list and ask user to reply with their choice.
+
 ## Handlers
 
 **If "Fix":**
@@ -48,7 +50,7 @@ AskUserQuestion(
 4. → execution/DELEGATE (GO tasks already passed evaluation; no re-check needed)
 
 **If "Scrub":**
-1. Mark NO-GO tasks as `ABORTED - Scrubbed at pre-flight`
+1. Mark NO-GO tasks as `ABORTED - Scrubbed at preflight`
 2. If GO tasks remain → execution/DELEGATE (GO tasks already passed; proceed directly)
 3. If no GO tasks remain → control/REPORT (nothing to execute this cycle)
 

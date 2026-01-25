@@ -47,7 +47,7 @@ Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. M
 
 ## Phases
 
-Follow each phase in sequence. (The `@lib/...` syntax references phase definitions that are loaded inline.)
+`@lib/...` references phase definitions loaded inline.
 
 @lib/001_INITIALIZE.md
 @lib/002_FAN_OUT.md
@@ -87,7 +87,7 @@ Follow each phase in sequence. (The `@lib/...` syntax references phase definitio
 
 | Flag | Behavior |
 |------|----------|
-| `--auto` | Skip HIL checkpoints |
+| `--auto` | Skip HIL checkpoints (still displays plan/summary, skips user prompts) |
 | `-n N` | Do N passes (default: 1) |
 
 ---

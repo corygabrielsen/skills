@@ -61,13 +61,14 @@ AskUserQuestion(
 
 ```
 if --auto:
-    if ready_tasks exist:
+    if ready_tasks exist (pending with empty blockedBy):
         → preflight/EVALUATE
     else if in_progress_tasks exist:
-        → execution/MONITOR
+        → execution/MONITOR (agents working, may unblock others when done)
     else if all_tasks completed:
         → generate summary, end skill
     else:
-        → all tasks blocked, no progress possible
+        → deadlock: all pending tasks blocked AND no in_progress tasks
+        → no forward progress possible without intervention
         → exit auto mode, present options to human
 ```

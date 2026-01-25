@@ -29,7 +29,7 @@ Catches slow-developing problems before they become crises.
 | Pending | Ready to launch | Delegate |
 | Blocked | Waiting on dependencies | Check blockers |
 | Stalled | In progress too long, no output | Investigate |
-| Failed | Verification failed | → HIL: Anomaly |
+| Failed | Verification failed | → control/HIL_ANOMALY |
 
 ## Checkpoint Format
 
@@ -66,7 +66,9 @@ No hard-coded timeouts. Agent capabilities evolve rapidly.
 - Complex research or multi-file edits in progress
 - Agent explicitly indicated long-running work
 
-When uncertain, surface to user rather than assuming stall.
+**Relative timing:** If similar tasks completed in X time, 3-5X without progress is worth surfacing. When no baseline exists, wait until user engagement or visible output ceases.
+
+When uncertain, surface to user: "T-004 has been running for [duration]. Continue waiting?"
 
 ## After Checkpoint
 

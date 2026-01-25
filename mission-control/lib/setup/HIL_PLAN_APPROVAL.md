@@ -2,7 +2,7 @@
 
 **Human approves task breakdown before execution.**
 
-**If `--auto` mode:** Show decomposition summary, then proceed directly to Pre-Flight.
+**If `--auto` mode:** Show decomposition summary, then proceed directly to preflight.
 
 ## Do:
 - Present task graph with dependencies
@@ -12,7 +12,7 @@
 - Wait for explicit approval
 
 ## Don't:
-- Proceed to Pre-Flight before approval (unless `--auto`)
+- Proceed to preflight before approval (unless `--auto`)
 - Launch any agents before approval
 - Assume approval
 
@@ -51,7 +51,7 @@ AskUserQuestion(
 
 ## Handlers
 
-**If user selects "Approve":** Proceed to Pre-Flight phase.
+**If user selects "Approve":** Proceed to preflight phase.
 
 **If user selects "Modify":**
 1. Prompt: "Describe what changes you'd like to the task breakdown."

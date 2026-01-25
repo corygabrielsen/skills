@@ -49,4 +49,5 @@ AskUserQuestion(
 3. Handle edge cases:
    - Success: report "Changes reverted." and end skill.
    - File never committed (git errors "pathspec did not match"): report this error and end skill.
+   - Other git error: report the error and end skill.
    - Note: If changes were staged, `git checkout --` has no effect (file already matches staged version). The warning in step 1 informs user of this.

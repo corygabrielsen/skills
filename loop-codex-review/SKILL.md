@@ -1,25 +1,42 @@
 ---
 name: loop-codex-review
-description: Automated code review loop with progressive reasoning levels. Runs N parallel Codex reviews, Claude fixes issues, climbs from low→xhigh reasoning until fixed point (N consecutive clean, configurable via -n). Human approval at each iteration.
+description: Automated code review loop with progressive reasoning levels. Runs n parallel Codex reviews (configurable via -n), Claude addresses findings, climbs from low→xhigh reasoning until fixed point (all n clean). Human approval at each iteration.
 ---
 
 # Loop: Codex Review
 
-You are a code review coordinator. **Codex reviews, Claude fixes.** Diverse LLM perspectives.
+You are a code review coordinator. **Codex reviews, Claude addresses.** Diverse LLM perspectives.
+
+## Core Philosophy
+
+**Every finding demands code improvement. No exceptions.**
+
+When a reviewer flags something, the code changes. Always. Either:
+- **Real bug** → fix the code
+- **False positive** → the code was unclear; add comments or refactor until the intent is obvious
+- **Design tradeoff** → document the rationale in code comments
+
+There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misunderstood, that's a signal the code isn't self-evident — a tired human would misunderstand too. The code must become clearer.
+
+**Fixed point** = no reviewer can find *anything* to flag. Not because you argued them down, but because the code is both **correct** AND **self-evident**.
+
+This loop creates a proof: when n independent reviews at each reasoning level (low through xhigh) find nothing to flag, you have strong evidence your code is unambiguous.
+
+---
 
 ## Core Concept
 
 ```
-┌─────────────────┐     ┌─────────────────┐
-│  codex review   │────▶│  Claude fixes   │
-│   (OpenAI CLI)  │     │  (Task agents)  │
-└─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌───────────────────┐
+│  codex review   │────▶│  Claude addresses │
+│   (OpenAI CLI)  │     │   (Task agents)   │
+└─────────────────┘     └───────────────────┘
          │                       │
          └───────── loop ────────┘
 ```
 
 - **Review**: Run `codex review` command via Bash — this is OpenAI's Codex doing analysis
-- **Fix**: Spawn Claude Task agents to resolve issues Codex found
+- **Address**: Spawn Claude Task agents to address findings (fix code OR clarify with comments/refactoring)
 - **Value**: Two different frontier LLMs catch different things
 
 ## Relationship to loop-address-pr-feedback
@@ -31,7 +48,7 @@ You are a code review coordinator. **Codex reviews, Claude fixes.** Diverse LLM 
 | **Trigger** | You run it | Reviews arrive async |
 | **Interface** | stdout parsing | GitHub API |
 | **Scope** | Single diff | Stack of PRs |
-| **Fixed point** | n consecutive clean | All threads resolved |
+| **Fixed point** | All n reviews clean | All threads resolved |
 
 Use **this skill** to validate code before opening a PR. Use **loop-address-pr-feedback** to address reviewer comments after.
 
@@ -43,10 +60,10 @@ Codex supports different reasoning effort levels. **Always set explicitly.**
 ┌─────────┬────────────────────────────────────────────┬──────────┐
 │  Level  │  Description                               │  Time    │
 ├─────────┼────────────────────────────────────────────┼──────────┤
-│  low    │  Quick scan - fast iteration, obvious bugs │  ~3 min  │
-│  medium │  Moderate depth - good balance             │  ~5 min  │
+│  low    │  Quick scan - fast iteration, obvious bugs │   ~3m    │
+│  medium │  Moderate depth - good balance             │   ~5m    │
 │  high   │  Deep analysis - catches subtle issues     │  ~8-10m  │
-│  xhigh  │  Exhaustive - maximum thoroughness         │  ~12-20m │
+│  xhigh  │  Exhaustive - maximum thoroughness         │ ~12-20m  │
 └─────────┴────────────────────────────────────────────┴──────────┘
 ```
 
@@ -55,19 +72,21 @@ Codex supports different reasoning effort levels. **Always set explicitly.**
 codex review --base master -c model_reasoning_effort="high"
 ```
 
-⚠️ **Lower Reasoning Caveat**: Reviews at low/medium are faster but may miss subtle bugs. Real example: low and medium both returned clean (4 consecutive!), but high found a case-sensitivity bug (uppercase hex not normalized). **Always climb to at least high for production code.**
+⚠️ **Lower Reasoning Caveat**: Reviews at low/medium are faster but may miss subtle bugs. Real example: low and medium both returned clean (all n reviews clean at each level), but high found a case-sensitivity bug (uppercase hex not normalized). **Always climb to at least high for production code.**
 
 ## Progressive Strategy (Default)
 
 Default behavior: **Climb the reasoning ladder from low → xhigh**
 
 ```
-low (n clean) → medium (n clean) → high (n clean) → xhigh (n clean) → DONE
-     ↑                ↑                  ↑                 ↑
-     └── bug found? fix and restart at this level ────────┘
+low (all n clean) → medium (all n clean) → high (all n clean) → xhigh (all n clean) → DONE
+         ↑                    ↑                    ↑                     ↑
+         └──────── finding? address and restart at this level ──────────┘
 ```
 
-Where `n` is the `-n` parameter (default: 3). Higher `n` = stronger fixed point = more confidence.
+Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → advance. If ANY has findings → address and re-run. Higher `n` = more parallel reviewers = higher confidence.
+
+**Note:** "Findings" includes both real bugs AND false positives. False positives mean the code is unclear — add comments or refactor until the intent is obvious. See "Verification of Findings" section.
 
 Why progressive?
 - Fast feedback at low levels catches obvious issues quickly
@@ -79,13 +98,13 @@ Why progressive?
 
 ```
 1. Initialize       → Accept target (--base branch or --uncommitted)
-2. Run codex review → Bash command, run_in_background: true
-3. Parse Output     → Extract issues into tracker
-4. Evaluate         → Issues found? Reset counter. Clean? Increment.
-5. Check Exit       → n consecutive clean? → Done (graduate or finish)
-6. Spawn Fix Agents → Claude agents fix Codex's findings (parallel)
-7. Verify Fixes     → Tests pass, files modified
-8. Human Approval   → Present diff, get explicit approval, commit
+2. Run codex review → Launch n parallel reviews via Bash (run_in_background: true)
+3. Parse Output     → Extract findings into tracker
+4. Evaluate         → ALL clean? → step 5. Else (findings exist) → step 6.
+5. Check Exit       → At xhigh? → Done. Else → advance level, go to step 2.
+6. Address Findings → Claude agents address findings (parallel)
+7. Verify           → Tests pass, files modified
+8. Human Approval   → Present summary, get explicit approval, commit
 9. Loop             → Return to step 2
 ```
 
@@ -95,28 +114,35 @@ Track across iterations. Store in task descriptions for compaction survival.
 
 ```yaml
 iteration_count: 0
-review_mode: ""                    # --base master | --uncommitted | --commit SHA
+review_mode: ""                    # --base <branch> | --uncommitted | --pr <num> | --commit <sha>
 review_criteria: ""                # Custom prompt passed to codex review
 max_iterations: 15
 
 # Reasoning level tracking
 reasoning_level: "low"             # Current: low | medium | high | xhigh
 reasoning_strategy: "progressive"  # progressive | fixed
-consecutive_clean_at_level: 0      # Resets on any finding
-consecutive_clean_target: 3        # -n flag (default 3, max 10)
-# Note: Run -n reviews in parallel. If all clean, fixed point reached in one batch.
+parallel_review_count: 3           # -n flag (default 3) - how many reviews to run in parallel
 
 # Level history (for reporting)
 level_history:
-  low:    { reviews: 0, bugs_found: 0, fixed_point: false }
-  medium: { reviews: 0, bugs_found: 0, fixed_point: false }
-  high:   { reviews: 0, bugs_found: 0, fixed_point: false }
-  xhigh:  { reviews: 0, bugs_found: 0, fixed_point: false }
+  low:    { reviews: 0, findings: 0, fixed_point: false }
+  medium: { reviews: 0, findings: 0, fixed_point: false }
+  high:   { reviews: 0, findings: 0, fixed_point: false }
+  xhigh:  { reviews: 0, findings: 0, fixed_point: false }
 
 issue_tracker: []
 ```
 
 ## Phase: Initialize
+
+### Do:
+- Detect base branch properly (check for Graphite stack first)
+- Parse review mode from args
+- Initialize state and create tracking task
+
+### Don't:
+- ❌ Assume master/main is the base — check for stack parent first
+- ❌ Skip base branch detection — wrong base = useless review
 
 **On activation:**
 
@@ -126,7 +152,7 @@ issue_tracker: []
    - `--pr <num>` → `--base` against PR's target branch
    - `--commit <sha>` → review specific commit
 
-2. **Detect base branch** (don't naively assume master):
+2. **Detect base branch**:
    ```bash
    # Check if in a Graphite stack
    gt ls 2>/dev/null
@@ -152,33 +178,33 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 
 **Args examples:**
 ```bash
-# Default: progressive low → xhigh, n consecutive clean per level (n=3 default)
-/codex-review-loop                          # --uncommitted, full climb
-/codex-review-loop --base master            # Review vs master, full climb
+# Default: progressive low → xhigh, 3 parallel reviews per level
+/loop-codex-review                          # --uncommitted, full climb
+/loop-codex-review --base master            # Review vs master, full climb
 
 # Start at specific level
-/codex-review-loop --level high             # Start at high, climb to xhigh
-/codex-review-loop --level xhigh            # Start and stay at xhigh only
+/loop-codex-review --level high             # Start at high, climb to xhigh
+/loop-codex-review --level xhigh            # Start at xhigh (skip lower levels)
 
 # Fixed level (no climbing)
-/codex-review-loop --level medium --no-climb  # Stay at medium only
+/loop-codex-review --level medium --no-climb  # Stay at medium only
 
 # Quick mode (low only, for fast iteration during development)
-/codex-review-loop --quick                  # Alias for --level low --no-climb
+/loop-codex-review --quick                  # Alias for --level low --no-climb
 
-# Fixed point strength: -n sets consecutive clean reviews needed per level
-/codex-review-loop -n 10                    # High confidence (10 clean per level)
-/codex-review-loop -n 1                     # Fast/yolo mode (1 clean per level)
-/codex-review-loop --quick -n 1             # Fastest possible (low only, 1 clean)
+# Parallel review count: -n sets how many reviews run in parallel per level
+/loop-codex-review -n 10                    # High confidence (10 parallel reviews)
+/loop-codex-review -n 1                     # Fast/yolo mode (1 review per level)
+/loop-codex-review --quick -n 1             # Fastest possible (low only, 1 review)
 
 # With custom criteria
-/codex-review-loop "check for security issues" --level high
+/loop-codex-review "check for security issues" --level high
 
 # Auto-detect base from Graphite stack
-/codex-review-loop --base auto              # Uses gt to find parent branch
+/loop-codex-review --base auto              # Uses gt to find parent branch
 ```
 
-**The `-n` parameter:** Controls how many consecutive clean reviews are needed before declaring fixed point at each level. Default is 3. Higher values give more confidence but cost more. Max recommended is 10.
+**The `-n` parameter:** Controls how many reviews run in parallel at each level. All n must be clean to advance. Default is 3. Higher values = more diverse perspectives = higher confidence. Max recommended is 10.
 
 **Auto-detection logic:**
 1. If `gt` available → check parent with `gt log --oneline -n 1` or parse `gt ls`
@@ -189,19 +215,34 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 
 **This runs the actual `codex review` CLI command — NOT a Claude agent.**
 
-### Always Run N Reviews in Parallel
+### Do:
+- Use `Bash` tool directly with `run_in_background: true`
+- Launch all n reviews in a **single message** (parallel)
+- Always set `-c model_reasoning_effort` explicitly
+- Record all task IDs for polling later
 
-Use the `Bash` tool directly with `run_in_background: true` — NOT Task agents:
+### Don't:
+- ❌ Use Task agents for review — they interpret prompts unpredictably (e.g., `tail -f` blocking forever)
+- ❌ Run reviews sequentially — always parallel
+- ❌ Forget `-c model_reasoning_effort` — Codex defaults are unpredictable
+- ❌ Use `tail -f` to check output — it blocks forever; use `tail -n` or `cat`
+
+### Example: Launch n Parallel Reviews
 
 ```
-Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true)
-Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true)
-Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true)
+# If n=3 (default), launch 3 in a single message:
+Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true, description: "Codex review 1/3 (low)")
+Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true, description: "Codex review 2/3 (low)")
+Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1", run_in_background: true, description: "Codex review 3/3 (low)")
+
+# If n=10, launch 10 in a single message:
+Bash(command: "...", run_in_background: true, description: "Codex review 1/10 (low)")
+# ... repeat for all n reviews
 ```
 
-⚠️ **Why Bash, not Task?** Task spawns an agent that interprets the prompt and may use unpredictable strategies (like `tail -f` which blocks forever). Bash runs the command directly with predictable output.
+Each call returns a `task_id` and `output_file` path. Record these for polling.
 
-**Fixed point = n consecutive clean (default 3).** If ANY review finds bugs, fix and restart the count.
+**Fixed point = all n clean.** If ANY review has findings, address them and re-run all n reviews at this level.
 
 ### Command Construction
 
@@ -215,71 +256,68 @@ Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1
 
 **Important:** When in a Graphite stack, always review against the parent branch, not master.
 
-### Example: Launch 10 Parallel Reviews
-
-```python
-# In a single message, launch all reviews:
-Bash(command: "codex review --base master -c model_reasoning_effort=\"high\" 2>&1", run_in_background: true, description: "Codex review 1/10 (high)")
-Bash(command: "codex review --base master -c model_reasoning_effort=\"high\" 2>&1", run_in_background: true, description: "Codex review 2/10 (high)")
-# ... repeat for all N reviews
-```
-
-Each call returns a `task_id` and `output_file` path. Record these for polling.
-
 **Polling:** Use `cat` or `tail -n` (NOT `tail -f`) to check output files. See "Handling Zombie Tasks" section.
 
 ## Phase: Parse Output
 
-Codex review outputs markdown with issues. Parse into tracker:
+### Do:
+- Extract all findings from codex review output
+- Parse into issue tracker format
+- Record the reasoning level that found each issue
+
+### Don't:
+- ❌ Skip findings because they seem minor — every finding gets tracked
+- ❌ Combine multiple findings into one — each gets its own ID
+
+Codex review outputs markdown with findings. Parse into tracker:
 
 ```markdown
-| ID | File | Line | Severity | Description | Status | Round | Level |
-|:--:|:-----|:----:|:--------:|:------------|:------:|:-----:|:-----:|
-| CR-001 | src/auth.js | 42 | major | SQL injection | open | R1 | high |
+| ID | File | Line | Severity | Description | Status | Iter | Level |
+|:--:|:-----|:----:|:--------:|:------------|:------:|:----:|:-----:|
+| CR-001 | src/auth.js | 42 | major | SQL injection | open | I1 | high |
 ```
 
-### Evaluate N Parallel Results
+### Evaluate n Parallel Results
 
 ```
 results = [review_1, review_2, ..., review_n]
 
-if ALL results are clean:
-    consecutive_clean_at_level += n
-    if consecutive_clean_at_level >= n:
-        # Fixed point at this level!
-        if reasoning_level == "xhigh":
-            → DONE (full fixed point reached)
-        else:
-            → Escalate to next level, reset counter
+if ALL n results are clean:
+    # Fixed point at this level!
+    if reasoning_level == "xhigh":
+        → DONE (full fixed point reached)
+    else:
+        → Advance to next reasoning level
 else:
-    # ANY review found bugs
-    consecutive_clean_at_level = 0
-    → Merge all bugs into tracker, proceed to fix phase
+    # ANY review has findings
+    → Merge all findings into tracker, proceed to address phase
+    → After addressing, re-run all n reviews at this level
 ```
 
 ### Verification of Findings
 
-⚠️ **Verify findings carefully, especially from lower reasoning levels.**
+**Do:**
+- Verify each finding before addressing (especially at lower reasoning levels)
+- Ask: real bug, false positive, or design tradeoff?
+- Triage using this table:
 
-Before fixing, sanity-check each issue:
-- Is this a real bug or false positive?
-- Does the suggested fix make sense?
-- Could this be an intentional design decision?
-
-**Triage each finding:**
-
-| Finding Type | The Fix |
-|--------------|---------|
+| Finding Type | Resolution |
+|--------------|------------|
 | Real bug | Fix the code |
-| False positive | Fix the documentation (add comments explaining the intent) |
+| False positive | Add comments or refactor until the intent is obvious |
 | Design tradeoff | Document the rationale in code comments |
 | Unclear | Research before deciding |
 
+**Don't:**
+- ❌ Address without verifying first — lower reasoning levels have more false positives
+- ❌ Dismiss findings without improving code — every finding = code change
+- ❌ Blame the reviewer for misunderstanding — if an LLM gets confused, a human will too
+
 **Critical insight: False positives are documentation bugs.**
 
-When a reviewer misunderstands your code, the code is unclear. If an LLM gets confused, a tired human will too. The fix is NOT to dismiss the finding — it's to add comments or refactor until the intent is obvious.
+When a reviewer misunderstands your code, the code is unclear. If an LLM gets confused, a tired human will too. The resolution is NOT to dismiss — it's to add comments or refactor until the intent is obvious.
 
-Example: A reviewer flags an empty `catch` block as "swallowing errors." But you're intentionally ignoring that specific error. The fix isn't to dismiss the review — it's to add a comment:
+Example: A reviewer flags an empty `catch` block as "swallowing errors." But you're intentionally ignoring that specific error. The resolution isn't to dismiss — it's to add a comment:
 ```javascript
 } catch (e) {
   // Intentionally ignored: retries handle this upstream
@@ -288,11 +326,11 @@ Example: A reviewer flags an empty `catch` block as "swallowing errors." But you
 
 Now the next reviewer (human or LLM) won't raise the same concern. The false positive becomes impossible.
 
-### Synthesize Before Fixing
+### Synthesize Before Addressing
 
-⚠️ **Always zoom out before fixing.**
+⚠️ **Always zoom out before addressing any finding.**
 
-Reviewers do deep analysis but output terse summaries. A finding that looks like a one-line fix often touches code with multiple exit paths, callers, and implicit contracts. Fixing the symptom without understanding the system leads to incomplete or wrong fixes.
+Reviewers do deep analysis but output terse summaries. A finding that looks like a one-line change often touches code with multiple exit paths, callers, and implicit contracts. Addressing the symptom without understanding the system leads to incomplete or wrong resolutions.
 
 This step is not optional, and it's not just for "complex" findings. Even when a single reviewer flags a single line, ask: why was this subtle enough that others missed it? What else in this area might have similar issues?
 
@@ -315,47 +353,58 @@ This step is not optional, and it's not just for "complex" findings. Even when a
 
 5. **Challenge yourself** — "Is this my best effort? What haven't I considered?"
 
-The goal is to reconstruct the full picture before acting. Understand the system, then fix holistically.
+The goal is to reconstruct the full picture before acting. Understand the system, then address holistically.
 
-## Phase: Fix (Claude Agents)
+## Phase: Address (Claude Agents)
+
+### Do:
+- Check exit conditions before spawning any agents
+- Ask user for restart strategy when findings exist
+- Spawn agents in parallel with `run_in_background: true`
+- Group findings by file when sensible
+
+### Don't:
+- ❌ Skip exit check — you might already be done
+- ❌ Address findings without user input on restart strategy
+- ❌ Run address agents sequentially — always parallel
 
 **Exit check first:**
 ```
-if consecutive_clean_at_level >= n AND reasoning_level == "xhigh":
+if all_n_clean AND reasoning_level == "xhigh":
     → Done (full fixed point reached)
-if consecutive_clean_at_level >= n:
-    → Escalate to next reasoning level
+if all_n_clean:
+    → Advance to next reasoning level
 if iteration_count >= max_iterations:
     → Ask user how to proceed
 ```
 
-### When Bugs Found: Ask User for Strategy
+### When Findings Exist: Ask User for Strategy
 
 Use `AskUserQuestion` to let user choose restart strategy:
 
 ```
-"Found [N] issues at [level] reasoning. After fixing, how should we verify?"
+"Found {count} findings at {level} reasoning. After addressing, how should we verify?"
 
 Options:
-1. "Re-review at [current level]" (recommended) - Verify fix at same depth
+1. "Re-review at [current level]" (recommended) - Verify resolution at same depth
 2. "Restart from low" - Full re-climb, maximum confidence
 3. "Drop one level and re-climb" - Balance of speed and thoroughness
-4. "Skip to next level" - Trust the fix, continue climbing
+4. "Skip to next level" - Trust the resolution, continue climbing
 ```
 
-Context matters: A subtle edge case found at `high` probably just needs re-review at `high`. A fundamental bug that `low` should have caught might warrant a full restart.
+Context matters: A subtle edge case found at `high` probably just needs re-review at `high`. A fundamental issue that `low` should have caught might warrant a full restart.
 
-### Spawn Claude Fix Agents
+### Spawn Claude Address Agents
 
-**Spawn fix agents in parallel** via Task tool:
-- One agent per issue (or grouped by file)
+**Spawn address agents in parallel** via Task tool:
+- One agent per finding (or grouped by file)
 - `run_in_background: true` for parallel execution
-- Agent prompt includes issue details from Codex's review
+- Agent prompt includes finding details from Codex's review
 
 ```
 Task(
-  description: "Fix CR-001: SQL injection",
-  prompt: "Fix the SQL injection issue found by code review...",
+  description: "Address CR-001: SQL injection",
+  prompt: "Address the SQL injection finding from code review...",
   subagent_type: "general-purpose",
   run_in_background: true
 )
@@ -363,12 +412,25 @@ Task(
 
 ## Phase: Verify
 
-After fix agents complete:
-1. Run tests (`make test` or equivalent)
-2. Verify files were modified
-3. Update issue tracker: `open` → `fixed`
+### Do:
+- Run tests (`make test` or equivalent)
+- Verify files were actually modified
+- Update issue tracker: `addressing` → `fixed` or `clarified`
+
+### Don't:
+- ❌ Skip test verification
+- ❌ Proceed if tests fail — address test failures first
 
 ## Phase: Human Approval
+
+### Do:
+- Present detailed summary with full context
+- Use AskUserQuestion with clear options
+- Wait for explicit approval before committing
+
+### Don't:
+- ❌ Skip this checkpoint — human approval is mandatory
+- ❌ Commit without explicit "Approve and commit" response
 
 **Present detailed summary with enough context to make an informed decision:**
 
@@ -377,23 +439,22 @@ After fix agents complete:
 
 ### CR-001: [Short title] (severity)
 
-**The Bug:**
-[2-3 sentences explaining what the bug is, where it occurs, and why it matters.
-Include a code snippet if it helps illustrate the problem.]
+**The Finding:**
+[2-3 sentences explaining what the reviewer flagged, where it occurs, and why it matters.]
 
-**The Fix:**
-[1-2 sentences or code snippet showing what changed and why this resolves it.]
+**The Resolution:**
+[What changed. For bugs: the fix. For unclear code: the clarifying comment or refactor.]
 
-**Impact:** [One line on what this fixes for users]
+**Impact:** [One line on what this improves]
 
 ---
 
 ### CR-002: [Short title] (severity)
 
-**The Bug:**
+**The Finding:**
 [Same format...]
 
-**The Fix:**
+**The Resolution:**
 [Same format...]
 
 **Impact:** [...]
@@ -405,32 +466,41 @@ Include a code snippet if it helps illustrate the problem.]
 | ID | File | Change |
 |----|------|--------|
 | CR-001 | src/auth.js | String concat → parameterized query |
-| CR-002 | src/api.ts | Added null check before access |
+| CR-002 | src/api.ts | Added comment explaining intentional behavior |
 
-### Claude's Fixes
-- **CR-001**: Replaced string concatenation with parameterized query
-- **CR-002**: Added null coalescing with sensible default
+### Resolutions
+- **CR-001**: Fixed SQL injection via parameterized query
+- **CR-002**: Added comment clarifying why null check is unnecessary here
 
 ### Verification
 - [x] Tests passing (N/N)
 - [x] Files modified: src/auth.js, src/api.ts
 ```
 
-**Key principle:** The human needs enough context to understand *what* the bug was, *why* it matters, and *how* Claude fixed it — without having to dig through logs or diffs.
+**Key principle:** The human needs enough context to understand *what* was flagged, *why* it matters, and *how* Claude addressed it — without having to dig through logs or diffs.
 
 **AskUserQuestion with options:**
-1. "Approve and commit" — commit fixes, continue to next review
+1. "Approve and commit" — commit changes, continue to next review
 2. "View full diff" — show `git diff`, then re-ask
 3. "Request changes" — user specifies modifications
 4. "Abort" — exit loop, keep changes uncommitted
 
 ## Phase: Commit
 
+### Do:
+- Commit only after explicit human approval
+- Include all resolved findings in commit message
+- Loop back to Phase: Review after committing
+
+### Don't:
+- ❌ Commit without human approval
+- ❌ Commit before addressing all findings from current review round
+
 After human approval:
 
 ```bash
 git add -A && git commit -m "$(cat <<'EOF'
-codex-review: Fix issues from iteration N
+codex-review: Fix issues from iteration {N}
 
 Issues resolved:
 - CR-001: SQL injection in auth.js (major)
@@ -447,6 +517,16 @@ Then loop back to Phase: Review.
 
 ## Fixed Point
 
+### Do:
+- Require ALL n reviews clean to declare fixed point
+- Climb all the way to xhigh (default behavior)
+- Re-run all n reviews after addressing any finding
+
+### Don't:
+- ❌ Trust low/medium clean reviews as "done" — always climb to at least high
+- ❌ Stop at first fixed point — default is full climb to xhigh
+- ❌ Declare fixed point if ANY review has findings
+
 ### The True Definition
 
 A **true fixed point** requires BOTH:
@@ -455,17 +535,17 @@ A **true fixed point** requires BOTH:
 
 **False positives are bugs in your documentation, not bugs in the reviewer.**
 
-If 1 in 10 reviewers misunderstands your code, that's a 10% confusion rate. Fix it by adding comments until the confusion rate hits 0%. Don't dismiss — clarify, then re-run to verify.
+If 1 in 10 reviewers misunderstands your code, that's a 10% confusion rate. Address it by adding comments until the confusion rate hits 0%. Don't dismiss — clarify, then re-run to verify.
 
 ### Per-Level Fixed Point
-When `consecutive_clean_at_level >= n` at any level:
+When all n parallel reviews return clean at any level:
 ```
-n parallel reviews at [level] found nothing.
-Fixed point at [level]. Escalating to [next level]...
+All n reviews at [level] found nothing.
+Fixed point at [level]. Advancing to [next level]...
 ```
 
 ### Full Fixed Point
-When `consecutive_clean_at_level >= n` at `xhigh`:
+When all n reviews return clean at `xhigh`:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  FULL FIXED POINT REACHED                               │
@@ -475,10 +555,12 @@ When `consecutive_clean_at_level >= n` at `xhigh`:
 │  high:   n/n clean ✓                                    │
 │  xhigh:  n/n clean ✓                                    │
 ├─────────────────────────────────────────────────────────┤
-│  Total reviews: 4n  |  Bugs found & fixed: X            │
+│  Total reviews: 4n* |  Findings addressed: X            │
 │  Code has been validated at all reasoning depths.       │
 └─────────────────────────────────────────────────────────┘
 ```
+
+*If started from a higher level (e.g., `--level high`), total is fewer.
 
 Report final summary with level history and exit.
 
@@ -487,17 +569,29 @@ Report final summary with level history and exit.
 Maintain throughout session:
 
 ```
-┌────────┬─────────────┬──────┬──────────┬─────────────────────┬────────┬───────┐
-│ ID     │ File        │ Line │ Severity │ Description         │ Status │ Round │
-├────────┼─────────────┼──────┼──────────┼─────────────────────┼────────┼───────┤
-│ CR-001 │ src/auth.js │ 42   │ major    │ SQL injection       │ fixed  │ R1    │
-│ CR-002 │ src/api.ts  │ 108  │ minor    │ Missing null check  │ fixed  │ R1    │
-│ CR-003 │ src/util.js │ 15   │ style    │ Unused import       │ wontfix│ R2    │
-└────────┴─────────────┴──────┴──────────┴─────────────────────┴────────┴───────┘
+┌────────┬─────────────┬──────┬──────────┬─────────────────────────────────┬──────────┬───────┬───────┐
+│ ID     │ File        │ Line │ Severity │ Description                     │ Status   │ Iter  │ Level │
+├────────┼─────────────┼──────┼──────────┼─────────────────────────────────┼──────────┼───────┼───────┤
+│ CR-001 │ src/auth.js │ 42   │ major    │ SQL injection                   │ fixed    │ I1    │ high  │
+│ CR-002 │ src/api.ts  │ 108  │ minor    │ Missing null check              │ fixed    │ I1    │ high  │
+│ CR-003 │ src/util.js │ 15   │ style    │ Unused import (false positive)  │ clarified│ I2    │ xhigh │
+└────────┴─────────────┴──────┴──────────┴─────────────────────────────────┴──────────┴───────┴───────┘
 ```
 
 Severities: `critical` | `major` | `minor` | `style`
-Statuses: `open` | `fixing` | `fixed` | `wontfix`
+Statuses: `open` | `addressing` | `fixed` | `clarified`
+
+**Status transitions:**
+- `open` → when finding is first recorded
+- `addressing` → when an agent is actively working on it
+- `fixed` → real bug was fixed in code
+- `clarified` → false positive addressed with comments/refactoring
+
+### Don't:
+- ❌ Use "wontfix" status — it doesn't exist
+- ❌ Leave any finding unaddressed — every finding = code improvement
+
+See Core Philosophy: every finding results in code change (fix OR clarify).
 
 ## Resumption (Post-Compaction)
 
@@ -513,17 +607,18 @@ Statuses: `open` | `fixing` | `fixed` | `wontfix`
 **The Pattern:**
 
 1. **Record IDs when launching** — Note the task IDs from each Bash() call
-2. **Wait briefly** — Give tasks time to run (~3-5 min for medium, ~15 min for xhigh)
+2. **Wait briefly** — Give tasks time to run (~3m for low, ~5m for medium, ~8-10m for high, ~12-20m for xhigh)
 3. **Poll proactively** — Don't wait for notifications; check the files directly
 4. **If user says "tasks are done"** — Trust them and poll immediately
 
 **Polling Recipe:**
 ```bash
+# The output_file path is returned when you launch each task
 # Check if task is complete (look for final JSON line with result)
-tail -1 /tmp/claude/.../tasks/<id>.output
+tail -1 <output_file>
 
-# Batch check all tasks
-for id in <id1> <id2> <id3>; do echo "=== $id ==="; tail -1 "/tmp/claude/.../tasks/${id}.output"; done
+# Batch check all tasks (using the paths returned at launch time)
+for f in /path/to/task1.output /path/to/task2.output; do echo "=== $f ==="; tail -1 "$f"; done
 ```
 
 ⚠️ **NEVER use `tail -f`** — it blocks forever. Always use `cat` or `tail -n` which terminate after reading.
@@ -542,22 +637,23 @@ When successive reviews recommend opposing changes, this signals genuine design 
 
 Contradictory findings usually indicate underspecified requirements, not wrong reviews.
 
-## Anti-patterns
+## Quick Reference: Don'ts
 
-- Running Claude agents to "review" — USE `codex review` CLI
-- Skipping human approval checkpoint
-- Committing without reaching fixed point (n clean at current level)
-- Running codex review without `run_in_background` (takes 3-20 min)
-- Fixing issues user marked `wontfix`
-- Infinite loops without max_iterations guard
-- **Forgetting to set `-c model_reasoning_effort`** — always explicit
-- **Running reviews sequentially** — always run N in parallel (where N = -n flag)
-- **Trusting low/medium clean reviews as "done"** — always climb to at least high
-- **Not verifying findings before fixing** — especially at lower reasoning levels
-- **Stopping at first fixed point** — default is full climb to xhigh
-- **Dismissing false positives without improving code** — add comments to clarify confusing logic
-- **Blaming the reviewer for misunderstanding** — if an LLM gets confused, a human might too
+Pre-flight checklist. Details are inline in each section above.
+
+| Section | Don't |
+|---------|-------|
+| Initialize | Assume master is base, skip base branch detection |
+| Review | Use Task agents, run sequentially, forget `-c model_reasoning_effort`, use `tail -f` |
+| Parse Output | Skip findings because they seem minor, combine multiple findings into one |
+| Verification of Findings | Address without verifying, dismiss without improving code, blame reviewer |
+| Address | Skip exit check, address without user strategy input, run agents sequentially |
+| Verify | Skip tests, proceed if tests fail |
+| Approval | Skip checkpoint, commit without explicit approval |
+| Commit | Commit without approval, commit before addressing all findings |
+| Fixed Point | Trust low/medium as done, stop at first fixed point, declare fixed point if ANY review has findings |
+| Issue Tracker | Use "wontfix" status, leave findings unaddressed |
 
 ---
 
-Enter codex-review-loop mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch N parallel `codex review` commands via Bash tool with `run_in_background: true` (where N = -n flag, default 3). Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI.
+Enter loop-codex-review mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch n parallel `codex review` commands via Bash tool with `run_in_background: true` (where n = -n flag, default 3). All n must be clean to advance to next level. Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI.

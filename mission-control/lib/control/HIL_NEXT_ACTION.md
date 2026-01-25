@@ -37,7 +37,10 @@ AskUserQuestion(
 **If "Continue":**
 1. Check for ready tasks (pending, empty blockedBy)
 2. If ready tasks exist → preflight/EVALUATE
-3. If all tasks blocked → report blockers, re-present options
+3. If all tasks blocked with no in_progress tasks → **deadlock detected**:
+   - Check for circular dependencies (A blockedBy B, B blockedBy A) → route to HIL_ANOMALY
+   - Check for blockers that are ABORTED/completed → offer to clear stale blockedBy
+   - Otherwise report blockers with explicit options: "Unblock manually" or "Abort blocked tasks"
 4. If all tasks complete → proceed to "Complete" handler
 
 **If "Pause":**

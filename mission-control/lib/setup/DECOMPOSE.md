@@ -41,4 +41,10 @@ T-002 ──┴── T-004
 
 Tasks T-001 and T-002 run in parallel. T-003 and T-004 wait for their blockers.
 
+## Empty Request Handling
+
+If the user's request is too vague to decompose into concrete tasks (e.g., "just help me" with no context), ask for clarification before creating tasks. Do not proceed to HIL_PLAN_APPROVAL with an empty task graph.
+
+---
+
 After decomposition, proceed to HIL_PLAN_APPROVAL for user approval.

@@ -22,8 +22,10 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty.
 
 ## Mode-Specific Behavior
 
+**Note:** `--auto` forces `--fg` behavior even if originally invoked with `--bg`.
+
 ```
---fg (foreground):
+--fg (foreground), or --auto:
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
        - Task(run_in_background: true) for T1
        - Task(run_in_background: true) for T2

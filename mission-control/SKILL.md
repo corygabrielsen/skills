@@ -3,9 +3,9 @@ name: mission-control
 description: Coordinate complex multi-step work using task graphs and parallel background agents. Use when work requires decomposition, delegation, and long-running operations that may survive context compaction.
 args:
   - name: --fg
-    description: Foreground mode. Launch agents but block on them (parallel launch, blocking wait). Mission control maintains control flow.
+    description: Foreground mode. Launch agents and block on them (parallel launch, blocking wait).
   - name: --bg
-    description: Background mode (default). Launch agents and return control to human. Human gets notified on completion.
+    description: Background mode (default). Launch agents, return control to human, notify on completion.
   - name: --auto
     description: Skip human checkpoints in foreground mode. If used with --bg, forces --fg.
 ---
@@ -121,7 +121,7 @@ mission-control/
 - Tasks pending but all blocked → control/REPORT
 - All tasks completed/ABORTED → control/REPORT
 - No tasks + work-related history → setup/BOOTSTRAP (see INITIALIZE.md for "history" definition)
-- Fresh start → setup/DECOMPOSE
+- No tasks + no work-related history → setup/DECOMPOSE
 
 See each composite's PHASE.md for internal flow details.
 
@@ -196,17 +196,17 @@ pending --> in_progress --> completed
 | `TaskGet` | Get full details of a specific task | `taskId` |
 | `Task` | Spawn a background agent to execute work | `run_in_background: true` for async |
 
-**Agent ID timing:** `Task` returns the agent ID immediately at launch (before the agent completes).
+**Agent ID timing:** `Task` returns agent ID immediately at launch.
 
 | `TaskOutput` | Read output from a spawned agent | `task_id`, `block: true/false` |
 | `AskUserQuestion` | Present options to human for decision | `questions` array |
 
-**Note:** `Task` (spawns agent) is distinct from `TaskCreate` (creates task record). Always create the task first, then spawn an agent to execute it.
+**Note:** `Task` spawns agents; `TaskCreate` creates task records. Create task first, then spawn agent.
 
-**TaskOutput blocking:** Use `block: true` to wait for completion (--fg mode). Use `block: false` or omit to poll without waiting (--bg mode status checks).
+**TaskOutput blocking:** `block: true` waits for completion (--fg). `block: false` polls without waiting (--bg).
 
 ---
 
 Begin /mission-control now. Enter setup/INITIALIZE for state detection and routing.
 
-Follow composite phase flows. Honor HIL sub-phases unless `--auto` AND nominal (see FR-E003 for auto-mode boundaries on failures).
+Follow composite phase flows. Honor HIL sub-phases unless `--auto` AND nominal (FR-E003).

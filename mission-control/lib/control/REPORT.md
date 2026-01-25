@@ -38,13 +38,12 @@
 
 ```
 --fg mode:
-    → Proceed to HIL: Next Action (human decides)
-    (If --auto: HIL: Next Action auto-continues or auto-completes)
+    → control/HIL_NEXT_ACTION
+    (If --auto: auto-continues or auto-completes)
 
 --bg mode:
-    → Report status
-    → Return control to human
-    → Human can resume with /mission-control
+    → Report status, return control to human
+    → Human resumes with /mission-control
 ```
 
 ## Final Report Template (All Work Complete)

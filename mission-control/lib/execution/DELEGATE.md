@@ -26,13 +26,13 @@ A task is "ready" when its `blockedBy` list is empty.
 --fg (foreground):
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
     2. Immediately call TaskOutput(block: true) for each launched task
-    3. Proceed to Verify when all complete
+    3. → execution/VERIFY when all complete
 
 --bg (background):
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
     2. Report launched tasks to user
     3. Return control to human
-    4. Resume on task completion notification → proceed to Monitor
+    4. On resume → execution/MONITOR
 ```
 
 ## Agent Prompt Template

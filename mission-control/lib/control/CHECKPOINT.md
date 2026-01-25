@@ -72,9 +72,9 @@ When uncertain, surface to user rather than assuming stall.
 
 ```
 if stalled tasks exist:
-    → Trigger HIL: Anomaly for each
+    → control/HIL_ANOMALY
 if context near limit:
-    → Trigger Handoff
+    → control/HANDOFF
 else:
-    → Proceed to Report
+    → control/REPORT
 ```

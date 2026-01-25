@@ -72,20 +72,20 @@ AskUserQuestion(
 
 **If "Retry":**
 1. Reset task to `pending`
-2. Return to Delegate phase
+2. → preflight/EVALUATE
 
 **If "Replan":**
 1. Mark original task `ABORTED - Replanning`
-2. Prompt user: "Describe the new approach or I'll propose one."
+2. Prompt user: "Describe the new approach, or I'll propose one."
 3. Create new task with revised approach
-4. Return to Pre-Flight
+4. → preflight/EVALUATE
 
 **If "Skip":**
 1. Mark task `ABORTED - Skipped after anomaly`
 2. Check if downstream tasks are now blocked
-3. Return to Checkpoint → Report
+3. → control/CHECKPOINT
 
 **If "Halt":**
-1. Mark task `in_progress` (preserve state)
-2. Trigger Handoff phase (capture state for later)
+1. Keep task `in_progress` (preserve state)
+2. → control/HANDOFF
 3. End skill

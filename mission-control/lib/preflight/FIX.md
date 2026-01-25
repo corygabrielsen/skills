@@ -58,5 +58,5 @@ Mark T-003 as: ABORTED - Split into T-003a, T-003b, T-003c, T-003d
 
 ```
 after fixes applied:
-    → return to preflight/EVALUATE (re-check all ready tasks)
+    → preflight/EVALUATE (re-check all ready tasks)
 ```

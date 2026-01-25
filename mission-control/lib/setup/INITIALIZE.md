@@ -24,22 +24,22 @@ if TaskList returns tasks:
     Check task states and route:
 
     if any tasks are in_progress:
-        → Proceed to Monitor (agents are running)
+        → execution/MONITOR (agents are running)
 
     else if any tasks are pending with empty blockedBy:
-        → Proceed to Pre-Flight (ready tasks waiting)
+        → preflight/EVALUATE (ready tasks waiting)
 
     else if any tasks are pending but all blocked:
-        → Proceed to Report (show blocked status)
+        → control/REPORT (show blocked status)
 
     else if all tasks completed or ABORTED:
-        → Proceed to Report (show final status)
+        → control/REPORT (show final status)
 
 else if conversation has history:
-    → Proceed to Bootstrap (mine conversation for work)
+    → setup/BOOTSTRAP (mine conversation for work)
 
 else:
-    → Proceed to Decompose (fresh start, await user request)
+    → setup/DECOMPOSE (fresh start, await user request)
 ```
 
 ## Handoff Detection

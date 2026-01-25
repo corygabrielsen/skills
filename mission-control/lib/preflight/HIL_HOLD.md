@@ -38,17 +38,17 @@ AskUserQuestion(
 ## Handlers
 
 **If "Fix":**
-- → proceed to preflight/FIX
+→ preflight/FIX
 
 **If "Waive":**
-- Record waiver in task metadata: `metadata.waived: true, metadata.waiver_reason: "..."`
-- Log warning: "Proceeding with waived NO-GOs. Increased failure risk."
-- → exit preflight, proceed to execution/DELEGATE
+1. Record waiver: `metadata.waived: true, metadata.waiver_reason: "..."`
+2. Log warning: "Proceeding with waived NO-GOs. Increased failure risk."
+3. → execution/DELEGATE
 
 **If "Scrub":**
-- Mark NO-GO tasks as `ABORTED - Scrubbed at pre-flight`
-- If GO tasks remain → exit preflight, proceed to execution/DELEGATE
-- If no GO tasks remain → proceed to control/REPORT
+1. Mark NO-GO tasks as `ABORTED - Scrubbed at pre-flight`
+2. If GO tasks remain → execution/DELEGATE
+3. If no GO tasks remain → control/REPORT
 
 **If "Halt":**
-- → return to setup/DECOMPOSE for replanning
+→ setup/DECOMPOSE

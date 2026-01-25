@@ -29,6 +29,8 @@ else:
     → Proceed to Synthesize
 ```
 
+If any reviewer failed to launch, always proceed to Synthesize even if remaining reviewers found no issues.
+
 ## Issue Tracker Format
 
 ```markdown

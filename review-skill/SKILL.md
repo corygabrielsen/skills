@@ -17,7 +17,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 | checklist | "Do these specific checks pass?" | Structural issues, missing sections |
 | contradictions | "Does A contradict B?" | Conflicting instructions |
 | terminology | "Is term X used consistently?" | Naming inconsistencies |
-| adversarial | "Can this be misinterpreted?" | Ambiguities, edge cases |
+| adversarial | "Where would a reasonable LLM go wrong?" | Fixable ambiguities, missing info |
 | coverage | "Is every option/branch handled?" | Unhandled branches, missing handlers |
 
 ---
@@ -46,10 +46,10 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 **Launch all reviewers in parallel. Each reviewer gets a specialized prompt.**
 
 ### Do:
-- Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
+- Use `Task` tool with background execution enabled (e.g., `run_in_background: true`) and `prompt: <reviewer prompt>`. Verify parameter names match your tool's API.
 - Launch all 6 reviewers in a **single assistant turn** (6 separate Task tool calls, one per reviewer)
-- Store all 6 task IDs (from tool response) for collection, mapping each ID to its reviewer name
-- Verify 6 task IDs were returned; if fewer, identify missing reviewer by comparing returned IDs to expected list and record "Reviewer [name] failed to launch" as an issue
+- Store all 6 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage
+- Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue
 
 ### Don't:
 - Run reviewers sequentially
@@ -153,13 +153,26 @@ NO ISSUES
 ```
 Review {target_file} adversarially.
 
-Try to find ways to misinterpret this document that would lead to wrong behavior.
+Imagine a less-capable LLM or hurried reader following this document. Find places where they would go wrong.
 
-If you CAN'T find a plausible misinterpretation, the document is robust.
+Focus on issues FIXABLE by improving the document:
+- Ambiguous instructions with multiple valid interpretations
+- Missing information needed to choose the right action
+- Implicit assumptions that should be explicit
+- Easy-to-miss qualifiers or conditions
+
+Do NOT flag issues outside the document's control:
+- Tool behavior (assume standard tools work correctly)
+- User actions outside the skill's flow
+- Environment variations
+- Misreadings that require ignoring surrounding context
+
+Before flagging, ask: "What edit to this document would fix this?"
+If you can't answer, don't flag it.
 
 Output:
 ISSUES:
-1. Line X: Could be read as "[bad interpretation]" leading to [wrong behavior]
+1. Line X: A reasonable LLM would [wrong behavior] because [why context doesn't resolve it], fixable by [specific edit]
 ...
 
 OR
@@ -193,7 +206,7 @@ NO ISSUES
 **Gather results from all reviewers.**
 
 ### Do:
-- Use `TaskOutput` with `task_id: <id>` and `block: true` for each reviewer to wait for completion
+- Use `TaskOutput` with `task_id: <id>` for each reviewer **in a single turn (6 parallel calls)** to wait for completion
 - Parse each reviewer's output format
 
 ### Don't:
@@ -202,7 +215,7 @@ NO ISSUES
 
 ### Evaluate Results
 
-A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed or failed reviewer output as having issues—record "Reviewer failed: [error]" in the Issue field and follow the normal issue path (proceed to Synthesize).
+A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed output (neither "NO ISSUES" nor valid "ISSUES: 1. Line X..." format) or failed reviewer output (task execution error) as having issues—record "Reviewer failed: [error]" in the Issue field and follow the normal issue path (proceed to Synthesize).
 
 ```
 if ALL 6 reviewers output NO ISSUES:
@@ -232,7 +245,7 @@ else:
 A single root cause may be caught by multiple reviewers. Group them.
 
 ### Do:
-- Look for issues that point to the same underlying issue
+- Look for issues that point to the same underlying issue (e.g., if terminology flags "X vs Y" inconsistency and execution flags wrong behavior caused by that naming, they share root cause "inconsistent naming")
 - Name themes clearly (2-5 words)
 - List truly unrelated issues separately
 
@@ -249,7 +262,7 @@ A single root cause may be caught by multiple reviewers. Group them.
 ### Do:
 - Propose ONE fix per theme
 - Categorize: real issue, ambiguity, or missing content
-- Update status to `planned`
+- After proposing a fix for each theme, update that theme's issues from `open` to `planned`
 
 ### Don't:
 - Make edits during triage
@@ -289,7 +302,12 @@ AskUserQuestion(
 
 **If user selects "Approve":** Proceed to Address phase.
 
-**If user selects "Modify":** Acknowledge selection and prompt: "Please describe your changes." End turn. When user provides input, update plan accordingly, then re-present Plan Approval options.
+**If user selects "Modify":**
+1. Acknowledge selection and prompt: "Please describe your changes."
+2. End turn (stop responding and wait for user input).
+3. When user provides input, update plan accordingly.
+4. Show updated plan to user.
+5. Re-present Plan Approval options.
 
 **If user selects "Abort":** End skill without changes.
 
@@ -356,9 +374,21 @@ AskUserQuestion(
 
 **If user selects "Confirm":** Proceed to Epilogue.
 
-**If user selects "View diff":** Run `git diff {target_file}` to show unstaged changes (Edit tool produces unstaged changes). Show the diff output to user. If empty, report "No changes to show." If file is untracked, report "File is untracked (not yet committed)." Then re-present confirmation options.
+**If user selects "View diff":**
+1. Run `git diff {target_file}` to show unstaged changes (Edit tool produces unstaged changes).
+2. Show the diff output to user.
+3. Handle edge cases:
+   - If diff is empty: report "No unstaged changes to show."
+   - If file is untracked: report "File is untracked (not yet committed)."
+4. Re-present confirmation options.
 
-**If user selects "Revert":** First warn user: "This will discard unstaged changes to {target_file}. Staged changes are not affected—use `git restore --staged {target_file}` first if needed." Then run `git checkout -- {target_file}` to restore the file (restores to staged version if staged, otherwise to last committed version). If file was never committed and has no staged version, git will error with "pathspec did not match"—report this error and end skill. On success, report "Changes reverted." and end skill.
+**If user selects "Revert":**
+1. Warn user: "This will discard unstaged changes to {target_file}. Staged changes are not affected—use `git restore --staged {target_file}` first if needed."
+2. Run `git checkout -- {target_file}` to restore the file.
+3. Handle edge cases:
+   - Success: report "Changes reverted." and end skill.
+   - File never committed (git errors "pathspec did not match"): report this error and end skill.
+   - Note: If changes were staged, `git checkout --` has no effect (file already matches staged version). The warning in step 1 informs user of this.
 
 ---
 
@@ -406,4 +436,4 @@ Issues: {count} addressed (from {reviewers_with_issues} reviewers).
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 reviewers in parallel with their specialized prompts. Follow phase flow based on results: if all clean, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.
+Begin /review-skill now. Parse args for target file. Launch all 6 reviewers in parallel with their specialized prompts. Collect results. Follow phase flow based on results: if all clean, skip to Epilogue; otherwise continue Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Epilogue.

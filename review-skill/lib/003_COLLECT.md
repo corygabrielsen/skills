@@ -3,7 +3,7 @@
 **Gather results from all reviewers.**
 
 ## Do:
-- Use `TaskOutput` with `task_id: <id>` for each reviewer that successfully launched, **in a single assistant turn**, to wait for completion (if fewer than 8 launched, only call TaskOutput for those that did)
+- Use `TaskOutput` with `task_id: <id>` for each reviewer that successfully launched, **in a single assistant turn** (one message with up to 8 TaskOutput calls), to wait for completion (if fewer than 8 launched, only call TaskOutput for those that did). TaskOutput blocks until completion, so this turn waits for all reviewers to finish.
 - Parse each reviewer's output: extract line number from "Line X:" prefix into Line column, extract description after the colon into Issue column, assign sequential IDs (I-001, I-002...), set Fix to "—" and Status to `open`. Note: Some reviewers (e.g., checklist) output issues without line numbers—use "-" for the Line column when no line number is present.
 
 ## Don't:

@@ -3,7 +3,7 @@
 ```
 Review {target_file} for portability across LLM providers.
 
-Question: Would this skill break or behave incorrectly when run by a non-Claude model?
+Question: Would this skill break or behave incorrectly when run by another LLM provider?
 
 Flag issues where the document assumes:
 - Claude-specific tools or behaviors

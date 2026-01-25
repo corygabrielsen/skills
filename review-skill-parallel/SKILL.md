@@ -33,7 +33,7 @@ There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misundersto
 └─────────────────┘     └───────────────────┘
 ```
 
-This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation.
+This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Iteration Complete.
 
 Task agents are launched via the `Task` tool and serve as reviewers. You address their findings through the phases below.
 
@@ -58,10 +58,12 @@ task_ids: []                 # Task IDs for result collection
 # issue_tracker is maintained as a markdown table (see Phase: Parse Output)
 ```
 
+The issue tracker is conceptual — maintained in your working context during the iteration, not persisted to disk.
+
 ### Tools Assumed
 
 This skill uses standard Claude Code tools without detailed explanation:
-- `Task` — Launch background agents (`description`, `subagent_type`, `run_in_background`, `prompt`)
+- `Task` — Launch background agents; returns task_id (`description`, `subagent_type`, `run_in_background`, `prompt`)
 - `TaskOutput` — Retrieve agent results (`task_id`, `block`, `timeout`)
 - `Edit` — Modify files (`file_path`, `old_string`, `new_string`)
 - `AskUserQuestion` — Present options to user (`questions` array containing objects with `question`, `header`, `options`, `multiSelect`)
@@ -146,19 +148,19 @@ NO FINDINGS - document is internally consistent.
 
 ```
 Task(
-  description: "Review SKILL.md (1/3)",
+  description: "Review {target_file} (1/3)",
   prompt: "[review prompt with {file} substituted]",
   subagent_type: "general-purpose",
   run_in_background: true
 )
 Task(
-  description: "Review SKILL.md (2/3)",
+  description: "Review {target_file} (2/3)",
   prompt: "[same review prompt]",
   subagent_type: "general-purpose",
   run_in_background: true
 )
 Task(
-  description: "Review SKILL.md (3/3)",
+  description: "Review {target_file} (3/3)",
   prompt: "[same review prompt]",
   subagent_type: "general-purpose",
   run_in_background: true
@@ -216,7 +218,7 @@ Statuses:
 - `open` — finding identified, not yet addressed
 - `planned` — resolution proposed, awaiting human approval
 - `fixed` — real inconsistency corrected
-- `clarified` — wording improved to prevent future misunderstanding (for false positives or design tradeoffs)
+- `clarified` — wording improved or rationale documented to prevent future misunderstanding (for false positives or design tradeoffs)
 
 ---
 
@@ -352,7 +354,7 @@ This is the first human-in-the-loop checkpoint. The user can:
 
 ### Plan Summary Template
 
-Present by theme, not by individual finding. This makes review tractable for humans.
+Extend the Theme Summary from Synthesize by adding proposed fixes for each theme. Present by theme, not by individual finding. This makes review tractable for humans.
 
 ```markdown
 ## Review Findings: {finding_count} findings in {theme_count} themes
@@ -425,7 +427,6 @@ AskUserQuestion(
 ### Do:
 - Address all planned findings from the tracker
 - Use Edit tool for targeted changes
-- Group related findings when they share a root cause
 - Update tracker status as you go
 
 ### Don't:
@@ -436,7 +437,7 @@ AskUserQuestion(
 
 ### Address Protocol
 
-For each finding:
+For each theme (or individual unrelated finding):
 
 1. **Read context** — Read the section(s) containing the finding
 2. **Identify resolution** — Fix, clarify, or document rationale
@@ -492,6 +493,8 @@ Update tracker: F-001 status → fixed
 
 This is the second human-in-the-loop checkpoint. The user confirms the changes were executed correctly.
 
+**Clean iteration (0 findings)**: If all reviewers returned "NO FINDINGS," present a minimal confirmation: "Clean iteration — no findings, no changes made. Ready for next iteration or fixed point declaration."
+
 ### Do:
 - Present summary of changes made (not proposed — actually executed)
 - Show which findings were resolved and how
@@ -533,7 +536,7 @@ AskUserQuestion(
     header: "Confirm",
     options: [
       {label: "Confirm", description: "Changes look correct, complete iteration"},
-      {label: "View diff", description: "Show git diff, then re-ask"},
+      {label: "View diff", description: "Show git diff (requires git), then re-ask"},
       {label: "Revert", description: "Something went wrong, undo changes"},
       {label: "Modify", description: "Need additional changes"}
     ],
@@ -564,7 +567,7 @@ When user confirms:
 | Phase | Don't |
 |-------|-------|
 | Initialize | Start without target file, review non-skill files |
-| Review | Run sequentially, Do the review yourself, customize prompts per reviewer |
+| Review | Run sequentially, do the review yourself, customize prompts per reviewer |
 | Parse Output | Skip minor findings, proceed before all reviewers complete |
 | Synthesize | Skip straight to individual triage, group mechanically without understanding, force unrelated findings into themes |
 | Triage | Make edits during triage, dismiss findings, triage individually instead of by theme, blame reviewer |
@@ -575,4 +578,4 @@ When user confirms:
 
 ---
 
-Begin review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents with identical review prompts. Wait for all to complete, synthesize findings into themes, triage by theme (not individually), get plan approval from human, execute the plan, verify changes, and get human confirmation.
+Begin review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents with identical review prompts. Wait for all to complete, synthesize findings into themes, triage by theme (unrelated findings are triaged individually), get plan approval from human, execute the plan, verify changes, and get human confirmation.

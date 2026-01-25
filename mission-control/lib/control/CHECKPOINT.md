@@ -66,9 +66,9 @@ No hard-coded timeouts. Agent capabilities evolve rapidly.
 - Complex research or multi-file edits in progress
 - Agent explicitly indicated long-running work
 
-**Relative timing:** If similar tasks completed in X time, 3-5X without progress is worth surfacing. When no baseline exists, wait until user engagement or visible output ceases.
+**Relative timing:** If similar tasks completed in X time, 3-5X without progress is worth surfacing.
 
-When uncertain, surface to user: "T-004 has been running for [duration]. Continue waiting?"
+**Default when no baseline exists:** Surface to user rather than assuming stalled. Present a status question: "T-004 has been running for [duration] with no visible output. Continue waiting or investigate?"
 
 ## After Checkpoint
 

@@ -56,7 +56,7 @@ AskUserQuestion(
 **If user selects "Modify":**
 1. Prompt: "Describe what changes you'd like to the task breakdown."
 2. End turn, wait for user input.
-3. Update tasks via TaskUpdate or create new tasks.
+3. Interpret user feedback (at any level of detail) and make appropriate TaskUpdate calls or create new tasks. Mission control proposes and executes changes based on user's intent.
 4. Re-present Plan Approval (loop until Approve or Abort).
 
 **If user selects "Abort":**

@@ -1,6 +1,6 @@
 ---
 name: review-skill
-description: Review a skill document using specialized lenses. Each lens finds specific issue types. Clean from all lenses = no findings.
+description: Review a skill document using specialized lenses. Each lens finds specific issue types. Clean from all lenses = no issues.
 ---
 
 # Review Skill
@@ -9,7 +9,7 @@ Review skill documents using specialized lenses. Each lens is tuned to find spec
 
 ## Lenses
 
-Each lens asks a focused question. A finding from any lens is signal. Clean from all lenses means no findings.
+Each lens asks a focused question. An issue from any lens is signal. Clean from all lenses means no issues.
 
 | Lens | Question | Finds |
 |------|----------|-------|
@@ -26,7 +26,7 @@ Each lens asks a focused question. A finding from any lens is signal. Clean from
 
 ### Do:
 - Accept target skill file path from args
-- Validate file exists and ends with `SKILL.md`
+- Validate file exists and path ends with `/SKILL.md`
 - Read the full file content for lens prompts
 - Store `target_file` path for use in later phases
 
@@ -72,13 +72,13 @@ Only report issues where the answer is YES. Ignore:
 - Tool existence (assume standard tools work)
 
 Output:
-FINDINGS:
+ISSUES:
 1. Line X: [what would go wrong]
 ...
 
 OR
 
-NO FINDINGS
+NO ISSUES
 ```
 
 **Lens: checklist**
@@ -93,13 +93,13 @@ Check ONLY:
 5. Are tool parameters documented accurately?
 
 Output:
-FINDINGS:
+ISSUES:
 1. [which check failed]: [details]
 ...
 
 OR
 
-NO FINDINGS - all checks pass.
+NO ISSUES - all checks pass.
 ```
 
 **Lens: contradictions**
@@ -118,7 +118,7 @@ IS a contradiction:
 - A rule and an example that violate it
 
 Output:
-FINDINGS:
+ISSUES:
 1. Lines X and Y contradict: [explanation]
 ...
 
@@ -139,13 +139,13 @@ Do NOT flag:
 - Intentional distinctions (e.g., "phase" vs "section" if they mean different things)
 
 Output:
-FINDINGS:
+ISSUES:
 1. "[term A]" vs "[term B]" for same concept: lines X, Y, Z
 ...
 
 OR
 
-NO FINDINGS - terminology is consistent.
+NO ISSUES - terminology is consistent.
 ```
 
 **Lens: adversarial**
@@ -198,12 +198,12 @@ NO GAPS - all paths handled.
 
 ### Don't:
 - Proceed before all lenses complete
-- Ignore any lens's findings
+- Ignore any lens's issues
 
 ### Evaluate Results
 
 A lens is "clean" if its output starts with one of:
-- `NO FINDINGS`
+- `NO ISSUES`
 - `NO CONTRADICTIONS`
 - `ROBUST`
 - `NO GAPS`
@@ -212,7 +212,7 @@ A lens is "clean" if its output starts with one of:
 if ALL 6 lenses are clean:
     → Present "All lenses clean." and proceed to Epilogue
 else:
-    → Merge findings into tracker
+    → Merge issues into tracker
     → Proceed to Synthesize
 ```
 
@@ -229,24 +229,24 @@ else:
 
 ## Phase: Synthesize
 
-**Group findings by root cause, not by lens.**
+**Group issues by root cause, not by lens.**
 
 A single root cause may be caught by multiple lenses. Group them.
 
 ### Do:
-- Look for findings that point to the same underlying issue
+- Look for issues that point to the same underlying issue
 - Name themes clearly (2-5 words)
-- List truly unrelated findings separately
+- List truly unrelated issues separately
 
 ### Don't:
 - Group by lens (lenses are detection methods, not categories)
-- Force unrelated findings into themes
+- Force unrelated issues into themes
 
 ---
 
 ## Phase: Triage
 
-**Propose resolutions. Don't edit yet.**
+**Propose fixes. Don't edit yet.**
 
 ### Do:
 - Propose ONE fix per theme
@@ -255,7 +255,7 @@ A single root cause may be caught by multiple lenses. Group them.
 
 ### Don't:
 - Make edits during triage
-- Dismiss findings
+- Dismiss issues
 
 ---
 
@@ -273,7 +273,7 @@ A single root cause may be caught by multiple lenses. Group them.
 ```
 AskUserQuestion(
   questions: [{
-    question: "Approve plan to address these findings?",
+    question: "Approve plan to address these issues?",
     header: "Plan",
     options: [
       {label: "Approve", description: "Proceed to make edits"},
@@ -315,11 +315,11 @@ AskUserQuestion(
 ### Do:
 - Re-read modified sections
 - Check for unintended side effects
-- Ensure all findings are `fixed`
+- Ensure all issues are `fixed`
 
 ### Don't:
 - Skip verification
-- Proceed with unaddressed findings
+- Proceed with unaddressed issues
 
 ---
 
@@ -366,7 +366,7 @@ AskUserQuestion(
 **Report results and end.**
 
 ### Do:
-- Report outcome (clean or findings addressed)
+- Report outcome (clean or issues addressed)
 - End the skill
 
 ### Don't:
@@ -375,13 +375,13 @@ AskUserQuestion(
 
 **All lenses clean:**
 ```
-All lenses clean. No findings.
+All lenses clean. No issues.
 ```
 
 **Findings addressed:**
 ```
 Review complete.
-Findings: {count} addressed across {lens_count} lenses.
+Issues: {count} addressed across {lens_count} lenses.
 ```
 
 ---
@@ -403,4 +403,4 @@ Findings: {count} addressed across {lens_count} lenses.
 
 ---
 
-Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. If all return clean, report "All lenses clean." and end. Otherwise: synthesize findings into themes, triage, get Plan Approval, execute edits, verify, and get Change Confirmation.
+Begin /review-skill now. Parse args for target file. Launch all 6 lenses in parallel with their specialized prompts. If all return clean, report "All lenses clean." and end. Otherwise: synthesize issues into themes, triage, get Plan Approval, execute edits, verify, and get Change Confirmation.

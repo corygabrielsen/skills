@@ -81,7 +81,7 @@ After handoff, inform user:
 State captured in task system. To resume:
 
 1. Run `/mission-control` (or `/mission-control --fg`)
-2. Mission control will read TaskList and Bootstrap phase will recover state
+2. Mission control will read TaskList and handoff task to recover state
 3. Coordination continues from where we left off
 
 **In-flight work:** T-004 (agent abc123) - check for completion

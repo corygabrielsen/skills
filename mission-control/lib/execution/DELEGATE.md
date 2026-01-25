@@ -56,6 +56,8 @@ Task(
 )
 ```
 
+**Note:** When launching multiple agents, include all Task calls in a single assistant turn (message) for parallel execution.
+
 The `Task` tool returns an agent ID. Store it in task metadata: `TaskUpdate(taskId: T-001, metadata: {agent_id: "returned_id"})`.
 
 ## Launch Failure Handling

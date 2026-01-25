@@ -44,6 +44,8 @@
 --bg mode:
     → Report status, end skill, return control to human
     → Human resumes with /mission-control (re-enters at INITIALIZE)
+    Note: Ready tasks (unblocked by completed work) will be picked up on
+    resume via INITIALIZE → preflight/EVALUATE.
 ```
 
 ## Final Report Template (All Work Complete)

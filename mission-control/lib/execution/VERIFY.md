@@ -49,4 +49,4 @@ if verification failed for any task:
     → control/HIL_ANOMALY (for failed tasks only)
 ```
 
-**Mixed results:** When some tasks pass and some fail, mark passed tasks complete first, then proceed to HIL_ANOMALY for the failed ones. Passed work is preserved.
+**Mixed results:** When some tasks pass and some fail, mark passed tasks complete first, then proceed to HIL_ANOMALY for the failed ones. Passed work is preserved. Completed tasks persist in task system and appear in subsequent CHECKPOINT/REPORT phases regardless of HIL_ANOMALY routing for failed tasks.

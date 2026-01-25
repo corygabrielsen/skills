@@ -53,7 +53,7 @@ else if conversation has work-related history:
     → setup/BOOTSTRAP (mine conversation for work)
     "Work-related history" triggers BOOTSTRAP if conversation contains ANY of:
     - Explicit action requests ("implement X", "fix Y", "create Z", "add a...")
-    - File paths or code snippets discussed
+    - File paths or code snippets discussed in context of requested work (not just queried)
     - Decisions recorded ("let's use X", "we decided Y")
     - Work already done that should be catalogued
     If user only exchanged greetings or asked general questions with no action

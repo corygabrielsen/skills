@@ -46,9 +46,9 @@ Each lens asks a focused question. An issue from any lens is signal.
 **Launch all lenses in parallel. Each lens gets a specialized prompt.**
 
 ### Do:
-- Use `Task` tool with `run_in_background: true`
+- Use `Task` tool with `run_in_background: true` and `prompt: <lens prompt>`
 - Launch all 6 lenses in a **single assistant turn** (6 parallel Task tool calls)
-- Store all 6 task IDs in a list for collection
+- Store all 6 task IDs (from tool response) for collection
 
 ### Don't:
 - Run lenses sequentially
@@ -192,7 +192,7 @@ NO ISSUES
 **Gather results from all lenses.**
 
 ### Do:
-- Use `TaskOutput` with `block: true` for each lens to wait for completion
+- Use `TaskOutput` with `task_id: <id>` and `block: true` for each lens to wait for completion
 - Parse each lens's output format
 
 ### Don't:

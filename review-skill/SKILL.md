@@ -46,7 +46,7 @@ Each reviewer asks a focused question. An issue from any reviewer is signal.
 **Launch all reviewers in parallel. Each reviewer gets a specialized prompt.**
 
 ### Do:
-- Use `Task` tool with background execution enabled (e.g., `run_in_background: true`) and `prompt: <reviewer prompt>`. Verify parameter names match your tool's API.
+- Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
 - Launch all 6 reviewers in a **single assistant turn** (6 separate Task tool calls, one per reviewer)
 - Store all 6 task IDs (from tool response) for collection—tool results are returned in the same order as tool calls, so track reviewer by position: (1) execution, (2) checklist, (3) contradictions, (4) terminology, (5) adversarial, (6) coverage
 - Verify 6 task IDs were returned; if fewer, the result at that position contains an error message instead of a task ID—record "Reviewer [name] failed to launch: [error]" as an issue
@@ -307,7 +307,7 @@ AskUserQuestion(
 2. End turn (stop responding and wait for user input).
 3. When user provides input, update plan accordingly.
 4. Show updated plan to user.
-5. Re-present Plan Approval options.
+5. Re-present Plan Approval options (repeat until user selects Approve or Abort).
 
 **If user selects "Abort":** End skill without changes.
 

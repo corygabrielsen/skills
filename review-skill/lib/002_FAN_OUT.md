@@ -6,7 +6,7 @@ If `--reviewer <category>` was specified, launch only reviewers from that catego
 
 ## Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
-- **Substitute `{target_file}` with the file path** in each reviewer prompt. Perform literal string replacement: replace ALL instances of `{target_file}` in the prompt text with the actual path
+- **Substitute `{target_file}` with the file path** in each reviewer prompt. Perform literal string replacement: replace ALL instances of `{target_file}` in the prompt text with the actual path (substitution applies to the prompt; example code in prompts uses literal `{target_file}` intentionally)
   - Pass the fully-substituted prompt as the `prompt` parameter
 - Launch reviewers in a **single assistant turn** (one message containing parallel Task tool calls)
 - Launch in this order (filtered by `--reviewer` if specified): execution, contradictions, coverage, adversarial, terminology, conciseness, checklist, portability.

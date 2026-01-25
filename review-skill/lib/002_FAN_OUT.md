@@ -4,7 +4,9 @@
 
 ## Do:
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
-- **Substitute `{target_file}`** in each reviewer prompt with the actual target file path before passing to Task. You (the LLM) must perform this string replacement on the prompt text before making the Task call—literally replace ALL instances of `{target_file}` in the prompt with the actual path, then pass the fully-substituted prompt as the `prompt` parameter.
+- **Substitute `{target_file}`** in each reviewer prompt with the actual target file path **before** passing to Task
+  - Perform literal string replacement: replace ALL instances of `{target_file}` in the prompt text with the actual path
+  - Pass the fully-substituted prompt as the `prompt` parameter
 - Launch all 8 reviewers in a **single assistant turn** (one message containing 8 parallel Task tool calls)
 - Launch in this exact order: execution, contradictions, coverage, adversarial, terminology, conciseness, checklist, portability. (Rationale: Tool results are returned in the same order as tool calls, so position-based tracking relies on consistent launch order. Order groups by category: correctness, clarity, conformance.)
 - Store all 8 task IDs (from tool response) for collection. Store IDs in launch order (list index 0-7 maps to: execution, contradictions, coverage, adversarial, terminology, conciseness, checklist, portability). This mapping is used in Collect to match TaskOutput results back to reviewer names.

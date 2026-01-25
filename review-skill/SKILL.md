@@ -23,8 +23,6 @@ Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. M
 
 ## Reviewers
 
-Each reviewer asks a focused question.
-
 **Correctness** — will this do the wrong thing?
 | Reviewer | Question | Finds |
 |----------|----------|-------|
@@ -49,7 +47,7 @@ Each reviewer asks a focused question.
 
 ## Phases
 
-Follow each phase in sequence:
+Follow each phase in sequence. (The `@lib/...` syntax references phase definitions that are loaded inline.)
 
 @lib/001_INITIALIZE.md
 @lib/002_FAN_OUT.md
@@ -76,10 +74,10 @@ Follow each phase in sequence:
 | Collect | Gather and merge results |
 | Synthesize | Group into themes |
 | Triage | Propose fixes |
-| HIL: Plan Approval | Show plan; get approval (plan shown, approval skipped with `--auto`) |
+| HIL: Plan Approval | Show plan; get approval |
 | Address | Make edits |
 | Verify | Confirm changes |
-| HIL: Change Confirmation | Show summary; get confirmation (summary shown, confirmation skipped with `--auto`) |
+| HIL: Change Confirmation | Show summary; get confirmation |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
 | Loop Gate | Check pass count, loop or exit |

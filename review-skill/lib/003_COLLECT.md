@@ -12,7 +12,7 @@
 
 ## Evaluate Results
 
-A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed output (neither "NO ISSUES" nor a recognizable "ISSUES:" list format) or failed reviewer output (task execution error) as having issues—record "Reviewer output error: [error description]" in the Issue field (use "-" for Line column) and follow the normal issue path (proceed to Synthesize). Do not attempt partial parsing of malformed output; treat the entire response as a single error entry.
+A reviewer has no issues if its output contains `NO ISSUES`. Valid issue format: starts with `ISSUES:` followed by numbered items (e.g., `1. Line X: ...`). Treat malformed output (neither "NO ISSUES" nor valid issue format) or failed reviewer output (task execution error) as having issues—record "Reviewer output error: [error description]" in the Issue field (use "-" for Line column) and follow the normal issue path (proceed to Synthesize). Do not attempt partial parsing of malformed output; treat the entire response as a single error entry.
 
 ```
 if ALL 8 reviewers output NO ISSUES AND no launch failures were recorded in the tracker:

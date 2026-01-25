@@ -3,7 +3,7 @@
 **Execute the approved plan.**
 
 ## Do:
-- Process each theme sequentially (not in parallel, to avoid line-number shifts affecting subsequent edits): make one or more edits as needed
+- Process each theme sequentially (not in parallel, to avoid line-number shifts affecting subsequent edits). Apply the proposed fix for each theme, which may require one or more edits to address all issues within that theme.
 - Update tracker status based on resolution type:
   - `planned` → `fixed` (real issue was corrected)
   - `planned` → `clarified` (false positive addressed with clarifying text)

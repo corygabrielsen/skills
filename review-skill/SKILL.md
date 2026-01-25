@@ -5,7 +5,7 @@ description: Review a skill document using specialized reviewers. Each reviewer 
 
 # Review Skill
 
-Review skill documents using specialized reviewers. Each reviewer is tuned to find specific issue types with high signal and low noise.
+Review skill documents using specialized reviewers. Each reviewer finds specific issue types.
 
 ## Core Philosophy
 
@@ -76,10 +76,10 @@ Follow each phase in sequence:
 | Collect | Gather and merge results |
 | Synthesize | Group by root cause |
 | Triage | Propose fixes |
-| HIL (Human In the Loop): Plan Approval | Waits for user approval (skipped with `--auto`) |
+| HIL: Plan Approval | User approval (skipped with `--auto`) |
 | Address | Make edits |
 | Verify | Confirm changes |
-| HIL: Change Confirmation | Waits for user confirmation (skipped with `--auto`) |
+| HIL: Change Confirmation | User confirmation (skipped with `--auto`) |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
 | Loop Gate | Check pass count, loop or exit |
@@ -94,4 +94,4 @@ Follow each phase in sequence:
 
 ---
 
-Parse args for target file (including `-n` flag for pass count, default 1). Launch all 8 reviewers in parallel. Collect results. If all 8 reviewers return NO ISSUES and no launch failures (reviewers that failed to start), skip to Epilogue. Otherwise: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N, re-read target file and loop to Fan Out; else continue to Epilogue.
+Parse args for target file (including `-n` flag for pass count, default 1). Launch all 8 reviewers in parallel. Collect results. If all 8 reviewers return NO ISSUES and no launch failures, skip to Epilogue. Otherwise: Synthesize → Triage → HIL: Plan Approval → Address → Verify → HIL: Change Confirmation → Stage → Commit → Loop Gate. At Loop Gate: if pass < N, re-read target file and loop to Fan Out; else continue to Epilogue.

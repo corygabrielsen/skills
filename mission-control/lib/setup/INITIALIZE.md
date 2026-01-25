@@ -12,13 +12,23 @@
 - Skip TaskList check
 - Assume mode without checking args
 
-## Args:
-- `--fg`: Foreground mode. Launch agents but block on them.
-- `--bg`: Background mode (default). Launch agents and return control to human.
-- `--auto`: Skip human checkpoints. Requires `--fg`; if used with `--bg`, treat as `--fg --auto`.
-- If both `--fg` and `--bg` are passed explicitly, `--fg` wins (explicit foreground overrides default).
+## Args
+
+| Args Passed | Effective Mode |
+|-------------|----------------|
+| (none) | `--bg` |
+| `--fg` | `--fg` |
+| `--bg` | `--bg` |
+| `--fg --bg` | `--fg` |
+| `--auto` | `--fg --auto` |
+| `--auto --bg` | `--fg --auto` |
+| `--fg --auto` | `--fg --auto` |
 
 **Note:** `--auto` only applies to foreground mode. Background mode inherently returns control to human.
+
+## Handoff Detection (First)
+
+Before routing, check for handoff task: if any task has `metadata.type: "handoff"`, read it to recover mission state (mode, decisions, open questions).
 
 ## State Check
 
@@ -52,7 +62,3 @@ else if conversation has work-related history:
 else:
     → setup/DECOMPOSE (fresh start, await user request)
 ```
-
-## Handoff Detection
-
-If a task with `metadata.type: "handoff"` exists, read it first to recover mission state (mode, decisions, open questions).

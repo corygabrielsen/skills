@@ -22,8 +22,3 @@ IF pass < N:
 OTHERWISE:
     → Continue to Epilogue
 ```
-
-## On loop:
-- Re-read the target file (it has changed)—reviewers in the next pass will read this updated version
-- Reset per-pass state: clear issue tracker, clear reviewer task IDs and results
-- Preserve: cumulative stats (total fixed/clarified counts), target_file path, pass counter (after incrementing)

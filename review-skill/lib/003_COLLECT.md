@@ -3,8 +3,8 @@
 **Gather results from all reviewers.**
 
 ## Do:
-- Use `TaskOutput` with `task_id: <id>` for each reviewer, **in a single assistant turn (6 parallel TaskOutput calls)**, to wait for completion
-- Parse each reviewer's output format
+- Use `TaskOutput` with `task_id: <id>` for each reviewer, **in a single assistant turn (7 parallel TaskOutput calls)**, to wait for completion
+- Parse each reviewer's output: extract line number from "Line X:" prefix into Line column, extract description after the colon into Issue column, assign sequential IDs (I-001, I-002...), set Fix to "—" and Status to `open`
 
 ## Don't:
 - Proceed before all reviewers complete
@@ -12,10 +12,10 @@
 
 ## Evaluate Results
 
-A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed output (neither "NO ISSUES" nor a recognizable "ISSUES:" list format) or failed reviewer output (task execution error) as having issues—record "Reviewer failed: [error]" in the Issue field (use "-" for Line column) and follow the normal issue path (proceed to Synthesize).
+A reviewer has no issues if its output contains `NO ISSUES`. Treat malformed output (neither "NO ISSUES" nor a recognizable "ISSUES:" list format) or failed reviewer output (task execution error) as having issues—record "Reviewer output error: [error description]" in the Issue field (use "-" for Line column) and follow the normal issue path (proceed to Synthesize).
 
 ```
-if ALL 6 reviewers output NO ISSUES:
+if ALL 7 reviewers output NO ISSUES AND no launch failures were recorded in the tracker:
     → Proceed to Epilogue (no-issues path)
 else:
     → Merge issues into tracker

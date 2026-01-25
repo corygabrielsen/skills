@@ -54,6 +54,10 @@ Mark T-003 as: ABORTED - Split into T-003a, T-003b, T-003c, T-003d
 | T-003 | Too large | Split into 4 sub-tasks |
 ```
 
+## Fix Iteration Limit
+
+Track fix attempts in task metadata: `metadata.fix_attempts`. If a task returns NO-GO after 2+ fix attempts, surface this to the user: "Task {id} has been NO-GO after {n} fix attempts. Consider Waive, Scrub, or manual intervention."
+
 ## Transitions
 
 ```

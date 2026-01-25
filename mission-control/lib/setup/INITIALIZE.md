@@ -41,9 +41,13 @@ if TaskList returns tasks:
 
 else if conversation has work-related history:
     → setup/BOOTSTRAP (mine conversation for work)
-    "Work-related history" means: technical discussion, task mentions, decisions,
-    or context beyond greetings/skill invocation. If user only said "hi" then
-    "/mission-control", that's a fresh start, not bootstrap.
+    "Work-related history" triggers BOOTSTRAP if conversation contains ANY of:
+    - Explicit action requests ("implement X", "fix Y", "create Z", "add a...")
+    - File paths or code snippets discussed
+    - Decisions recorded ("let's use X", "we decided Y")
+    - Work already done that should be catalogued
+    If user only exchanged greetings or asked general questions with no action
+    requests, treat as fresh start → DECOMPOSE.
 
 else:
     → setup/DECOMPOSE (fresh start, await user request)

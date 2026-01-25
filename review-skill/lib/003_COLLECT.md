@@ -23,7 +23,7 @@
 
 ```
 if ALL successfully-launched reviewers output NO ISSUES AND no launch failures were recorded:
-    → Skip Synthesize through Commit; proceed directly to Epilogue
+    → Skip Synthesize through Commit; proceed to Loop Gate (not Epilogue)
 else:
     → Merge issues into tracker
     → Proceed to Synthesize

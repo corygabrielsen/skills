@@ -13,3 +13,5 @@
 - Deviate from approved plan
 - Skip any issue
 - Leave any issue without a document change
+
+Proceed to Verify.

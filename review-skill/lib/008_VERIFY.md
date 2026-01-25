@@ -10,3 +10,5 @@
 ## Don't:
 - Skip verification
 - Proceed with unaddressed issues
+
+Proceed to HIL: Change Confirmation.

@@ -29,7 +29,7 @@ else:
     → Proceed to Synthesize
 ```
 
-If any reviewer failed to launch, always proceed to Synthesize even if remaining reviewers found no issues. (Launch failures are infrastructure errors recorded in the tracker for visibility, not document issues to address.)
+If any reviewer failed to launch, proceed to Synthesize for visibility, but launch failures are infrastructure errors—skip them during Triage (no document fix needed).
 
 ## Issue Tracker Format
 

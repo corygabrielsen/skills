@@ -11,7 +11,7 @@
 
 ## Don't:
 - Make edits during triage
-- Dismiss issues as "not actionable" or "tool behavior"—every issue gets a document change
+- Dismiss document issues as "not actionable"—every reviewer-flagged issue gets a document change (launch failures are infrastructure errors, not document issues; skip them in triage)
 - Skip issues because they seem minor—if a reviewer flagged it, the document can be clearer
 
 Proceed to HIL: Plan Approval.

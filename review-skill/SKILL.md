@@ -26,7 +26,7 @@ Each lens asks a focused question. An issue from any lens is signal.
 
 ### Do:
 - Accept target skill file path from args
-- Validate file exists and is named `SKILL.md`
+- Validate file exists and has basename `SKILL.md`
 - Read the full file content for lens prompts
 - Store `target_file` path for use in later phases
 
@@ -47,7 +47,7 @@ Each lens asks a focused question. An issue from any lens is signal.
 
 ### Do:
 - Use `Task` tool with `run_in_background: true`
-- Launch all 6 lenses in a **single message** (6 separate Task calls, one per lens)
+- Launch all 6 lenses in a **single assistant turn** (6 parallel Task tool calls)
 - Store all 6 task IDs in a list for collection
 
 ### Don't:
@@ -299,9 +299,8 @@ AskUserQuestion(
 **Execute the approved plan.**
 
 ### Do:
-- Make edits using `Edit` tool
-- Update tracker status (`planned` → `fixed`)
-- Process each theme
+- Process each theme: make edit, then update tracker status (`planned` → `fixed`)
+- Use `Edit` tool for changes
 
 ### Don't:
 - Deviate from approved plan

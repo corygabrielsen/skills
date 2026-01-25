@@ -13,9 +13,7 @@ Run specialized reviewers against a skill document to find correctness, clarity,
 
 When a reviewer flags something, the document changes. Always. Either:
 - **Real issue** → fix the document
-- **False positive** → the document was unclear; add clarifying text until the intent is obvious
-
-Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. Make it clearer.
+- **False positive** → add clarifying text until the intent is obvious
 
 **Fixed point** = no reviewer can flag anything because the document is correct and unambiguous.
 
@@ -74,10 +72,10 @@ Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. M
 | Collect | Gather and merge results |
 | Synthesize | Group into themes |
 | Triage | Propose fixes |
-| HIL: Plan Approval | Show plan; get approval |
+| HIL: Plan Approval | User approves proposed fixes |
 | Address | Make edits |
 | Verify | Confirm changes |
-| HIL: Change Confirmation | Show summary; get confirmation |
+| HIL: Change Confirmation | User confirms edits |
 | Stage | Review and stage changes |
 | Commit | Create commit with proper message |
 | Loop Gate | Check pass count, loop or exit |
@@ -87,7 +85,7 @@ Never dismiss—if a reviewer misunderstood, the document wasn't self-evident. M
 
 | Flag | Behavior |
 |------|----------|
-| `--auto` | Skip HIL checkpoints (still displays plan/summary, skips user prompts) |
+| `--auto` | Skip HIL prompts (still displays plan/summary) |
 | `-n N` | Do N passes (default: 1) |
 
 ---

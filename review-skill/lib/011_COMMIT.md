@@ -8,7 +8,7 @@
 
 ## Message Rules
 
-1. Subject ≤42 chars (room for ` (#NNNN)` suffix → 50 char limit)
+1. Subject ≤42 chars (GitHub may append ` (#123)` PR number; 42+8=50)
 2. Imperative mood ("Add feature" not "Added feature")
 3. Capitalize subject, no period at end
 4. Blank line between subject and body

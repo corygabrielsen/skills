@@ -201,7 +201,7 @@ NO ISSUES
 
 ### Evaluate Results
 
-A lens has no issues if its output starts with `NO ISSUES`.
+A lens has no issues if its output contains `NO ISSUES`.
 
 ```
 if ALL 6 lenses output NO ISSUES:

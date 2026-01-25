@@ -29,7 +29,7 @@ Catches slow-developing problems before they become crises.
 | Pending | Ready to launch | Delegate |
 | Blocked | Waiting on dependencies | Check blockers |
 | Stalled | In progress too long, no output | Investigate |
-| Failed | Verification failed | → control/HIL_ANOMALY |
+| Failed | Verification failed (still in_progress) | → control/HIL_ANOMALY |
 
 ## Checkpoint Format
 
@@ -75,10 +75,12 @@ No hard-coded timeouts. Agent capabilities evolve rapidly.
 ## After Checkpoint
 
 ```
-if stalled tasks exist:
+if stalled or failed tasks exist (in_progress with issues):
     → control/HIL_ANOMALY
 if context near limit:
     → control/HANDOFF
 else:
     → control/REPORT
 ```
+
+**Note:** ABORTED tasks are not "Failed"—they were already handled. Only surface tasks that are in_progress but problematic.

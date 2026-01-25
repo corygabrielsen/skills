@@ -48,6 +48,12 @@
     resume via INITIALIZE → preflight/EVALUATE.
 ```
 
+## Empty TaskList
+
+If `TaskList` returns zero tasks:
+- In --bg mode after resume: Report "No tasks found. Use `/mission-control` with a work description to begin."
+- This can happen if conversation was compacted before any tasks were created.
+
 ## Final Report Template (All Work Complete)
 
 ```markdown

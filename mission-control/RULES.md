@@ -25,7 +25,7 @@ Inviolable constraints. No exceptions without explicit user override.
 |------|------------|
 | Ready task | status=`pending` (not `in_progress`, not `completed`) AND `blockedBy` is empty. This is the canonical definition. |
 | Spot-check verification | Read key output files, check expected artifacts exist, verify no obvious errors. Not exhaustive, but confirms work was attempted. |
-| End skill | Output a final summary, do not proceed to further phases, conclude response. Conversation continues but mission control is no longer active. |
+| End skill | Conclude mission control response. In --bg mode, this is a pause (user resumes later). In --fg mode after completion, this is termination. Either way: output summary, stop processing phases. |
 
 ---
 

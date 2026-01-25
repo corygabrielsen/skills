@@ -2,7 +2,7 @@
 
 **Get user confirmation of executed changes.**
 
-**If `--auto` mode:** Show summary, then proceed directly to Stage (skip AskUserQuestion).
+**If `--auto` mode:** Display the summary to the user (same format as normal mode), then proceed directly to Stage (skip AskUserQuestion).
 
 ## Do:
 - Present summary: issue tracker showing final statuses, plus brief prose summary of key changes

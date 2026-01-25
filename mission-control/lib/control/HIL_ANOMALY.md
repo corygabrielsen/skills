@@ -80,7 +80,10 @@ AskUserQuestion(
 **If "Replan":**
 1. Mark original task `ABORTED - Replanning`
 2. Prompt user: "Describe the new approach, or I'll propose one."
-3. Create new task with revised approach
+3. End turn, wait for user input:
+   - If user provides approach → create new task with user's approach
+   - If user says "propose" or similar → mission control proposes approach, asks user to confirm
+   - If user cancels ("nevermind") → re-present Anomaly options
 4. → preflight/EVALUATE
 
 **If "Skip":**

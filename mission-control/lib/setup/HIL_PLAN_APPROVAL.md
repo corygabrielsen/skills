@@ -58,9 +58,9 @@ AskUserQuestion(
 **If user selects "Modify":**
 1. Prompt: "Describe what changes you'd like to the task breakdown."
 2. End turn, wait for user input.
-3. If user provides empty/unclear input or cancels ("nevermind"), re-present options.
-4. Otherwise, interpret user feedback and make appropriate TaskUpdate calls or create new tasks.
-5. Re-present Plan Approval (loop until Approve or Abort).
+3. If user provides empty/unclear input or cancels ("nevermind"), re-present the same Plan Approval options (no changes made).
+4. Otherwise, interpret user feedback and make appropriate TaskUpdate calls or create new tasks. If interpretation is ambiguous, ask a clarifying question before editing.
+5. Re-present Plan Approval with updated graph (loop until Approve or Abort).
 
 **If user selects "Abort":**
 1. Mark all pending tasks as `ABORTED - User cancelled`.

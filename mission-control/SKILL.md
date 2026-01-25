@@ -15,6 +15,7 @@ args:
 You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 **HIL** = Human-In-the-Loop checkpoint (human decision required).
+**HIL_GATE** = Pure gate (no side effects, skippable in `--auto`).
 
 ## Prerequisites
 
@@ -51,7 +52,7 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 | Phase | Sub-phases | Purpose |
 |-----------|------------|---------|
-| **setup** | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_PLAN_APPROVAL | Initialize and plan work |
+| **setup** | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_GATE_PLAN_APPROVAL, MATERIALIZE | Initialize and plan work |
 | **preflight** | EVALUATE, HIL_HOLD, FIX | Go/no-go checks before launch |
 | **execution** | DELEGATE, MONITOR, VERIFY | Launch agents, collect results |
 | **control** | HIL_ANOMALY, CHECKPOINT, REPORT, HIL_NEXT_ACTION, HANDOFF | Handle failures, decide next |

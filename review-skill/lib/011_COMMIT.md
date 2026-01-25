@@ -32,4 +32,9 @@ EOF
 - Skip the body for non-trivial changes
 - Forget backticks around technical terms
 
+## If commit fails:
+- **Pre-commit hook failure**: Fix the issue (usually formatting/linting), re-stage if needed, create a NEW commit (do not amend)
+- **No staged changes**: Return to Stage phase to diagnose
+- **Other git error**: Report the error and end the skill
+
 Proceed to Loop Gate.

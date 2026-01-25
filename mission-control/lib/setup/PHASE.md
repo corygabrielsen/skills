@@ -7,7 +7,8 @@
 @INITIALIZE.md
 @BOOTSTRAP.md
 @DECOMPOSE.md
-@HIL_PLAN_APPROVAL.md
+@HIL_GATE_PLAN_APPROVAL.md
+@MATERIALIZE.md
 
 ## Flow
 
@@ -16,24 +17,30 @@
         │
         ├── tasks exist? ──► exit to appropriate phase
         │
-        ├── history exists? ──► BOOTSTRAP ──► HIL_PLAN_APPROVAL
-        │                                          │
-        └── fresh start ─────► DECOMPOSE ──────────┤
-                                                   │
-                                            ┌──────┴──────┐
-                                            │      │      │
-                                         approve modify abort
-                                            │      │      │
-                                            │      │      ▼
-                                            │      │     END
-                                            │      │
-                                            │      └─► re-present HIL_PLAN_APPROVAL
-                                            │
-                                            ▼
-                                    preflight/PHASE
+        ├── history exists? ──► BOOTSTRAP ──► HIL_GATE_PLAN_APPROVAL
+        │                         (propose)            │
+        └── fresh start ─────► DECOMPOSE ──────────────┤
+                                (propose)              │
+                                                ┌──────┴──────┐
+                                                │      │      │
+                                             approve modify abort
+                                                │      │      │
+                                                │      │      ▼
+                                                │      │     END
+                                                │      │
+                                                │      └─► re-propose
+                                                │
+                                                ▼
+                                           MATERIALIZE
+                                          (create tasks)
+                                                │
+                                                ▼
+                                        preflight/PHASE
 ```
 
-Both BOOTSTRAP and DECOMPOSE proceed to HIL_PLAN_APPROVAL for user approval before execution.
+Both BOOTSTRAP and DECOMPOSE **propose** tasks (no TaskCreate).
+HIL_GATE_PLAN_APPROVAL is a pure gate (no side effects).
+MATERIALIZE creates tasks only after user approval.
 
 ## Entry Conditions
 - Skill invoked with `/mission-control`

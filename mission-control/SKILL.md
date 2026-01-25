@@ -107,12 +107,12 @@ mission-control/
 **Normal flow:** SETUP → PREFLIGHT → EXECUTION → CONTROL → (continue?) → PREFLIGHT...
 
 **Entry points after resume:**
-- Tasks in-progress → EXECUTION/MONITOR
-- Tasks pending/ready (unblocked) → PREFLIGHT/EVALUATE
-- Tasks pending but all blocked → CONTROL/REPORT
-- All tasks completed/ABORTED → CONTROL/REPORT
-- No tasks + history → SETUP/BOOTSTRAP
-- Fresh start → SETUP/DECOMPOSE
+- Tasks in-progress → execution/MONITOR
+- Tasks pending/ready (unblocked) → preflight/EVALUATE
+- Tasks pending but all blocked → control/REPORT
+- All tasks completed/ABORTED → control/REPORT
+- No tasks + history → setup/BOOTSTRAP
+- Fresh start → setup/DECOMPOSE
 
 See each composite's PHASE.md for internal flow details.
 

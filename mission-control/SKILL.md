@@ -18,7 +18,7 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 ## Prerequisites
 
-This skill requires Claude Code's task system tools:
+This skill requires task system tools (typically provided by the agent framework):
 - `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` - task record management
 - `Task`, `TaskOutput` - background agent spawning and output retrieval
 - `AskUserQuestion` - human-in-the-loop prompts
@@ -115,7 +115,7 @@ mission-control/
 
 **Normal flow:** SETUP → PREFLIGHT → EXECUTION → CONTROL → (continue?) → PREFLIGHT...
 
-**Entry points after resume:**
+**Entry points after resume (in priority order):**
 - Tasks in-progress → execution/MONITOR
 - Ready tasks (pending with empty blockedBy) → preflight/EVALUATE
 - Tasks pending but all blocked → control/REPORT
@@ -135,17 +135,21 @@ pending --> in_progress --> completed
 ```
 
 - To abort: update subject to `ABORTED - [reason]`, mark completed
+  Example: `TaskUpdate(taskId: X, subject: "ABORTED - reason", status: "completed")`
 - Never delete task data; always leave a trail in descriptions/metadata
 
 ## Delegation Philosophy
 
-**Default to delegating.** If a task involves:
+**Default to delegating.** Delegate tasks that involve:
 - Writing or editing files
 - Running commands to verify something
 - Research or exploration
-- Any substantive work (not trivial verification like checking a file exists)
+- Any substantive work
 
-...then delegate it to a background agent. Don't do it yourself. Brief verification checks (confirming an artifact exists, reading a single line) can be done directly by mission control.
+**Do directly** (mission control handles these):
+- Checking if a file exists
+- Reading a single line to confirm content
+- Other trivial verification checks
 
 **Your job is to:**
 1. Create the task
@@ -191,6 +195,9 @@ pending --> in_progress --> completed
 | `TaskList` | List all tasks with summary info | — |
 | `TaskGet` | Get full details of a specific task | `taskId` |
 | `Task` | Spawn a background agent to execute work | `run_in_background: true` for async |
+
+**Agent ID timing:** `Task` returns the agent ID immediately at launch (before the agent completes).
+
 | `TaskOutput` | Read output from a spawned agent | `task_id`, `block: true/false` |
 | `AskUserQuestion` | Present options to human for decision | `questions` array |
 

@@ -152,6 +152,82 @@ advr=adversarial, term=terminology, conc=conciseness, chkl=checklist, port=porta
 
 This table shows issue counts decreasing toward fixed point. Non-monotonic behavior (increases) signals oscillation or reviewer variance.
 
+### Convergence Chart (optional)
+
+If `plotext` is available, generate a terminal chart showing convergence curves:
+
+```python
+import plotext as plt
+
+# history = list of {iteration, total_issues, by_reviewer} dicts
+iterations = [h['iteration'] for h in history]
+total = [h['total_issues'] for h in history]
+conc = [h['by_reviewer']['conciseness'] for h in history]
+advr = [h['by_reviewer']['adversarial'] for h in history]
+
+plt.plot(iterations, total, label="total", marker="braille")
+plt.plot(iterations, conc, label="conciseness", marker="braille")
+plt.plot(iterations, advr, label="adversarial", marker="braille")
+plt.title("Convergence to Fixed Point")
+plt.xlabel("Iteration")
+plt.ylabel("Issues")
+plt.theme("dark")
+plt.plotsize(80, 15)
+plt.show()
+```
+
+Example output:
+```
+                         Convergence to Fixed Point
+    ┌──────────────────────────────────────────────────────────────┐
+ 24┤⢕⢕ total                                                      │
+   │⢕⢕ conciseness                                                │
+ 18┤⢕⢕ adversarial                                                │
+   │⠑⠢⠤⣀     ⠑⢄                                                    │
+ 12┤     ⠉⠑⠢⠤⣀⣀⣀⣀⣀                                                │
+   │              ⠉⠉⠉⠒⠒⠢⠤⠤⡀                                       │
+  6┤                      ⠈⠑⠢⣀                                    │
+   │⢄⣀⣀                       ⠉⠒⠒⠢⠤⠤⣀                             │
+  0┤⠑⠒⠒⠒⠒⠢⠤⠤⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀│
+   └┬────────────┬────────────┬────────────┬────────────┬──────────┘
+   1            3            5            7            9
+Issues                      Iteration
+```
+
+The braille markers show smooth decay curves. Reviewers converge at different rates depending on the document's issues.
+
+To check availability: `python3 -c "import plotext" 2>/dev/null && echo "available"`. Skip chart if not installed.
+
+### Sparkline Summary (alternative)
+
+For a compact single-line-per-reviewer view:
+
+```python
+SPARKS = " ▁▂▃▄▅▆▇█"
+
+def spark(values, max_val):
+    return "".join(SPARKS[min(8, int(v / max_val * 8))] for v in values)
+
+# Example: conciseness over 15 iterations
+# [28, 22, 18, 14, 10, 8, 6, 4, 3, 2, 1, 0, 0, 0, 0]
+# Output: █▇▆▅▄▃▂▁▁      (converged at iter 12)
+```
+
+Example output:
+```
+Reviewer       Trend              Start  End  Converged @
+execution      ▂▁                     2    0            3
+contradictions                        0    0            1
+coverage       ▄▂▁                    4    0            4
+adversarial    ▆▄▂▁                   6    0            5
+terminology    ▂▁                     2    0            3
+conciseness    █▆▄▂▁                  8    0            6
+checklist                             0    0            1
+portability                           0    0            1
+
+Total: █▄▂▁           (22 → 0)
+```
+
 If fixed point reached:
 > {target} has reached a fixed point after {N} iterations.
 > The document is now internally consistent and unambiguous.

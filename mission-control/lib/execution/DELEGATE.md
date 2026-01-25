@@ -10,14 +10,14 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty.
   - Update status to `in_progress` via `TaskUpdate`
   - Launch via `Task` with `run_in_background: true`
   - Write a clear, specific prompt with full context
-  - **Always use the same model as mission control**---do not downgrade agents
+  - **Match mission control's model** (if framework supports model selection)
 - Launch multiple agents in a **single assistant turn** when tasks are independent
 - Record task IDs for monitoring
 
 ## Don't:
 - Launch tasks sequentially when they could be parallel
 - Do work yourself that an agent could do
-- Downgrade to cheaper/faster models
+- Downgrade to cheaper/faster models (if framework supports model selection)
 - Launch tasks that are blocked
 
 ## Mode-Specific Behavior
@@ -66,7 +66,7 @@ The `Task` tool returns an agent ID. Store it in task metadata: `TaskUpdate(task
 
 If `Task` tool returns an error instead of an agent ID:
 1. Record error in task metadata for the failed task
-2. Mark that task: `BLOCKED - Launch failed: [error]`
+2. Mark that task: `ABORTED - Launch failed: [error]`
 3. **Continue launching remaining tasks in the batch** (don't abort the whole batch)
 4. After batch completes: if any launches failed → control/HIL_ANOMALY for failed tasks
 5. Successfully launched tasks proceed normally to MONITOR/VERIFY

@@ -71,6 +71,7 @@ No hard-coded timeouts. Agent capabilities evolve rapidly.
 **Default when no baseline exists:** Surface to user rather than assuming stalled. Present a status question: "T-004 has been running for [duration] with no visible output. Continue waiting or investigate?" This question is asked within CHECKPOINT.
 - If user says "continue waiting" → control/REPORT (normal flow, task stays in_progress)
 - If user says "investigate" or confirms stalled → control/HIL_ANOMALY with Classification: Stalled
+- If user provides other response → interpret intent; if unclear, ask clarifying question
 
 ## After Checkpoint
 

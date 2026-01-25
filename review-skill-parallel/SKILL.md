@@ -33,9 +33,9 @@ There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misundersto
 └─────────────────┘     └───────────────────┘
 ```
 
-This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation → Iteration Complete.
+This diagram is conceptual — the full phase sequence is: Initialize → Review → Parse Output → Synthesize → Triage → Plan Approval → Address → Verify → Change Confirmation. (Iteration Complete is the epilogue, not a phase.)
 
-Task agents are launched via the `Task` tool and serve as reviewers. You address their findings through the phases below.
+You address the reviewers' findings through the phases below.
 
 ## Relationship to loop-review-skill-parallel
 
@@ -119,7 +119,7 @@ This skill uses standard Claude Code tools without detailed explanation:
 All agents receive the same prompt:
 
 ```
-You are reviewing {file} for internal consistency and clarity issues.
+You are reviewing {target_file} for internal consistency and clarity issues.
 
 This is a skill document that instructs an LLM how to perform a task.
 We want to reach a "fixed point" where no reviewer can find anything to flag.
@@ -149,7 +149,7 @@ NO FINDINGS - document is internally consistent.
 ```
 Task(
   description: "Review {target_file} (1/3)",
-  prompt: "[review prompt with {file} substituted]",
+  prompt: "[review prompt with {target_file} substituted]",
   subagent_type: "general-purpose",
   run_in_background: true
 )
@@ -167,7 +167,7 @@ Task(
 )
 ```
 
-Each Task returns a task ID. Record these IDs; you'll use them in Phase: Parse Output to collect results.
+Each Task returns a task ID for use in Phase: Parse Output.
 
 ---
 
@@ -316,7 +316,7 @@ Work through themes identified in Synthesize. For each theme, propose one root-c
 ### Don't:
 - ❌ Make edits during triage — propose only
 - ❌ Dismiss findings — every finding gets a proposed resolution
-- ❌ Triage findings individually — work by theme
+- ❌ Triage themed findings individually — work by theme (unrelated findings are handled individually)
 - ❌ Blame the reviewer — if an LLM got confused, another will too
 
 ### Triage Table
@@ -354,7 +354,7 @@ This is the first human-in-the-loop checkpoint. The user can:
 
 ### Plan Summary Template
 
-Extend the Theme Summary from Synthesize by adding proposed fixes for each theme. Present by theme, not by individual finding. This makes review tractable for humans.
+Build on the Theme Summary from Synthesize by adding proposed fixes for each theme. Present by theme, not by individual finding. This makes review tractable for humans.
 
 ```markdown
 ## Review Findings: {finding_count} findings in {theme_count} themes
@@ -493,7 +493,7 @@ Update tracker: F-001 status → fixed
 
 This is the second human-in-the-loop checkpoint. The user confirms the changes were executed correctly.
 
-**Clean iteration (0 findings)**: If all reviewers returned "NO FINDINGS," present a minimal confirmation: "Clean iteration — no findings, no changes made. Ready for next iteration or fixed point declaration."
+**Clean iteration (0 findings)**: If all reviewers returned "NO FINDINGS," present a minimal confirmation: "Clean iteration — no findings, no changes."
 
 ### Do:
 - Present summary of changes made (not proposed — actually executed)
@@ -555,7 +555,7 @@ When user confirms:
    ```
    Review complete.
    Findings: {finding_count} addressed
-   Status: Ready for next iteration (or clean iteration if no findings)
+   Status: Iteration complete
    ```
 
 2. End the skill. If called by /loop-review-skill-parallel, the loop wrapper will launch a new iteration as needed.
@@ -570,7 +570,7 @@ When user confirms:
 | Review | Run sequentially, do the review yourself, customize prompts per reviewer |
 | Parse Output | Skip minor findings, proceed before all reviewers complete |
 | Synthesize | Skip straight to individual triage, group mechanically without understanding, force unrelated findings into themes |
-| Triage | Make edits during triage, dismiss findings, triage individually instead of by theme, blame reviewer |
+| Triage | Make edits during triage, dismiss findings, triage themed findings individually, blame reviewer |
 | Plan Approval | Make edits before approval, skip checkpoint, assume approval |
 | Address | Deviate from plan, skip findings, edit without reading context, over-edit |
 | Verify | Skip verification, proceed with unaddressed findings |

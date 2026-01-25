@@ -81,99 +81,33 @@ mission-control/
 | **execution** | DELEGATE, MONITOR, VERIFY | Launch agents, collect results |
 | **control** | HIL_ANOMALY, CHECKPOINT, REPORT, HIL_NEXT_ACTION, HANDOFF | Handle failures, decide next |
 
-## Phase Flow
+## Mission Flow (Top Level)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                  SETUP                                      │
-│                                                                             │
-│   INITIALIZE ──► BOOTSTRAP ──► DECOMPOSE ──► HIL_PLAN_APPROVAL             │
-│        │              │              │              │                       │
-│        │              │              │         ┌────┴────┐                  │
-│        │              │              │      approve   abort                 │
-│        │              │              │         │         │                  │
-│        │              │              ◄─ modify─┘         ▼                  │
-│        │              │                                 END                 │
-│   existing tasks?     │                                                     │
-│        │              │                                                     │
-└────────┼──────────────┼─────────────────────────────────────────────────────┘
-         │              │                        │
-         │              │                        ▼
-         │              │ ┌─────────────────────────────────────────────────┐
-         │              │ │                  PREFLIGHT                      │
-         │              │ │                                                 │
-         │              │ │            ┌───────────────────┐                │
-         │              │ │            │                   │                │
-         │              │ │            ▼                   │                │
-         │              │ │        EVALUATE                │                │
-         │              │ │       │        │               │                │
-         │              │ │    all GO    any NO-GO         │                │
-         │              │ │       │        │               │                │
-         │              │ │       │        ▼               │                │
-         │              │ │       │    HIL_HOLD            │                │
-         │              │ │       │    │  │  │  │          │                │
-         │              │ │       │  fix waive scrub halt  │                │
-         │              │ │       │    │  │    │    │      │                │
-         │              │ │       │    ▼  │    │    │      │                │
-         │              │ │       │   FIX─┘    │    │      │                │
-         │              │ │       │    │       │    │      │                │
-         │              │ │       │    └───────┼────┼──────┘                │
-         │              │ │       │            │    │                       │
-         │              │ └───────┼────────────┼────┼───────────────────────┘
-         │              │         │            │    │
-         │              │         │            │    └──► setup/DECOMPOSE
-         │              │         │            │
-         │              │         ▼            ▼
-         │              │ ┌─────────────────────────────────────────────────┐
-         │              │ │                 EXECUTION                       │
-         │              │ │                                                 │
-         │              │ │   DELEGATE ──► MONITOR ──► VERIFY               │
-         │              │ │       │            │          │                 │
-         │              │ │   --bg mode    --bg mode   ┌──┴──┐              │
-         │              │ │       │            │     pass   fail            │
-         │              │ │       ▼            ▼       │      │             │
-         └──────────────┼─┼► [human] ◄────────┘       │      │             │
-                        │ │       │                    │      │             │
-                        │ │       ▼ (resume)           │      │             │
-                        │ │   MONITOR ─────────────────┘      │             │
-                        │ │                                   │             │
-                        │ └───────────────────────────────────┼─────────────┘
-                        │                                     │
-                        │                                     ▼
-                        │ ┌─────────────────────────────────────────────────┐
-                        │ │                   CONTROL                       │
-                        │ │                                                 │
-                        │ │   HIL_ANOMALY ◄───────────────────┘             │
-                        │ │       │                                         │
-                        │ │   ┌───┼───┬───────┐                             │
-                        │ │ retry │ replan  skip                            │
-                        │ │   │   │    │      │                             │
-                        │ │   │   │    │      ▼                             │
-                        │ │   │   │    │  CHECKPOINT                        │
-                        │ │   │   │    │      │                             │
-                        │ │   │   │    │      ▼                             │
-                        │ │   │   │    │   REPORT                           │
-                        │ │   │   │    │      │                             │
-                        │ │   │   │    │      ▼                             │
-                        │ │   │   │    │  HIL_NEXT_ACTION                   │
-                        │ │   │   │    │   │    │    │    │                 │
-                        │ │   │   │    │ cont pause add complete            │
-                        │ │   │   │    │   │    │    │    │                 │
-                        │ │   │   │    │   │    ▼    │    ▼                 │
-                        │ │   │   │    │   │ HANDOFF │   END                │
-                        │ │   │   │    │   │    │    │                      │
-                        │ │   │   │    │   │    ▼    │                      │
-                        │ │   │   │    │   │   END   │                      │
-                        │ │   │   │    │   │         │                      │
-                        └─┼───┴───┴────┴───┘         │                      │
-                          │                          │                      │
-                          │          ┌───────────────┘                      │
-                          │          │                                      │
-                          │          ▼                                      │
-                          │   setup/DECOMPOSE                               │
-                          │                                                 │
-                          └─────────────────────────────────────────────────┘
+┌─────────┐     ┌────────────┐     ┌───────────┐     ┌─────────┐
+│  SETUP  │ ──► │ PREFLIGHT  │ ──► │ EXECUTION │ ──► │ CONTROL │
+└─────────┘     └────────────┘     └───────────┘     └─────────┘
+     │                │                  │                │
+     │                │                  │                │
+     │           (loop on               (--bg mode       (loop on
+     │            NO-GO fix)             returns to       continue)
+     │                │                  human)           │
+     │                │                  │                │
+     └────────────────┴──────────────────┴────────────────┘
+                            ▲
+                            │
+                      (resume points)
 ```
+
+**Normal flow:** SETUP → PREFLIGHT → EXECUTION → CONTROL → (continue?) → PREFLIGHT...
+
+**Entry points after resume:**
+- Tasks in-progress → EXECUTION/MONITOR
+- Tasks pending/ready → PREFLIGHT/EVALUATE
+- No tasks + history → SETUP/BOOTSTRAP
+- Fresh start → SETUP/DECOMPOSE
+
+See each composite's PHASE.md for internal flow details.
 
 ---
 

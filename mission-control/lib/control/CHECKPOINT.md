@@ -47,7 +47,7 @@ Catches slow-developing problems before they become crises.
 - T-004: No visible progress, may need investigation
 
 ### Resource Status
-- Context: ~40% capacity
+- Context: moderate (estimate based on conversation length)
 - Tasks: 2/4 complete
 ```
 

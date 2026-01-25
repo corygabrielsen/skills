@@ -125,10 +125,15 @@ Inviolable constraints. No exceptions without explicit user override.
 
 #### FR-D001: Context Approaching Limit
 
-| Condition | Threshold | Action | Rationale |
-|-----------|-----------|--------|-----------|
-| Context utilization | >70% | Warning: consider Handoff soon | Compaction loses detail |
-| Context utilization | >85% | → Handoff phase | Capture state before forced compaction |
+Context utilization cannot be measured programmatically. Use heuristics:
+
+| Indicator | Severity | Action |
+|-----------|----------|--------|
+| Many tool calls (50+) in session | Warning | Consider Handoff soon |
+| Conversation feels "long" (many pages of context) | Warning | Consider Handoff soon |
+| System indicates compaction imminent | Critical | → Handoff phase immediately |
+
+**Guideline:** When in doubt, capture state early. Handoff is cheap; lost context is expensive.
 
 #### FR-D002: Post-Compaction Recovery
 

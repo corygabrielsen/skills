@@ -6,7 +6,7 @@
 - Run `TaskList` to see current task state
 - Parse args for mode flags: `--fg`, `--bg`, `--auto`
 - Default to `--bg` if no mode flag specified
-- Store mode in task metadata (e.g., on a handoff task or first task) to survive compaction
+- Store mode on the handoff task (`metadata.mode`). If no handoff task exists yet, create one during DECOMPOSE or first HANDOFF. Read it back after compaction via `metadata.type: "handoff"`.
 
 ## Don't:
 - Skip TaskList check
@@ -16,6 +16,7 @@
 - `--fg`: Foreground mode. Launch agents but block on them.
 - `--bg`: Background mode (default). Launch agents and return control to human.
 - `--auto`: Skip human checkpoints. Requires `--fg`; if used with `--bg`, treat as `--fg --auto`.
+- If both `--fg` and `--bg` are passed explicitly, `--fg` wins (explicit foreground overrides default).
 
 **Note:** `--auto` only applies to foreground mode. Background mode inherently returns control to human.
 

@@ -1,6 +1,6 @@
 ---
 name: review-skill-parallel
-description: Single iteration of skill document review with n parallel reviewers. All reviewers are fungible (same prompt). Synthesizes findings, addresses issues, verifies changes, gets human approvals (plan and confirmation). Use /loop-review-skill-parallel for iterating until fixed point.
+description: Review a skill document with n parallel reviewers. Synthesizes findings, addresses issues, verifies changes, gets human approvals (plan and confirmation).
 ---
 
 # Review Skill (Parallel)
@@ -37,19 +37,9 @@ This diagram is conceptual — the phase sequence is: Initialize → Review → 
 
 You address the reviewers' findings through the phases below.
 
-## Relationship to loop-review-skill-parallel
-
-| Aspect | review-skill-parallel | loop-review-skill-parallel |
-|--------|----------------------|----------------------------|
-| **Scope** | Single iteration | Iterate until fixed point |
-| **Output** | Findings addressed, changes confirmed | Document at fixed point |
-| **When** | Called by loop wrapper or standalone | User invokes directly |
-
-Use **/loop-review-skill-parallel** to iterate this skill until all n reviewers return clean.
-
 ## State Schema
 
-Track during this iteration:
+Track state:
 
 ```yaml
 target_file: ""              # Path to skill file being edited
@@ -182,7 +172,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 - Merge into issue tracker, deduplicating similar findings (same line + similar description = one finding)
 - Record which reviewers found each issue
 
-**Clean iteration = all n reviewers return "NO FINDINGS".** (The full output is "NO FINDINGS - document is internally consistent." — checking whether the output starts with "NO FINDINGS" is sufficient.) If ANY review has findings, proceed to Synthesize.
+**No findings = all n reviewers return "NO FINDINGS".** (The full output is "NO FINDINGS - document is internally consistent." — checking whether the output starts with "NO FINDINGS" is sufficient.) If ANY reviewer has findings, proceed to Synthesize.
 
 ### Don't:
 - ❌ Skip findings because they seem minor — every finding gets tracked
@@ -194,7 +184,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 results = [reviewer_1, reviewer_2, ..., reviewer_n]
 
 if ALL n results are "NO FINDINGS":
-    → Iteration is clean — skip Synthesize/Triage/Plan Approval/Address/Verify/Change Confirmation; present "Clean iteration — no findings, no changes." and proceed directly to Epilogue (no AskUserQuestion needed)
+    → Skip Synthesize/Triage/Plan Approval/Address/Verify/Change Confirmation; present "No findings." and proceed directly to Epilogue (no AskUserQuestion needed)
 else:
     # ANY reviewer has findings
     → Merge all findings into tracker
@@ -206,8 +196,8 @@ else:
 ```markdown
 | ID | Line | Issue | Status | Reviewers |
 |:--:|:----:|:-----------|:------:|:---------:|
-| F-001 | 42 | Terminology: "bug" vs "finding" inconsistent | open | 1,3 |
-| F-002 | 108 | Missing Do/Don't section in Phase: Verify | open | 2 |
+| F-001 | {n} | [issue description] | open | 1,3 |
+| F-002 | {n} | [issue description] | open | 2 |
 ```
 
 The "Reviewers" column shows which of the n reviewers (numbered 1 through n) flagged this issue.
@@ -281,13 +271,12 @@ After understanding the system, organize findings for triage (and subsequent hum
 ### Theme Summary Format
 
 ```markdown
-## Synthesize: {finding_count} findings → {theme_count} themes
+## Synthesize: {finding_count} findings in {theme_count} themes
 
 | Theme | Findings | Root cause |
 |-------|----------|------------|
-| Terminology: "agent" vs "reviewer" | F-001, F-002, F-003, F-004 | No single term chosen |
-| Phase reference errors | F-005, F-006 | Phases renamed but refs not updated |
-| Missing status transitions | F-007, F-008, F-009 | Status flow never documented |
+| [theme name] | F-001, F-002, ... | [root cause] |
+| [theme name] | F-003, F-004, ... | [root cause] |
 
 **Unrelated findings** (no shared root cause):
 - F-010: [individual description]
@@ -335,7 +324,7 @@ Triage changes status from `open` → `planned`. Address phase changes `planned`
 
 **Present findings and proposed resolutions to user BEFORE making any edits.**
 
-This is the first human-in-the-loop checkpoint in this iteration. The user can:
+This is the first human-in-the-loop checkpoint. The user can:
 - Approve the plan and proceed to edits
 - Modify proposed resolutions
 - Add context or requirements
@@ -359,45 +348,42 @@ Present the themes and proposed fixes from Triage. Present by theme; unrelated f
 ```markdown
 ## Review Findings: {finding_count} findings in {theme_count} themes
 
-### Theme 1: Terminology — "agent" vs "reviewer" (4 findings)
+### Theme 1: [theme name] ({n} findings)
 
-**Root cause**: Document uses both terms interchangeably.
+**Root cause**: [why this pattern exists]
 
-**Findings**: F-001, F-002, F-003, F-004
+**Findings**: F-001, F-002, ...
 
-**Proposed fix**: Standardize on "reviewer" throughout. One search-and-replace resolves all 4.
-
----
-
-### Theme 2: Phase reference errors (2 findings)
-
-**Root cause**: Phases were renamed but cross-references not updated.
-
-**Findings**: F-005, F-006
-
-**Proposed fix**: Update all references to match current phase names (e.g., "Approval" → "Plan Approval").
+**Proposed fix**: [single fix that resolves all findings in theme]
 
 ---
 
-### Unrelated findings (3 findings)
+### Theme 2: [theme name] ({n} findings)
+
+**Root cause**: [why this pattern exists]
+
+**Findings**: F-003, F-004, ...
+
+**Proposed fix**: [single fix that resolves all findings in theme]
+
+---
+
+### Unrelated findings ({n} findings)
 
 These have no shared root cause; list individually:
 
-**F-007** (line 299): "code sections" should be "document sections"
-- Fix: Change "code" to "document"
+**F-005** (line {n}): [issue description]
+- Fix: [specific fix]
 
-**F-008** (line 452): Missing example for clean iteration
-- Fix: Add clean iteration example to Change Confirmation
-
-**F-009** (line 437): "approves" vs "confirms" inconsistency
-- Fix: Change to "confirms"
+**F-006** (line {n}): [issue description]
+- Fix: [specific fix]
 
 ---
 
 ### Summary
-- 2 themes (covering 6 findings) + 3 unrelated findings = 9 total findings
-- 2 root-cause fixes resolve 6 findings
-- 3 standalone point fixes
+- {theme_count} themes (covering {n} findings) + {n} unrelated = {total} findings
+- {theme_count} root-cause fixes resolve {n} findings
+- {n} standalone point fixes
 ```
 
 ### Plan Approval Options
@@ -448,14 +434,14 @@ For each theme (or individual unrelated finding):
 ### Example: Addressing a Finding
 
 ```
-Finding F-001: Line 42 uses "bug" but line 108 uses "finding"
+Finding F-001: [issue description]
 
-Resolution: Standardize on "finding" throughout
+Resolution: [how to fix]
 
 Edit(
-  file_path: "/path/to/SKILL.md",
-  old_string: "every bug demands",
-  new_string: "every finding demands"
+  file_path: "{target_file}",
+  old_string: "[text to replace]",
+  new_string: "[replacement text]"
 )
 
 Update tracker: F-001 status → fixed
@@ -492,7 +478,7 @@ Update tracker: F-001 status → fixed
 
 **Present executed changes to user and get explicit confirmation.**
 
-This is the second human-in-the-loop checkpoint in this iteration. The user confirms the changes were executed correctly.
+This is the second human-in-the-loop checkpoint. The user confirms the changes were executed correctly.
 
 ### Do:
 - Present summary of changes made (not proposed — actually executed)
@@ -504,7 +490,7 @@ This is the second human-in-the-loop checkpoint in this iteration. The user conf
 - ❌ Skip this checkpoint — human confirmation is mandatory
 - ❌ Assume confirmation — wait for explicit response
 
-Note: For clean iterations (no findings), Change Confirmation is skipped entirely — see Parse Output phase for the clean iteration flow.
+Note: When there are no findings, this phase is skipped (see Parse Output).
 
 ### Change Summary Template
 
@@ -515,17 +501,17 @@ Note: For clean iterations (no findings), Change Confirmation is skipped entirel
 
 | ID | Line | Issue | Resolution Applied |
 |----|------|-------|-------------------|
-| F-001 | 42 | "bug" vs "finding" inconsistency | Changed to "finding" |
-| F-002 | 108 | Missing Do/Don't section | Added Do/Don't section |
+| F-001 | {n} | [issue] | [resolution] |
+| F-002 | {n} | [issue] | [resolution] |
 
 ### Edits Made
-1. Line 42: Changed "bug" → "finding"
-2. Lines 108-115: Added Do/Don't section
+1. Line {n}: [change description]
+2. Line {n}: [change description]
 
 ### Verification
-- [x] All planned resolutions executed
-- [x] Modified sections re-read
-- [x] No new inconsistencies introduced
+- [ ] All planned resolutions executed
+- [ ] Modified sections re-read
+- [ ] No new inconsistencies introduced
 ```
 
 ### Confirmation Options
@@ -536,7 +522,7 @@ AskUserQuestion(
     question: "Confirm changes were executed correctly?",
     header: "Confirm",
     options: [
-      {label: "Confirm", description: "Changes look correct, complete iteration"},
+      {label: "Confirm", description: "Changes look correct"},
       {label: "View diff", description: "Show git diff (requires git), then re-ask"},
       {label: "Revert", description: "Something went wrong, undo changes"},
       {label: "Modify", description: "Need additional changes"}
@@ -550,29 +536,28 @@ AskUserQuestion(
 
 ## Phase: Epilogue
 
-**Wrap up the iteration and report results.**
+**Wrap up and report results.**
 
 ### Do:
-- For clean iterations: Present "Clean iteration — no findings, no changes." and end
-- For non-clean iterations: Report findings addressed and iteration status
+- For no findings: Present "No findings." and end
+- For findings addressed: Report what was fixed
 - End the skill cleanly
 
 ### Don't:
-- ❌ Skip the completion message — always report iteration outcome
-- ❌ Continue after reporting — the iteration is complete
+- ❌ Skip the completion message — always report outcome
+- ❌ Continue after reporting — the skill is complete
 
-**For clean iterations** (no findings): Present "Clean iteration — no findings, no changes." and end the skill. No user confirmation needed.
+**For no findings**: Present "No findings." and end. (No user confirmation needed.)
 
-**For non-clean iterations** (after user confirms changes):
+**For findings addressed** (after user confirms changes):
 
-1. Report iteration results:
+1. Report results:
    ```
    Review complete.
    Findings: {finding_count} addressed
-   Status: Iteration complete
    ```
 
-2. End the skill. If called by /loop-review-skill-parallel, the loop wrapper will launch a new iteration as needed.
+2. End the skill.
 
 ---
 
@@ -595,4 +580,4 @@ AskUserQuestion(
 
 ---
 
-Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents in a single message with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present clean iteration statement and proceed directly to Epilogue (skipping Synthesize/Triage/Plan Approval/Address/Verify/Change Confirmation). Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.
+Begin /review-skill-parallel now. Parse args for target skill file path and -n flag (default: 3 reviewers). Launch n parallel Task agents in a single message with identical review prompts. Wait for all to complete. If all return NO FINDINGS, present "No findings." and proceed to Epilogue. Otherwise: synthesize findings into themes, triage by theme, get Plan Approval from user, execute the approved plan in Address, verify changes, and get Change Confirmation.

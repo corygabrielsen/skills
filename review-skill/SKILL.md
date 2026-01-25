@@ -265,6 +265,10 @@ A single root cause may be caught by multiple lenses. Group them.
 - Use AskUserQuestion with clear options
 - Wait for explicit approval
 
+### Don't:
+- Make edits before approval
+- Skip this checkpoint
+
 ### Plan Approval Options
 
 ```

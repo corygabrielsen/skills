@@ -38,9 +38,9 @@ AskUserQuestion(
 1. Check for ready tasks (pending, empty blockedBy)
 2. If ready tasks exist → preflight/EVALUATE
 3. If all tasks blocked with no in_progress tasks → **deadlock detected**:
-   - Check for circular dependencies (A blockedBy B, B blockedBy A) → route to HIL_ANOMALY
-   - Check for blockers that are ABORTED/completed → offer to clear stale blockedBy
-   - Otherwise report blockers with explicit options: "Unblock manually" or "Abort blocked tasks"
+   - Circular dependencies (A blockedBy B, B blockedBy A) → HIL_ANOMALY (Classification: Blocking)
+   - Stale blockers (blockedBy tasks that are ABORTED/completed) → offer to clear; if user accepts, clear and → preflight/EVALUATE; if user declines, re-present options
+   - Otherwise, present AskUserQuestion: "Unblock manually" (user will explain) or "Abort blocked tasks" (mark all blocked as ABORTED). After resolution → preflight/EVALUATE or control/REPORT if nothing remains
 4. If all tasks complete → proceed to "Complete" handler
 
 **If "Pause":**
@@ -51,12 +51,14 @@ AskUserQuestion(
 **If "Add work":**
 1. Prompt: "Describe the additional work."
 2. End turn, wait for user input.
-3. → setup/DECOMPOSE with new input
-4. New tasks added to existing graph
+3. If user provides empty/unclear input or cancels ("nevermind") → re-present HIL_NEXT_ACTION options
+4. Otherwise → setup/DECOMPOSE with new input; new tasks added to existing graph
 
 **If "Complete":**
 1. Verify all tasks are completed or ABORTED
 2. If incomplete tasks remain, confirm: "These tasks are still open: [list]. Mark them ABORTED?"
+   - If user says yes → mark listed tasks ABORTED, continue to step 3
+   - If user says no → re-present HIL_NEXT_ACTION options (mission not complete)
 3. Generate final summary
 4. End skill
 

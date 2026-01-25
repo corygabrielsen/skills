@@ -40,7 +40,8 @@
         → execution/VERIFY
 
     if no tasks completed yet:
-        Report status and return control to human
+        Report status, return control to human, end skill
+        (User resumes later with /mission-control → INITIALIZE)
 ```
 
 ## Polling Pattern

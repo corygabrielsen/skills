@@ -38,8 +38,8 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty. See RULES.md 
 --bg (background):
     1. Launch all ready tasks in parallel (Task with run_in_background: true)
     2. Report launched tasks to user
-    3. Return control to human
-    4. On resume → execution/MONITOR
+    3. Return control to human, end skill
+    4. On resume (user returns or invokes /mission-control) → INITIALIZE routes to execution/MONITOR
 ```
 
 **Note:** In --fg mode, DELEGATE handles all blocking. MONITOR phase is skipped (pass-through).
@@ -63,9 +63,11 @@ The `Task` tool returns an agent ID. Store it in task metadata: `TaskUpdate(task
 ## Launch Failure Handling
 
 If `Task` tool returns an error instead of an agent ID:
-1. Record error in task metadata
-2. Mark task: `BLOCKED - Launch failed: [error]`
-3. → control/HIL_ANOMALY
+1. Record error in task metadata for the failed task
+2. Mark that task: `BLOCKED - Launch failed: [error]`
+3. **Continue launching remaining tasks in the batch** (don't abort the whole batch)
+4. After batch completes: if any launches failed → control/HIL_ANOMALY for failed tasks
+5. Successfully launched tasks proceed normally to MONITOR/VERIFY
 
 See FR-A001 in RULES.md for full details.
 

@@ -34,7 +34,7 @@ Like NASA shift handoffs: outgoing controller briefs incoming controller on ever
 
 ## Handoff Format
 
-Before creating a new handoff task, mark any existing handoff tasks as `completed` (they served their purpose). Only one active handoff task should exist at a time.
+Before creating a new handoff task, find and mark any existing handoff tasks as `completed` (they served their purpose). Find existing handoff tasks by checking TaskList for tasks with `metadata.type: "handoff"` that are not already completed. Only one active handoff task should exist at a time.
 
 Write to a designated task or create one:
 

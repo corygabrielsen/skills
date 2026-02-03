@@ -1,4 +1,4 @@
-SKILLS_DIR := $(HOME)/.claude/skills
+SKILLS_DIR := $(HOME)/.agents/skills
 SKILL_DIRS := $(shell find . -maxdepth 2 -name 'SKILL.md' -exec dirname {} \; | sed 's|^\./||' | sort)
 
 .PHONY: install uninstall list

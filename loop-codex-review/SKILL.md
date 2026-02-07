@@ -1,6 +1,6 @@
 ---
 name: loop-codex-review
-description: Automated code review loop with progressive reasoning levels. Runs n parallel Codex reviews (configurable via -n), Claude addresses findings, climbs from low→xhigh reasoning until fixed point (all n clean). Human approval at each iteration.
+description: Automated code review loop with progressive reasoning levels. Runs n parallel Codex reviews (configurable via -n), Claude addresses issues, climbs from low→xhigh reasoning until fixed point (all n clean). Human approval at each iteration.
 ---
 
 # Loop: Codex Review
@@ -9,7 +9,7 @@ You are a code review coordinator. **Codex reviews, Claude addresses.** Diverse 
 
 ## Core Philosophy
 
-**Every finding demands code improvement. No exceptions.**
+**Every issue demands code improvement. No exceptions.**
 
 When a reviewer flags something, the code changes. Always. Either:
 - **Real bug** → fix the code
@@ -36,7 +36,7 @@ This loop creates a proof: when n independent reviews at each reasoning level (l
 ```
 
 - **Review**: Run `codex review` command via Bash — this is OpenAI's Codex doing analysis
-- **Address**: Spawn Claude Task agents to address findings (fix code OR clarify with comments/refactoring)
+- **Address**: Spawn Claude Task agents to address issues (fix code OR clarify with comments/refactoring)
 - **Value**: Two different frontier LLMs catch different things
 
 ## Relationship to loop-address-pr-feedback
@@ -76,36 +76,41 @@ codex review --base master -c model_reasoning_effort="high"
 
 ## Progressive Strategy (Default)
 
-Default behavior: **Climb the reasoning ladder from low → xhigh**
+Default behavior: **Climb the reasoning ladder from low → xhigh, with retrospective after each level**
 
 ```
-low (all n clean) → medium (all n clean) → high (all n clean) → xhigh (all n clean) → DONE
-         ↑                    ↑                    ↑                     ↑
-         └──────── finding? address and restart at this level ──────────┘
+low (all n clean) → retro → medium (all n clean) → retro → high (all n clean) → retro → xhigh (all n clean) → retro → DONE
+         ↑                          ↑                           ↑                            ↑
+         └────────── issue? address and restart at this level ─┘                            │
+                                                                                              │
+         ↑──────────────── retro found architectural changes? restart from low ───────────────┘
 ```
 
-Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → advance. If ANY has findings → address and re-run. Higher `n` = more parallel reviewers = higher confidence.
+Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → run retrospective → advance (or restart from low if retro produced changes). If ANY has issues → address and re-run. Higher `n` = more parallel reviewers = higher confidence.
 
-**Note:** "Findings" includes both real bugs AND false positives. False positives mean the code is unclear — add comments or refactor until the intent is obvious. See "Verification of Findings" section.
+**Note:** "Issues" includes both real bugs AND false positives. False positives mean the code is unclear — add comments or refactor until the intent is obvious. See "Verification of Issues" section.
 
 Why progressive?
 - Fast feedback at low levels catches obvious issues quickly
 - Each level validates the previous (higher levels catch what lower missed)
+- Retrospective at each fixed point catches *patterns across issues* that no individual review would see
 - User can stop early ("good enough, let's PR") but continuing is automatic
 - Restarting a stopped loop is annoying; stopping a running one is easy
 
 ## Workflow Overview
 
 ```
-1. Initialize       → Accept target (--base branch or --uncommitted)
-2. Run codex review → Launch n parallel reviews via Bash (run_in_background: true)
-3. Parse Output     → Extract findings into tracker
-4. Evaluate         → ALL clean? → step 5. Else (findings exist) → step 6.
-5. Check Exit       → At xhigh? → Done. Else → advance level, go to step 2.
-6. Address Findings → Claude agents address findings (parallel)
-7. Verify           → Tests pass, files modified
-8. Human Approval   → Present summary, get explicit approval, commit
-9. Loop             → Return to step 2
+1.  Initialize       → Accept target (--base branch or --uncommitted)
+2.  Run codex review → Launch n parallel reviews via Bash (run_in_background: true)
+3.  Parse Output     → Extract issues into tracker
+4.  Evaluate         → ALL clean? → step 5. Else (issues exist) → step 6.
+5.  Retrospective    → Synthesize all issues so far, look for patterns (see Phase: Retrospective)
+5a. If retro changes → Implement, restart from low (go to step 2 at low)
+5b. If no changes    → At xhigh? → Done. Else → advance level, go to step 2.
+6.  Address Issues → Claude agents address issues (parallel)
+7.  Verify           → Tests pass, files modified
+8.  Human Approval   → Present summary, get explicit approval, commit
+9.  Loop             → Return to step 2
 ```
 
 ## State Schema
@@ -125,10 +130,15 @@ parallel_review_count: 3           # -n flag (default 3) - how many reviews to r
 
 # Level history (for reporting)
 level_history:
-  low:    { reviews: 0, findings: 0, fixed_point: false }
-  medium: { reviews: 0, findings: 0, fixed_point: false }
-  high:   { reviews: 0, findings: 0, fixed_point: false }
-  xhigh:  { reviews: 0, findings: 0, fixed_point: false }
+  low:    { reviews: 0, issues: 0, fixed_point: false }
+  medium: { reviews: 0, issues: 0, fixed_point: false }
+  high:   { reviews: 0, issues: 0, fixed_point: false }
+  xhigh:  { reviews: 0, issues: 0, fixed_point: false }
+
+# Retrospective tracking
+retro_count: 0                     # Number of retrospectives run
+retro_restarts: 0                  # Times retro triggered restart from low
+retro_patterns_found: 0            # Total architectural patterns found
 
 issue_tracker: []
 ```
@@ -242,7 +252,7 @@ Bash(command: "...", run_in_background: true, description: "Codex review 1/10 (l
 
 Each call returns a `task_id` and `output_file` path. Record these for polling.
 
-**Fixed point = all n clean.** If ANY review has findings, address them and re-run all n reviews at this level.
+**Fixed point = all n clean.** If ANY review has issues, address them and re-run all n reviews at this level.
 
 ### Command Construction
 
@@ -256,20 +266,20 @@ Each call returns a `task_id` and `output_file` path. Record these for polling.
 
 **Important:** When in a Graphite stack, always review against the parent branch, not master.
 
-**Polling:** Use `cat` or `tail -n` (NOT `tail -f`) to check output files. See "Handling Zombie Tasks" section.
+**Polling:** Use `cat` or `tail -n` (NOT `tail -f`) to check output files.
 
 ## Phase: Parse Output
 
 ### Do:
-- Extract all findings from codex review output
+- Extract all issues from codex review output
 - Parse into issue tracker format
 - Record the reasoning level that found each issue
 
 ### Don't:
-- ❌ Skip findings because they seem minor — every finding gets tracked
-- ❌ Combine multiple findings into one — each gets its own ID
+- ❌ Skip issues because they seem minor — every issue gets tracked
+- ❌ Combine multiple issues into one — each gets its own ID
 
-Codex review outputs markdown with findings. Parse into tracker:
+Codex review outputs markdown with issues. Parse into tracker:
 
 ```markdown
 | ID | File | Line | Severity | Description | Status | Iter | Level |
@@ -289,19 +299,19 @@ if ALL n results are clean:
     else:
         → Advance to next reasoning level
 else:
-    # ANY review has findings
-    → Merge all findings into tracker, proceed to address phase
+    # ANY review has issues
+    → Merge all issues into tracker, proceed to address phase
     → After addressing, re-run all n reviews at this level
 ```
 
-### Verification of Findings
+### Verification of Issues
 
 **Do:**
-- Verify each finding before addressing (especially at lower reasoning levels)
+- Verify each issue before addressing (especially at lower reasoning levels)
 - Ask: real bug, false positive, or design tradeoff?
 - Triage using this table:
 
-| Finding Type | Resolution |
+| Issue Type | Resolution |
 |--------------|------------|
 | Real bug | Fix the code |
 | False positive | Add comments or refactor until the intent is obvious |
@@ -310,7 +320,7 @@ else:
 
 **Don't:**
 - ❌ Address without verifying first — lower reasoning levels have more false positives
-- ❌ Dismiss findings without improving code — every finding = code change
+- ❌ Dismiss issues without improving code — every issue = code change
 - ❌ Blame the reviewer for misunderstanding — if an LLM gets confused, a human will too
 
 **Critical insight: False positives are documentation bugs.**
@@ -328,11 +338,11 @@ Now the next reviewer (human or LLM) won't raise the same concern. The false pos
 
 ### Synthesize Before Addressing
 
-⚠️ **Always zoom out before addressing any finding.**
+⚠️ **Always zoom out before addressing any issue.**
 
-Reviewers do deep analysis but output terse summaries. A finding that looks like a one-line change often touches code with multiple exit paths, callers, and implicit contracts. Addressing the symptom without understanding the system leads to incomplete or wrong resolutions.
+Reviewers do deep analysis but output terse summaries. An issue that looks like a one-line change often touches code with multiple exit paths, callers, and implicit contracts. Addressing the symptom without understanding the system leads to incomplete or wrong resolutions.
 
-This step is not optional, and it's not just for "complex" findings. Even when a single reviewer flags a single line, ask: why was this subtle enough that others missed it? What else in this area might have similar issues?
+This step is not optional, and it's not just for "complex" issues. Even when a single reviewer flags a single line, ask: why was this subtle enough that others missed it? What else in this area might have similar issues?
 
 **The protocol:**
 
@@ -343,7 +353,7 @@ This step is not optional, and it's not just for "complex" findings. Even when a
    - All callers and call sites
    - All reads and writes of affected state
 
-3. **Look for patterns** — Findings in the same file or touching the same concept (error handling, validation, cleanup) may share a root cause. A single finding may reveal a pattern repeated elsewhere.
+3. **Look for patterns** — Issues in the same file or touching the same concept (error handling, validation, cleanup) may share a root cause. A single issue may reveal a pattern repeated elsewhere.
 
 4. **Ask the hard questions:**
    - What contract should this code uphold?
@@ -359,31 +369,32 @@ The goal is to reconstruct the full picture before acting. Understand the system
 
 ### Do:
 - Check exit conditions before spawning any agents
-- Ask user for restart strategy when findings exist
+- Ask user for restart strategy when issues exist
 - Spawn agents in parallel with `run_in_background: true`
-- Group findings by file when sensible
+- Group issues by file when sensible
 
 ### Don't:
 - ❌ Skip exit check — you might already be done
-- ❌ Address findings without user input on restart strategy
+- ❌ Address issues without user input on restart strategy
 - ❌ Run address agents sequentially — always parallel
 
 **Exit check first:**
 ```
-if all_n_clean AND reasoning_level == "xhigh":
-    → Done (full fixed point reached)
 if all_n_clean:
-    → Advance to next reasoning level
+    → Run retrospective (see Phase: Retrospective)
+    → If retro has changes: implement, restart from low
+    → If retro clean AND reasoning_level == "xhigh": Done (full fixed point)
+    → If retro clean: Advance to next reasoning level
 if iteration_count >= max_iterations:
     → Ask user how to proceed
 ```
 
-### When Findings Exist: Ask User for Strategy
+### When Issues Exist: Ask User for Strategy
 
 Use `AskUserQuestion` to let user choose restart strategy:
 
 ```
-"Found {count} findings at {level} reasoning. After addressing, how should we verify?"
+"Found {count} issues at {level} reasoning. After addressing, how should we verify?"
 
 Options:
 1. "Re-review at [current level]" (recommended) - Verify resolution at same depth
@@ -397,14 +408,14 @@ Context matters: A subtle edge case found at `high` probably just needs re-revie
 ### Spawn Claude Address Agents
 
 **Spawn address agents in parallel** via Task tool:
-- One agent per finding (or grouped by file)
+- One agent per issue (or grouped by file)
 - `run_in_background: true` for parallel execution
-- Agent prompt includes finding details from Codex's review
+- Agent prompt includes issue details from Codex's review
 
 ```
 Task(
   description: "Address CR-001: SQL injection",
-  prompt: "Address the SQL injection finding from code review...",
+  prompt: "Address the SQL injection issue from code review...",
   subagent_type: "general-purpose",
   run_in_background: true
 )
@@ -420,6 +431,25 @@ Task(
 ### Don't:
 - ❌ Skip test verification
 - ❌ Proceed if tests fail — address test failures first
+
+## Phase: Retrospective
+
+**Triggers after every per-level fixed point (all n reviews clean at current level).**
+
+Synthesize all issues so far. Look for patterns across the issue tracker — clusters, fix cascades, recurring themes — and propose architectural changes that would eliminate entire categories of issues. This is Claude reasoning over the accumulated issue history, not a Codex review.
+
+### Do:
+- Run after EVERY per-level fixed point — no conditionals
+- Feed it the full issue tracker (not the diff)
+- Propose architectural changes that would prevent 3+ issues each
+- If proposals approved: implement, then restart from low
+- If no patterns: say so briefly and advance
+
+### Don't:
+- ❌ Skip it — it's cheap when empty, high-value when not
+- ❌ Feed it the diff — the issue history is the signal
+- ❌ Propose cosmetic/style changes — architectural only
+- ❌ Force patterns that aren't there — "no patterns found" is valid and common
 
 ## Phase: Human Approval
 
@@ -439,7 +469,7 @@ Task(
 
 ### CR-001: [Short title] (severity)
 
-**The Finding:**
+**The Issue:**
 [2-3 sentences explaining what the reviewer flagged, where it occurs, and why it matters.]
 
 **The Resolution:**
@@ -451,7 +481,7 @@ Task(
 
 ### CR-002: [Short title] (severity)
 
-**The Finding:**
+**The Issue:**
 [Same format...]
 
 **The Resolution:**
@@ -489,12 +519,12 @@ Task(
 
 ### Do:
 - Commit only after explicit human approval
-- Include all resolved findings in commit message
+- Include all resolved issues in commit message
 - Loop back to Phase: Review after committing
 
 ### Don't:
 - ❌ Commit without human approval
-- ❌ Commit before addressing all findings from current review round
+- ❌ Commit before addressing all issues from current review round
 
 After human approval:
 
@@ -520,12 +550,12 @@ Then loop back to Phase: Review.
 ### Do:
 - Require ALL n reviews clean to declare fixed point
 - Climb all the way to xhigh (default behavior)
-- Re-run all n reviews after addressing any finding
+- Re-run all n reviews after addressing any issue
 
 ### Don't:
 - ❌ Trust low/medium clean reviews as "done" — always climb to at least high
 - ❌ Stop at first fixed point — default is full climb to xhigh
-- ❌ Declare fixed point if ANY review has findings
+- ❌ Declare fixed point if ANY review has issues
 
 ### The True Definition
 
@@ -541,21 +571,28 @@ If 1 in 10 reviewers misunderstands your code, that's a 10% confusion rate. Addr
 When all n parallel reviews return clean at any level:
 ```
 All n reviews at [level] found nothing.
-Fixed point at [level]. Advancing to [next level]...
+Fixed point at [level]. Running retrospective...
+
+[retrospective runs — see Phase: Retrospective]
+
+No architectural patterns found. Advancing to [next level]...
+  — or —
+Retrospective found N patterns. Implementing changes, restarting from low...
 ```
 
 ### Full Fixed Point
-When all n reviews return clean at `xhigh`:
+When all n reviews return clean at `xhigh` AND retrospective finds no patterns:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  FULL FIXED POINT REACHED                               │
 ├─────────────────────────────────────────────────────────┤
-│  low:    n/n clean ✓                                    │
-│  medium: n/n clean ✓                                    │
-│  high:   n/n clean ✓                                    │
-│  xhigh:  n/n clean ✓                                    │
+│  low:    n/n clean ✓  retro: clean                      │
+│  medium: n/n clean ✓  retro: clean                      │
+│  high:   n/n clean ✓  retro: clean                      │
+│  xhigh:  n/n clean ✓  retro: clean                      │
 ├─────────────────────────────────────────────────────────┤
-│  Total reviews: 4n* |  Findings addressed: X            │
+│  Total reviews: 4n* |  Issues addressed: X            │
+│  Retrospectives: Y  |  Architectural changes: Z         │
 │  Code has been validated at all reasoning depths.       │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -582,16 +619,16 @@ Severities: `critical` | `major` | `minor` | `style`
 Statuses: `open` | `addressing` | `fixed` | `clarified`
 
 **Status transitions:**
-- `open` → when finding is first recorded
+- `open` → when issue is first recorded
 - `addressing` → when an agent is actively working on it
 - `fixed` → real bug was fixed in code
 - `clarified` → false positive addressed with comments/refactoring
 
 ### Don't:
 - ❌ Use "wontfix" status — it doesn't exist
-- ❌ Leave any finding unaddressed — every finding = code improvement
+- ❌ Leave any issue unaddressed — every issue = code improvement
 
-See Core Philosophy: every finding results in code change (fix OR clarify).
+See Core Philosophy: every issue results in code change (fix OR clarify).
 
 ## Resumption (Post-Compaction)
 
@@ -600,32 +637,7 @@ See Core Philosophy: every finding results in code change (fix OR clarify).
 3. Check for running background Bash (codex review) or Task agents
 4. Resume from appropriate phase
 
-## Handling Zombie Tasks
-
-⚠️ **Background task notifications are unreliable.** ~50% of notifications are lost when you're mid-response. Don't trust them.
-
-**The Pattern:**
-
-1. **Record IDs when launching** — Note the task IDs from each Bash() call
-2. **Wait briefly** — Give tasks time to run (~3m for low, ~5m for medium, ~8-10m for high, ~12-20m for xhigh)
-3. **Poll proactively** — Don't wait for notifications; check the files directly
-4. **If user says "tasks are done"** — Trust them and poll immediately
-
-**Polling Recipe:**
-```bash
-# The output_file path is returned when you launch each task
-# Check if task is complete (look for final JSON line with result)
-tail -1 <output_file>
-
-# Batch check all tasks (using the paths returned at launch time)
-for f in /path/to/task1.output /path/to/task2.output; do echo "=== $f ==="; tail -1 "$f"; done
-```
-
-⚠️ **NEVER use `tail -f`** — it blocks forever. Always use `cat` or `tail -n` which terminate after reading.
-
-**Key insight:** Treat notifications as hints, not guarantees. When in doubt, poll.
-
-## Contradictory Findings
+## Contradictory Issues
 
 When successive reviews recommend opposing changes, this signals genuine design tension:
 
@@ -635,7 +647,7 @@ When successive reviews recommend opposing changes, this signals genuine design 
 4. **Search for synthesis** — Often a solution exists that satisfies multiple constraints
 5. **Commit deliberately** — If no synthesis exists, choose and document the rationale
 
-Contradictory findings usually indicate underspecified requirements, not wrong reviews.
+Contradictory issues usually indicate underspecified requirements, not wrong reviews.
 
 ## Quick Reference: Don'ts
 
@@ -645,15 +657,16 @@ Pre-flight checklist. Details are inline in each section above.
 |---------|-------|
 | Initialize | Assume master is base, skip base branch detection |
 | Review | Use Task agents, run sequentially, forget `-c model_reasoning_effort`, use `tail -f` |
-| Parse Output | Skip findings because they seem minor, combine multiple findings into one |
-| Verification of Findings | Address without verifying, dismiss without improving code, blame reviewer |
+| Parse Output | Skip issues because they seem minor, combine multiple issues into one |
+| Verification of Issues | Address without verifying, dismiss without improving code, blame reviewer |
 | Address | Skip exit check, address without user strategy input, run agents sequentially |
 | Verify | Skip tests, proceed if tests fail |
+| Retrospective | Skip to save time, feed the diff instead of issue history, propose cosmetic changes, force patterns that aren't there |
 | Approval | Skip checkpoint, commit without explicit approval |
-| Commit | Commit without approval, commit before addressing all findings |
-| Fixed Point | Trust low/medium as done, stop at first fixed point, declare fixed point if ANY review has findings |
-| Issue Tracker | Use "wontfix" status, leave findings unaddressed |
+| Commit | Commit without approval, commit before addressing all issues |
+| Fixed Point | Trust low/medium as done, stop at first fixed point, declare fixed point if ANY review has issues |
+| Issue Tracker | Use "wontfix" status, leave issues unaddressed |
 
 ---
 
-Enter loop-codex-review mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch n parallel `codex review` commands via Bash tool with `run_in_background: true` (where n = -n flag, default 3). All n must be clean to advance to next level. Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI.
+Enter loop-codex-review mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch n parallel `codex review` commands via Bash tool with `run_in_background: true` (where n = -n flag, default 3). All n must be clean to advance to next level. Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI. After each per-level fixed point, run the retrospective phase to synthesize issues and look for architectural patterns before advancing.

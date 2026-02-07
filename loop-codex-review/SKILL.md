@@ -81,12 +81,15 @@ Default behavior: **Climb the reasoning ladder from low → xhigh, with retrospe
 ```
 low (all n clean) → retro → medium (all n clean) → retro → high (all n clean) → retro → xhigh (all n clean) → retro → DONE
          ↑                          ↑                           ↑                            ↑
-         └────────── issue? address and restart at this level ─┘                            │
-                                                                                              │
-         ↑──────────────── retro found architectural changes? restart from low ───────────────┘
+         │              ┌─ issue? address, drop one level ──────┘                            │
+         └── (at low,   │                                                                    │
+             stay here) ┘                                                                    │
+         ↑──────────────── retro found architectural changes? restart from low ──────────────┘
 ```
 
-Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → run retrospective → advance (or restart from low if retro produced changes). If ANY has issues → address and re-run. Higher `n` = more parallel reviewers = higher confidence.
+Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → run retrospective → advance (or restart from low if retro produced changes). If ANY has issues → address and **drop one reasoning level** (e.g., issues at high → fix → re-run at medium). At low, stay at low. Higher `n` = more parallel reviewers = higher confidence.
+
+**Why drop a level?** Fixes are code changes. Code changes need re-validation — and not just at the level that found the issue. Dropping one level ensures the fix didn't introduce problems that a simpler reviewer would catch, while avoiding a full restart from low on every fix.
 
 **Note:** "Issues" includes both real bugs AND false positives. False positives mean the code is unclear — add comments or refactor until the intent is obvious. See "Verification of Issues" section.
 
@@ -107,10 +110,11 @@ Why progressive?
 5.  Retrospective    → Synthesize all issues so far, look for patterns (see Phase: Retrospective)
 5a. If retro changes → Implement, restart from low (go to step 2 at low)
 5b. If no changes    → At xhigh? → Done. Else → advance level, go to step 2.
-6.  Address Issues → Claude agents address issues (parallel)
+6.  Address Issues   → Claude agents address issues (parallel)
 7.  Verify           → Tests pass, files modified
 8.  Human Approval   → Present summary, get explicit approval, commit
-9.  Loop             → Return to step 2
+9.  Drop Level       → Drop one reasoning level (stay at low if already there)
+10. Loop             → Return to step 2
 ```
 
 ## State Schema
@@ -252,7 +256,7 @@ Bash(command: "...", run_in_background: true, description: "Codex review 1/10 (l
 
 Each call returns a `task_id` and `output_file` path. Record these for polling.
 
-**Fixed point = all n clean.** If ANY review has issues, address them and re-run all n reviews at this level.
+**Fixed point = all n clean.** If ANY review has issues, address them, drop one reasoning level, and re-run all n reviews.
 
 ### Command Construction
 
@@ -301,7 +305,8 @@ if ALL n results are clean:
 else:
     # ANY review has issues
     → Merge all issues into tracker, proceed to address phase
-    → After addressing, re-run all n reviews at this level
+    → After addressing, drop one reasoning level and re-run
+    →   high → medium, medium → low, low → low (floor)
 ```
 
 ### Verification of Issues
@@ -397,13 +402,13 @@ Use `AskUserQuestion` to let user choose restart strategy:
 "Found {count} issues at {level} reasoning. After addressing, how should we verify?"
 
 Options:
-1. "Re-review at [current level]" (recommended) - Verify resolution at same depth
+1. "Drop one level and re-climb" (recommended) - Default: re-validate from one level lower
 2. "Restart from low" - Full re-climb, maximum confidence
-3. "Drop one level and re-climb" - Balance of speed and thoroughness
+3. "Re-review at [current level]" - Stay at same depth, skip lower re-validation
 4. "Skip to next level" - Trust the resolution, continue climbing
 ```
 
-Context matters: A subtle edge case found at `high` probably just needs re-review at `high`. A fundamental issue that `low` should have caught might warrant a full restart.
+Context matters: Default drop-one-level works for most cases. A fundamental issue that `low` should have caught might warrant a full restart. A trivial fix might justify staying at the same level.
 
 ### Spawn Claude Address Agents
 

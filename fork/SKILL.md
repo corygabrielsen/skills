@@ -9,7 +9,7 @@ Generate a context handoff for a new Claude session. No tool calls needed - synt
 
 ## Output Format
 
-```
+````
 ## Fork Ready
 
 **Context Summary:**
@@ -21,9 +21,10 @@ Generate a context handoff for a new Claude session. No tool calls needed - synt
 ```bash
 cd [target directory] && \
 claude "/mission-control [escaped prompt here]"
-```
+````
 
-*This conversation continues here. The fork runs independently.*
+_This conversation continues here. The fork runs independently._
+
 ```
 
 ## Building the Command
@@ -31,13 +32,16 @@ claude "/mission-control [escaped prompt here]"
 Always invoke `/mission-control` so the forked session starts in coordination mode:
 
 ```
+
 /mission-control Context from forked conversation:
+
 - Working on: [description]
 - Files: [list]
 - Key context: [important decisions, findings, state]
 
 Continue with: [focus hint from args, or "Pick up where we left off"]
-```
+
+````
 
 ## Args Handling
 
@@ -51,7 +55,7 @@ If the current session has bypass permissions enabled, propagate it to the fork:
 ```bash
 cd [dir] && \
 claude --dangerously-skip-permissions "/mission-control ..."
-```
+````
 
 Check your current permission context. If you're running with elevated permissions (no confirmation prompts for file edits, bash commands, etc.), include the flag so the forked session has the same capabilities.
 

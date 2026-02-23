@@ -5,11 +5,13 @@
 **If `--auto` mode:** Show the plan, then proceed to Address (skip AskUserQuestion).
 
 ## Do:
+
 - Show themes and proposed fixes (always)
 - Use AskUserQuestion with clear options (unless `--auto`)
 - Wait for explicit approval (unless `--auto`)
 
 ## Don't:
+
 - Make edits before approval/showing plan
 - Skip showing the plan
 - Re-run Synthesize/Triage when user modifies—just adjust fix proposals directly

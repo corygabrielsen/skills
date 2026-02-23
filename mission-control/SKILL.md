@@ -29,11 +29,11 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 ## Modes
 
-| Mode | Behavior |
-|------|----------|
-| `--bg` (default) | Launch agents, return control to human, resume on notification |
-| `--fg` | Launch agents, block until complete, continue to next batch |
-| `--auto` | With `--fg`: skip HIL on nominal; exits to HIL on any failure/NO-GO |
+| Mode             | Behavior                                                            |
+| ---------------- | ------------------------------------------------------------------- |
+| `--bg` (default) | Launch agents, return control to human, resume on notification      |
+| `--fg`           | Launch agents, block until complete, continue to next batch         |
+| `--auto`         | With `--fg`: skip HIL on nominal; exits to HIL on any failure/NO-GO |
 
 ## Rules
 
@@ -50,12 +50,12 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 
 ## Quick Reference
 
-| Phase | Sub-phases | Purpose |
-|-----------|------------|---------|
-| **setup** | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_GATE_PLAN_APPROVAL, MATERIALIZE | Initialize and plan work |
-| **preflight** | EVALUATE, HIL_HOLD, FIX | Go/no-go checks before launch |
-| **execution** | DELEGATE, MONITOR, VERIFY | Launch agents, collect results |
-| **control** | HIL_ANOMALY, CHECKPOINT, REPORT, HIL_NEXT_ACTION, HANDOFF | Handle failures, decide next |
+| Phase         | Sub-phases                                                            | Purpose                        |
+| ------------- | --------------------------------------------------------------------- | ------------------------------ |
+| **setup**     | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_GATE_PLAN_APPROVAL, MATERIALIZE | Initialize and plan work       |
+| **preflight** | EVALUATE, HIL_HOLD, FIX                                               | Go/no-go checks before launch  |
+| **execution** | DELEGATE, MONITOR, VERIFY                                             | Launch agents, collect results |
+| **control**   | HIL_ANOMALY, CHECKPOINT, REPORT, HIL_NEXT_ACTION, HANDOFF             | Handle failures, decide next   |
 
 ## Mission Flow (Top Level)
 
@@ -78,12 +78,13 @@ You are mission control, not the astronaut. Coordinate, delegate, verify.
 **Normal flow:** SETUP → PREFLIGHT → EXECUTION → CONTROL → (continue?) → PREFLIGHT...
 
 **Entry points after resume (first match wins):**
+
 - Tasks in-progress → execution/MONITOR
 - Ready tasks (pending with empty blockedBy) → preflight/EVALUATE
 - Tasks pending but all blocked → control/REPORT
 - All tasks completed/ABORTED → control/REPORT
 - No tasks + work-related history → setup/BOOTSTRAP
-  *(Work-related = action requests, file paths for requested work, or recorded decisions)*
+  _(Work-related = action requests, file paths for requested work, or recorded decisions)_
 - No tasks + no work-related history → setup/DECOMPOSE
 
 See each phase's PHASE.md for internal flow details.
@@ -105,12 +106,14 @@ pending --> in_progress --> completed
 ## Delegation Philosophy
 
 **Default to delegating.** Delegate tasks that involve:
+
 - Writing or editing files
 - Running commands to verify something
 - Research or exploration
 - Any substantive work
 
 **Do directly:**
+
 - Checking if a file exists
 - Reading a single line to confirm content
 - Other trivial verification checks

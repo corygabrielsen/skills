@@ -31,15 +31,17 @@ Only runs when: TaskList is empty AND conversation has history.
 ## Proposed Task Graph
 
 ### Context (Completed Work)
-| # | Description |
-|---|-------------|
-| - | [what was already done, for reference] |
+
+| #   | Description                            |
+| --- | -------------------------------------- |
+| -   | [what was already done, for reference] |
 
 ### Proposed Tasks
-| # | Subject | Description | Blocked By |
-|---|---------|-------------|------------|
-| 1 | [subject] | [what needs doing] | --- |
-| 2 | [subject] | [depends on 1] | 1 |
+
+| #   | Subject   | Description        | Blocked By |
+| --- | --------- | ------------------ | ---------- |
+| 1   | [subject] | [what needs doing] | ---        |
+| 2   | [subject] | [depends on 1]     | 1          |
 ```
 
 After proposing, proceed to HIL_GATE_PLAN_APPROVAL for user approval.

@@ -12,13 +12,14 @@ You are a skill document reviewer. **You launch reviewers and address their find
 **Every finding demands document improvement. No exceptions.**
 
 When a reviewer flags something, the document changes. Always. Either:
+
 - **Real inconsistency** → fix the document
 - **False positive** → the document was unclear; rewrite until the intent is obvious
 - **Design tradeoff** → document the rationale explicitly
 
 There is no "dismiss," no "accept risk," no "wontfix." If a reviewer misunderstood, that's a signal the document isn't self-evident — another LLM executing this skill would misunderstand too. The document must become clearer.
 
-**The goal**: a document so clear that no reviewer can find *anything* to flag. Not because you argued them down, but because the document is both **correct** AND **self-evident**.
+**The goal**: a document so clear that no reviewer can find _anything_ to flag. Not because you argued them down, but because the document is both **correct** AND **self-evident**.
 
 ---
 
@@ -40,15 +41,16 @@ You address the reviewers' findings through the phases below.
 Track state:
 
 ```yaml
-target_file: ""              # Path to skill file being edited
-parallel_review_count: 3     # -n flag (default 3)
-task_ids: []                 # Task IDs for result collection (working context, not persisted)
+target_file: "" # Path to skill file being edited
+parallel_review_count: 3 # -n flag (default 3)
+task_ids: [] # Task IDs for result collection (working context, not persisted)
 # issue_tracker: markdown table (see Parse Output phase); working context, not persisted
 ```
 
 ### Tools Assumed
 
 This skill uses standard Claude Code tools without detailed explanation:
+
 - `Task` — Launch background agents; takes `description`, `prompt`, `subagent_type`, `run_in_background`; returns `task_id`
 - `TaskOutput` — Retrieve agent results (`task_id`, `block`, `timeout`)
 - `Edit` — Modify files (`file_path`, `old_string`, `new_string`)
@@ -59,17 +61,20 @@ This skill uses standard Claude Code tools without detailed explanation:
 ## Phase: Initialize
 
 ### Do:
+
 - Accept target skill file path from args
 - Validate file exists and is a SKILL.md
 - Initialize state
 
 ### Don't:
+
 - ❌ Start without a target file — require explicit path
 - ❌ Review non-skill files — this skill is for SKILL.md files only
 
 **On activation:**
 
 1. Parse args for target file:
+
    ```
    /review-skill-parallel path/to/SKILL.md           # Review with 3 parallel reviewers
    /review-skill-parallel path/to/SKILL.md -n 5      # 5 parallel reviewers
@@ -80,6 +85,7 @@ This skill uses standard Claude Code tools without detailed explanation:
 3. Initialize state
 
 **Args:**
+
 - First positional arg: path to SKILL.md (required)
 - `-n <count>`: number of parallel reviewers (default: 3)
 
@@ -90,12 +96,14 @@ This skill uses standard Claude Code tools without detailed explanation:
 **Launch n parallel reviewers. All reviewers are fungible — identical prompt.**
 
 ### Do:
+
 - Use `Task` tool with `run_in_background: true`
 - Launch all n reviewers in a **single message** (parallel)
 - Use identical prompt for all reviewers
 - Record all task IDs for result collection
 
 ### Don't:
+
 - ❌ Run reviews sequentially — always parallel
 - ❌ Do the review yourself — delegate to reviewers
 - ❌ Customize prompts per reviewer — all reviewers are fungible
@@ -162,6 +170,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 **Collect results from all n reviewers and merge into the issue tracker.**
 
 ### Do:
+
 - Use `TaskOutput` tool to collect results from each reviewer:
   ```
   TaskOutput(task_id: "task_id_here", block: true, timeout: 120000)
@@ -173,6 +182,7 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 **No findings = all n reviewers return "NO FINDINGS".** If ANY reviewer has findings, proceed to Synthesize.
 
 ### Don't:
+
 - ❌ Skip findings because they seem minor — every finding gets tracked
 - ❌ Proceed before all reviewers complete — wait for all n
 
@@ -192,15 +202,16 @@ else:
 ### Issue Tracker Format
 
 ```markdown
-| ID | Line | Issue | Status | Reviewers |
-|:--:|:----:|:-----------|:------:|:---------:|
-| F-001 | {n} | [issue description] | open | 1,3 |
-| F-002 | {n} | [issue description] | open | 2 |
+|  ID   | Line | Issue               | Status | Reviewers |
+| :---: | :--: | :------------------ | :----: | :-------: |
+| F-001 | {n}  | [issue description] |  open  |    1,3    |
+| F-002 | {n}  | [issue description] |  open  |     2     |
 ```
 
 The "Reviewers" column shows which of the n reviewers (numbered 1 through n) flagged this issue.
 
 Statuses:
+
 - `open` — finding identified, not yet addressed
 - `planned` — resolution proposed, awaiting human approval in Plan Approval phase
 - `fixed` — real inconsistency corrected
@@ -246,6 +257,7 @@ After understanding the system, organize findings for triage:
 - Aim for 3-7 themes, not 15 — if you have too many, you haven't found the root causes
 
 ### Do:
+
 - Understand the document structure before grouping
 - Map how sections interconnect
 - Find root causes, not just surface patterns
@@ -253,8 +265,9 @@ After understanding the system, organize findings for triage:
 - List unrelated findings separately (don't force into themes)
 
 ### Don't:
+
 - ❌ Skip straight to triaging findings one-by-one — always synthesize first
-- ❌ Group mechanically without understanding — themes should reflect *why* findings exist
+- ❌ Group mechanically without understanding — themes should reflect _why_ findings exist
 - ❌ Force unrelated findings into themes — list them individually instead
 
 ### Common Theme Patterns
@@ -271,18 +284,19 @@ After understanding the system, organize findings for triage:
 ```markdown
 ## Synthesize: {finding_count} findings in {theme_count} themes
 
-| Theme | Findings | Root cause |
-|-------|----------|------------|
+| Theme        | Findings          | Root cause   |
+| ------------ | ----------------- | ------------ |
 | [theme name] | F-001, F-002, ... | [root cause] |
 | [theme name] | F-003, F-004, ... | [root cause] |
 
 **Unrelated findings** (no shared root cause):
+
 - F-010: [individual description]
 - F-011: [individual description]
 - F-012: [individual description]
 ```
 
-Addressing one theme often resolves multiple findings simultaneously. Understanding *why* the theme exists prevents incomplete fixes.
+Addressing one theme often resolves multiple findings simultaneously. Understanding _why_ the theme exists prevents incomplete fixes.
 
 ---
 
@@ -293,6 +307,7 @@ Addressing one theme often resolves multiple findings simultaneously. Understand
 Work through themes identified in Synthesize. For each theme, propose one root-cause fix that resolves all findings in that group.
 
 ### Do:
+
 - Work theme-by-theme from Synthesize output
 - Read context around each theme's findings
 - Propose ONE resolution per theme (not per finding)
@@ -301,6 +316,7 @@ Work through themes identified in Synthesize. For each theme, propose one root-c
 - Handle unrelated findings individually (not by theme)
 
 ### Don't:
+
 - ❌ Make edits during triage — propose only
 - ❌ Dismiss findings — every finding gets a proposed resolution
 - ❌ Triage findings within a theme one-by-one — work by theme
@@ -308,11 +324,11 @@ Work through themes identified in Synthesize. For each theme, propose one root-c
 
 ### Triage Table
 
-| Finding Type | Resolution Type | Final Status (after Address) |
-|--------------|-----------------|------------------------------|
-| Real inconsistency | Fix the document | `fixed` |
-| False positive | Rewrite until intent is obvious | `clarified` |
-| Design tradeoff | Document rationale explicitly | `clarified` |
+| Finding Type       | Resolution Type                 | Final Status (after Address) |
+| ------------------ | ------------------------------- | ---------------------------- |
+| Real inconsistency | Fix the document                | `fixed`                      |
+| False positive     | Rewrite until intent is obvious | `clarified`                  |
+| Design tradeoff    | Document rationale explicitly   | `clarified`                  |
 
 Triage changes status from `open` → `planned`. Address phase changes `planned` → final status (`fixed` or `clarified`).
 
@@ -323,18 +339,21 @@ Triage changes status from `open` → `planned`. Address phase changes `planned`
 **Present findings and proposed resolutions to user BEFORE making any edits.**
 
 This is the first human-in-the-loop checkpoint. The user can:
+
 - Approve the plan and proceed to edits
 - Modify proposed resolutions
 - Add context or requirements
 - Request different approaches
 
 ### Do:
+
 - Present executive summary with findings and proposed resolutions
 - Explain the reasoning behind each proposed resolution
 - Use `AskUserQuestion` tool with clear options
 - Wait for explicit approval before any edits
 
 ### Don't:
+
 - ❌ Make edits before approval — this is a PLAN checkpoint
 - ❌ Skip this checkpoint — human input is critical before changes
 - ❌ Assume approval — wait for explicit response
@@ -371,14 +390,17 @@ Present the themes and proposed fixes from Triage. Present by theme; unrelated f
 These have no shared root cause; list individually:
 
 **F-005** (line {n}): [issue description]
+
 - Fix: [specific fix]
 
 **F-006** (line {n}): [issue description]
+
 - Fix: [specific fix]
 
 ---
 
 ### Summary
+
 - {theme_count} themes covering {themed_findings} findings + {unrelated_count} unrelated = {total} findings
 - {themed_findings} resolved via root-cause fixes, {unrelated_count} via standalone fixes
 ```
@@ -408,12 +430,14 @@ AskUserQuestion(
 **Execute the approved plan. Make edits to resolve all findings.**
 
 ### Do:
+
 - Address all planned findings from the tracker
 - Use `Edit` for targeted changes
 - Update tracker status as you go (`planned` → `fixed` or `clarified`)
 - Process unrelated findings individually
 
 ### Don't:
+
 - ❌ Deviate from approved plan — execute what was approved
 - ❌ Skip any finding — every approved resolution must be executed
 - ❌ Make changes without reading the relevant sections first
@@ -451,12 +475,14 @@ Update tracker: F-001 status → fixed
 **Verify all changes were made correctly.**
 
 ### Do:
+
 - Re-read all sections that were modified
 - Confirm each finding was properly addressed
 - Check for unintended side effects from edits
 - Ensure tracker shows all findings as `fixed` or `clarified`
 
 ### Don't:
+
 - ❌ Skip verification — always re-read modified sections
 - ❌ Proceed with unaddressed findings — all must be resolved
 
@@ -478,12 +504,14 @@ Update tracker: F-001 status → fixed
 This is the second human-in-the-loop checkpoint. The user confirms the changes were executed correctly.
 
 ### Do:
+
 - Present summary of changes made (not proposed — actually executed)
 - Show which findings were resolved and how
 - Use `AskUserQuestion` tool with clear options
 - Wait for explicit confirmation
 
 ### Don't:
+
 - ❌ Skip this checkpoint — human confirmation is mandatory
 - ❌ Assume confirmation — wait for explicit response
 
@@ -496,16 +524,18 @@ Note: When there are no findings, this phase is skipped (see Parse Output).
 
 ### Findings Addressed: {finding_count}
 
-| ID | Line | Issue | Resolution Applied |
-|----|------|-------|-------------------|
-| F-001 | {n} | [issue] | [resolution] |
-| F-002 | {n} | [issue] | [resolution] |
+| ID    | Line | Issue   | Resolution Applied |
+| ----- | ---- | ------- | ------------------ |
+| F-001 | {n}  | [issue] | [resolution]       |
+| F-002 | {n}  | [issue] | [resolution]       |
 
 ### Edits Made
+
 1. Line {n}: [change description]
 2. Line {n}: [change description]
 
 ### Verification
+
 - [ ] All planned resolutions executed
 - [ ] Modified sections re-read
 - [ ] No new inconsistencies introduced
@@ -536,11 +566,13 @@ AskUserQuestion(
 **Wrap up and report results.**
 
 ### Do:
+
 - For no findings: Present "No findings." and end
 - For findings addressed: Report what was fixed
 - End the skill cleanly
 
 ### Don't:
+
 - ❌ Skip the completion message — always report outcome
 - ❌ Continue after reporting — the skill is complete
 
@@ -549,6 +581,7 @@ AskUserQuestion(
 **For findings addressed** (after user confirms changes):
 
 1. Report results:
+
    ```
    Review complete.
    Findings: {finding_count} addressed
@@ -560,20 +593,20 @@ AskUserQuestion(
 
 ## Quick Reference: Don'ts
 
-*Summary table — see each phase section for full context and rationale.*
+_Summary table — see each phase section for full context and rationale._
 
-| Phase | Don'ts |
-|-------|-------|
-| Initialize | Start without target file, review non-skill files |
-| Review | Run sequentially, do the review yourself, customize prompts per reviewer |
-| Parse Output | Skip minor findings, proceed before all reviewers complete |
-| Synthesize | Skip straight to triaging findings one-by-one, group mechanically without understanding, force unrelated findings into themes |
-| Triage | Make edits during triage, dismiss findings, triage findings within a theme one-by-one, blame reviewer |
-| Plan Approval | Make edits before approval, skip checkpoint, assume approval |
-| Address | Deviate from plan, skip findings, edit without reading context, over-edit |
-| Verify | Skip verification, proceed with unaddressed findings |
-| Change Confirmation | Skip checkpoint, assume confirmation |
-| Epilogue | Skip completion message, continue after reporting |
+| Phase               | Don'ts                                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Initialize          | Start without target file, review non-skill files                                                                             |
+| Review              | Run sequentially, do the review yourself, customize prompts per reviewer                                                      |
+| Parse Output        | Skip minor findings, proceed before all reviewers complete                                                                    |
+| Synthesize          | Skip straight to triaging findings one-by-one, group mechanically without understanding, force unrelated findings into themes |
+| Triage              | Make edits during triage, dismiss findings, triage findings within a theme one-by-one, blame reviewer                         |
+| Plan Approval       | Make edits before approval, skip checkpoint, assume approval                                                                  |
+| Address             | Deviate from plan, skip findings, edit without reading context, over-edit                                                     |
+| Verify              | Skip verification, proceed with unaddressed findings                                                                          |
+| Change Confirmation | Skip checkpoint, assume confirmation                                                                                          |
+| Epilogue            | Skip completion message, continue after reporting                                                                             |
 
 ---
 

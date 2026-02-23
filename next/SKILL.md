@@ -20,11 +20,13 @@ No status tables. No reconstruction. Just options.
 Start each option with a verb. Be concrete.
 
 **Good:**
+
 - "Finish the auth refactor in `api.ts`"
 - "Run tests and fix failures"
 - "Add error handling to the new endpoint"
 
 **Bad:**
+
 - "Continue working" (vague)
 - "Maybe look at tests?" (uncertain)
 - "We could do several things..." (narrative)
@@ -47,6 +49,7 @@ AskUserQuestion:
 ## When Context is Empty
 
 If there's nothing to go on:
+
 - Ask what they'd like to work on
 - Offer to explore the codebase
 - Suggest reviewing recent git activity

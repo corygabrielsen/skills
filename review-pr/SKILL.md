@@ -31,6 +31,7 @@ gh pr view <RELATED_PR> --comments
 ```
 
 **Present to user:**
+
 - Title, author, branch, stats (+/- lines, files changed)
 - CI status (passing/failing, which jobs)
 - Brief summary of what the PR does
@@ -41,11 +42,13 @@ gh pr view <RELATED_PR> --comments
 Explain the changes thoroughly before identifying problems:
 
 **Trace the code flow:**
+
 - What's the entry point?
 - How do components interact?
 - What's the data flow?
 
 **Use diagrams** for complex flows:
+
 ```
 Node A                    Node B
     │                         │
@@ -54,11 +57,13 @@ Node A                    Node B
 ```
 
 **Ask yourself:**
+
 - What is this trying to accomplish?
 - How does it fit with related work?
 - What assumptions is it making?
 
 **Present to user:**
+
 - Detailed walkthrough of the implementation
 - Key design decisions
 - How it integrates with existing code
@@ -69,15 +74,16 @@ Let the user ask questions. They should deeply understand before you move to cri
 
 Categorize findings by severity and complexity:
 
-| Severity | Meaning |
-|----------|---------|
+| Severity | Meaning                           |
+| -------- | --------------------------------- |
 | Critical | Security hole, data loss, crashes |
-| High | Incorrect behavior users will hit |
-| Medium | Edge cases, integration issues |
-| Low | Test coverage gaps, minor issues |
-| Nitpick | Style, micro-optimizations |
+| High     | Incorrect behavior users will hit |
+| Medium   | Edge cases, integration issues    |
+| Low      | Test coverage gaps, minor issues  |
+| Nitpick  | Style, micro-optimizations        |
 
 **Look for:**
+
 - Architectural issues, not just bugs
 - Integration with related work (other PRs, issues)
 - Backward compatibility
@@ -85,6 +91,7 @@ Categorize findings by severity and complexity:
 - Missing tests for new behavior
 
 **Present to user:**
+
 - Table of issues with severity/complexity
 - Detailed explanation of each issue
 - How the issue manifests (concrete examples)
@@ -94,8 +101,10 @@ Categorize findings by severity and complexity:
 Structure the review for teaching, not criticizing:
 
 **1. Lead with wins:**
+
 ```markdown
 Nice work on:
+
 - Thing they did well
 - Another good thing
 - Solid foundation piece
@@ -106,19 +115,21 @@ Before saying what's wrong, establish what we're building toward. Use diagrams. 
 
 **3. Walk through gaps:**
 For each issue:
+
 - What's the current behavior?
 - What should it be?
 - Why does it matter?
 - What's the path forward?
 
 **4. End with actionable summary:**
+
 ```markdown
 ## Summary
 
-| What | Status | Action |
-|------|--------|--------|
-| Feature X | ✅ Done | - |
-| Integration Y | ❌ Gap | Needs Z |
+| What          | Status  | Action  |
+| ------------- | ------- | ------- |
+| Feature X     | ✅ Done | -       |
+| Integration Y | ❌ Gap  | Needs Z |
 ```
 
 **5. Offer to discuss:**

@@ -3,6 +3,7 @@
 **Validate that completed work matches expectations.**
 
 ## Do:
+
 - For each completed task, verify actual state matches expected state:
   - If code was written: run tests
   - If files were created: check they exist and have expected content
@@ -11,19 +12,20 @@
 - If verification fails: proceed to control/HIL_ANOMALY
 
 ## Don't:
+
 - Trust agent summaries without verification
 - Mark tasks complete before verifying
 - Skip verification "because it looks right"
 
 ## Verification Actions by Task Type
 
-| Task Type | Verification |
-|-----------|--------------|
-| Write code | Run tests, check syntax |
-| Create files | Check existence, validate content |
-| Edit files | Diff against expected, run tests |
-| Research | Spot-check sources, validate conclusions |
-| Configuration | Test the configuration works |
+| Task Type     | Verification                             |
+| ------------- | ---------------------------------------- |
+| Write code    | Run tests, check syntax                  |
+| Create files  | Check existence, validate content        |
+| Edit files    | Diff against expected, run tests         |
+| Research      | Spot-check sources, validate conclusions |
+| Configuration | Test the configuration works             |
 
 ## Verification Failure Handling
 

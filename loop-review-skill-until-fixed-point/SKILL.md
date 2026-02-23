@@ -29,19 +29,19 @@ Fixed point = the document is both correct AND unambiguous. No reviewer can find
 
 ## Arguments
 
-| Arg | Required | Description |
-|-----|----------|-------------|
-| `<target>` | yes | Path to SKILL.md to review |
+| Arg        | Required | Description                |
+| ---------- | -------- | -------------------------- |
+| `<target>` | yes      | Path to SKILL.md to review |
 
 ---
 
 ## State
 
 ```yaml
-max_iterations: 10        # Safety limit
-iteration_count: 0        # Current iteration
-target: "<from args>"     # Target SKILL.md path
-history: []               # Minimal: just iteration outcomes
+max_iterations: 10 # Safety limit
+iteration_count: 0 # Current iteration
+target: "<from args>" # Target SKILL.md path
+history: [] # Minimal: just iteration outcomes
 ```
 
 ### History Entry Schema
@@ -54,7 +54,7 @@ Each iteration appends a minimal entry:
 - iteration: 2
   fixed_point: false
 - iteration: 3
-  fixed_point: true   # All reviewers returned NO ISSUES
+  fixed_point: true # All reviewers returned NO ISSUES
 ```
 
 The orchestrator does NOT track per-reviewer metrics. That detail stays inside `/review-skill` where it belongs. This prevents context leak between iterations.
@@ -91,9 +91,9 @@ The orchestrator is intentionally stateless. All synthesis, triage, and issue-ad
 
 ### Exit Conditions
 
-| Condition | Action |
-|-----------|--------|
-| `/review-skill` reports fixed point | Exit with success |
+| Condition                           | Action                                    |
+| ----------------------------------- | ----------------------------------------- |
+| `/review-skill` reports fixed point | Exit with success                         |
 | `iteration_count >= max_iterations` | Safety limit hit, ask user how to proceed |
 
 ---
@@ -105,17 +105,19 @@ Present final state:
 ```markdown
 ## Loop Complete
 
-| Metric | Value |
-|--------|-------|
-| Target | {target} |
-| Iterations | {iteration_count} |
-| Fixed point reached | yes/no |
+| Metric              | Value             |
+| ------------------- | ----------------- |
+| Target              | {target}          |
+| Iterations          | {iteration_count} |
+| Fixed point reached | yes/no            |
 ```
 
 If fixed point reached:
+
 > {target} reached fixed point after {N} iterations.
 
 If max iterations hit:
+
 > Safety limit reached after {max_iterations} iterations without convergence.
 
 ---

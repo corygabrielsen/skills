@@ -5,6 +5,7 @@
 If `--reviewer <category>` was specified, launch only reviewers from that category. Otherwise launch all 8.
 
 ## Do:
+
 - Use `Task` tool with `run_in_background: true` and `prompt: <reviewer prompt>`
 - **Substitute `{target_file}` with the actual file path** in each reviewer prompt (all instances are placeholders)
 - Launch reviewers in a **single assistant turn** (one message containing parallel Task tool calls)
@@ -14,6 +15,7 @@ If `--reviewer <category>` was specified, launch only reviewers from that catego
 - Continue to Collect phase with the reviewers that did launch successfully.
 
 ## Don't:
+
 - Run reviewers sequentially
 - Combine multiple reviewers into one prompt
 - Use identical prompts (each reviewer is specialized)

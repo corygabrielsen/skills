@@ -26,11 +26,11 @@ Proposed plan from BOOTSTRAP or DECOMPOSE (markdown table in context).
 ```markdown
 ## Tasks Created
 
-| Plan # | Task ID | Subject |
-|--------|---------|---------|
-| 1 | T-001 | [subject] |
-| 2 | T-002 | [subject] |
-| 3 | T-003 | [subject] |
+| Plan # | Task ID | Subject   |
+| ------ | ------- | --------- |
+| 1      | T-001   | [subject] |
+| 2      | T-002   | [subject] |
+| 3      | T-003   | [subject] |
 
 Dependencies configured. Proceeding to preflight.
 ```

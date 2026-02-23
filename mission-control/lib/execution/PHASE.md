@@ -40,10 +40,12 @@
 ```
 
 ## Entry Conditions
+
 - All ready tasks passed preflight (GO status)
 - Coming from preflight/PHASE
 
 ## Exit Conditions
+
 - All agents completed and verified → proceed to control/CHECKPOINT
 - Verification failed → proceed to control/HIL_ANOMALY
 - --bg mode: return control to human after DELEGATE

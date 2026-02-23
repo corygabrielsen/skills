@@ -58,12 +58,14 @@ Read the diff and classify each modified section into one of these categories:
 Determine the commit order based on dependencies.
 
 **Dependency rules:**
+
 - Refactors before features that depend on them
 - Types/interfaces before code that uses them
 - Core logic before tests
 - Changes to the same function ordered by logical progression
 
 **For each commit, define:**
+
 - Subject line (imperative mood, max 50 chars)
 - Which files/sections to include (with line ranges if helpful)
 - Whether it should build/pass lint
@@ -153,6 +155,7 @@ git diff ${ORIGINAL_BRANCH}..HEAD
 ```
 
 If differences exist:
+
 - Acceptable: formatting, whitespace only
 - Not acceptable: missing changes — add a commit or amend to include them
 

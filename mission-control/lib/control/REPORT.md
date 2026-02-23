@@ -3,12 +3,14 @@
 **Present status and determine next action.**
 
 ## Do:
+
 - Report status as table for scannability
 - Show: task, status, blockedBy, owner
 - Call out: ready, blocked, needs attention
 - Determine next action based on mode and state
 
 ## Don't:
+
 - Skip the status report
 - Use prose when tables are clearer
 - Continue without reporting current state
@@ -18,13 +20,13 @@
 ```markdown
 ## Mission Status
 
-| Task | Status | Blocked By | Owner | Notes |
-|------|--------|------------|-------|-------|
-| T-001 | completed | --- | agent-1 | Verified |
-| T-002 | completed | --- | agent-2 | Verified |
-| T-003 | in_progress | --- | agent-3 | Running |
-| T-004 | pending | T-003 | --- | Waiting |
-| T-005 | ABORTED | --- | --- | [reason] |
+| Task  | Status      | Blocked By | Owner   | Notes    |
+| ----- | ----------- | ---------- | ------- | -------- |
+| T-001 | completed   | ---        | agent-1 | Verified |
+| T-002 | completed   | ---        | agent-2 | Verified |
+| T-003 | in_progress | ---        | agent-3 | Running  |
+| T-004 | pending     | T-003      | ---     | Waiting  |
+| T-005 | ABORTED     | ---        | ---     | [reason] |
 ```
 
 ## Status Values
@@ -51,6 +53,7 @@
 ## Empty TaskList
 
 If `TaskList` returns zero tasks:
+
 - In --bg mode after resume: Report "No tasks found. Use `/mission-control` with a work description to begin."
 - This can happen if conversation was compacted before any tasks were created.
 
@@ -59,8 +62,8 @@ If `TaskList` returns zero tasks:
 ```markdown
 ## Mission Complete
 
-| Task | Result |
-|------|--------|
+| Task  | Result    |
+| ----- | --------- |
 | T-001 | [outcome] |
 | T-002 | [outcome] |
 

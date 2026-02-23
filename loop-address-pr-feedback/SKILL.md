@@ -19,6 +19,7 @@ You are a PR author addressing review feedback. **Reviewers give feedback, you f
 ```
 
 **The loop:**
+
 1. **Gather** — Collect review comments from all sources
 2. **Triage** — Valid → fix, invalid → explain, unclear → ask
 3. **Fix** — Make changes, commit, restack dependent PRs
@@ -28,14 +29,14 @@ You are a PR author addressing review feedback. **Reviewers give feedback, you f
 
 ## Relationship to loop-codex-review
 
-| Aspect | loop-codex-review | loop-address-pr-feedback |
-|--------|-------------------|--------------------------|
-| **When** | Pre-PR (local) | Post-PR (remote) |
-| **Reviewer** | `codex review` CLI | GitHub bots + humans |
-| **Trigger** | You run it | Reviews arrive async |
-| **Interface** | stdout parsing | GitHub API |
-| **Scope** | Single diff | Stack of PRs |
-| **Fixed point** | 3 clean at xhigh | All threads resolved |
+| Aspect          | loop-codex-review  | loop-address-pr-feedback |
+| --------------- | ------------------ | ------------------------ |
+| **When**        | Pre-PR (local)     | Post-PR (remote)         |
+| **Reviewer**    | `codex review` CLI | GitHub bots + humans     |
+| **Trigger**     | You run it         | Reviews arrive async     |
+| **Interface**   | stdout parsing     | GitHub API               |
+| **Scope**       | Single diff        | Stack of PRs             |
+| **Fixed point** | 3 clean at xhigh   | All threads resolved     |
 
 Same decision procedure, different interface.
 
@@ -44,11 +45,13 @@ Same decision procedure, different interface.
 **Detect the PR stack and get full context.**
 
 1. Get stack overview with full context:
+
    ```bash
    gt log          # Full detail (recommended)
    gt ls           # Short form (just branch names)
    gt log -s       # Current stack only (if multiple stacks)
    ```
+
    `gt log` shows everything in one shot:
    - PR numbers, titles, and status (Draft, Needs approvals, Approved)
    - Local changes needing submit
@@ -56,6 +59,7 @@ Same decision procedure, different interface.
    - Graphite links
 
 2. If not using Graphite, fall back to:
+
    ```bash
    gh pr list --author "@me" --state open --json number,headRefName,reviewDecision
    ```
@@ -63,6 +67,7 @@ Same decision procedure, different interface.
 3. Determine review order — address base PRs before children (changes propagate down via restack)
 
 **Args:**
+
 ```bash
 /loop-address-pr-feedback              # All PRs in current stack
 /loop-address-pr-feedback --pr 123     # Single PR only
@@ -75,11 +80,11 @@ Same decision procedure, different interface.
 
 GitHub has three places reviews live:
 
-| Type | API | Use |
-|------|-----|-----|
-| Issue comments | `/issues/{num}/comments` | General PR feedback |
-| Review comments | `/pulls/{num}/comments` | Line-specific feedback |
-| Review threads | GraphQL `reviewThreads` | Resolution status |
+| Type            | API                      | Use                    |
+| --------------- | ------------------------ | ---------------------- |
+| Issue comments  | `/issues/{num}/comments` | General PR feedback    |
+| Review comments | `/pulls/{num}/comments`  | Line-specific feedback |
+| Review threads  | GraphQL `reviewThreads`  | Resolution status      |
 
 ```bash
 # Issue comments
@@ -107,16 +112,17 @@ gh api graphql -f query='
 
 **Categorize each issue before acting.**
 
-| Assessment | Action |
-|------------|--------|
-| Valid bug | React 👍, fix, commit, reply with SHA, resolve |
-| Valid style | React 👍, fix, commit, reply with SHA, resolve |
-| False positive | React 👎, reply explaining why, resolve |
-| Outdated | React 👎, reply noting already addressed, resolve |
-| Unclear | Reply asking for clarification (don't resolve) |
-| Won't fix | Reply with rationale (may or may not resolve) |
+| Assessment     | Action                                            |
+| -------------- | ------------------------------------------------- |
+| Valid bug      | React 👍, fix, commit, reply with SHA, resolve    |
+| Valid style    | React 👍, fix, commit, reply with SHA, resolve    |
+| False positive | React 👎, reply explaining why, resolve           |
+| Outdated       | React 👎, reply noting already addressed, resolve |
+| Unclear        | Reply asking for clarification (don't resolve)    |
+| Won't fix      | Reply with rationale (may or may not resolve)     |
 
 **Considerations:**
+
 - Verify before fixing — especially AI reviews
 - False positives signal unclear code — consider adding comments
 - Check if later commits already addressed the issue
@@ -160,6 +166,7 @@ gt restack
 ```
 
 Handle conflicts:
+
 - If conflicts occur in skipped/deferred PRs, abort and push what succeeded
 - Push each branch individually: `git push origin <branch> --force-with-lease`
 
@@ -209,6 +216,7 @@ Be specific — reviewers should know what to verify.
 ## Phase: Wait
 
 Reviews arrive asynchronously. Either:
+
 1. **Exit** — Tell user to re-invoke when reviews arrive
 2. **Poll** — Check for new comments periodically
 
@@ -220,6 +228,7 @@ Run /loop-address-pr-feedback again when new reviews arrive.
 ## Fixed Point
 
 **A PR is done when:**
+
 - All review threads resolved
 - No pending comments
 - Required approvals obtained
@@ -247,7 +256,7 @@ Persist in task descriptions for compaction survival:
 prs:
   - num: 1
     branch: feature-a
-    status: done        # addressing | waiting | done | skipped
+    status: done # addressing | waiting | done | skipped
   - num: 2
     branch: feature-b
     status: addressing
@@ -267,6 +276,7 @@ iteration: 1
 ## Resumption
 
 After compaction:
+
 1. `TaskList` — find tracking task
 2. Read task description for state
 3. `gt ls` — check stack state

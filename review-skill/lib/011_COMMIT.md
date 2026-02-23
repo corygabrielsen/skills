@@ -3,6 +3,7 @@
 **Create commit with proper message format.**
 
 ## Do:
+
 - Create commit with subject and body following the rules below
 - Use the heredoc pattern shown in Command section
 
@@ -16,6 +17,7 @@
 6. Use backticks around `filenames`, `paths`, and `code_symbols`
 
 ## Command
+
 ```bash
 git commit -m "$(cat <<'EOF'
 <Subject line - imperative, ≤42 chars>
@@ -27,12 +29,14 @@ EOF
 ```
 
 ## Don't:
+
 - Write vague subjects
 - Exceed character limits
 - Skip the body for non-trivial changes
 - Forget backticks around technical terms
 
 ## If commit fails:
+
 - **Pre-commit hook failure**: Fix issue, re-stage if needed, create NEW commit (don't amend—original didn't happen)
 - **No staged changes**: Return to Stage phase to diagnose
 - **Other git error**: Report the error and end the skill

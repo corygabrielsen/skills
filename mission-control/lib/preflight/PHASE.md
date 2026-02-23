@@ -40,10 +40,12 @@ NASA's Flight Director polls every station before critical operations. One NO-GO
 ```
 
 ## Entry Conditions
+
 - Tasks exist in pending state with empty blockedBy
 - Coming from setup/HIL_PLAN_APPROVAL or control/HIL_NEXT_ACTION (continue)
 
 ## Exit Conditions
+
 - All ready tasks are GO → proceed to execution/DELEGATE
 - All ready tasks scrubbed → proceed to control/REPORT
 - User selects Halt → return to setup/DECOMPOSE

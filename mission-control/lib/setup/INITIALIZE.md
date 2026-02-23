@@ -3,26 +3,28 @@
 **Parse args and load current state.**
 
 ## Do:
+
 - Run `TaskList` to see current task state
 - Parse args for mode flags: `--fg`, `--bg`, `--auto`
 - Default to `--bg` if no mode flag specified
 - Store mode on the handoff task (`metadata.mode`). If no handoff task exists yet, create one during MATERIALIZE or first HANDOFF. Read it back after compaction via `metadata.type: "handoff"`.
 
 ## Don't:
+
 - Skip TaskList check
 - Assume mode without checking args
 
 ## Args
 
-| Args Passed | Effective Mode |
-|-------------|----------------|
-| (none) | `--bg` |
-| `--fg` | `--fg` |
-| `--bg` | `--bg` |
-| `--fg --bg` | `--fg` |
-| `--auto` | `--fg --auto` |
-| `--auto --bg` | `--fg --auto` |
-| `--fg --auto` | `--fg --auto` |
+| Args Passed   | Effective Mode |
+| ------------- | -------------- |
+| (none)        | `--bg`         |
+| `--fg`        | `--fg`         |
+| `--bg`        | `--bg`         |
+| `--fg --bg`   | `--fg`         |
+| `--auto`      | `--fg --auto`  |
+| `--auto --bg` | `--fg --auto`  |
+| `--fg --auto` | `--fg --auto`  |
 
 **Note:** `--auto` only applies to foreground mode. Background mode inherently returns control to human.
 

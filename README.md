@@ -20,6 +20,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 | Skill                         | Description                                                   |
 | ----------------------------- | ------------------------------------------------------------- |
+| `/brainstorm`                 | Generate N diverse solutions, forced breadth over intuition   |
 | `/cd`                         | Change working directory                                      |
 | `/checkpoint`                 | Swarm-safe git checkpoint workflow                            |
 | `/debrief`                    | Reconstruct context after returning to a conversation         |

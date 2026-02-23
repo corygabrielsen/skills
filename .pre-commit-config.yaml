@@ -7,10 +7,14 @@
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
       - id: check-merge-conflict
+      - id: check-yaml
+      - id: detect-private-key
       - id: end-of-file-fixer
       - id: mixed-line-ending
         args: [--fix=lf]
@@ -18,6 +22,19 @@ repos:
 
   - repo: local
     hooks:
+      - id: lint-skill-frontmatter
+        name: Validate SKILL.md frontmatter
+        entry: scripts/lint-skill-frontmatter.sh
+        language: script
+        files: SKILL\.md$
+
+      - id: prettier
+        name: Format markdown (prettier)
+        entry: npx prettier --write --list-different
+        language: system
+        types: [markdown]
+        exclude: CLAUDE\.md$
+
       - id: validate-commit-message
         name: Validate commit message (50/72 rule)
         entry: scripts/validate-commit-message.sh

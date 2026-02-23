@@ -26,6 +26,7 @@
 ## Task Size Heuristic
 
 A task is the right size if an agent can:
+
 - Understand it from the description alone
 - Complete it in one focused session
 - Produce a verifiable result
@@ -53,12 +54,13 @@ If the user's request is too vague to decompose into concrete tasks (e.g., "just
 ```markdown
 ## Proposed Task Graph
 
-| # | Subject | Description | Blocked By |
-|---|---------|-------------|------------|
-| 1 | [subject] | [what needs doing] | --- |
-| 2 | [subject] | [depends on 1] | 1 |
+| #   | Subject   | Description        | Blocked By |
+| --- | --------- | ------------------ | ---------- |
+| 1   | [subject] | [what needs doing] | ---        |
+| 2   | [subject] | [depends on 1]     | 1          |
 
 Execution plan:
+
 1. Task 1 (no blockers)
 2. Task 2 (after 1 completes)
 ```

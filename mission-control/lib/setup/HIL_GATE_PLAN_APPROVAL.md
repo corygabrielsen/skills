@@ -30,13 +30,14 @@ Expects a proposed plan from BOOTSTRAP or DECOMPOSE (markdown table in context, 
 ```markdown
 ## Proposed Task Graph
 
-| # | Subject | Blocked By | Parallel Group |
-|---|---------|------------|----------------|
-| 1 | [subject] | --- | A |
-| 2 | [subject] | --- | A |
-| 3 | [subject] | 1, 2 | B |
+| #   | Subject   | Blocked By | Parallel Group |
+| --- | --------- | ---------- | -------------- |
+| 1   | [subject] | ---        | A              |
+| 2   | [subject] | ---        | A              |
+| 3   | [subject] | 1, 2       | B              |
 
 Execution plan:
+
 1. Group A: Tasks 1, 2 (parallel)
 2. Group B: Task 3 (after A completes)
 ```
@@ -62,15 +63,16 @@ AskUserQuestion(
 
 ## Returns
 
-| Decision | Next Step |
-|----------|-----------|
+| Decision  | Next Step                                    |
+| --------- | -------------------------------------------- |
 | `approve` | → MATERIALIZE (create tasks, then preflight) |
-| `modify` | → Re-propose (DECOMPOSE or inline edit) |
-| `abort` | → End skill |
+| `modify`  | → Re-propose (DECOMPOSE or inline edit)      |
+| `abort`   | → End skill                                  |
 
 ## Modify Flow
 
 If user selects "Modify":
+
 1. Prompt: "Describe what changes you'd like to the plan."
 2. End turn, wait for user input.
 3. If user provides empty/unclear input or cancels ("nevermind"), re-present gate options.

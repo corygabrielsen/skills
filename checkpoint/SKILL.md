@@ -73,6 +73,7 @@ EOF
 ```
 
 If commit fails:
+
 - No staged changes -> return to Stage
 - Hook failure -> fix, re-stage, create a NEW commit (do not amend)
 - Other error -> report and stop

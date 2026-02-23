@@ -14,6 +14,7 @@ Mine the conversation, synthesize status, present options. The user should scan,
 ## On Activation
 
 **1. Mine the conversation for:**
+
 - What was accomplished (concrete wins, completed work)
 - What's in progress (started but not finished)
 - What's blocked (and why)

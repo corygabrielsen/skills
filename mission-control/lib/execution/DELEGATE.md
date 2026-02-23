@@ -5,6 +5,7 @@
 A task is "ready" when: status=`pending` AND `blockedBy` is empty.
 
 ## Do:
+
 - Identify all ready tasks (no blockers, not in_progress, not completed)
 - For each ready task:
   - Update status to `in_progress` via `TaskUpdate`
@@ -15,6 +16,7 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty.
 - Record task IDs for monitoring
 
 ## Don't:
+
 - Launch tasks sequentially when they could be parallel
 - Do work yourself that an agent could do
 - Downgrade to cheaper/faster models (if framework supports model selection)
@@ -49,6 +51,7 @@ A task is "ready" when: status=`pending` AND `blockedBy` is empty.
 ## Agent Launch Syntax
 
 Use the `Task` tool with these parameters:
+
 ```
 Task(
   prompt: "You are executing task {task_id}: {task_subject}\n\n{task_description}\n\nWhen complete:\n- Report what you accomplished\n- Note any issues encountered\n- Confirm verification criteria are met",
@@ -65,6 +68,7 @@ The `Task` tool returns an agent ID. Store it in task metadata: `TaskUpdate(task
 ## Launch Failure Handling
 
 If `Task` tool returns an error instead of an agent ID:
+
 1. Record error in task metadata for the failed task
 2. Mark that task: `ABORTED - Launch failed: [error]`
 3. **Continue launching remaining tasks in the batch** (don't abort the whole batch)
@@ -78,10 +82,10 @@ See FR-A001 in RULES.md for full details.
 ```markdown
 ## Launched Agents
 
-| Task | Agent | Description |
-|------|-------|-------------|
-| T-002 | agent-1 | [brief] |
-| T-004 | agent-2 | [brief] |
+| Task  | Agent   | Description |
+| ----- | ------- | ----------- |
+| T-002 | agent-1 | [brief]     |
+| T-004 | agent-2 | [brief]     |
 
 Agents running. Notifications may be lost (~50%)—poll with `/mission-control` to check status.
 ```

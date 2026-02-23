@@ -2,13 +2,13 @@
 
 ## The Generational Shift
 
-| Generation | Artifact | Abstraction |
-|------------|----------|-------------|
-| 1GL | Machine code | Hardware instructions |
-| 2GL | Assembly | Mnemonics |
-| 3GL | C, Python | Procedural/OO |
-| 4GL | SQL, MATLAB | Declarative, domain-specific |
-| **5GL** | **Natural language** | **Intent specification** |
+| Generation | Artifact             | Abstraction                  |
+| ---------- | -------------------- | ---------------------------- |
+| 1GL        | Machine code         | Hardware instructions        |
+| 2GL        | Assembly             | Mnemonics                    |
+| 3GL        | C, Python            | Procedural/OO                |
+| 4GL        | SQL, MATLAB          | Declarative, domain-specific |
+| **5GL**    | **Natural language** | **Intent specification**     |
 
 **Key insight**: The prompt becomes the source of truth. Generated code is an artifact — like protobuf bindings from a `.proto` file. You version-control the intent, not the output.
 
@@ -22,21 +22,21 @@ Reviewer → Addresser → Loop until fixed point
 
 Works for any LLM-readable artifact:
 
-| Skill | Artifact | Reviewer | Fixed Point |
-|-------|----------|----------|-------------|
-| loop-codex-review | Code | Codex CLI | n clean at xhigh |
-| loop-address-pr-feedback | Code | Humans + bots | All threads resolved |
-| review-skill-parallel | Skill docs | Claude agents | n clean reviews |
+| Skill                    | Artifact   | Reviewer      | Fixed Point          |
+| ------------------------ | ---------- | ------------- | -------------------- |
+| loop-codex-review        | Code       | Codex CLI     | n clean at xhigh     |
+| loop-address-pr-feedback | Code       | Humans + bots | All threads resolved |
+| review-skill-parallel    | Skill docs | Claude agents | n clean reviews      |
 
-**Fixed point** = no reviewer can find anything to flag. Not because you argued them down, but because the artifact is both *correct* AND *self-evident*.
+**Fixed point** = no reviewer can find anything to flag. Not because you argued them down, but because the artifact is both _correct_ AND _self-evident_.
 
 ## The Linting Parallel
 
-| 3GL Linting | 5GL Review |
-|-------------|------------|
-| Deterministic | Stochastic |
+| 3GL Linting                | 5GL Review                 |
+| -------------------------- | -------------------------- |
+| Deterministic              | Stochastic                 |
 | Converges to "no warnings" | Converges to "no findings" |
-| Fix issue → issue gone | Fix issue → E[findings] ↓ |
+| Fix issue → issue gone     | Fix issue → E[findings] ↓  |
 
 **Why stochastic convergence works**: Different reviewers catch different issues through execution diversity. If all n independent samples return clean, the probability of lurking issues is low.
 
@@ -59,11 +59,11 @@ Fix correctness → add edge case handling → more text
 
 `review-skill` fixed-point run (Jan 2026, 3 reviewers: adversarial/conciseness/correctness):
 
-| Iteration | Issues | Pattern |
-|:---------:|:------:|:--------|
-| 3-7 | 4-18 | Oscillating |
-| 8 | 29 | Peak |
-| 9-13 | 0 | Stable |
+| Iteration | Issues | Pattern     |
+| :-------: | :----: | :---------- |
+|    3-7    |  4-18  | Oscillating |
+|     8     |   29   | Peak        |
+|   9-13    |   0    | Stable      |
 
 **Breakthrough at iteration 8→9**: Consolidated Core Philosophy from 7 lines to 1. The cycle broke because there was nothing left to cut or clarify.
 
@@ -91,9 +91,9 @@ Movement in any direction makes something worse. The document can't be shorter w
 Simple reviewers converge; deep reviewers always find something.
 
 | Reviewer Depth | Result at Fixed Point |
-|----------------|----------------------|
-| Simple/fast | NO ISSUES |
-| Deep/thorough | ~13 borderline issues |
+| -------------- | --------------------- |
+| Simple/fast    | NO ISSUES             |
+| Deep/thorough  | ~13 borderline issues |
 
 The "borderline issues" are stable across runs—same findings, not oscillating. They represent the noise floor: real but diminishing-returns improvements.
 

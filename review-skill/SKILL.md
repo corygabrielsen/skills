@@ -59,28 +59,28 @@ Run specialized reviewers against a skill document to find correctness, clarity,
 
 ## Quick Reference
 
-| Phase | Purpose |
-|-------|---------|
-| Initialize | Parse args, validate target |
-| Fan Out | Launch all reviewers in parallel |
-| Collect | Gather and merge results |
-| Synthesize | Group into themes |
-| Triage | Propose fixes |
-| HIL: Plan Approval | User approves proposed fixes |
-| Address | Make edits |
-| Verify | Confirm changes |
-| HIL: Change Confirmation | User confirms edits |
-| Stage | Review and stage changes |
-| Commit | Create commit with proper message |
-| Loop Gate | Check pass count, loop or exit |
-| Epilogue | Report and end |
+| Phase                    | Purpose                           |
+| ------------------------ | --------------------------------- |
+| Initialize               | Parse args, validate target       |
+| Fan Out                  | Launch all reviewers in parallel  |
+| Collect                  | Gather and merge results          |
+| Synthesize               | Group into themes                 |
+| Triage                   | Propose fixes                     |
+| HIL: Plan Approval       | User approves proposed fixes      |
+| Address                  | Make edits                        |
+| Verify                   | Confirm changes                   |
+| HIL: Change Confirmation | User confirms edits               |
+| Stage                    | Review and stage changes          |
+| Commit                   | Create commit with proper message |
+| Loop Gate                | Check pass count, loop or exit    |
+| Epilogue                 | Report and end                    |
 
 ## Flags
 
-| Flag | Behavior |
-|------|----------|
-| `--auto` | Skip HIL checkpoints (still displays plan/summary) |
-| `-n N` | Do N passes (default: 1) |
+| Flag                    | Behavior                                                      |
+| ----------------------- | ------------------------------------------------------------- |
+| `--auto`                | Skip HIL checkpoints (still displays plan/summary)            |
+| `-n N`                  | Do N passes (default: 1)                                      |
 | `--reviewer <category>` | Run only `correctness`, `clarity`, or `conformance` reviewers |
 
 ---

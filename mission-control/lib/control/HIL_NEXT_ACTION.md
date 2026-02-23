@@ -5,12 +5,14 @@
 **If `--auto` mode:** Automatically continue if more work exists, otherwise complete.
 
 ## Do:
+
 - Present current state summary
 - Offer clear next action options
 - Wait for human decision
 - Execute chosen path
 
 ## Don't:
+
 - Assume continuation (unless `--auto`)
 - Loop forever without checkpoint
 
@@ -37,6 +39,7 @@ AskUserQuestion(
 ## Handlers
 
 **If "Continue":**
+
 1. Check for ready tasks (pending, empty blockedBy)
 2. If ready tasks exist → preflight/EVALUATE
 3. If no ready tasks but in_progress tasks exist → execution/MONITOR (wait for running agents)
@@ -47,17 +50,20 @@ AskUserQuestion(
 5. If all tasks complete → proceed to "Complete" handler
 
 **If "Pause":**
+
 1. → control/HANDOFF
 2. Report: "State saved. Resume with `/mission-control`."
 3. End skill
 
 **If "Add work":**
+
 1. Prompt: "Describe the additional work."
 2. End turn, wait for user input.
 3. If user provides empty/unclear input or cancels ("nevermind") → re-present HIL_NEXT_ACTION options
 4. Otherwise → setup/DECOMPOSE with new input; new tasks added to existing graph
 
 **If "Complete":**
+
 1. Verify all tasks are completed or ABORTED
 2. If incomplete tasks remain, confirm: "These tasks are still open: [list]. Mark them ABORTED?"
    - If user says yes → mark listed tasks ABORTED, continue to step 3

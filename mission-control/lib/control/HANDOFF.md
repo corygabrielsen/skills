@@ -5,32 +5,35 @@
 Like NASA shift handoffs: outgoing controller briefs incoming controller on everything they need to continue.
 
 ## Triggers
+
 - Context approaching compaction limit
 - User selects "Pause" in HIL: Next Action
 - Session ending
 - Explicit user request
 
 ## Do:
+
 - Capture all state that won't survive compaction
 - Write to task descriptions and metadata (these persist)
 - Ensure fresh agent can continue without asking
 - Report handoff summary to user
 
 ## Don't:
+
 - Rely on context memory (will be lost)
 - Leave implicit state undocumented
 - Assume current agent will continue
 
 ## State to Capture
 
-| State | Where to Store | How |
-|-------|----------------|-----|
-| Task status | Task system | Already there via TaskList |
-| In-flight agents | Task metadata | `metadata.agent_id` on each task |
-| Decisions made | Task descriptions | Append to description |
-| Open questions | New task | Create "QUESTION: ..." task |
-| Mode flags | Task metadata | Store on a "meta" task |
-| Iteration count | Task metadata | `metadata.iteration` |
+| State            | Where to Store    | How                              |
+| ---------------- | ----------------- | -------------------------------- |
+| Task status      | Task system       | Already there via TaskList       |
+| In-flight agents | Task metadata     | `metadata.agent_id` on each task |
+| Decisions made   | Task descriptions | Append to description            |
+| Open questions   | New task          | Create "QUESTION: ..." task      |
+| Mode flags       | Task metadata     | Store on a "meta" task           |
+| Iteration count  | Task metadata     | `metadata.iteration`             |
 
 ## Handoff Format
 
@@ -90,6 +93,7 @@ State captured in task system. To resume:
 ## Verification
 
 Before ending:
+
 - Run TaskList to confirm all state is captured
 - Verify handoff task was created
 - Confirm critical decisions are documented

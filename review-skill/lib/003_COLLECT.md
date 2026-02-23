@@ -3,6 +3,7 @@
 **Gather results from all reviewers.**
 
 ## Do:
+
 - Use `TaskOutput` with `task_id: <id>` for each reviewer that launched, **in a single turn with parallel calls** (up to 8). TaskOutput blocks until completion.
 - Parse each reviewer's output into tracker rows. For each numbered issue:
   - If it starts with "Line X:", extract X into Line column and the text after the colon into Issue column
@@ -10,12 +11,14 @@
   - Assign sequential IDs (I-001, I-002...; IDs reset each pass), set Fix to "—" and Status to `open`
 
 ## Don't:
+
 - Proceed before all reviewers complete
 - Ignore any reviewer's issues
 
 ## Evaluate Results
 
 **Valid reviewer output** is one of:
+
 - Exactly `NO ISSUES` (reviewer found nothing)
 - `ISSUES:` followed by numbered items (`1. ...`, `2. ...`, etc.)—items may or may not have "Line X:" prefix
 
@@ -34,10 +37,10 @@ Launch failures are infrastructure errors (not document issues per Core Philosop
 ## Tracker Format
 
 ```markdown
-| ID | Reviewer | Line | Issue | Fix | Status |
-|:--:|:--------:|:----:|:------|:----|:------:|
-| I-001 | execution | 42 | [description] | — | open |
-| I-002 | coverage | 156 | [description] | Added X | clarified |
+|  ID   | Reviewer  | Line | Issue         | Fix     |  Status   |
+| :---: | :-------: | :--: | :------------ | :------ | :-------: |
+| I-001 | execution |  42  | [description] | —       |   open    |
+| I-002 | coverage  | 156  | [description] | Added X | clarified |
 ```
 
 - **Line**: Line number from reviewer output. For multi-line issues, use first line; mention others in Issue description.

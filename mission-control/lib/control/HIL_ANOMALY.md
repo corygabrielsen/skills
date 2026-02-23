@@ -7,6 +7,7 @@ Triggered when: agent fails, unexpected output, verification fails, task blocked
 NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make it worse.
 
 ## Do:
+
 - STOP: Pause affected task, don't retry blindly
 - ASSESS: Gather information about what happened
 - CLASSIFY: Determine failure type
@@ -14,6 +15,7 @@ NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make 
 - Execute human's chosen response
 
 ## Don't:
+
 - Immediately retry (might repeat failure)
 - Ignore and continue (cascading failures)
 - Panic-fix without understanding
@@ -21,13 +23,13 @@ NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make 
 
 ## Classification
 
-| Type | Meaning | Suggested Response |
-|------|---------|-------------------|
-| Transient | Flaky, might work on retry | Suggest retry to human |
-| Systematic | Approach is wrong | Replan task |
-| Blocking | Need info we don't have | Escalate, ask user |
-| Stalled | No progress, unclear if stuck | Wait longer or investigate |
-| Fatal | Cannot recover | Abort task with explanation |
+| Type       | Meaning                       | Suggested Response          |
+| ---------- | ----------------------------- | --------------------------- |
+| Transient  | Flaky, might work on retry    | Suggest retry to human      |
+| Systematic | Approach is wrong             | Replan task                 |
+| Blocking   | Need info we don't have       | Escalate, ask user          |
+| Stalled    | No progress, unclear if stuck | Wait longer or investigate  |
+| Fatal      | Cannot recover                | Abort task with explanation |
 
 **Note:** All responses require human approval. "Suggest retry" means present Retry option; don't auto-retry (see FR-B001).
 
@@ -40,16 +42,20 @@ NASA's Anomaly Resolution: STOP → ASSESS → CLASSIFY → RESPOND. Don't make 
 **Phase:** Verify (agent completed, verification failed)
 
 ### What Happened
+
 Agent reported success, but tests fail with: `AuthError: token undefined`
 
 ### Assessment
+
 - Agent implemented middleware but didn't wire it to request context
 - Tests expect `req.user` to be populated after auth
 
 ### Classification: Systematic
+
 Approach was incomplete. Agent needs clearer requirements about request context integration.
 
 ### Recommended Response
+
 Create follow-up task with explicit wiring requirements.
 ```
 
@@ -76,10 +82,12 @@ AskUserQuestion(
 ## Handlers
 
 **If "Retry":**
+
 1. Reset task to `pending` (if task was `in_progress`, the previous agent's work is abandoned—it may complete but results are ignored)
 2. → preflight/EVALUATE
 
 **If "Replan":**
+
 1. Mark original task `ABORTED - Replanning`
 2. Prompt user: "Describe the new approach, or I'll propose one."
 3. End turn, wait for user input:
@@ -90,11 +98,13 @@ AskUserQuestion(
 4. → preflight/EVALUATE
 
 **If "Skip":**
+
 1. Mark task `ABORTED - Skipped after anomaly`
 2. Check if downstream tasks are now blocked
 3. → control/CHECKPOINT
 
 **If "Halt":**
+
 1. Keep task `in_progress` (preserve state)
 2. → control/HANDOFF
 3. End skill

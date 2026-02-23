@@ -5,48 +5,53 @@
 Catches slow-developing problems before they become crises.
 
 ## Triggers
+
 - After each Verify phase
 - Periodically during long waits (blocking in DELEGATE for --fg, or MONITOR for --bg)
 - On user request
 - When context approaching compaction threshold
 
 ## Do:
+
 - Poll TaskList for current state
 - Identify: completed, in_progress, pending, blocked, stalled
 - Surface anything needing attention
 - Check for resource concerns (context size, time elapsed)
 
 ## Don't:
+
 - Skip checkpoint when things "seem fine"
 - Continue without surfacing stalled work
 
 ## Status Categories
 
-| Category | Meaning | Action |
-|----------|---------|--------|
-| Completed | Done and verified | None |
-| In Progress | Agent working | Monitor |
-| Pending | Ready to launch | Delegate |
-| Blocked | Waiting on dependencies | Check blockers |
-| Stalled | In progress too long, no output | Investigate |
-| Failed | Verification failed (still in_progress) | → control/HIL_ANOMALY |
+| Category    | Meaning                                 | Action                |
+| ----------- | --------------------------------------- | --------------------- |
+| Completed   | Done and verified                       | None                  |
+| In Progress | Agent working                           | Monitor               |
+| Pending     | Ready to launch                         | Delegate              |
+| Blocked     | Waiting on dependencies                 | Check blockers        |
+| Stalled     | In progress too long, no output         | Investigate           |
+| Failed      | Verification failed (still in_progress) | → control/HIL_ANOMALY |
 
 ## Checkpoint Format
 
 ```markdown
 ## Checkpoint
 
-| Task | Status | Notes |
-|------|--------|-------|
-| T-001 | completed | Verified |
-| T-002 | in_progress | Agent actively working |
-| T-003 | blocked | Waiting on T-002 |
+| Task  | Status      | Notes                        |
+| ----- | ----------- | ---------------------------- |
+| T-001 | completed   | Verified                     |
+| T-002 | in_progress | Agent actively working       |
+| T-003 | blocked     | Waiting on T-002             |
 | T-004 | in_progress | No recent output, monitoring |
 
 ### Attention Needed
+
 - T-004: No visible progress, may need investigation
 
 ### Resource Status
+
 - Context: moderate (estimate based on conversation length)
 - Tasks: 2/4 complete
 ```
@@ -56,12 +61,14 @@ Catches slow-developing problems before they become crises.
 No hard-coded timeouts. Agent capabilities evolve rapidly.
 
 **Stall indicators (use judgment):**
+
 - Agent has stopped producing output mid-task
 - Task is blocking others with no visible progress
 - User expresses concern
 - Pattern differs from similar previous tasks
 
 **Not stalled (patience required):**
+
 - Agent actively working (tool calls visible)
 - Complex research or multi-file edits in progress
 - Agent explicitly indicated long-running work
@@ -69,6 +76,7 @@ No hard-coded timeouts. Agent capabilities evolve rapidly.
 **Relative timing:** If similar tasks completed in X time, 3-5X without progress is worth surfacing.
 
 **Default when no baseline exists:** Surface to user rather than assuming stalled. Present a status question: "T-004 has been running for [duration] with no visible output. Continue waiting or investigate?" This question is asked within CHECKPOINT.
+
 - If user says "continue waiting" → control/REPORT (normal flow, task stays in_progress)
 - If user says "investigate" or confirms stalled → control/HIL_ANOMALY with Classification: Stalled
 - If user provides other response → interpret intent; if unclear, ask clarifying question

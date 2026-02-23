@@ -57,11 +57,13 @@ git show <commit>
 Group commits into **orthogonal sets** — clusters with internal dependencies but no cross-cluster dependencies.
 
 **Algorithm:**
+
 1. Build a graph where commits are nodes and dependencies are edges
 2. Find connected components — each component is an orthogonal set
 3. Commits with no dependencies on other branch commits are their own set
 
 From the example above:
+
 - **Set A**: Commits 1, 2, 3 (Cache feature)
 - **Set B**: Commits 4, 5 (RateLimiter feature)
 
@@ -100,6 +102,7 @@ git cherry-pick <commit-4> <commit-5>
 ```
 
 **Verify each branch:**
+
 ```bash
 # Should build independently
 # (prettier, cargo fmt, black, etc.)
@@ -107,6 +110,7 @@ git cherry-pick <commit-4> <commit-5>
 ```
 
 If a branch doesn't build, either:
+
 - A dependency was missed — revisit Phase 2
 - The changes aren't truly orthogonal — merge the sets
 
@@ -141,11 +145,12 @@ Sometimes orthogonal sets exist but splitting isn't worthwhile:
 - **Conceptually unified**: Author bundled them intentionally for a reason
 - **Review overhead**: Two PRs means twice the CI, review cycles, merge conflicts
 
-Note these cases but don't force splits. The goal is to *identify* orthogonality, not mandate separation.
+Note these cases but don't force splits. The goal is to _identify_ orthogonality, not mandate separation.
 
 ## Edge Cases
 
 **Shared base refactor:** Sometimes commit 1 is a refactor that enables both Set A and Set B. Options:
+
 - Include it in both branches (duplication, but each stands alone)
 - Make it a third "foundation" set that both depend on
 - Leave sets coupled if the refactor is small
@@ -153,6 +158,7 @@ Note these cases but don't force splits. The goal is to *identify* orthogonality
 **File-level overlap:** Two sets may touch the same file in different places. This is fine — they're still orthogonal if changes don't interact. Git can merge them.
 
 **Test coupling:** Tests might span multiple sets. Options:
+
 - Include tests with the code they test
 - Create a separate "tests" set if tests are truly independent
 - Accept some test duplication across branches

@@ -22,13 +22,13 @@ When you have rich context (current task, domain jargon, specific examples), you
 
 **1. Identify the artifact's audience**
 
-| Artifact | Audience | Context they have |
-|----------|----------|-------------------|
-| Commit message | Repo contributors | Repo history |
-| PR description | Reviewers | Repo + diff |
-| Config/rules file | Future self, strangers | None |
-| Library docs | External users | None |
-| Skill/prompt | Any project | None |
+| Artifact          | Audience               | Context they have |
+| ----------------- | ---------------------- | ----------------- |
+| Commit message    | Repo contributors      | Repo history      |
+| PR description    | Reviewers              | Repo + diff       |
+| Config/rules file | Future self, strangers | None              |
+| Library docs      | External users         | None              |
+| Skill/prompt      | Any project            | None              |
 
 **2. Apply the stranger test**
 
@@ -38,11 +38,11 @@ If any example, term, or reference requires conversation history—replace it.
 
 **3. Genericize examples**
 
-| Before (context-bound) | After (portable) |
-|------------------------|------------------|
+| Before (context-bound)            | After (portable)             |
+| --------------------------------- | ---------------------------- |
 | "Fix the auth bug in UserService" | "Fix authentication timeout" |
-| "Update the Client class" | "Update the API client" |
-| "like we discussed" | [remove or specify] |
+| "Update the Client class"         | "Update the API client"      |
+| "like we discussed"               | [remove or specify]          |
 
 **4. Check your language**
 

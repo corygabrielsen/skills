@@ -3,12 +3,14 @@
 **Track agent progress and collect results.**
 
 ## Do:
+
 - Check status of in_progress tasks via `TaskOutput`
 - Handle completion notifications
 - Record results for verification
 - Update task status when agents complete
 
 ## Don't:
+
 - Trust completion notifications blindly (verification happens next)
 - Block on tasks in --bg mode (return control to human)
 - Forget to check TaskList after context compaction
@@ -58,6 +60,7 @@ TaskOutput(task_id: "<id>")
 ## Handling Lost Notifications
 
 Background task notifications are unreliable (~50% lost). If user says "tasks are done":
+
 1. Trust them
 2. Poll TaskOutput for all in_progress tasks immediately
 3. Proceed with results
@@ -65,6 +68,7 @@ Background task notifications are unreliable (~50% lost). If user says "tasks ar
 ## Agent Crash/Error Handling
 
 If `TaskOutput` returns an error (agent crashed, terminated abnormally, or returned malformed output):
+
 1. Record the error in task metadata
 2. Keep task `in_progress` (do not mark complete)
 3. → control/HIL_ANOMALY with Classification:

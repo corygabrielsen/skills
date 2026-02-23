@@ -63,12 +63,14 @@ gh pr diff <NUMBER>
 Determine the commit order based on dependencies:
 
 **Dependency rules:**
+
 - Types/structs before code that uses them
 - Refactors before features that depend on them
 - Core logic before tests
 - Changes to the same function should be ordered by logical progression
 
 **For each commit, define:**
+
 - Subject line (imperative mood, ≤50 chars)
 - Which hunks from the diff to include
 - Whether it should compile (see note on atomicity below)
@@ -104,7 +106,7 @@ For larger refactors or base type changes, non-buildable intermediate commits ma
 
 **Showing contrast:**
 
-Consider what helps the learner understand *why* each change matters:
+Consider what helps the learner understand _why_ each change matters:
 
 - **Bug fixes**: A `legacy_*` function demonstrating the bug makes the fix concrete
 - **Refactors**: Old structure → migration → deletion as separate commits
@@ -150,6 +152,7 @@ git apply --cached /tmp/partial.patch
 ```
 
 **After each commit:**
+
 ```bash
 # Run formatter/linter first to avoid pre-commit surprises
 # (prettier, cargo fmt, black, gofmt, etc.)
@@ -171,6 +174,7 @@ git diff <pr-branch>
 ```
 
 If there are differences, either:
+
 - They're acceptable (whitespace, comment tweaks)
 - Something was missed — add a final "cleanup" commit
 

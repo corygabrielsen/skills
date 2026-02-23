@@ -43,10 +43,12 @@ HIL_GATE_PLAN_APPROVAL is a pure gate (no side effects).
 MATERIALIZE creates tasks only after user approval.
 
 ## Entry Conditions
+
 - Skill invoked with `/mission-control`
 - May have existing tasks or fresh start
 
 ## Exit Conditions
+
 - Plan approved → proceed to preflight/PHASE
 - User aborts → end skill
 - Tasks already in progress → skip to execution or control

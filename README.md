@@ -11,23 +11,31 @@ make list       # Show installed skills
 ```
 
 Requires `pre-commit` for hooks:
+
 ```bash
 pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
 ## Skills
 
-| Skill | Description |
-|-------|-------------|
-| `/debrief` | Reconstruct context after returning to a conversation |
-| `/fork` | Branch off a conversation to handle tangents |
-| `/loop-address-pr-feedback` | Address PR review feedback until all threads resolved |
-| `/loop-codex-review` | Codex review loop with progressive reasoning levels |
-| `/loop-review-skill-parallel` | Iterate skill review until fixed point |
-| `/mission-control` | Coordinate multi-step work with task graphs |
-| `/next` | Present 2-4 actionable next steps |
-| `/review-pr` | Thorough PR review process |
-| `/review-skill-parallel` | Single iteration of parallel skill review |
+| Skill                         | Description                                                   |
+| ----------------------------- | ------------------------------------------------------------- |
+| `/cd`                         | Change working directory                                      |
+| `/checkpoint`                 | Swarm-safe git checkpoint workflow                            |
+| `/debrief`                    | Reconstruct context after returning to a conversation         |
+| `/decompose-branch`           | Reorganize a messy branch into focused, atomic commits        |
+| `/decompose-pr`               | Break down a complex PR into focused, atomic commits          |
+| `/decontextualize`            | Course-correct when artifacts overfit to conversation context |
+| `/fork`                       | Branch off a conversation to handle tangents                  |
+| `/loop-address-pr-feedback`   | Address PR review feedback until all threads resolved         |
+| `/loop-codex-review`          | Codex review loop with progressive reasoning levels           |
+| `/loop-review-skill-parallel` | Iterate skill review until fixed point                        |
+| `/mission-control`            | Coordinate multi-step work with task graphs                   |
+| `/next`                       | Present 2-4 actionable next steps                             |
+| `/orthogonalize-pr`           | Separate orthogonal change sets within a decomposed PR        |
+| `/review-pr`                  | Thorough PR review process                                    |
+| `/review-skill`               | Review a skill document using specialized reviewers           |
+| `/review-skill-parallel`      | Single iteration of parallel skill review                     |
 
 ## Skill Authoring Patterns
 
@@ -57,17 +65,21 @@ Each phase file follows this template:
 **One-liner purpose statement.**
 
 ## Do:
+
 - Action 1
 - Action 2
 
 ## Don't:
+
 - Anti-pattern 1
 - Anti-pattern 2
 
 ## Options (for HIL phases)
+
 AskUserQuestion(...)
 
 ## Handlers
+
 What to do for each user choice.
 ```
 
@@ -75,11 +87,11 @@ What to do for each user choice.
 
 **Human-in-the-loop checkpoints** at irreversible or high-impact decisions:
 
-| Gate | Purpose |
-|------|---------|
-| Plan Approval | User approves proposed changes before edits |
-| Change Confirmation | User confirms edits before commit |
-| Strategy Selection | User chooses between approaches |
+| Gate                | Purpose                                     |
+| ------------------- | ------------------------------------------- |
+| Plan Approval       | User approves proposed changes before edits |
+| Change Confirmation | User confirms edits before commit           |
+| Strategy Selection  | User chooses between approaches             |
 
 Support `--auto` flag to skip HIL (still display plan/summary).
 
@@ -87,11 +99,11 @@ Support `--auto` flag to skip HIL (still display plan/summary).
 
 **Every finding demands a change.** No dismiss, no wontfix.
 
-| Finding type | Resolution |
-|--------------|------------|
-| Real issue | Fix it |
-| False positive | Add clarifying text (the code/doc was unclear) |
-| Design tradeoff | Document the rationale |
+| Finding type    | Resolution                                     |
+| --------------- | ---------------------------------------------- |
+| Real issue      | Fix it                                         |
+| False positive  | Add clarifying text (the code/doc was unclear) |
+| Design tradeoff | Document the rationale                         |
 
 If a reviewer misunderstands, the artifact is unclear. Clarify until misunderstanding is impossible.
 
@@ -111,23 +123,23 @@ history:
 
 ### Flags Convention
 
-| Flag | Behavior |
-|------|----------|
-| `--auto` | Skip HIL checkpoints (still display summaries) |
-| `-n N` | Number of iterations/passes |
-| `--reviewer <category>` | Filter to specific reviewer category |
+| Flag                    | Behavior                                       |
+| ----------------------- | ---------------------------------------------- |
+| `--auto`                | Skip HIL checkpoints (still display summaries) |
+| `-n N`                  | Number of iterations/passes                    |
+| `--reviewer <category>` | Filter to specific reviewer category           |
 
 ### Quick Reference Table
 
 Every skill should have a phase → purpose table:
 
 ```markdown
-| Phase | Purpose |
-|-------|---------|
-| Initialize | Parse args, validate target |
-| Fan Out | Launch reviewers in parallel |
+| Phase              | Purpose                      |
+| ------------------ | ---------------------------- |
+| Initialize         | Parse args, validate target  |
+| Fan Out            | Launch reviewers in parallel |
 | HIL: Plan Approval | User approves proposed fixes |
-| ...   | ... |
+| ...                | ...                          |
 ```
 
 ### Composition

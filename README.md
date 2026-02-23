@@ -27,6 +27,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/decompose-branch`           | Reorganize a messy branch into focused, atomic commits        |
 | `/decompose-pr`               | Break down a complex PR into focused, atomic commits          |
 | `/decontextualize`            | Course-correct when artifacts overfit to conversation context |
+| `/denarrate`                  | Strip narrative mode from descriptive artifacts               |
 | `/fork`                       | Branch off a conversation to handle tangents                  |
 | `/loop-address-pr-feedback`   | Address PR review feedback until all threads resolved         |
 | `/loop-codex-review`          | Codex review loop with progressive reasoning levels           |

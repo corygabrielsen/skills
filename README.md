@@ -40,6 +40,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/review-skill`               | Review a skill document using specialized reviewers           |
 | `/review-skill-parallel`      | Single iteration of parallel skill review                     |
 | `/spike`                      | Implement N approaches as branches, compare side-by-side      |
+| `/synthesize`                 | Consolidate brainstorm rounds into organized synthesis        |
 
 ## Skill Authoring Patterns
 

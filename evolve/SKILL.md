@@ -166,20 +166,17 @@ echo "$score" | grep -qE '^-?[0-9]+\.?[0-9]*$'
 
 ### Focus Lenses
 
-Each seed agent gets one lens, chosen to span different optimization axes:
+Each seed agent gets one lens — a constraint that forces it to explore a different region of the solution space. **Choose lenses appropriate to the user's objective.** The lenses below are examples, not an exhaustive list.
 
-| Lens               | What it means                                                     |
+| Objective domain   | Example lenses                                                    |
 | ------------------ | ----------------------------------------------------------------- |
-| Algorithm          | Change the fundamental approach (different algo, search strategy) |
-| Data structure     | Use a different container, layout, or representation              |
-| Caching            | Add memoization, precomputation, or lookup tables                 |
-| Loop structure     | Restructure loops (unroll, fuse, vectorize, eliminate)            |
-| Branch elimination | Remove conditionals, use lookup tables, bit tricks                |
-| Memory layout      | Improve cache locality, reduce allocations, pack data             |
-| Parallelism        | Add concurrency, SIMD, batching                                   |
-| Simplification     | Remove unnecessary work, short-circuit, early exit                |
+| Performance        | Algorithm, data structure, caching, loop structure, parallelism   |
+| Accuracy / quality | Algorithm, error handling, edge cases, validation, representation |
+| Size / simplicity  | Elimination, decomposition, alternative libraries, rewrite        |
+| Robustness         | Error paths, input validation, retry strategy, fallback design    |
+| General (any)      | Algorithm, data structure, simplification, inversion              |
 
-With k=4, pick 4 lenses spanning the widest range. With k > 8, lenses may repeat.
+The key requirement: lenses must be **genuinely different axes**, not variations on a theme. With k=4, pick 4 lenses spanning the widest range. With k > 8, lenses may repeat.
 
 ### Agent prompt template (seed)
 
@@ -193,11 +190,11 @@ The fitness function is: [command]
 Here are the target files:
 [file contents]
 
-Your focus: **[lens]**. Optimize primarily through [lens description].
+Your focus: **[lens]**. Approach the problem primarily through [lens description].
 
 Write the complete modified file(s). Do not stub or TODO — the code
 must be functional. You may make multiple changes, but your primary
-optimization axis should be [lens].
+axis of variation should be [lens].
 ```
 
 Each agent:
@@ -491,17 +488,18 @@ The fitness command must:
 ### Examples
 
 ```bash
-# Benchmark: operations per second
+# Performance: operations per second
 ./benchmark.sh
+
+# Accuracy: correct predictions out of test set
+python eval.py --dataset test.csv
 
 # Test pass rate
 make test 2>&1 | grep -oP '\d+ passed' | grep -oP '\d+'
 
-# Negative latency (lower is better → negate)
-echo "-$(./measure_latency.sh)"
-
-# Code golf (fewer chars = better → negate)
-echo "-$(wc -c < solution.py)"
+# Lower-is-better metrics: negate so higher = better
+echo "-$(./measure_latency.sh)"    # Latency
+echo "-$(wc -c < solution.py)"     # Code size
 
 # Multi-metric composite
 python evaluate.py  # Script prints composite score as last line

@@ -297,7 +297,7 @@ Each call returns a `task_id` and `output_file` path. Record the `task_id` for p
 
 **Important:** When in a Graphite stack, always review against the parent branch, not master.
 
-**Polling:** Use `cat` or `tail -n` (NOT `tail -f`) to check output files.
+**Polling:** Use the polling one-liner below (NOT `tail -f`, NOT `TaskOutput`).
 
 ## Reading Review Results (Context Management)
 
@@ -307,13 +307,47 @@ Each call returns a `task_id` and `output_file` path. Record the `task_id` for p
 
 ### 1. Poll for Completion
 
-Use `TaskOutput(task_id, block: false)` ONLY to check whether the background task has finished. **Ignore the output content** — you only care about the status (running vs. done).
-
-Alternatively, check if the log file contains a verdict:
+**Use this one-liner.** It produces a clean timestamped ledger — one line per tick, immediate first check, clean exit when all done.
 
 ```bash
-grep -c '^codex$' "$REVIEW_DIR/xhigh-1.log"
+L=high N=5 S=30 DIR="$REVIEW_DIR"; printf '%-10s  %-8s  %s\n' TIME LEVEL DONE; printf '%-10s  %-8s  %s\n' ---------- -------- ----; while true; do n=$(grep -rl '^codex$' "$DIR/$L"-*.log 2>/dev/null | wc -l); printf '%-10s  %-8s  %d/%d\n' "$(date +%H:%M:%S)" "$L" "$n" "$N"; [ "$n" -eq "$N" ] && break; sleep "$S"; done
 ```
+
+**Parameters** (set at the start of the command):
+
+| Var   | Meaning           | Example       |
+| ----- | ----------------- | ------------- |
+| `L`   | Reasoning level   | `high`        |
+| `N`   | Number of reviews | `5`           |
+| `S`   | Poll interval (s) | `30`          |
+| `DIR` | Review workspace  | `$REVIEW_DIR` |
+
+**Example output:**
+
+```
+TIME        LEVEL     DONE
+----------  --------  ----
+15:20:42    high      0/5
+15:21:12    high      2/5
+15:21:42    high      3/5
+15:22:12    high      5/5
+```
+
+**Design notes:**
+
+- Check runs _before_ sleep — no 30s hang on launch
+- `grep -rl '^codex$'` counts log files that contain a verdict marker
+- Every line is timestamped — self-documenting duration
+- Breaks immediately when count hits N
+- Token-efficient: one short line per tick regardless of how long it runs
+- All parameters are front-loaded for easy one-shot construction
+
+**Don't:**
+
+- ❌ Use `TaskOutput` to poll — pulls full output into context
+- ❌ Use `tail -f` — blocks forever
+- ❌ Use `while sleep` as the loop condition — delays first check by S seconds
+- ❌ Use dots/heartbeats — just print a line every tick, it's a ledger
 
 ### 2. Extract Verdict Only
 

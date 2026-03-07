@@ -42,7 +42,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/review-pr`                           | Thorough PR review process                                      |
 | `/review-skill`                        | Review a skill document using specialized reviewers             |
 | `/review-skill-parallel`               | Single iteration of parallel skill review                       |
-| `/socratic`                            | Reveal user intent through narrowing binary questions           |
+| `/socratic`                            | Reveal user intent through narrowing questions                  |
 | `/spike`                               | Implement N approaches as branches, compare side-by-side        |
 | `/synthesize`                          | Consolidate brainstorm rounds into organized synthesis          |
 

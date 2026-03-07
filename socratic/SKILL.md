@@ -1,6 +1,6 @@
 ---
 name: socratic
-description: Reveal user intent through narrowing binary questions, increasingly specific, with opinionated defaults when asked.
+description: Reveal user intent through narrowing questions, increasingly specific, with opinionated defaults when asked.
 ---
 
 # Socratic
@@ -27,10 +27,9 @@ otherwise guess or present a wall of options.
 State what needs deciding in one sentence. Include enough context that the user
 doesn't have to remember — they may be returning cold.
 
-### 2. Ask binary questions
+### 2. Ask narrowing questions
 
-Use `AskUserQuestion` with 2 options (occasionally 3 when there's a genuine third
-path). Each question should:
+Use `AskUserQuestion` with 2-3 options. Each question should:
 
 - Have **clear phrasing** — the question makes sense without re-reading prior context
 - Have **concrete options** — not "option A" vs "option B" but what each does
@@ -70,9 +69,9 @@ Once intent is clear, execute immediately. Don't summarize the decision tree bac
 ## Anti-patterns
 
 - **Open-ended first question** — "How do you want to handle this?" puts all the
-  cognitive load on the user. Start with a binary.
-- **More than 3 options per question** — You haven't narrowed enough. Group into 2
-  categories first, then drill down.
+  cognitive load on the user. Start with a few concrete options.
+- **More than 4 options per question** — You haven't narrowed enough. Group into
+  fewer categories first, then drill down.
 - **Re-asking after an answer** — Each answer should advance the state. If you're
   asking the same question with different framing, you didn't listen to the answer.
 - **Dumping context before the question** — Lead with the question. Add context in
@@ -80,4 +79,4 @@ Once intent is clear, execute immediately. Don't summarize the decision tree bac
 
 ---
 
-The user has a decision to make. Frame it and ask the first binary question.
+The user has a decision to make. Frame it and ask the first narrowing question.

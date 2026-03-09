@@ -37,8 +37,9 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/mission-control`                     | Coordinate multi-step work with task graphs                     |
 | `/next`                                | Present 2-4 actionable next steps                               |
 | `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR          |
-| `/postcompaction`                      | Recover rich context after conversation compaction              |
+| `/postcompact`                         | Recover nuance lost during conversation compaction              |
 | `/postmortem`                          | Write a structured postmortem with thorough root cause analysis |
+| `/precompact`                          | Persist session knowledge to durable storage                    |
 | `/review-pr`                           | Thorough PR review process                                      |
 | `/review-skill`                        | Review a skill document using specialized reviewers             |
 | `/review-skill-parallel`               | Single iteration of parallel skill review                       |

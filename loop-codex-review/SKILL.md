@@ -84,14 +84,16 @@ Default behavior: **Climb the reasoning ladder from low → xhigh, with retrospe
 low (all n clean) → retro → medium (all n clean) → retro → high (all n clean) → retro → xhigh (all n clean) → retro → DONE
          ↑                          ↑                           ↑                            ↑
          │              ┌─ issue? address, drop one level ──────┘                            │
-         └── (at low,   │                                                                    │
+         └── (at floor, │                                                                    │
              stay here) ┘                                                                    │
-         ↑──────────────── retro found architectural changes? restart from low ──────────────┘
+         ↑──────────────── retro found architectural changes? restart from floor ────────────┘
 ```
 
-Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → run retrospective → advance (or restart from low if retro produced changes). If ANY has issues → address and **drop one reasoning level** (e.g., issues at high → fix → re-run at medium). At low, stay at low. Higher `n` = more parallel reviewers = higher confidence.
+Where `n` is the `-n` parameter (default: 3). Run n reviews in parallel at each level. If ALL n are clean → run retrospective → advance (or restart from floor if retro produced changes). If ANY has issues → address and **drop one reasoning level, clamped at the floor** (e.g., issues at high → fix → re-run at medium; but if floor is medium, medium stays at medium). Higher `n` = more parallel reviewers = higher confidence.
 
-**Why drop a level?** Fixes are code changes. Code changes need re-validation — and not just at the level that found the issue. Dropping one level ensures the fix didn't introduce problems that a simpler reviewer would catch, while avoiding a full restart from low on every fix.
+**Floor level:** The floor is the lowest level the loop will drop to after addressing issues. Default floor is `low`. Use interval notation (see Args) to set it higher — e.g., `[medium` sets the floor at medium, so drops never go below medium. Retrospective restarts also respect the floor.
+
+**Why drop a level?** Fixes are code changes. Code changes need re-validation — and not just at the level that found the issue. Dropping one level ensures the fix didn't introduce problems that a simpler reviewer would catch, while avoiding a full restart from the floor on every fix.
 
 **Note:** "Issues" includes both real bugs AND false positives. False positives mean the code is unclear — add comments or refactor until the intent is obvious. See "Verification of Issues" section.
 
@@ -111,12 +113,12 @@ Why progressive?
 3.  Parse Output     → Extract issues into tracker
 4.  Evaluate         → ALL clean? → step 5. Else (issues exist) → step 6.
 5.  Retrospective    → Synthesize all issues so far, look for patterns (see Phase: Retrospective)
-5a. If retro changes → Implement, restart from low (go to step 2 at low)
+5a. If retro changes → Implement, restart from floor (go to step 2 at floor)
 5b. If no changes    → At xhigh? → Done. Else → advance level, go to step 2.
 6.  Address Issues   → Claude agents address issues (parallel)
 7.  Verify           → Tests pass, files modified
 8.  Human Approval   → Present summary, get explicit approval, commit
-9.  Drop Level       → Drop one reasoning level (stay at low if already there)
+9.  Drop Level       → Drop one reasoning level (clamp at floor)
 10. Loop             → Return to step 2
 ```
 
@@ -132,6 +134,7 @@ max_iterations: 15
 
 # Reasoning level tracking
 reasoning_level: "low" # Current: low | medium | high | xhigh
+reasoning_floor: "low" # Minimum level for drops: low | medium | high | xhigh
 reasoning_strategy: "progressive" # progressive | fixed
 parallel_review_count: 3 # -n flag (default 3) - how many reviews to run in parallel
 review_workspace: "" # /tmp/codex-review-{repo}-{timestamp} — log files written here
@@ -215,7 +218,15 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 /loop-codex-review                          # --uncommitted, full climb
 /loop-codex-review --base master            # Review vs master, full climb
 
-# Start at specific level
+# Interval notation: [start -> end] with floor control
+# [ = inclusive lower bound (floor) — drops never go below this level
+# Uses mathematical interval convention: [a means "a is the minimum"
+/loop-codex-review [medium -> xhigh         # Start at medium, climb to xhigh, floor at medium
+/loop-codex-review [high -> xhigh           # Start at high, climb to xhigh, floor at high
+/loop-codex-review medium -> xhigh          # Start at medium, climb to xhigh, floor at low (default)
+/loop-codex-review [medium -> xhigh -n 10   # Combines with other flags
+
+# Start at specific level (no interval — floor defaults to low)
 /loop-codex-review --level high             # Start at high, climb to xhigh
 /loop-codex-review --level xhigh            # Start at xhigh (skip lower levels)
 
@@ -431,8 +442,8 @@ if ALL n results are clean:
 else:
     # ANY review has issues
     → Merge all issues into tracker, proceed to address phase
-    → After addressing, drop one reasoning level and re-run
-    →   high → medium, medium → low, low → low (floor)
+    → After addressing, drop one reasoning level (clamped at floor) and re-run
+    →   high → medium, medium → low (or floor if higher)
 ```
 
 ### Verification of Issues
@@ -519,7 +530,7 @@ The goal is to reconstruct the full picture before acting. Understand the system
 ```
 if all_n_clean:
     → Run retrospective (see Phase: Retrospective)
-    → If retro has changes: implement, restart from low
+    → If retro has changes: implement, restart from floor
     → If retro clean AND reasoning_level == "xhigh": Done (full fixed point)
     → If retro clean: Advance to next reasoning level
 if iteration_count >= max_iterations:
@@ -583,7 +594,7 @@ Synthesize all issues so far. Look for patterns across the issue tracker — clu
 - Run after EVERY per-level fixed point — no conditionals
 - Feed it the full issue tracker (not the diff)
 - Propose architectural changes that would prevent 3+ issues each
-- If proposals approved: implement, then restart from low
+- If proposals approved: implement, then restart from floor
 - If no patterns: say so briefly and advance
 
 ### Don't:
@@ -731,7 +742,7 @@ Fixed point at [level]. Running retrospective...
 
 No architectural patterns found. Advancing to [next level]...
   — or —
-Retrospective found N patterns. Implementing changes, restarting from low...
+Retrospective found N patterns. Implementing changes, restarting from floor...
 ```
 
 ### Full Fixed Point
@@ -828,4 +839,4 @@ Pre-flight checklist. Details are inline in each section above.
 
 ---
 
-Enter loop-codex-review mode now. Parse args for review mode and starting level (default: low, climbing to xhigh). Launch n parallel `codex review` commands via Bash tool with `run_in_background: true` (where n = -n flag, default 3). All n must be clean to advance to next level. Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI. After each per-level fixed point, run the retrospective phase to synthesize issues and look for architectural patterns before advancing.
+Enter loop-codex-review mode now. Parse args for review mode, starting level, and floor. Interval notation: `[medium -> xhigh` sets start=medium, ceiling=xhigh, floor=medium. The `[` bracket sets the floor (drops never go below it). Without `[`, floor defaults to `low`. Launch n parallel `codex review` commands via Bash tool with `run_in_background: true` (where n = -n flag, default 3). All n must be clean to advance to next level. Always set `-c model_reasoning_effort` explicitly. Do NOT do the review yourself — delegate to Codex via the CLI. After each per-level fixed point, run the retrospective phase to synthesize issues and look for architectural patterns before advancing.

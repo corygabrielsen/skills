@@ -14,12 +14,12 @@ it violates the channel's discourse mode.
 
 Every artifact has one semantic role:
 
-| Artifact | Role | Temporal mode |
-|----------|------|---------------|
-| Code | What is | Present |
-| Comments | Why it's surprising | Atemporal |
-| Commits | What changed | Past |
-| PRs | What to evaluate | Imperative |
+| Artifact | Role                | Temporal mode |
+| -------- | ------------------- | ------------- |
+| Code     | What is             | Present       |
+| Comments | Why it's surprising | Atemporal     |
+| Commits  | What changed        | Past          |
+| PRs      | What to evaluate    | Imperative    |
 
 Narrative belongs in commits and PRs. Comments that narrate are
 operating in the wrong discourse mode. They presuppose a temporal
@@ -79,7 +79,7 @@ yesterday, today, and tomorrow. That's the test.
 2. **Extract every comment** from the target files.
 3. **Evaluate each** — is it descriptive (in-register) or narrative
    (out-of-register)?
-4. **Present findings** — file, line, the comment, which narrative
+4. **Present issues** — file, line, the comment, which narrative
    signal it triggers, and the fix (revised wording or deletion).
 5. **Ask** before applying.
 6. **Apply** — edit files, show the diff.

@@ -36,7 +36,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/loop-review-skill-until-fixed-point` | Iterate skill review until fixed point                          |
 | `/mission-control`                     | Coordinate multi-step work with task graphs                     |
 | `/next`                                | Present 2-4 actionable next steps                               |
-| `/oneshot`                             | Execute a dev task to completion in one pass, no stopping early |
+| `/oneshot`                             | Execute a task to completion in one pass, no stopping early     |
 | `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR          |
 | `/postcompact`                         | Recover nuance lost during conversation compaction              |
 | `/postmortem`                          | Write a structured postmortem with thorough root cause analysis |

@@ -34,6 +34,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/loop-address-pr-feedback`            | Address PR review feedback until all threads resolved           |
 | `/loop-codex-review`                   | Codex review loop with progressive reasoning levels             |
 | `/loop-review-skill-until-fixed-point` | Iterate skill review until fixed point                          |
+| `/meta`                                | Signal that a remark is about the conversation, not in it       |
 | `/mission-control`                     | Coordinate multi-step work with task graphs                     |
 | `/next`                                | Present 2-4 actionable next steps                               |
 | `/oneshot`                             | Execute a task to completion in one pass, no stopping early     |

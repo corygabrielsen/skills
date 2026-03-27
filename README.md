@@ -42,6 +42,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/postcompact`                         | Recover nuance lost during conversation compaction              |
 | `/postmortem`                          | Write a structured postmortem with thorough root cause analysis |
 | `/precompact`                          | Persist session knowledge to durable storage                    |
+| `/prove`                               | Formal symbolic proof — QED or counterexample, no hand-waving   |
 | `/review-pr`                           | Thorough PR review process                                      |
 | `/review-skill`                        | Review a skill document using specialized reviewers             |
 | `/review-skill-parallel`               | Single iteration of parallel skill review                       |

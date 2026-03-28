@@ -10,20 +10,18 @@ args:
 
 # /timebox
 
-Work autonomously for a fixed duration. The user is away. Check the system clock at checkpoints. Ship what fits. Stop when time's up.
+Work autonomously for a fixed duration. Check the system clock at checkpoints. Ship what fits. Stop when time's up.
 
 ## Why This Works
 
 Parkinson's law: work expands to fill the time available. A timebox inverts this — you have N minutes, ship what you can. No deliberation on scope. No asking permission. The clock decides what's in and what's out.
 
-The user steps away (shower, coffee, walk). You work. They come back to a summary of what shipped.
-
 ## On Activation
 
-1. **Record start time** — `date +%s` (not wall clock — immune to timezone confusion)
+1. **Record start time** — `date +%s` (epoch seconds, immune to timezone confusion)
 2. **Plan** — 30 seconds max. Prioritize by impact. Don't plan more than fits.
 3. **Work** — Build, commit, push. Check the clock at natural breakpoints.
-4. **Checkpoint** — Every ~5 minutes, `date +%H:%M`. Are you on pace? Adjust scope.
+4. **Checkpoint** — Every ~5 minutes, `date +%H:%M`. On pace? Adjust scope.
 5. **Wrap** — When time is up (or the last unit of work completes within the window), stop. Commit everything. Push.
 6. **Report** — Minute-by-minute log of what shipped. Total time. What's left.
 
@@ -41,7 +39,7 @@ Check the clock BEFORE starting a new unit of work. If there isn't enough time t
 
 ## Work Style
 
-- **No questions.** The user is away. Make decisions and move.
+- **No questions.** Decide and move.
 - **Commit early, commit often.** Small commits that each build.
 - **Build and typecheck between units.** Don't accumulate errors.
 - **Feature branch.** Never commit to master.
@@ -76,10 +74,10 @@ When time is up:
 ## Anti-patterns
 
 - **Planning for 10 minutes** — Plan ≤ 30 seconds. The clock is running.
-- **Asking the user** — They're gone. Decide and go.
+- **Asking questions** — Decide and go. Ask forgiveness, not permission.
 - **Starting something too big** — Check the clock first.
 - **Perfecting before shipping** — Good enough and pushed beats perfect and local.
-- **Forgetting to check the clock** — Set mental alarms at 25%, 50%, 75%.
+- **Forgetting to check the clock** — Check at 25%, 50%, 75% of the duration.
 
 ---
 

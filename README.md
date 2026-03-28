@@ -39,6 +39,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/next`                                | Present 2-4 actionable next steps                               |
 | `/oneshot`                             | Execute a task to completion in one pass, no stopping early     |
 | `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR          |
+| `/park`                                | Plaintext banner capturing current work state for re-entry      |
 | `/postcompact`                         | Recover nuance lost during conversation compaction              |
 | `/postmortem`                          | Write a structured postmortem with thorough root cause analysis |
 | `/precompact`                          | Persist session knowledge to durable storage                    |

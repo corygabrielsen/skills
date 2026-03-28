@@ -50,6 +50,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/socratic`                            | Reveal user intent through narrowing questions                  |
 | `/spike`                               | Implement N approaches as branches, compare side-by-side        |
 | `/synthesize`                          | Consolidate brainstorm rounds into organized synthesis          |
+| `/unwind`                              | Discard conversation frames, replace with memoized summary      |
 
 ## Skill Authoring Patterns
 

@@ -10,75 +10,41 @@ args:
 
 # /timebox
 
-Work autonomously for a fixed duration. Check the system clock at checkpoints. Ship what fits. Stop when time's up.
+Work autonomously for a fixed duration. The clock decides scope.
 
-## Why This Works
+## Invariants
 
-Parkinson's law: work expands to fill the time available. A timebox inverts this — you have N minutes, ship what you can. No deliberation on scope. No asking permission. The clock decides what's in and what's out.
-
-## On Activation
-
-1. **Record start time** — `date +%s` (epoch seconds, immune to timezone confusion)
-2. **Plan** — 30 seconds max. Prioritize by impact. Don't plan more than fits.
-3. **Work** — Build, commit, push. Check the clock at natural breakpoints.
-4. **Checkpoint** — Every ~5 minutes, `date +%H:%M`. On pace? Adjust scope.
-5. **Wrap** — When time is up (or the last unit of work completes within the window), stop. Commit everything. Push.
-6. **Report** — Minute-by-minute log of what shipped. Total time. What's left.
-
-## Clock Discipline
-
-```bash
-# At start
-START=$(date +%s)
-
-# At checkpoints
-NOW=$(date +%s); ELAPSED=$(( (NOW - START) / 60 )); echo "${ELAPSED}m elapsed"
-```
-
-Check the clock BEFORE starting a new unit of work. If there isn't enough time to finish it, don't start it — wrap up instead.
-
-## Work Style
-
+- **Check the system clock** (`date`) at every natural breakpoint
+- **Don't start work you can't finish** in the remaining time
 - **No questions.** Decide and move.
-- **Commit early, commit often.** Small commits that each build.
-- **Build and typecheck between units.** Don't accumulate errors.
-- **Feature branch.** Never commit to master.
-- **Push at checkpoints.** Work is only real when it's pushed.
+- **Feature branch.** Commit and push as you go.
+- **Ship independently valuable units** — each commit should stand alone
 
-## Scope Management
-
-If the task is open-ended ("improve X"), prioritize:
-
-1. Highest-impact, lowest-effort first
-2. Each unit of work should be independently valuable (shippable alone)
-3. Don't start something you can't finish in the remaining time
-4. Refactoring and cleanup go last (after new functionality)
-
-## Report Format
-
-When time is up:
+## The loop
 
 ```
-## Timebox: [duration]
+record start time (date +%s)
+while time remains:
+  pick highest-impact next thing
+  check clock — enough time? if not, wrap up
+  do the thing
+  build/typecheck
+  commit and push
+report what shipped
+```
 
+## When time's up
+
+```
 | Minute | What shipped |
 |--------|-------------|
-| 0-3    | Built X |
-| 3-7    | Built Y |
-| 7-9    | Refactored Z |
+| 0-3    | Built X     |
+| 3-7    | Built Y     |
 
-**Delivered:** [count] items. PR: [link]
-**Remaining:** [what didn't fit]
+Delivered: N items. PR: [link]
+Remaining: [what didn't fit]
 ```
-
-## Anti-patterns
-
-- **Planning for 10 minutes** — Plan ≤ 30 seconds. The clock is running.
-- **Asking questions** — Decide and go. Ask forgiveness, not permission.
-- **Starting something too big** — Check the clock first.
-- **Perfecting before shipping** — Good enough and pushed beats perfect and local.
-- **Forgetting to check the clock** — Check at 25%, 50%, 75% of the duration.
 
 ---
 
-Parse args for duration (default 20m). Record the start time. Start working. Check the clock at every natural breakpoint. Stop when time's up. Report what shipped.
+Parse args for duration (default 20m). Record start time. Enter the loop.

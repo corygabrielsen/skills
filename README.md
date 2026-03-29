@@ -18,39 +18,42 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 ## Skills
 
-| Skill                                  | Description                                                     |
-| -------------------------------------- | --------------------------------------------------------------- |
-| `/brainstorm`                          | Generate N diverse solutions, forced breadth over intuition     |
-| `/cd`                                  | Change working directory                                        |
-| `/checkpoint`                          | Swarm-safe git checkpoint workflow                              |
-| `/debrief`                             | Reconstruct context after returning to a conversation           |
-| `/decompose-branch`                    | Reorganize a messy branch into focused, atomic commits          |
-| `/decompose-pr`                        | Break down a complex PR into focused, atomic commits            |
-| `/decontextualize`                     | Course-correct when artifacts overfit to conversation context   |
-| `/denarrate`                           | Strip narrative mode from descriptive artifacts                 |
-| `/distill`                             | Strip overspecified instructions, trust model intuition         |
-| `/evolve`                              | Evolutionary search for code optimization via fitness function  |
-| `/fork`                                | Branch off a conversation to handle tangents                    |
-| `/loop-address-pr-feedback`            | Address PR review feedback until all threads resolved           |
-| `/loop-codex-review`                   | Codex review loop with progressive reasoning levels             |
-| `/loop-review-skill-until-fixed-point` | Iterate skill review until fixed point                          |
-| `/meta`                                | Signal that a remark is about the conversation, not in it       |
-| `/mission-control`                     | Coordinate multi-step work with task graphs                     |
-| `/next`                                | Present 2-4 actionable next steps                               |
-| `/oneshot`                             | Execute a task to completion in one pass, no stopping early     |
-| `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR          |
-| `/park`                                | Plaintext banner capturing current work state for re-entry      |
-| `/postcompact`                         | Recover nuance lost during conversation compaction              |
-| `/postmortem`                          | Write a structured postmortem with thorough root cause analysis |
-| `/precompact`                          | Persist session knowledge to durable storage                    |
-| `/prove`                               | Formal symbolic proof — QED or counterexample, no hand-waving   |
-| `/review-pr`                           | Thorough PR review process                                      |
-| `/review-skill`                        | Review a skill document using specialized reviewers             |
-| `/review-skill-parallel`               | Single iteration of parallel skill review                       |
-| `/socratic`                            | Reveal user intent through narrowing questions                  |
-| `/spike`                               | Implement N approaches as branches, compare side-by-side        |
-| `/synthesize`                          | Consolidate brainstorm rounds into organized synthesis          |
-| `/unwind`                              | Discard conversation frames, replace with memoized summary      |
+| Skill                                  | Description                                                       |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| `/brainstorm`                          | Generate N diverse solutions, forced breadth over intuition       |
+| `/cd`                                  | Change working directory                                          |
+| `/checkpoint`                          | Swarm-safe git checkpoint workflow                                |
+| `/debrief`                             | Reconstruct context after returning to a conversation             |
+| `/decompose-branch`                    | Reorganize a messy branch into focused, atomic commits            |
+| `/decompose-pr`                        | Break down a complex PR into focused, atomic commits              |
+| `/decontextualize`                     | Course-correct when artifacts overfit to conversation context     |
+| `/denarrate`                           | Strip narrative mode from descriptive artifacts                   |
+| `/distill`                             | Strip overspecified instructions, trust model intuition           |
+| `/evolve`                              | Evolutionary search for code optimization via fitness function    |
+| `/fork`                                | Branch off a conversation to handle tangents                      |
+| `/loop-address-pr-feedback`            | Address PR review feedback until all threads resolved             |
+| `/loop-codex-review`                   | Codex review loop with progressive reasoning levels               |
+| `/loop-review-skill-until-fixed-point` | Iterate skill review until fixed point                            |
+| `/meta`                                | Signal that a remark is about the conversation, not in it         |
+| `/mission-control`                     | Coordinate multi-step work with task graphs                       |
+| `/next`                                | Present 2-4 actionable next steps                                 |
+| `/oneshot`                             | Execute a task to completion in one pass, no stopping early       |
+| `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR            |
+| `/park`                                | Plaintext banner capturing current work state for re-entry        |
+| `/postcompact`                         | Recover nuance lost during conversation compaction                |
+| `/postmortem`                          | Write a structured postmortem with thorough root cause analysis   |
+| `/precompact`                          | Persist session knowledge to durable storage                      |
+| `/prove`                               | Formal symbolic proof — QED or counterexample, no hand-waving     |
+| `/review-pr`                           | Thorough PR review process                                        |
+| `/review-skill`                        | Review a skill document using specialized reviewers               |
+| `/review-skill-parallel`               | Single iteration of parallel skill review                         |
+| `/socratic`                            | Reveal user intent through narrowing questions                    |
+| `/solve`                               | Think deeply, find the right solution, prove it correct           |
+| `/spike`                               | Implement N approaches as branches, compare side-by-side          |
+| `/synthesize`                          | Consolidate brainstorm rounds into organized synthesis            |
+| `/tighten`                             | Strip to load-bearing words; specification voice, not explanation |
+| `/timebox`                             | Work autonomously for a fixed duration, ship what fits            |
+| `/unwind`                              | Discard conversation frames, replace with memoized summary        |
 
 ## Skill Authoring Patterns
 

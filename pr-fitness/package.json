@@ -1,0 +1,43 @@
+{
+  "name": "pr-fitness",
+  "version": "0.1.0",
+  "description": "Live PR merge readiness assessment",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "pr-fitness": "dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc",
+    "lint": "eslint src/ && prettier --check .",
+    "format": "prettier --write .",
+    "test": "tsx --test test/**/*.test.ts",
+    "test:live": "tsx src/cli.ts example/widgets 1563",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm run test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "private": true,
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/node": "^22.15.2",
+    "eslint": "^9.24.0",
+    "prettier": "^3.8.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.30.1"
+  }
+}

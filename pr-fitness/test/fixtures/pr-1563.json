@@ -1,0 +1,57 @@
+{
+  "version": "0.1.0",
+  "pr": 1563,
+  "url": "https://github.com/example/widgets/pull/1563",
+  "title": "Fix usize hashing in runner selection",
+  "head": "3634facc",
+  "base": "master",
+  "lifecycle": "open",
+  "merged_at": null,
+  "closed_at": null,
+  "mergeable": true,
+  "blockers": [],
+  "ci": {
+    "pass": 19,
+    "fail": 0,
+    "pending": 0,
+    "total": 19,
+    "failed": [],
+    "pending_names": [],
+    "failed_details": [],
+    "completed_at": "2026-03-30T07:55:00Z"
+  },
+  "reviews": {
+    "decision": "APPROVED",
+    "threads_unresolved": 0,
+    "threads_total": 3,
+    "bot_comments": 1,
+    "approvals_on_head": 1,
+    "approvals_stale": 0
+  },
+  "state": {
+    "conflict": "UNKNOWN",
+    "draft": false,
+    "wip": false,
+    "title_len": 45,
+    "title_ok": true,
+    "body": true,
+    "summary": true,
+    "test_plan": true,
+    "content_label": true,
+    "assignees": 1,
+    "reviewers": 0,
+    "merge_when_ready": false,
+    "commits": 3,
+    "updated_at": "2026-03-30T08:03:06.407Z",
+    "last_commit_at": "2026-03-29T22:15:00Z"
+  },
+  "graphite": {
+    "status": "pass",
+    "title": null,
+    "summary": null
+  },
+  "actions": [],
+  "summary": "Ready to merge",
+  "timestamp": "2026-03-30T08:03:06.407Z",
+  "duration_ms": 912
+}

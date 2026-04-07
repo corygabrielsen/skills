@@ -275,6 +275,8 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 - ❌ Use `tail -f` to check output — it blocks forever; use `tail -n` or `cat`
 - ❌ Use `TaskOutput` to read review results — dumps ~800 lines per review into context (see "Reading Review Results")
 - ❌ Read full log files — extract the `codex` verdict block only
+- ❌ **NEVER use shell `&` to background codex reviews** — `for i in 1..5; do codex review ... & done` corrupts output even with `tee`. The `&` detaches the process from the pipe, truncating logs. Always use separate `Bash` tool calls with `run_in_background: true`.
+- ❌ **NEVER combine review launch + polling in one Bash call** — e.g., `for i in ...; do codex ... & done; while ...; done` mixes codex stderr with polling output, producing megabytes of noise. Launch reviews and poll in **separate** Bash calls.
 
 ### Example: Launch n Parallel Reviews
 
@@ -290,7 +292,7 @@ Bash(command: "codex review ... 2>&1 | tee -a \"$REVIEW_DIR/low-1.log\"", run_in
 # ... repeat for all n reviews
 ```
 
-**File naming convention:** `{level}-{n}.log` (e.g., `low-1.log`, `high-3.log`, `xhigh-5.log`).
+**File naming convention:** `{level}-{n}.log` for first pass (e.g., `low-1.log`, `high-3.log`). For re-reviews after addressing issues, use `{level}{pass}-{n}.log` (e.g., `medium2-1.log`, `medium3-2.log`) to avoid overwriting previous results.
 
 Each call returns a `task_id` and `output_file` path. Record the `task_id` for polling completion status (but NOT for reading output — read from `$REVIEW_DIR` files instead).
 
@@ -767,6 +769,31 @@ When all n reviews return clean at `xhigh` AND retrospective finds no patterns:
 \*If started from a higher level (e.g., `--level high`), total is fewer.
 
 Report final summary with level history and exit.
+
+### Design Tradeoff Convergence
+
+Reviewers may keep flagging the same design decision across levels even after it's been documented in comments. This is NOT a code clarity failure — it's the reviewer disagreeing with the tradeoff, not misunderstanding the code.
+
+**How to recognize it:**
+
+- Same concern appears in 3+ of n reviews across multiple levels
+- The concern is about a design choice (e.g., "no backward compat"), not a bug
+- You've already added comments explaining the rationale
+- The comments are accurate and specific
+
+**Resolution:** After documenting the tradeoff in code and getting the same feedback again, advance to the next level. A design tradeoff that's clearly documented is not a false positive — it's a policy disagreement that comments can't resolve.
+
+**Don't:**
+
+- ❌ Keep adding more comments to an already-documented tradeoff
+- ❌ Block the loop indefinitely on a decision the user has already made
+- ❌ Confuse "reviewer disagrees with the design" with "code is unclear"
+
+**Do:**
+
+- ✅ Verify the existing comments are clear and complete
+- ✅ Count it as a fixed point if no NEW issues are found
+- ✅ Note the convergence pattern in the final summary
 
 ## Issue Tracker Format
 

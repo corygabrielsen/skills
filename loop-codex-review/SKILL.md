@@ -40,19 +40,6 @@ This loop creates a proof: when n independent reviews at each reasoning level (l
 - **Address**: Spawn Claude Task agents to address issues (fix code OR clarify with comments/refactoring)
 - **Value**: Two different frontier LLMs catch different things
 
-## Relationship to loop-address-pr-feedback
-
-| Aspect          | loop-codex-review   | loop-address-pr-feedback |
-| --------------- | ------------------- | ------------------------ |
-| **When**        | Pre-PR (local)      | Post-PR (remote)         |
-| **Reviewer**    | `codex review` CLI  | GitHub bots + humans     |
-| **Trigger**     | You run it          | Reviews arrive async     |
-| **Interface**   | stdout parsing      | GitHub API               |
-| **Scope**       | Single diff         | Stack of PRs             |
-| **Fixed point** | All n reviews clean | All threads resolved     |
-
-Use **this skill** to validate code before opening a PR. Use **loop-address-pr-feedback** to address reviewer comments after.
-
 ## Reasoning Levels
 
 Codex supports different reasoning effort levels. **Always set explicitly.**

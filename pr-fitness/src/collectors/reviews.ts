@@ -9,6 +9,6 @@ export async function collectReviews(
     "api",
     `repos/${repo}/pulls/${String(pr)}/reviews`,
     "--jq",
-    "[.[] | {state, commit_id}]",
+    "[.[] | {user: .user.login, state, commit_id, submitted_at}]",
   ]);
 }

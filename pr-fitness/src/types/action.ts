@@ -41,7 +41,6 @@ export type ActionType =
   | { kind: "add_assignee" }
   | { kind: "add_reviewer" }
   | { kind: "add_description" }
-  | { kind: "add_merge_when_ready" }
   | { kind: "wait_for_ci"; pending: readonly string[] }
   | { kind: "wait_for_review"; reviewers: readonly string[] }
   | { kind: "wait_for_human" };

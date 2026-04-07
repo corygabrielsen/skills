@@ -28,16 +28,29 @@ export function computeReviews(
   // That's distinct from REVIEW_REQUIRED (policy exists, not yet met).
   const decision = pr.reviewDecision || "NONE";
 
+  // Use GraphQL reviewRequests (not gh pr view) — the CLI silently
+  // drops bot reviewers like Copilot.
+  const requestNodes = threads.data.repository.pullRequest.reviewRequests.nodes;
   const bots: string[] = [];
   const humans: string[] = [];
-  for (const r of pr.reviewRequests) {
-    const name = r.login ?? r.name ?? "unknown";
-    if (name.endsWith("[bot]") || name === "Copilot") {
+  for (const r of requestNodes) {
+    const reviewer = r.requestedReviewer;
+    if (!reviewer) continue;
+    const name = reviewer.login ?? reviewer.name ?? "unknown";
+    if (reviewer.__typename === "Bot" || name.endsWith("[bot]")) {
       bots.push(name);
     } else {
       humans.push(name);
     }
   }
+
+  const botReviews = reviews
+    .filter((r) => r.user.endsWith("[bot]"))
+    .map((r) => ({
+      user: r.user,
+      state: r.state,
+      submitted_at: r.submitted_at,
+    }));
 
   return {
     decision,
@@ -47,5 +60,6 @@ export function computeReviews(
     approvals_on_head: approvalsOnHead,
     approvals_stale: approvalsTotal - approvalsOnHead,
     pending_reviews: { bots, humans },
+    bot_reviews: botReviews,
   };
 }

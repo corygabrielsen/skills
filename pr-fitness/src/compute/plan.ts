@@ -193,14 +193,5 @@ export function plan(
     });
   }
 
-  if (!state.merge_when_ready) {
-    actions.push({
-      blocker: "no_merge_when_ready",
-      description: "Add merge-when-ready label",
-      automation: "human",
-      type: { kind: "add_merge_when_ready" },
-    });
-  }
-
   return actions;
 }

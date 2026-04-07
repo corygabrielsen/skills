@@ -21,6 +21,16 @@ export async function collectReviewThreads(
               }
             }
           }
+          reviewRequests(first:20) {
+            nodes {
+              requestedReviewer {
+                ... on User { __typename login }
+                ... on Bot { __typename login }
+                ... on Team { __typename name: name }
+                ... on Mannequin { __typename login }
+              }
+            }
+          }
         }
       }
     }`,

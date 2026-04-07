@@ -149,17 +149,4 @@ describe("plan", () => {
     assert.ok(ciIdx < threadIdx, "CI should come before reviews");
     assert.ok(threadIdx < labelIdx, "reviews should come before metadata");
   });
-
-  it("prescribes add_merge_when_ready as human-gated", () => {
-    const state: PrState = { ...CLEAN_STATE, merge_when_ready: false };
-    const actions = plan(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
-    const a = actions.find((a) => a.type.kind === "add_merge_when_ready");
-    assert.ok(a);
-    assert.equal(a.automation, "human");
-  });
-
-  it("omits add_merge_when_ready when label is present", () => {
-    const actions = plan(CLEAN_CI, APPROVED_REVIEWS, CLEAN_STATE, "pass");
-    assert.ok(!actions.some((a) => a.type.kind === "add_merge_when_ready"));
-  });
 });

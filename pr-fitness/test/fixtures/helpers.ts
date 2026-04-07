@@ -42,7 +42,10 @@ export function makeCheck(name: string, state: GhCheck["state"]): GhCheck {
   return { name, state, description: "", link: "", completedAt: "" };
 }
 
-export function makeThreads(resolved: boolean[]): GhReviewThreadsResponse {
+export function makeThreads(
+  resolved: boolean[],
+  reviewRequests: GhReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewRequests"]["nodes"] = [],
+): GhReviewThreadsResponse {
   return {
     data: {
       repository: {
@@ -53,6 +56,7 @@ export function makeThreads(resolved: boolean[]): GhReviewThreadsResponse {
               comments: { nodes: [{ author: { login: "user" } }] },
             })),
           },
+          reviewRequests: { nodes: reviewRequests },
         },
       },
     },
@@ -63,8 +67,12 @@ export function makeComment(id: number, login: string): GhIssueComment {
   return { id, login };
 }
 
-export function makeReview(state: string, commit_id: string = HEAD): GhReview {
-  return { state, commit_id };
+export function makeReview(
+  state: string,
+  commit_id: string = HEAD,
+  user: string = "someone",
+): GhReview {
+  return { user, state, commit_id, submitted_at: "2026-03-30T08:00:00Z" };
 }
 
 export { HEAD };
@@ -89,6 +97,8 @@ export const APPROVED_REVIEWS: ReviewSummary = {
   bot_comments: 1,
   approvals_on_head: 1,
   approvals_stale: 0,
+  pending_reviews: { bots: [], humans: [] },
+  bot_reviews: [],
 };
 
 export const CLEAN_STATE: PrState = {

@@ -72,6 +72,14 @@ export interface ReviewSummary {
     readonly bots: readonly string[];
     readonly humans: readonly string[];
   };
+  /** Submitted bot reviews (Copilot, Cursor, etc). */
+  readonly bot_reviews: readonly BotReview[];
+}
+
+export interface BotReview {
+  readonly user: string;
+  readonly state: string;
+  readonly submitted_at: string;
 }
 
 export type ReviewDecision =

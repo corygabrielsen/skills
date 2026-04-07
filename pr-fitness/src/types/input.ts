@@ -49,7 +49,7 @@ export interface GhCheck {
   completedAt: string;
 }
 
-/** GraphQL reviewThreads response */
+/** GraphQL reviewThreads + reviewRequests response */
 export interface GhReviewThreadsResponse {
   data: {
     repository: {
@@ -60,6 +60,15 @@ export interface GhReviewThreadsResponse {
             comments: {
               nodes: readonly { author: { login: string } }[];
             };
+          }[];
+        };
+        reviewRequests: {
+          nodes: readonly {
+            requestedReviewer: {
+              __typename: string;
+              login?: string;
+              name?: string;
+            } | null;
           }[];
         };
       };
@@ -75,6 +84,8 @@ export interface GhIssueComment {
 
 /** gh api repos/.../pulls/.../reviews */
 export interface GhReview {
+  user: string;
   state: string;
   commit_id: string;
+  submitted_at: string;
 }

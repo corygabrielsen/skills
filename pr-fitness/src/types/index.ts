@@ -5,6 +5,7 @@ export type {
   CheckBucketSummary,
   AdvisorySummary,
   FailedCheck,
+  AxisLine,
   ReviewSummary,
   ReviewDecision,
   PullRequestState,

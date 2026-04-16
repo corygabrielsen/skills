@@ -73,6 +73,16 @@ export interface PullRequestFitnessReport {
    * skill-defined labels; /converge treats the map opaquely.
    */
   readonly activity_state: Readonly<Record<string, string>>;
+  /** Decomposed score components for PR progress comment rendering. */
+  readonly score_emoji: string;
+  readonly score_label: string;
+  /** Target label WITHOUT emoji — revealed only when score reaches target. */
+  readonly target_label: string;
+  /**
+   * Per-axis status lines for the PR progress comment. Each entry is
+   * rendered as `{emoji} {name} {summary}`.
+   */
+  readonly axes: readonly AxisLine[];
   /** ISO 8601 timestamp of when this report was generated. */
   readonly timestamp: string;
   /** Milliseconds taken to generate this report. */
@@ -200,3 +210,9 @@ export interface GraphiteCheck {
 }
 
 export type GraphiteStatus = GraphiteCheck["status"];
+
+export interface AxisLine {
+  readonly name: string;
+  readonly emoji: string;
+  readonly summary: string;
+}

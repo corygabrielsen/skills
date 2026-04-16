@@ -8,6 +8,18 @@
 import type { Action } from "./action.js";
 import type { Score } from "./branded.js";
 
+/**
+ * One row in the progress comment's axis display. Pr-fitness constructs
+ * these from its computed state; /converge renders them verbatim as
+ * `{emoji} {name} {summary}` lines. Converge never interprets what
+ * the axes mean — the fitness skill owns the vocabulary.
+ */
+export interface AxisLine {
+  readonly name: string;
+  readonly emoji: string;
+  readonly summary: string;
+}
+
 export interface FitnessReport {
   /** Current fitness. */
   readonly score: Score;
@@ -25,6 +37,21 @@ export interface FitnessReport {
   readonly score_display?: string;
   /** Branded rendering of `target`, mirror of `score_display`. */
   readonly target_display?: string;
+  /** Decomposed score components for the PR progress comment. */
+  readonly score_emoji?: string;
+  readonly score_label?: string;
+  /**
+   * Target label WITHOUT emoji — used in the "→ platinum" arrow when
+   * score < target. The target emoji is revealed only when score reaches
+   * target (via score_emoji matching at that point).
+   */
+  readonly target_label?: string;
+  /**
+   * Per-axis status lines for the PR progress comment. Each entry is
+   * rendered as `{emoji} {name} {summary}`. Pr-fitness constructs them;
+   * converge renders them.
+   */
+  readonly axes?: readonly AxisLine[];
   /**
    * Skill-owned informational lines — rendered verbatim by /converge as
    * bullet points in the PR progress comment. Intended for context the

@@ -14,11 +14,17 @@ import type {
   Score as ScoreT,
 } from "./types/branded.js";
 import type { CopilotReport } from "./types/copilot.js";
-import { COPILOT_TIER_EMOJI, formatScoreOrdinal } from "./types/copilot.js";
+import {
+  COPILOT_TIER_EMOJI,
+  formatScoreOrdinal,
+  tierForScore,
+} from "./types/copilot.js";
 import type {
+  AxisLine,
   CiSummary,
   Lifecycle,
   PullRequestFitnessReport,
+  ReviewSummary,
 } from "./types/index.js";
 
 /** Default target if the caller doesn't specify — 💠 platinum (4). */
@@ -37,18 +43,6 @@ function isMergeable(
   return blockers.length === 0;
 }
 
-/**
- * Compute a scalar fitness score.
- *
- * When Copilot is configured, use its tier ordinal as the score —
- * it's already a total order on review quality.
- *
- * Otherwise fall back to a CI/review-derived scalar:
- *   4: green CI, approved (or no-review-policy)
- *   3: green CI, approval pending (but no blockers)
- *   2: CI green but unresolved threads
- *   1: any hard blocker (CI fail, conflict, draft, wip, …)
- */
 /**
  * Collect informational lines that shouldn't drive fitness but that a
  * human reader should see — e.g. advisory check failures that didn't
@@ -77,6 +71,108 @@ function computeScoreDisplay(lifecycle: Lifecycle, score: ScoreT): string {
   if (lifecycle === "merged") return `${COPILOT_TIER_EMOJI.platinum} (merged)`;
   if (lifecycle === "closed") return "⚫ (closed)";
   return formatScoreOrdinal(score);
+}
+
+function scoreEmoji(lifecycle: Lifecycle, score: ScoreT): string {
+  if (lifecycle === "merged") return COPILOT_TIER_EMOJI.platinum;
+  if (lifecycle === "closed") return "⚫";
+  const tier = tierForScore(score);
+  return tier !== null ? COPILOT_TIER_EMOJI[tier] : "";
+}
+
+function scoreLabel(lifecycle: Lifecycle, score: ScoreT): string {
+  if (lifecycle === "merged") return "merged";
+  if (lifecycle === "closed") return "closed";
+  const tier = tierForScore(score);
+  return tier ?? `score ${String(score as number)}`;
+}
+
+function computeAxes(
+  ci: CiSummary,
+  copilot: CopilotReport,
+  reviews: ReviewSummary,
+): readonly AxisLine[] {
+  const axes: AxisLine[] = [];
+
+  // CI axis
+  if (ci.fail > 0) {
+    axes.push({
+      name: "CI",
+      emoji: "❌",
+      summary: ci.failed.join(", ") + " failing",
+    });
+  } else if (ci.pending > 0) {
+    axes.push({
+      name: "CI",
+      emoji: "⏳",
+      summary: `${String(ci.pending)} check${ci.pending === 1 ? "" : "s"} running`,
+    });
+  } else {
+    axes.push({ name: "CI", emoji: "✅", summary: "" });
+  }
+
+  // Copilot axis
+  if (copilot.configured) {
+    switch (copilot.activity.state) {
+      case "idle":
+        axes.push({ name: "Copilot", emoji: "⏳", summary: "awaiting review" });
+        break;
+      case "requested":
+        axes.push({
+          name: "Copilot",
+          emoji: "⏳",
+          summary: "review requested",
+        });
+        break;
+      case "working":
+        axes.push({
+          name: "Copilot",
+          emoji: "⏳",
+          summary: `reviewing (round ${String(copilot.rounds.length)})`,
+        });
+        break;
+      case "reviewed": {
+        const tierEmoji = COPILOT_TIER_EMOJI[copilot.tier];
+        let detail = "";
+        if (copilot.threads.unresolved > 0) {
+          detail = `${String(copilot.threads.unresolved)} unresolved thread${copilot.threads.unresolved === 1 ? "" : "s"}`;
+        } else if (copilot.threads.stale > 0) {
+          detail = `hasn't seen ${String(copilot.threads.stale)} post-review repl${copilot.threads.stale === 1 ? "y" : "ies"}`;
+        } else if (!copilot.fresh) {
+          detail = "reviewed, not at HEAD";
+        } else {
+          detail = "reviewed at HEAD";
+        }
+        axes.push({
+          name: "Copilot",
+          emoji: tierEmoji,
+          summary: `${copilot.tier}${detail.length > 0 ? " · " + detail : ""}`,
+        });
+        break;
+      }
+      case "unconfigured":
+        break;
+    }
+  }
+
+  // Approval axis
+  if (reviews.pending_reviews.humans.length > 0) {
+    axes.push({
+      name: "Approval",
+      emoji: "⏳",
+      summary: `pending from ${reviews.pending_reviews.humans.join(", ")}`,
+    });
+  } else if (reviews.decision === "CHANGES_REQUESTED") {
+    axes.push({
+      name: "Approval",
+      emoji: "❌",
+      summary: "changes requested",
+    });
+  } else if (reviews.decision === "APPROVED" || reviews.decision === "NONE") {
+    axes.push({ name: "Approval", emoji: "✅", summary: "" });
+  }
+
+  return axes;
 }
 
 export function computeScore(
@@ -161,6 +257,8 @@ export async function prFitness(
   const activityState: Record<string, string> = copilot.configured
     ? { copilot: copilot.activity.state }
     : {};
+  const axes = lifecycle === "open" ? computeAxes(ci, copilot, reviews) : [];
+  const targetTier = tierForScore(target);
 
   const durationMs = Math.round(performance.now() - start);
 
@@ -189,6 +287,10 @@ export async function prFitness(
     status: statusLine,
     notes,
     activity_state: activityState,
+    score_emoji: scoreEmoji(lifecycle, score),
+    score_label: scoreLabel(lifecycle, score),
+    target_label: targetTier ?? `score ${String(target as number)}`,
+    axes,
     timestamp: new Date().toISOString(),
     duration_ms: durationMs,
   };

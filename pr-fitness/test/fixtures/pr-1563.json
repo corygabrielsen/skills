@@ -73,6 +73,10 @@
   "status": "Ready to merge",
   "notes": [],
   "activity_state": {},
+  "score_emoji": "💠",
+  "score_label": "platinum",
+  "target_label": "platinum",
+  "axes": [],
   "timestamp": "2026-03-30T08:03:06.407Z",
   "duration_ms": 912
 }

@@ -41,6 +41,10 @@ describe("output contract", () => {
     assert.ok(report.score_display.length > 0);
     assert.equal(typeof report.target_display, "string");
     assert.ok(report.target_display.length > 0);
+    assert.equal(typeof report.score_emoji, "string");
+    assert.equal(typeof report.score_label, "string");
+    assert.equal(typeof report.target_label, "string");
+    assert.ok(Array.isArray(report.axes));
     assert.equal(typeof report.timestamp, "string");
     assert.equal(typeof report.duration_ms, "number");
 

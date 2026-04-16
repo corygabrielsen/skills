@@ -51,6 +51,23 @@ function isMergeable(
  *   1: any hard blocker (CI fail, conflict, draft, wip, …)
  */
 /**
+ * Collect informational lines that shouldn't drive fitness but that a
+ * human reader should see — e.g. advisory check failures that didn't
+ * block merge but did fail. Empty when nothing needs flagging.
+ */
+function computeNotes(ci: CiSummary): readonly string[] {
+  const notes: string[] = [];
+  if (ci.advisory.fail > 0) {
+    notes.push(
+      `${String(ci.advisory.fail)} advisory check${
+        ci.advisory.fail === 1 ? "" : "s"
+      } failing (non-blocking): ${ci.advisory.failed.join(", ")}`,
+    );
+  }
+  return notes;
+}
+
+/**
  * Branded rendering of a score. Uses the tier emoji/label for any 1..4
  * score — the ordinal scale is identical whether Copilot is configured
  * or not, so 🥇 (gold) is just as motivating on a CI/review-only PR as
@@ -141,6 +158,7 @@ export async function prFitness(
   const scoreDisplay = computeScoreDisplay(lifecycle, score);
   const targetDisplay = formatScoreOrdinal(target);
   const statusLine = summarize(lifecycle, blockers, data.pr.mergedAt);
+  const notes = computeNotes(ci);
 
   const durationMs = Math.round(performance.now() - start);
 
@@ -167,6 +185,7 @@ export async function prFitness(
     graphite: data.graphite,
     actions,
     status: statusLine,
+    notes,
     timestamp: new Date().toISOString(),
     duration_ms: durationMs,
   };

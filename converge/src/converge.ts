@@ -254,11 +254,16 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       }
 
       printTraceLine(iter, report.score, action);
-      progressTail = progressTail.then(() =>
-        reportIteration(opts.prProgressTarget, iter, report, action).catch(
-          () => undefined,
-        ),
-      );
+      // For llm/human actions the halt comment will fire immediately
+      // with the same description + a resume command, so skip the iter
+      // comment to avoid two near-identical posts back-to-back.
+      if (action.automation !== "llm" && action.automation !== "human") {
+        progressTail = progressTail.then(() =>
+          reportIteration(opts.prProgressTarget, iter, report, action).catch(
+            () => undefined,
+          ),
+        );
+      }
 
       // Act.
       switch (action.automation) {

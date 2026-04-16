@@ -265,6 +265,7 @@ function parseAndValidate(stdout: string): FitnessReport {
     ...(nonEmptyString(obj["target_display"])
       ? { target_display: obj["target_display"] }
       : {}),
+    ...(isNonEmptyStringArray(obj["notes"]) ? { notes: obj["notes"] } : {}),
     ...(isTerminal(obj["terminal"]) ? { terminal: obj["terminal"] } : {}),
   };
   return report;
@@ -274,6 +275,10 @@ function parseAndValidate(stdout: string): FitnessReport {
 // only need to check for `undefined`.
 function nonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
+}
+
+function isNonEmptyStringArray(v: unknown): v is readonly string[] {
+  return Array.isArray(v) && v.length > 0 && v.every((x) => nonEmptyString(x));
 }
 
 function isTerminal(v: unknown): v is { readonly kind: string } {

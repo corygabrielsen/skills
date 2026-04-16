@@ -36,6 +36,7 @@ describe("output contract", () => {
     assert.ok(Array.isArray(report.blockers));
     assert.equal(typeof report.version, "string");
     assert.equal(typeof report.status, "string");
+    assert.ok(Array.isArray(report.notes));
     assert.equal(typeof report.score_display, "string");
     assert.ok(report.score_display.length > 0);
     assert.equal(typeof report.target_display, "string");

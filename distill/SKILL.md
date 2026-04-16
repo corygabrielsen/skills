@@ -5,7 +5,7 @@ description: Strip overspecified instructions from an artifact. Trust the model'
 
 # Distill
 
-You're over-specifying. The artifact tells the reader *how* to format output instead of *what* to accomplish. That scaffolding was necessary for weaker models. It constrains stronger ones.
+You're over-specifying. The artifact tells the reader _how_ to format output instead of _what_ to accomplish. That scaffolding was necessary for weaker models. It constrains stronger ones.
 
 ## The Problem
 
@@ -15,11 +15,11 @@ When writing skills, prompts, or instructions, you default to showing exactly wh
 
 For each instruction in the artifact, ask: **is this intent or format?**
 
-| Intent (keep) | Format (cut) |
-|----------------|--------------|
-| Summarize the results in a table | Use these columns: Name, Status, Duration, Owner |
-| Assessments should be opinionated | Acceptable values: "ready", "blocked", "needs work" |
-| Group items by category | Categories: Infrastructure, Frontend, Backend, Testing |
+| Intent (keep)                       | Format (cut)                                            |
+| ----------------------------------- | ------------------------------------------------------- |
+| Summarize the results in a table    | Use these columns: Name, Status, Duration, Owner        |
+| Assessments should be opinionated   | Acceptable values: "ready", "blocked", "needs work"     |
+| Group items by category             | Categories: Infrastructure, Frontend, Backend, Testing  |
 | Commit your changes after each step | Run `git add -A && git commit -m "step N: description"` |
 
 ## On Activation

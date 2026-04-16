@@ -2,7 +2,14 @@ AGENTS_DIR := $(HOME)/.agents/skills
 CLAUDE_DIR := $(HOME)/.claude/skills
 SKILL_DIRS := $(shell find . -maxdepth 2 -name 'SKILL.md' -exec dirname {} \; | sed 's|^\./||' | sort)
 
-.PHONY: install uninstall list
+.PHONY: install uninstall clean list lint format
+
+lint:
+	@scripts/lint-skill-frontmatter.sh
+	@npx prettier --check .
+
+format:
+	@npx prettier --write .
 
 install:
 	@mkdir -p $(AGENTS_DIR) $(CLAUDE_DIR)
@@ -26,6 +33,14 @@ uninstall:
 				rm "$$dir/$$skill"; \
 				echo "remove: $$skill from $$dir"; \
 			fi \
+		done \
+	done
+
+clean:
+	@for dir in $(AGENTS_DIR) $(CLAUDE_DIR); do \
+		find "$$dir" -maxdepth 1 -xtype l 2>/dev/null | while read link; do \
+			echo "remove broken: $$link"; \
+			rm "$$link"; \
 		done \
 	done
 

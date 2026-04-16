@@ -20,6 +20,14 @@ Shell out to the compiled converge CLI:
 npx tsx ~/code/skills/converge/src/cli.ts <fitness> <args...>
 ```
 
+For `pr-fitness`, the repo can be omitted when running from inside the
+repo checkout — converge infers it from `gh repo view`:
+
+```
+npx tsx ~/code/skills/converge/src/cli.ts pr-fitness example/widgets 1725
+npx tsx ~/code/skills/converge/src/cli.ts pr-fitness 1725
+```
+
 ## Halt taxonomy (by exit code)
 
 | Exit | Status                |

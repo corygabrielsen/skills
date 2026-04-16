@@ -188,6 +188,7 @@ function parseAndValidate(stdout: string): FitnessReport {
         `actions[${i}].target_effect invalid: ${String(target_effect)}`,
       );
     }
+    const type = isJsonValue(ao["type"]) ? { type: ao["type"] } : {};
     switch (automation) {
       case "full": {
         const execute = ao["execute"];
@@ -214,6 +215,7 @@ function parseAndValidate(stdout: string): FitnessReport {
           description,
           target_effect,
           automation,
+          ...type,
           execute: execute as readonly string[],
           ...(rawTimeout !== undefined
             ? { timeout_seconds: PositiveSeconds(rawTimeout) }
@@ -232,6 +234,7 @@ function parseAndValidate(stdout: string): FitnessReport {
           description,
           target_effect,
           automation,
+          ...type,
           next_poll_seconds: PositiveSeconds(nps),
         };
       }
@@ -241,11 +244,12 @@ function parseAndValidate(stdout: string): FitnessReport {
           description,
           target_effect,
           automation,
+          ...type,
           ...(isJsonValue(ao["context"]) ? { context: ao["context"] } : {}),
         };
       }
       case "human": {
-        return { kind, description, target_effect, automation };
+        return { kind, description, target_effect, automation, ...type };
       }
       default:
         throw new PreconditionError(
@@ -266,6 +270,10 @@ function parseAndValidate(stdout: string): FitnessReport {
       ? { target_display: obj["target_display"] }
       : {}),
     ...(isNonEmptyStringArray(obj["notes"]) ? { notes: obj["notes"] } : {}),
+    ...(isStringArray(obj["blockers"]) ? { blockers: obj["blockers"] } : {}),
+    ...(isStringMap(obj["activity_state"])
+      ? { activity_state: obj["activity_state"] }
+      : {}),
     ...(isTerminal(obj["terminal"]) ? { terminal: obj["terminal"] } : {}),
   };
   return report;
@@ -279,6 +287,20 @@ function nonEmptyString(v: unknown): v is string {
 
 function isNonEmptyStringArray(v: unknown): v is readonly string[] {
   return Array.isArray(v) && v.length > 0 && v.every((x) => nonEmptyString(x));
+}
+
+function isStringArray(v: unknown): v is readonly string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+function isStringMap(v: unknown): v is Record<string, string> {
+  if (typeof v !== "object" || v === null) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return false;
+  for (const val of Object.values(v as Record<string, unknown>)) {
+    if (typeof val !== "string") return false;
+  }
+  return true;
 }
 
 function isTerminal(v: unknown): v is { readonly kind: string } {

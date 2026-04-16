@@ -159,6 +159,9 @@ export async function prFitness(
   const targetDisplay = formatScoreOrdinal(target);
   const statusLine = summarize(lifecycle, blockers, data.pr.mergedAt);
   const notes = computeNotes(ci);
+  const activityState: Record<string, string> = copilot.configured
+    ? { copilot: copilot.activity.state }
+    : {};
 
   const durationMs = Math.round(performance.now() - start);
 
@@ -186,6 +189,7 @@ export async function prFitness(
     actions,
     status: statusLine,
     notes,
+    activity_state: activityState,
     timestamp: new Date().toISOString(),
     duration_ms: durationMs,
   };

@@ -66,6 +66,13 @@ export interface PullRequestFitnessReport {
    * Empty when there's nothing noteworthy to flag.
    */
   readonly notes: readonly string[];
+  /**
+   * Per-axis activity state for /converge's iteration-key dedup. Lets
+   * converge distinguish "Copilot working" from "Copilot reviewed"
+   * when the picked action and blockers are identical. Keys are
+   * skill-defined labels; /converge treats the map opaquely.
+   */
+  readonly activity_state: Readonly<Record<string, string>>;
   /** ISO 8601 timestamp of when this report was generated. */
   readonly timestamp: string;
   /** Milliseconds taken to generate this report. */

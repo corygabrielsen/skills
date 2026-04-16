@@ -101,6 +101,60 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
+/**
+ * Recursively sort object keys so `JSON.stringify` produces a stable string
+ * regardless of source key order. Arrays preserve their order. Only plain
+ * JSON-shaped values are expected (the fitness report is JSON on the wire).
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(
+    ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
+  );
+  return `{${entries
+    .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
+    .join(",")}}`;
+}
+
+/**
+ * Iteration key: identity of a logical state. Two observations with the
+ * same key represent the same iteration — they don't trigger a new
+ * iteration, history entry, or PR comment.
+ *
+ * Deliberately excludes `score` from the key so tier progression under
+ * the same action (bronze → silver on the same wait_for_ci) doesn't
+ * churn. Score changes show up indirectly when they correlate with
+ * action, blocker-set, or activity changes.
+ */
+function iterKey(action: Action, report: FitnessReport): string {
+  const blockers = [...(report.blockers ?? [])].sort().join("|");
+  const activity = stableStringify(report.activity_state ?? {});
+  const typeDigest = stableStringify(action.type ?? null);
+  return `${action.kind}\0${typeDigest}\0${blockers}\0${activity}`;
+}
+
+/**
+ * Max polls per logical iteration. A session that never advances the
+ * key over 20 consecutive polls is treated as runaway and halted with
+ * `timeout`. Generous enough to cover real Copilot review cycles at
+ * 60s cadence (~20 minutes).
+ */
+const MAX_POLLS_PER_ITERATION = 20;
+
+/**
+ * Minimum delay before re-observing after a `full` action executed.
+ * Guards against tight-looping when GitHub's state hasn't propagated
+ * (e.g. rerequest_copilot just fired but the next observation still
+ * sees the old activity). Set conservatively — state usually propagates
+ * within seconds; this is a floor, not a budget.
+ */
+const POST_FULL_REOBSERVE_MS = 15_000;
+
 // ---------------------------------------------------------------------------
 
 export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
@@ -156,13 +210,26 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
     return report;
   };
 
-  try {
-    for (let iter = startIter; iter < startIter + opts.maxIterations; iter++) {
-      if (opts.signal.aborted) {
-        return await finalize(cancelledBody(iter - 1, lastScore, history));
-      }
+  // Logical iteration counter. Only advances on state transition (new
+  // iterKey vs prior). Polling while in the same state does not count.
+  // `currentIterKey` is null at session start so the first observation
+  // always advances — even on resume, a fresh invocation gets at least
+  // one new logical iteration.
+  let iter = startIter - 1;
+  let currentIterKey: string | null = null;
+  // Safety ceiling on total polls regardless of state transitions —
+  // prevents runaway sessions when a wait condition never resolves.
+  const maxPolls = opts.maxIterations * MAX_POLLS_PER_ITERATION;
+  let pollCount = 0;
 
-      verbose(`converge: iter ${iter}`);
+  try {
+    while (pollCount < maxPolls) {
+      if (opts.signal.aborted) {
+        return await finalize(cancelledBody(iter, lastScore, history));
+      }
+      pollCount++;
+
+      verbose(`converge: poll ${pollCount} (iter ${iter})`);
 
       // Observe.
       let report: FitnessReport;
@@ -170,12 +237,12 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
         report = await invokeFitness(opts.fitness, opts.args, opts.signal);
       } catch (err) {
         if (isAbortError(err)) {
-          return await finalize(cancelledBody(iter - 1, lastScore, history));
+          return await finalize(cancelledBody(iter, lastScore, history));
         }
         if (err instanceof FitnessUnavailableError) {
           return await finalize({
             status: "fitness_unavailable",
-            iterations: iter - 1,
+            iterations: iter,
             cause: {
               source: "fitness",
               message: err.message,
@@ -187,7 +254,7 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
         if (err instanceof PreconditionError) {
           return await finalize({
             status: "error",
-            iterations: iter - 1,
+            iterations: iter,
             final_score: lastScore,
             cause: {
               source: "parse",
@@ -198,7 +265,7 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
         }
         return await finalize({
           status: "error",
-          iterations: iter - 1,
+          iterations: iter,
           final_score: lastScore,
           cause: {
             source: "fitness",
@@ -211,22 +278,8 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       lastScore = report.score;
       lastReport = report;
 
-      // Decide.
       const action = pickAction(report.actions);
 
-      // Record this iteration. Use the chosen action for the summary if
-      // any; otherwise a synthetic marker so history shows the observation.
-      const summaryEntry: IterLog["action_summary"] =
-        action !== null
-          ? summary(action)
-          : { kind: "none", automation: "human" };
-      await appendHistory(handle, {
-        iter,
-        score: report.score,
-        action_summary: summaryEntry,
-      });
-
-      // Halt checks in precedence order.
       if (targetReached(report)) {
         return await finalize({
           status: "success",
@@ -253,21 +306,60 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
         });
       }
 
-      printTraceLine(iter, report.score, action);
-      // For llm/human actions the halt comment will fire immediately
-      // with the same description + a resume command, so skip the iter
-      // comment to avoid two near-identical posts back-to-back.
-      if (action.automation !== "llm" && action.automation !== "human") {
-        progressTail = progressTail.then(() =>
-          reportIteration(opts.prProgressTarget, iter, report, action).catch(
-            () => undefined,
-          ),
-        );
+      // Compute iteration key and decide whether this observation
+      // represents a new logical iteration.
+      const newKey = iterKey(action, report);
+      const isNewIteration = newKey !== currentIterKey;
+
+      if (isNewIteration) {
+        currentIterKey = newKey;
+        iter++;
+
+        if (iter >= startIter + opts.maxIterations) {
+          return await finalize({
+            status: "timeout",
+            iterations: iter - 1,
+            final_score: report.score,
+            history: [...history],
+          });
+        }
+
+        await appendHistory(handle, {
+          iter,
+          score: report.score,
+          action_summary: summary(action),
+        });
+
+        printTraceLine(iter, report.score, action);
+        // For llm/human actions the halt comment will fire immediately
+        // with the same description + a resume command, so skip the
+        // iteration comment to avoid two near-identical posts.
+        if (action.automation !== "llm" && action.automation !== "human") {
+          progressTail = progressTail.then(() =>
+            reportIteration(opts.prProgressTarget, iter, report, action).catch(
+              () => undefined,
+            ),
+          );
+        }
       }
 
-      // Act.
+      // `full` executes only on a new iteration — otherwise we'd
+      // repeat work the prior loop turn already did.
       switch (action.automation) {
         case "full": {
+          if (!isNewIteration) {
+            try {
+              await sleep(POST_FULL_REOBSERVE_MS, opts.signal);
+            } catch (err) {
+              if (isAbortError(err)) {
+                return await finalize(
+                  cancelledBody(iter, report.score, history),
+                );
+              }
+              throw err;
+            }
+            break;
+          }
           try {
             await executeFull(action, sessionDir, iter, opts.signal);
           } catch (err) {
@@ -335,10 +427,11 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       }
     }
 
-    // Iteration cap exhausted.
+    // Poll cap hit without hitting the logical iteration cap —
+    // typically means a wait condition never resolved.
     return await finalize({
       status: "timeout",
-      iterations: startIter + opts.maxIterations - 1,
+      iterations: iter,
       final_score: lastScore,
       history: [...history],
     });

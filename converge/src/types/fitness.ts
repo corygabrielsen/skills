@@ -33,6 +33,22 @@ export interface FitnessReport {
    */
   readonly notes?: readonly string[];
   /**
+   * Current blockers preventing fitness from advancing. Opaque string
+   * tokens — /converge uses these for iteration-key dedup (blocker-set
+   * changes advance the iteration) but doesn't interpret them.
+   */
+  readonly blockers?: readonly string[];
+  /**
+   * Per-axis activity state the skill wants /converge to track for
+   * iteration boundaries. E.g. pr-fitness emits `{ copilot: "working" }`
+   * so a Copilot `working → reviewed` transition advances the iteration
+   * even when the picked action and blockers haven't changed.
+   *
+   * Keys are skill-defined labels; values are opaque state strings. The
+   * map is folded into the iteration key without interpretation.
+   */
+  readonly activity_state?: Readonly<Record<string, string>>;
+  /**
    * Terminal state external to the fitness loop (e.g. PR merged/closed).
    * `kind` vocabulary is owned by the skill; /converge treats it opaquely
    * and halts `pr_terminal`.

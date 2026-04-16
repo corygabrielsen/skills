@@ -58,7 +58,7 @@ export interface ConvergeOpts {
   /**
    * Skill-form invocation a caller can re-run after a resumable halt
    * (llm_needed). Written to exit.json's `resume_cmd` header field.
-   * Example: `["/converge", "/pr-fitness", "example-org/repo", "566"]`.
+   * Example: `["/converge", "/pr-fitness", "owner/repo", "123"]`.
    */
   readonly resumeCmd: readonly string[];
   /**

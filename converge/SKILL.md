@@ -31,6 +31,7 @@ halt timeout
 ```
 
 On subagent/API failure: halt `error`.
+Before each action: print `iter {i} fitness={scalar} action={kind} ({automation})`.
 On any halt: print `halt {status} iter {i} fitness={scalar}` before any prose.
 On any halt: write `/tmp/converge-{session}/exit.json` with `{ status, iterations, final_fitness }`.
 

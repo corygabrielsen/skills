@@ -232,10 +232,18 @@ function haltBody(
       lines.push("Iteration cap reached.");
       break;
     case "error":
-    case "fitness_unavailable":
+    case "fitness_unavailable": {
       lines.push("");
       lines.push(`Cause: ${halt.cause.message}`);
+      const stderr = halt.cause.stderr;
+      if (stderr !== undefined && stderr.length > 0) {
+        lines.push("");
+        lines.push("```");
+        lines.push(stderr.trim().slice(0, 500));
+        lines.push("```");
+      }
       break;
+    }
     case "cancelled":
       lines.push("");
       lines.push("Interrupted.");
@@ -243,24 +251,47 @@ function haltBody(
   }
 
   appendNotes(lines, lastReport?.notes);
-  if (lastReport !== undefined) {
-    const extra: Record<string, unknown> = {
-      type: "halt",
-      halt: halt.status,
-      iter: halt.iterations,
-      action:
-        halt.status === "llm_needed" || halt.status === "hil"
-          ? {
-              kind: halt.action.kind,
-              automation: halt.action.automation,
-              description: halt.action.description,
-            }
-          : undefined,
+
+  // Build the snapshot. For error/fitness_unavailable halts where
+  // lastReport may be undefined, emit a minimal snapshot with the
+  // cause so agents can parse it structurally.
+  const extra: Record<string, unknown> = {
+    type: "halt",
+    halt: halt.status,
+    iter: halt.iterations,
+  };
+  if (halt.status === "llm_needed" || halt.status === "hil") {
+    extra["action"] = {
+      kind: halt.action.kind,
+      automation: halt.action.automation,
+      description: halt.action.description,
     };
-    if (halt.status === "llm_needed") {
-      extra["resume_cmd"] = halt.resume_cmd;
-    }
+  }
+  if (halt.status === "llm_needed") {
+    extra["resume_cmd"] = halt.resume_cmd;
+  }
+  if (halt.status === "error" || halt.status === "fitness_unavailable") {
+    extra["cause"] = {
+      source: halt.cause.source,
+      message: halt.cause.message,
+      ...(halt.cause.stderr !== undefined
+        ? { stderr: halt.cause.stderr.trim().slice(0, 500) }
+        : {}),
+    };
+  }
+  if (lastReport !== undefined) {
     appendSnapshot(lines, lastReport, extra);
+  } else {
+    // No fitness report available (e.g. fitness_unavailable on first
+    // observation). Emit a bare snapshot with just the halt context.
+    lines.push("");
+    lines.push("<details><summary>Fitness snapshot</summary>");
+    lines.push("");
+    lines.push("```json");
+    lines.push(JSON.stringify(extra, null, 2));
+    lines.push("```");
+    lines.push("");
+    lines.push("</details>");
   }
   return lines.join("\n");
 }

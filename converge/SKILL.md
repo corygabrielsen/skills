@@ -14,19 +14,26 @@ args:
 
 # /converge
 
-Shell out to the compiled converge CLI:
+Run the compiled converge CLI **alone in its own Bash call**. Do not
+pipe, redirect, combine with other commands, or pre-diagnose the PR
+state — converge observes everything it needs via the fitness skill.
+The **exit code** is the communication channel; piping to `tail`,
+`head`, `grep`, etc. swallows it.
 
-```
+```bash
 npx tsx ~/code/skills/converge/src/cli.ts <fitness> <args...>
 ```
 
 For `pr-fitness`, the repo can be omitted when running from inside the
 repo checkout — converge infers it from `gh repo view`:
 
-```
+```bash
 npx tsx ~/code/skills/converge/src/cli.ts pr-fitness example/widgets 1725
 npx tsx ~/code/skills/converge/src/cli.ts pr-fitness 1725
 ```
+
+After converge exits, read `/tmp/converge/{session-id}/exit.json` for
+the structured halt report. Do not parse stderr.
 
 ## Halt taxonomy (by exit code)
 

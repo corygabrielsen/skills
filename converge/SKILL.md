@@ -1,46 +1,53 @@
 ---
 name: converge
-description: Iterate observe→decide→act until target reached, actions exhausted, or iteration cap. Generic loop; slot in any fitness skill.
+description: Iterate observe→decide→act until target reached, actions exhausted, or iteration cap. Runs as a compiled CLI; agent invokes and interprets halt.
 args:
   - name: fitness
-    description: Skill name to invoke for observation
+    description: Fitness skill name (e.g. `pr-fitness`)
   - name: rest
     description: Args passed verbatim to the fitness skill
-  - name: --target
-    description: Target value; default per fitness skill
   - name: --max-iterations
     description: Default 20
+  - name: --verbose
+    description: Verbose logging
 ---
 
 # /converge
 
+Shell out to the compiled converge CLI:
+
 ```
-session = date +%s
-for i in 1..max_iterations:
-  report = invoke(fitness, args)
-  save /tmp/converge-{session}/iter-{i}.json
-
-  if target reached:                halt success
-  if no actions:                    halt done
-
-  action = report.actions[0]
-  if action.automation == "human":  halt hil
-
-  execute(action)                   # wait → sleep+continue; else act from description
-halt timeout
+npx tsx ~/code/skills/converge/src/cli.ts <fitness> <args...>
 ```
 
-On subagent/API failure: halt `error`.
-Before each action: print `iter {i} fitness={scalar} action={kind} ({automation})`.
-On any halt: print `halt {status} iter {i} fitness={scalar}` before any prose.
-On any halt: write `/tmp/converge-{session}/exit.json` with `{ status, iterations, final_fitness }`.
+## Halt taxonomy (by exit code)
 
-## Fitness contract
+| Exit | Status                |
+| ---- | --------------------- |
+| 0    | `success`             |
+| 1    | `stalled`             |
+| 2    | `timeout`             |
+| 3    | `hil`                 |
+| 4    | `error`               |
+| 5    | `llm_needed`          |
+| 6    | `pr_terminal`         |
+| 7    | `cancelled`           |
+| 8    | `fitness_unavailable` |
+| 9    | `lock_held`           |
 
-Structured output with:
+Final halt report at `/tmp/converge/{session-id}/exit.json`. The CLI writes a `stage: "in_progress"` stub on startup and overwrites with `stage: "final"` on halt — consumers check `stage` before reading status details.
 
-- A scalar the target predicate reads
-- `actions[]` ranked, each with `kind`, `description`, `automation ∈ {full, llm, wait, human}`
+## Score
+
+`score` is a numeric scalar, higher = better, emitted by the fitness skill. `/converge` halts `success` iff `score >= target`. The fitness skill defines what the scalar means; `/converge` never interprets it. For `pr-fitness`, score maps to Copilot tier ordinal (bronze=1, silver=2, gold=3, platinum=4) when Copilot is configured, else a CI/review-derived 1–4 scalar. See pr-fitness SKILL.md for its per-report semantics.
+
+## Resume on `llm_needed` (exit 5)
+
+1. Read `exit.json`: `status === "llm_needed"`, `action` has LLM task, `resume_cmd` has the invocation to re-run
+2. Delegate to sub-agent with `action.description` (and `action.context` if present)
+3. Run `exit.json.resume_cmd` — session resumes from `history.jsonl`
+
+The halt line on exit 5 prints the action and description, and a following `to resume:` line emits the skill-form invocation verbatim.
 
 ## Compose
 

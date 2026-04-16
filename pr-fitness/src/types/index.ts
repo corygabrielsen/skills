@@ -11,7 +11,7 @@ export type {
   GraphiteStatus,
 } from "./output.js";
 
-export type { Action, Automation, ActionType } from "./action.js";
+export type { Action, Automation, ActionType, TargetEffect } from "./action.js";
 
 export type {
   GitHubPullRequestView,

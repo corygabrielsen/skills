@@ -126,3 +126,36 @@ export function name(r: RepoSlug): string {
   const idx = r.indexOf("/");
   return r.slice(idx + 1);
 }
+
+// ---------------------------------------------------------------------------
+// Score — non-negative finite number. Fitness reports emit a `score` and a
+// `target` for /converge to compare directly. Skills may define stricter
+// brands atop this (e.g. tier ordinal 0..4) — /converge accepts any Score.
+// ---------------------------------------------------------------------------
+
+declare const scoreBrand: unique symbol;
+export type Score = number & { readonly [scoreBrand]: never };
+
+export function Score(n: number): Score {
+  if (!Number.isFinite(n) || n < 0 || Object.is(n, -0)) {
+    throw new PreconditionError(`invalid score: ${String(n)}`);
+  }
+  return n as Score;
+}
+
+// ---------------------------------------------------------------------------
+// PositiveSeconds — integer seconds in (0, 3600]. Used for poll intervals
+// and subprocess timeouts in the /converge action contract.
+// ---------------------------------------------------------------------------
+
+declare const positiveSecondsBrand: unique symbol;
+export type PositiveSeconds = number & {
+  readonly [positiveSecondsBrand]: never;
+};
+
+export function PositiveSeconds(n: number): PositiveSeconds {
+  if (!Number.isInteger(n) || n <= 0 || n > 3600) {
+    throw new PreconditionError(`invalid seconds: ${String(n)}`);
+  }
+  return n as PositiveSeconds;
+}

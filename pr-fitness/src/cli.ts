@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 
-import { prFitness } from "./pr-fitness.js";
-import { PullRequestNumberFromString, RepoSlug } from "./types/branded.js";
+import { DEFAULT_TARGET, prFitness } from "./pr-fitness.js";
+import {
+  PullRequestNumberFromString,
+  RepoSlug,
+  Score,
+} from "./types/branded.js";
+import type { Score as ScoreT } from "./types/branded.js";
 import { GitHubError, PreconditionError } from "./util/errors.js";
 import { setQuiet } from "./util/log.js";
 import { VERSION } from "./version.js";
@@ -12,30 +17,36 @@ function usage(): never {
 Live PR merge readiness assessment. Queries all state fresh.
 
 Options:
-  -h, --help       Show this help
-  -v, --version    Show version
-  -q, --quiet      Suppress stderr progress
-  -c, --compact    Compact JSON (single line)
-  -s, --summary    Print one-line summary instead of JSON
-  -e, --exit-code  Exit code reflects state (for scripts)
-                     0 = open + mergeable
-                     1 = open + blocked
-                     2 = already merged
-                     3 = closed (not merged)
+  -h, --help          Show this help
+  -v, --version       Show version
+  -q, --quiet         Suppress stderr progress
+  -c, --compact       Compact JSON (single line)
+  -s, --summary       Print one-line summary instead of JSON
+  -e, --exit-code     Exit code reflects state (for scripts)
+                        0 = open + mergeable
+                        1 = open + blocked
+                        2 = already merged
+                        3 = closed (not merged)
+      --target=<t>    Target score. Label (bronze|silver|gold|platinum)
+                      or integer. Default: platinum (4).
 
 Examples:
   pr-fitness example/widgets 1563
   pr-fitness -c example/widgets 1563
   pr-fitness -q example/widgets 1563 | jq '.blockers'
+  pr-fitness --target=gold example/widgets 1563
 
 Output fields:
+  .score           current fitness scalar (0..4 for PRs)
+  .target          target score the caller asked for
   .lifecycle       open, merged, or closed
+  .terminal        present iff PR can no longer progress (merged/closed)
   .mergeable       true if all hard blockers clear
   .blockers[]      list of blocking issues (empty when mergeable)
   .ci              check pass/fail/pending counts and names
   .reviews         approval state, threads, bot comments
   .state           draft, labels, title, timestamps, assignees
-  .actions[]       ordered plan to increase fitness
+  .actions[]       ordered plan to increase fitness (each has target_effect)
   .duration_ms     time to generate report
 `);
   process.exit(0);
@@ -46,12 +57,33 @@ function die(message: string): never {
   process.exit(1);
 }
 
+const TIER_SCORES: Readonly<Record<string, number>> = {
+  bronze: 1,
+  silver: 2,
+  gold: 3,
+  platinum: 4,
+};
+
+function parseTarget(raw: string): ScoreT {
+  if (/^[0-9]+$/.test(raw)) {
+    return Score(Number(raw));
+  }
+  const mapped = TIER_SCORES[raw.toLowerCase()];
+  if (mapped === undefined) {
+    die(
+      `invalid --target: ${raw} (expected integer or one of bronze|silver|gold|platinum)`,
+    );
+  }
+  return Score(mapped);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const positional: string[] = [];
   let compact = false;
   let summaryOnly = false;
   let exitCode = false;
+  let target: ScoreT = DEFAULT_TARGET;
 
   for (const arg of args) {
     if (arg === "-h" || arg === "--help") usage();
@@ -67,6 +99,8 @@ async function main(): Promise<void> {
       summaryOnly = true;
     } else if (arg === "-e" || arg === "--exit-code") {
       exitCode = true;
+    } else if (arg.startsWith("--target=")) {
+      target = parseTarget(arg.slice("--target=".length));
     } else if (arg.startsWith("-")) {
       die(`unknown option: ${arg}`);
     } else {
@@ -83,7 +117,7 @@ async function main(): Promise<void> {
   const repo = RepoSlug(rawRepo);
   const pr = PullRequestNumberFromString(rawPr);
 
-  const report = await prFitness(repo, pr);
+  const report = await prFitness(repo, pr, target);
 
   if (summaryOnly) {
     process.stdout.write(report.summary + "\n");

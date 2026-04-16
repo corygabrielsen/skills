@@ -1,3 +1,5 @@
+import type { PositiveSeconds } from "./branded.js";
+
 /**
  * An action that could increase PR fitness.
  *
@@ -8,13 +10,34 @@
 export interface Action {
   /** Which blocker this action addresses. */
   readonly blocker: string;
+  /** Discriminant at top level — mirrors `type.kind`. Required by the /converge fitness contract. */
+  readonly kind: string;
   /** What to do (human-readable). */
   readonly description: string;
   /** How automatable is this action? */
   readonly automation: Automation;
+  /**
+   * Effect this action has on reaching the report's target score.
+   * - "advances": executing this action can raise score toward target
+   * - "blocks":   this action represents a hard blocker; score stays low until cleared
+   * - "neutral":  hygiene — surfaced but does not drive the loop
+   */
+  readonly target_effect: TargetEffect;
   /** The type of action — determines how to execute it. */
   readonly type: ActionType;
+  /**
+   * Argv for full-automation actions. Required when `automation === "full"`;
+   * absent otherwise. /converge spawns this directly.
+   */
+  readonly execute?: readonly string[];
+  /**
+   * Next poll interval for wait actions. Required when `automation === "wait"`;
+   * absent otherwise.
+   */
+  readonly next_poll_seconds?: PositiveSeconds;
 }
+
+export type TargetEffect = "advances" | "blocks" | "neutral";
 
 export type Automation =
   /** Agent can do this without any human input. */

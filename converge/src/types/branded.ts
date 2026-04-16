@@ -55,3 +55,34 @@ export type JsonValue =
   | null
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
+
+// ---------------------------------------------------------------------------
+// FitnessId — internal dispatch key for a fitness skill. Always bare,
+// never slash-prefixed. Canonicalized at the CLI boundary by stripping
+// any leading slashes so `/pr-fitness` and `pr-fitness` resolve the same.
+// ---------------------------------------------------------------------------
+
+declare const fitnessIdBrand: unique symbol;
+export type FitnessId = string & { readonly [fitnessIdBrand]: never };
+
+export function FitnessId(raw: string): FitnessId {
+  const id = raw.replace(/^\/+/, "");
+  if (id.length === 0) {
+    throw new PreconditionError("empty fitness id");
+  }
+  return id as FitnessId;
+}
+
+// ---------------------------------------------------------------------------
+// SkillRef — a skill reference as an LLM types it in a prompt or as it
+// appears in a resume_cmd. Always has a leading `/`. Built from a
+// FitnessId — the only construction path guarantees the slash is applied
+// exactly once.
+// ---------------------------------------------------------------------------
+
+declare const skillRefBrand: unique symbol;
+export type SkillRef = string & { readonly [skillRefBrand]: never };
+
+export function SkillRef(id: FitnessId): SkillRef {
+  return `/${id}` as SkillRef;
+}

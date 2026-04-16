@@ -17,7 +17,12 @@ import { execFileSync } from "node:child_process";
 import { converge } from "./converge.js";
 import { detectPrProgressTarget } from "./pr-progress.js";
 import { gcStaleSessions } from "./session.js";
-import type { HaltReport, HaltStatus } from "./types/index.js";
+import { FitnessId, SkillRef } from "./types/index.js";
+import type {
+  HaltReport,
+  HaltStatus,
+  FitnessId as FitnessIdT,
+} from "./types/index.js";
 import { LockHeldError, PreconditionError } from "./util/errors.js";
 import { setVerbose } from "./util/log.js";
 import { VERSION } from "./version.js";
@@ -25,7 +30,7 @@ import { VERSION } from "./version.js";
 // ---------------------------------------------------------------------------
 
 interface ParsedArgs {
-  readonly fitness: string;
+  readonly fitness: FitnessIdT;
   readonly fitnessArgs: readonly string[];
   readonly maxIterations: number;
   readonly verbose: boolean;
@@ -135,13 +140,13 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     positional.push(arg);
   }
 
-  const fitness = positional[0];
-  if (fitness === undefined) {
+  const rawFitness = positional[0];
+  if (rawFitness === undefined) {
     die("missing argument: <fitness>");
   }
 
   return {
-    fitness,
+    fitness: FitnessId(rawFitness),
     fitnessArgs: positional.slice(1),
     maxIterations,
     verbose,
@@ -167,7 +172,7 @@ function sanitize(s: string): string {
   return s.replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
-function deriveSessionId(fitness: string, args: readonly string[]): string {
+function deriveSessionId(fitness: FitnessIdT, args: readonly string[]): string {
   if (fitness === "pr-fitness") {
     const repo = args[0];
     const pr = args[1];
@@ -211,10 +216,10 @@ function haltToExitCode(status: HaltStatus): number {
  * are how Claude Code identifies skill invocations.
  */
 function buildResumeCmd(
-  fitness: string,
+  fitness: FitnessIdT,
   fitnessArgs: readonly string[],
 ): readonly string[] {
-  return ["/converge", `/${fitness}`, ...fitnessArgs];
+  return [SkillRef(FitnessId("converge")), SkillRef(fitness), ...fitnessArgs];
 }
 
 /**
@@ -223,7 +228,7 @@ function buildResumeCmd(
  * Returns the normalized args with the repo prepended.
  */
 function normalizePrFitnessArgs(
-  fitness: string,
+  fitness: FitnessIdT,
   args: readonly string[],
 ): readonly string[] {
   if (fitness !== "pr-fitness") return args;

@@ -21,6 +21,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.equal(actions.length, 0);
   });
@@ -37,6 +39,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     const waits = actions.filter((a) => a.type.kind === "wait_for_ci");
     assert.equal(waits.length, 1);
@@ -55,6 +59,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     const fixes = actions.filter((a) => a.type.kind === "fix_ci");
     assert.equal(fixes.length, 2);
@@ -69,6 +75,8 @@ describe("plan", () => {
       state,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.ok(actions.some((a) => a.type.kind === "rebase"));
   });
@@ -81,6 +89,8 @@ describe("plan", () => {
       state,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     const a = actions.find((a) => a.type.kind === "mark_ready");
     assert.ok(a);
@@ -95,6 +105,8 @@ describe("plan", () => {
       state,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.ok(actions.some((a) => a.type.kind === "remove_wip_label"));
   });
@@ -111,6 +123,8 @@ describe("plan", () => {
       state,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     const a = actions.find((a) => a.type.kind === "shorten_title");
     assert.ok(a);
@@ -128,6 +142,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     const a = actions.find((a) => a.type.kind === "address_threads");
     assert.ok(a);
@@ -146,6 +162,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.ok(actions.some((a) => a.type.kind === "request_approval"));
   });
@@ -166,6 +184,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.ok(!actions.some((a) => a.type.kind === "request_approval"));
   });
@@ -181,6 +201,8 @@ describe("plan", () => {
       CLEAN_STATE,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.ok(!actions.some((a) => a.type.kind === "request_approval"));
     assert.ok(!actions.some((a) => a.type.kind === "add_reviewer"));
@@ -199,6 +221,8 @@ describe("plan", () => {
       state,
       "pass",
       UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
     );
     assert.ok(actions.some((a) => a.type.kind === "add_content_label"));
     assert.ok(actions.some((a) => a.type.kind === "add_assignee"));
@@ -216,7 +240,15 @@ describe("plan", () => {
       threads_unresolved: 1,
     };
     const state: PullRequestState = { ...CLEAN_STATE, content_label: false };
-    const actions = plan(ci, reviews, state, "pass", UNCONFIGURED_COPILOT);
+    const actions = plan(
+      ci,
+      reviews,
+      state,
+      "pass",
+      UNCONFIGURED_COPILOT,
+      "example/widgets",
+      100,
+    );
 
     const kinds = actions.map((a) => a.type.kind);
     const ciIdx = kinds.indexOf("fix_ci");

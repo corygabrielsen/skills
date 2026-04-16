@@ -7,9 +7,22 @@ import { computeReviews } from "./compute/reviews.js";
 import { computeState } from "./compute/state.js";
 import { summarize } from "./compute/summary.js";
 import { VERSION } from "./version.js";
-import { GitCommitSha } from "./types/branded.js";
-import type { PullRequestNumber, RepoSlug } from "./types/branded.js";
-import type { Lifecycle, PullRequestFitnessReport } from "./types/index.js";
+import { GitCommitSha, Score } from "./types/branded.js";
+import type {
+  PullRequestNumber,
+  RepoSlug,
+  Score as ScoreT,
+} from "./types/branded.js";
+import type { CopilotReport } from "./types/copilot.js";
+import type {
+  CiSummary,
+  Lifecycle,
+  PullRequestFitnessReport,
+  ReviewSummary,
+} from "./types/index.js";
+
+/** Default target if the caller doesn't specify — platinum (4). */
+export const DEFAULT_TARGET: ScoreT = Score(4);
 
 function toLifecycle(state: "OPEN" | "MERGED" | "CLOSED"): Lifecycle {
   return state.toLowerCase() as Lifecycle;
@@ -24,10 +37,58 @@ function isMergeable(
   return blockers.length === 0;
 }
 
+/**
+ * Compute a scalar fitness score.
+ *
+ * When Copilot is configured, use its tier ordinal as the score —
+ * it's already a total order on review quality.
+ *
+ * Otherwise fall back to a CI/review-derived scalar:
+ *   4: green CI, approved (or no-review-policy)
+ *   3: green CI, approval pending (but no blockers)
+ *   2: CI green but unresolved threads
+ *   1: any hard blocker (CI fail, conflict, draft, wip, …)
+ */
+function computeScore(
+  lifecycle: Lifecycle,
+  blockers: readonly string[],
+  ci: CiSummary,
+  reviews: ReviewSummary,
+  copilot: CopilotReport,
+): ScoreT {
+  if (lifecycle === "merged") return Score(4);
+  if (lifecycle === "closed") return Score(0);
+
+  if (copilot.configured) {
+    switch (copilot.tier) {
+      case "bronze":
+        return Score(1);
+      case "silver":
+        return Score(2);
+      case "gold":
+        return Score(3);
+      case "platinum":
+        return Score(4);
+    }
+  }
+
+  if (blockers.length > 0) return Score(1);
+
+  const ciGreen = ci.fail === 0 && ci.pending === 0;
+  if (!ciGreen) return Score(1);
+
+  if (reviews.threads_unresolved > 0) return Score(2);
+
+  const approved =
+    reviews.decision === "APPROVED" || reviews.decision === "NONE";
+  return approved ? Score(4) : Score(3);
+}
+
 /** Assess PR merge readiness. All state is queried live. */
 export async function prFitness(
   repo: RepoSlug,
   pr: PullRequestNumber,
+  target: ScoreT = DEFAULT_TARGET,
 ): Promise<PullRequestFitnessReport> {
   const start = performance.now();
 
@@ -59,12 +120,14 @@ export async function prFitness(
       : [];
   const actions =
     lifecycle === "open"
-      ? plan(ci, reviews, state, data.graphite.status, copilot)
+      ? plan(ci, reviews, state, data.graphite.status, copilot, repo, pr)
       : [];
+
+  const score = computeScore(lifecycle, blockers, ci, reviews, copilot);
 
   const durationMs = Math.round(performance.now() - start);
 
-  return {
+  const base: PullRequestFitnessReport = {
     version: VERSION,
     pr: data.pr.number,
     url: data.pr.url,
@@ -72,6 +135,8 @@ export async function prFitness(
     head: data.pr.headRefOid.slice(0, 8),
     base: data.pr.baseRefName,
     lifecycle,
+    score,
+    target,
     merged_at: data.pr.mergedAt ?? null,
     closed_at: data.pr.closedAt ?? null,
     mergeable: isMergeable(lifecycle, blockers),
@@ -86,4 +151,9 @@ export async function prFitness(
     timestamp: new Date().toISOString(),
     duration_ms: durationMs,
   };
+
+  if (lifecycle === "merged" || lifecycle === "closed") {
+    return { ...base, terminal: { kind: lifecycle } };
+  }
+  return base;
 }

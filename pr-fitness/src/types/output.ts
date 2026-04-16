@@ -1,3 +1,5 @@
+import type { Score } from "./branded.js";
+
 /**
  * PR fitness report — the public contract.
  *
@@ -14,6 +16,20 @@ export interface PullRequestFitnessReport {
   readonly base: string;
   /** PR lifecycle: open, merged, or closed. */
   readonly lifecycle: Lifecycle;
+  /**
+   * Current fitness score. Higher is better. Compared against `target` by
+   * /converge to decide loop termination. For PRs this is a Copilot tier
+   * ordinal (bronze=1, silver=2, gold=3, platinum=4) when Copilot is
+   * configured, else a simple blocker-vs-clean scalar.
+   */
+  readonly score: Score;
+  /** Target score the caller asked for (default platinum, 4). */
+  readonly target: Score;
+  /**
+   * Terminal state — present iff the PR can no longer make progress
+   * (merged, closed). /converge reads `kind` opaquely and halts.
+   */
+  readonly terminal?: { readonly kind: string };
   /** ISO 8601 — when the PR was merged. Null if not merged. */
   readonly merged_at: string | null;
   /** ISO 8601 — when the PR was closed. Null if open. */

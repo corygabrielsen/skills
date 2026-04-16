@@ -1,0 +1,355 @@
+/**
+ * Fitness skill invocation with bounded retry/backoff.
+ *
+ * v1 dispatch is hardcoded: only `pr-fitness` is recognized. The subprocess
+ * is `npx tsx ${HOME}/code/skills/pr-fitness/src/cli.ts -q -c <...args>`.
+ * Output is JSON on stdout; stderr is captured for error classification.
+ *
+ * Failure taxonomy (by stderr regex):
+ *   - auth           → no retry, rethrow (`FitnessUnavailableError`).
+ *   - rate-limit     → honor `Retry-After` if present, else backoff.
+ *   - network        → exponential backoff (1s, 2s, 4s).
+ *   - parse failure  → no retry, rethrow as error with source `parse`.
+ *   - other non-zero → rethrow immediately (surface to loop).
+ *
+ * Max 3 attempts. On exhaustion, throw `FitnessUnavailableError` carrying
+ * the last stderr.
+ */
+
+import { spawn } from "node:child_process";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import type { Action, FitnessReport, JsonValue } from "./types/index.js";
+import { PositiveSeconds, Score } from "./types/index.js";
+import { FitnessUnavailableError, PreconditionError } from "./util/errors.js";
+import { verbose } from "./util/log.js";
+import { sleep } from "./util/sleep.js";
+
+const MAX_ATTEMPTS = 3;
+const BASE_BACKOFF_MS = 1_000;
+
+const RATE_LIMIT_RE = /rate limit|secondary rate limit/i;
+const RETRY_AFTER_RE = /Retry-After:\s*(\d+)/i;
+const AUTH_RE = /Bad credentials|authentication required|not authenticated/i;
+const NETWORK_RE = /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i;
+
+interface InvokeResult {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
+}
+
+// ---------------------------------------------------------------------------
+
+function isRateLimit(stderr: string): boolean {
+  return RATE_LIMIT_RE.test(stderr);
+}
+
+function isAuth(stderr: string): boolean {
+  return AUTH_RE.test(stderr);
+}
+
+function isNetwork(stderr: string): boolean {
+  return NETWORK_RE.test(stderr);
+}
+
+function retryAfterSeconds(stderr: string): number | null {
+  const m = RETRY_AFTER_RE.exec(stderr);
+  if (!m?.[1]) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function exponentialBackoffMs(attempt: number): number {
+  return BASE_BACKOFF_MS * 2 ** (attempt - 1);
+}
+
+// ---------------------------------------------------------------------------
+
+function resolveCommand(
+  fitnessName: string,
+  fitnessArgs: readonly string[],
+): readonly string[] {
+  if (fitnessName === "pr-fitness") {
+    const cli = path.join(
+      os.homedir(),
+      "code",
+      "skills",
+      "pr-fitness",
+      "src",
+      "cli.ts",
+    );
+    return ["npx", "tsx", cli, "-q", "-c", ...fitnessArgs];
+  }
+  throw new PreconditionError(`unknown fitness skill: ${fitnessName}`);
+}
+
+// ---------------------------------------------------------------------------
+
+async function invokeOnce(
+  argv: readonly string[],
+  signal: AbortSignal,
+): Promise<InvokeResult> {
+  return new Promise<InvokeResult>((resolve, reject) => {
+    const [cmd, ...args] = argv;
+    if (cmd === undefined) {
+      reject(new PreconditionError("empty fitness argv"));
+      return;
+    }
+
+    const child = spawn(cmd, args, {
+      env: { ...process.env },
+      signal,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const STDOUT_CAP = 8 * 1024 * 1024;
+    const STDERR_CAP = 1 * 1024 * 1024;
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+
+    child.stdout.on("data", (chunk: string) => {
+      if (stdout.length < STDOUT_CAP) {
+        stdout += chunk.slice(0, STDOUT_CAP - stdout.length);
+      }
+    });
+    child.stderr.on("data", (chunk: string) => {
+      if (stderr.length < STDERR_CAP) {
+        stderr += chunk.slice(0, STDERR_CAP - stderr.length);
+      }
+    });
+
+    child.on("error", (err) => {
+      reject(err);
+    });
+
+    child.on("close", (code) => {
+      resolve({ stdout, stderr, exitCode: code });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+
+function parseAndValidate(stdout: string): FitnessReport {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch (err) {
+    throw new PreconditionError(
+      `fitness stdout is not valid JSON: ${String(err)}`,
+    );
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new PreconditionError("fitness report is not an object");
+  }
+  const obj = parsed as Record<string, unknown>;
+
+  const rawScore = obj["score"];
+  const rawTarget = obj["target"];
+  const rawActions = obj["actions"];
+
+  if (typeof rawScore !== "number") {
+    throw new PreconditionError("fitness report missing numeric `score`");
+  }
+  if (typeof rawTarget !== "number") {
+    throw new PreconditionError("fitness report missing numeric `target`");
+  }
+  if (!Array.isArray(rawActions)) {
+    throw new PreconditionError("fitness report missing `actions` array");
+  }
+
+  const actions: Action[] = rawActions.map((a, i) => {
+    if (typeof a !== "object" || a === null) {
+      throw new PreconditionError(`actions[${i}] is not an object`);
+    }
+    const ao = a as Record<string, unknown>;
+    const kind = ao["kind"];
+    const automation = ao["automation"];
+    const description = ao["description"];
+    const target_effect = ao["target_effect"];
+    if (typeof kind !== "string") {
+      throw new PreconditionError(`actions[${i}].kind missing`);
+    }
+    if (typeof description !== "string") {
+      throw new PreconditionError(`actions[${i}].description missing`);
+    }
+    if (
+      target_effect !== "advances" &&
+      target_effect !== "blocks" &&
+      target_effect !== "neutral"
+    ) {
+      throw new PreconditionError(
+        `actions[${i}].target_effect invalid: ${String(target_effect)}`,
+      );
+    }
+    switch (automation) {
+      case "full": {
+        const execute = ao["execute"];
+        if (!Array.isArray(execute) || execute.length === 0) {
+          throw new PreconditionError(
+            `actions[${i}].execute must be a non-empty argv array for automation=full`,
+          );
+        }
+        for (let j = 0; j < execute.length; j++) {
+          if (typeof execute[j] !== "string") {
+            throw new PreconditionError(
+              `actions[${i}].execute[${String(j)}] must be a string`,
+            );
+          }
+        }
+        const rawTimeout = ao["timeout_seconds"];
+        if (rawTimeout !== undefined && typeof rawTimeout !== "number") {
+          throw new PreconditionError(
+            `actions[${i}].timeout_seconds must be a number if present`,
+          );
+        }
+        return {
+          kind,
+          description,
+          target_effect,
+          automation,
+          execute: execute as readonly string[],
+          ...(rawTimeout !== undefined
+            ? { timeout_seconds: PositiveSeconds(rawTimeout) }
+            : {}),
+        };
+      }
+      case "wait": {
+        const nps = ao["next_poll_seconds"];
+        if (typeof nps !== "number") {
+          throw new PreconditionError(
+            `actions[${i}].next_poll_seconds must be a number for automation=wait`,
+          );
+        }
+        return {
+          kind,
+          description,
+          target_effect,
+          automation,
+          next_poll_seconds: PositiveSeconds(nps),
+        };
+      }
+      case "llm": {
+        return {
+          kind,
+          description,
+          target_effect,
+          automation,
+          ...(isJsonValue(ao["context"]) ? { context: ao["context"] } : {}),
+        };
+      }
+      case "human": {
+        return { kind, description, target_effect, automation };
+      }
+      default:
+        throw new PreconditionError(
+          `actions[${i}].automation invalid: ${String(automation)}`,
+        );
+    }
+  });
+
+  const report: FitnessReport = {
+    score: Score(rawScore),
+    target: Score(rawTarget),
+    actions,
+    ...(typeof obj["status"] === "string" ? { status: obj["status"] } : {}),
+    ...(isTerminal(obj["terminal"]) ? { terminal: obj["terminal"] } : {}),
+  };
+  return report;
+}
+
+function isTerminal(v: unknown): v is { readonly kind: string } {
+  if (typeof v !== "object" || v === null) return false;
+  const kind = (v as Record<string, unknown>)["kind"];
+  return typeof kind === "string";
+}
+
+function isJsonValue(v: unknown): v is JsonValue {
+  if (v === null) return true;
+  const t = typeof v;
+  if (t === "string" || t === "number" || t === "boolean") return true;
+  if (Array.isArray(v)) return (v as readonly unknown[]).every(isJsonValue);
+  if (t !== "object") return false;
+  // Plain objects only — reject class instances, Maps, Sets, etc.
+  const proto: unknown = Object.getPrototypeOf(v as object);
+  if (proto !== Object.prototype && proto !== null) return false;
+  for (const k of Object.keys(v as object)) {
+    if (!isJsonValue((v as Record<string, unknown>)[k])) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+
+export async function invokeFitness(
+  fitnessName: string,
+  fitnessArgs: readonly string[],
+  signal: AbortSignal,
+): Promise<FitnessReport> {
+  const argv = resolveCommand(fitnessName, fitnessArgs);
+
+  let lastStderr = "";
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (signal.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
+    verbose(`fitness: invoke attempt ${attempt}/${MAX_ATTEMPTS}`);
+
+    let result: InvokeResult;
+    try {
+      result = await invokeOnce(argv, signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      if (
+        err instanceof Error &&
+        "code" in err &&
+        (err as NodeJS.ErrnoException).code === "ABORT_ERR"
+      ) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      lastStderr = err instanceof Error ? err.message : String(err);
+      if (attempt === MAX_ATTEMPTS) {
+        throw new FitnessUnavailableError(attempt, lastStderr);
+      }
+      await sleep(exponentialBackoffMs(attempt), signal);
+      continue;
+    }
+
+    lastStderr = result.stderr;
+
+    if (result.exitCode === 0) {
+      return parseAndValidate(result.stdout);
+    }
+
+    // Classify failure.
+    if (isAuth(result.stderr)) {
+      throw new FitnessUnavailableError(attempt, result.stderr);
+    }
+
+    const isTransient = isNetwork(result.stderr) || isRateLimit(result.stderr);
+    if (!isTransient) {
+      // Non-transient non-zero exit — terminal.
+      throw new FitnessUnavailableError(attempt, result.stderr);
+    }
+
+    if (attempt === MAX_ATTEMPTS) {
+      throw new FitnessUnavailableError(attempt, result.stderr);
+    }
+
+    const retryAfter = retryAfterSeconds(result.stderr);
+    const waitMs =
+      retryAfter !== null ? retryAfter * 1000 : exponentialBackoffMs(attempt);
+    verbose(`fitness: transient failure, sleeping ${waitMs}ms`);
+    await sleep(waitMs, signal);
+  }
+
+  throw new FitnessUnavailableError(MAX_ATTEMPTS, lastStderr);
+}

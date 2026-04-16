@@ -55,14 +55,22 @@ export interface CopilotReviewRound {
 
 // ---------------------------------------------------------------------------
 // CopilotThreadSummary — counts of Copilot-authored review threads by
-// resolution status. Invariant (enforced by the collector, not the
-// type): total === resolved + unresolved.
+// resolution status. Invariants (enforced by the collector, not the
+// type):
+//   - total === resolved + unresolved
+//   - stale ≤ total
+//
+// `stale` counts Copilot threads with any non-Copilot comment authored
+// strictly after `copilot.activity.latest.reviewedAt`. A stale thread
+// has a reply the reviewer has not observed — resolving it or pushing
+// code won't fix that; only a re-request makes Copilot re-read it.
 // ---------------------------------------------------------------------------
 
 export interface CopilotThreadSummary {
   readonly total: number;
   readonly resolved: number;
   readonly unresolved: number;
+  readonly stale: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +102,19 @@ export type CopilotActivity =
 // ---------------------------------------------------------------------------
 // CopilotTier — scoring tier.
 //
-// Formal rules:
-//   PLATINUM: reviewed ∧ unresolved=0 ∧ ¬suppressed ∧ latestCommit=HEAD
-//   GOLD:     reviewed ∧ unresolved=0 ∧ ¬suppressed ∧ latestCommit≠HEAD
+// Formal rules (checked in order — first match wins):
+//   BRONZE:   ¬reviewed ∨ unresolved>0
 //   SILVER:   reviewed ∧ unresolved=0 ∧ suppressed
-//   BRONZE:   unreviewed ∨ unresolved>0
+//   GOLD:     reviewed ∧ unresolved=0 ∧ ¬suppressed ∧
+//             (stale>0 ∨ latestCommit≠HEAD)
+//   PLATINUM: reviewed ∧ unresolved=0 ∧ ¬suppressed ∧ stale=0 ∧
+//             latestCommit=HEAD
+//
+// Invariant: PLATINUM ⟹ Copilot's latest review observes the current
+// PR conversation state. A reply-only resolution (author replied and
+// clicked resolve without pushing code) leaves `stale>0` so the tier
+// caps at GOLD until rerequest produces a fresh review that sees the
+// reply.
 //
 // 💎 Diamond is a reserved name for a future tier above Platinum — no
 // semantic assigned and intentionally NOT part of the type so nothing

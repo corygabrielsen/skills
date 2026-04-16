@@ -94,6 +94,7 @@ describe("output contract", () => {
       assert.equal(typeof report.copilot.threads.total, "number");
       assert.equal(typeof report.copilot.threads.resolved, "number");
       assert.equal(typeof report.copilot.threads.unresolved, "number");
+      assert.equal(typeof report.copilot.threads.stale, "number");
       assert.ok(
         ["bronze", "silver", "gold", "platinum"].includes(report.copilot.tier),
       );

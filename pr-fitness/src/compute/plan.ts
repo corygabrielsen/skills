@@ -97,6 +97,12 @@ export function plan(
   }
 
   // ── Priority 3: Reviews ────────────────────────────────────────
+  //
+  // Ordering within this section:
+  //   1. Address unresolved threads (hard blocker; llm)
+  //   2. Copilot mechanical moves (free wins toward platinum)
+  //   3. Wait on pending reviewers (bots, humans)
+  //   4. Approval request (human click)
 
   if (reviews.threads_unresolved > 0) {
     actions.push({
@@ -109,51 +115,6 @@ export function plan(
       },
     });
   }
-
-  if (reviews.pending_reviews.bots.length > 0) {
-    actions.push({
-      blocker: `pending_bot_review: ${reviews.pending_reviews.bots.join(", ")}`,
-      description: `Wait for bot review from ${reviews.pending_reviews.bots.join(", ")}`,
-      automation: "wait",
-      type: {
-        kind: "wait_for_review",
-        reviewers: reviews.pending_reviews.bots,
-      },
-    });
-  }
-
-  if (reviews.pending_reviews.humans.length > 0) {
-    actions.push({
-      blocker: `pending_human_review: ${reviews.pending_reviews.humans.join(", ")}`,
-      description: `Waiting on human review from ${reviews.pending_reviews.humans.join(", ")}`,
-      automation: "human",
-      type: {
-        kind: "wait_for_review",
-        reviewers: reviews.pending_reviews.humans,
-      },
-    });
-  }
-
-  if (reviews.decision !== "APPROVED" && reviews.decision !== "NONE") {
-    // If there are no unresolved threads and CI is green, the main
-    // blocker is just getting someone to click approve.
-    const ciClean = ci.fail === 0 && ci.pending === 0;
-    const threadsClean = reviews.threads_unresolved === 0;
-
-    if (ciClean && threadsClean) {
-      actions.push({
-        blocker: "not_approved",
-        description: "Request or self-approve",
-        automation: "human",
-        type: { kind: "request_approval" },
-      });
-    } else {
-      // Approval will come after other blockers are resolved.
-      // Don't add a separate action — it's implied.
-    }
-  }
-
-  // ── Priority 3.5: Copilot ──────────────────────────────────────
 
   if (copilot.configured) {
     switch (copilot.activity.state) {
@@ -201,9 +162,47 @@ export function plan(
         break;
       case "idle":
       case "unconfigured":
-        // No action. idle = waiting on ready-for-review,
-        // unconfigured = not applicable.
         break;
+    }
+  }
+
+  if (reviews.pending_reviews.bots.length > 0) {
+    actions.push({
+      blocker: `pending_bot_review: ${reviews.pending_reviews.bots.join(", ")}`,
+      description: `Wait for bot review from ${reviews.pending_reviews.bots.join(", ")}`,
+      automation: "wait",
+      type: {
+        kind: "wait_for_review",
+        reviewers: reviews.pending_reviews.bots,
+      },
+    });
+  }
+
+  if (reviews.pending_reviews.humans.length > 0) {
+    actions.push({
+      blocker: `pending_human_review: ${reviews.pending_reviews.humans.join(", ")}`,
+      description: `Waiting on human review from ${reviews.pending_reviews.humans.join(", ")}`,
+      automation: "human",
+      type: {
+        kind: "wait_for_review",
+        reviewers: reviews.pending_reviews.humans,
+      },
+    });
+  }
+
+  if (reviews.decision !== "APPROVED" && reviews.decision !== "NONE") {
+    // If there are no unresolved threads and CI is green, the main
+    // blocker is just getting someone to click approve.
+    const ciClean = ci.fail === 0 && ci.pending === 0;
+    const threadsClean = reviews.threads_unresolved === 0;
+
+    if (ciClean && threadsClean) {
+      actions.push({
+        blocker: "not_approved",
+        description: "Request or self-approve",
+        automation: "human",
+        type: { kind: "request_approval" },
+      });
     }
   }
 

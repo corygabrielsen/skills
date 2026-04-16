@@ -21,7 +21,7 @@ import type {
   ReviewSummary,
 } from "./types/index.js";
 
-/** Default target if the caller doesn't specify — platinum (4). */
+/** Default target if the caller doesn't specify — 💠 platinum (4). */
 export const DEFAULT_TARGET: ScoreT = Score(4);
 
 function toLifecycle(state: "OPEN" | "MERGED" | "CLOSED"): Lifecycle {

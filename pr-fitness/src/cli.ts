@@ -27,8 +27,11 @@ Options:
                         1 = open + blocked
                         2 = already merged
                         3 = closed (not merged)
-      --target=<t>    Target score. Label (bronze|silver|gold|platinum)
-                      or integer. Default: platinum (4).
+      --target=<t>    Target score. Integer or tier label:
+                        1  🥉 (bronze)
+                        2  🥈 (silver)
+                        3  🥇 (gold)
+                        4  💠 (platinum)   ← default
 
 Examples:
   pr-fitness example/widgets 1563

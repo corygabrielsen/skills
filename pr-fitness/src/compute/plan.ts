@@ -7,6 +7,7 @@ import type {
 import type { Action, TargetEffect } from "../types/action.js";
 import type { CopilotReport } from "../types/copilot.js";
 import { PositiveSeconds } from "../types/branded.js";
+import { formatCopilotTier } from "../types/copilot.js";
 
 /**
  * Attention-phase urgency for "waiting on async axis" actions.
@@ -152,7 +153,7 @@ export function plan(
   //
   // Ordering within this section:
   //   1. Address unresolved threads (hard blocker; llm)
-  //   2. Copilot mechanical moves (free wins toward platinum)
+  //   2. Copilot mechanical moves (free wins toward 💠 (platinum))
   //   3. Wait on pending reviewers (bots, humans)
   //   4. Approval request (human click)
 
@@ -196,10 +197,11 @@ export function plan(
         // either addressing suppressed findings or re-requesting.
         if (copilot.tier !== "platinum" && copilot.threads.unresolved === 0) {
           const latestRound = copilot.activity.latest;
+          const platinumDisplay = formatCopilotTier("platinum");
           if (copilot.tier === "silver") {
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
-              description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach platinum`,
+              description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach ${platinumDisplay}`,
               automation: "llm",
               target_effect: "advances",
               type: {
@@ -210,8 +212,7 @@ export function plan(
           } else {
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
-              description:
-                "Re-request Copilot review on HEAD to reach platinum",
+              description: `Re-request Copilot review on HEAD to reach ${platinumDisplay}`,
               automation: "full",
               target_effect: "advances",
               type: { kind: "rerequest_copilot" },

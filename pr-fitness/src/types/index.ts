@@ -53,4 +53,9 @@ export type {
   CopilotIdentitySource,
 } from "./copilot.js";
 
-export { COPILOT_TIER_ORDER, compareCopilotTier } from "./copilot.js";
+export {
+  COPILOT_TIER_ORDER,
+  COPILOT_TIER_EMOJI,
+  compareCopilotTier,
+  formatCopilotTier,
+} from "./copilot.js";

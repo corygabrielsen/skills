@@ -19,11 +19,12 @@ export interface PullRequestFitnessReport {
   /**
    * Current fitness score. Higher is better. Compared against `target` by
    * /converge to decide loop termination. For PRs this is a Copilot tier
-   * ordinal (bronze=1, silver=2, gold=3, platinum=4) when Copilot is
-   * configured, else a simple blocker-vs-clean scalar.
+   * ordinal (🥉 bronze=1, 🥈 silver=2, 🥇 gold=3, 💠 platinum=4) when Copilot
+   * is configured, else a simple blocker-vs-clean scalar. 💎 Diamond is a
+   * reserved name for a future tier above platinum — not yet emitted.
    */
   readonly score: Score;
-  /** Target score the caller asked for (default platinum, 4). */
+  /** Target score the caller asked for (default 💠 platinum, 4). */
   readonly target: Score;
   /**
    * Terminal state — present iff the PR can no longer make progress

@@ -20,6 +20,7 @@ import type {
   GitHubRequestedReviewers,
 } from "../types/index.js";
 import { isCopilot } from "../types/copilot-identity.js";
+import { formatCopilotTier } from "../types/copilot.js";
 
 const VISIBLE_RE = /generated (\d+) comments?\./;
 const SUPPRESSED_RE = /Comments suppressed due to low confidence \((\d+)\)/;
@@ -228,6 +229,7 @@ export function computeCopilot(input: {
     rounds,
     threads,
     tier,
+    tier_display: formatCopilotTier(tier),
     fresh,
   };
 }

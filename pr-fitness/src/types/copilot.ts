@@ -99,6 +99,10 @@ export type CopilotActivity =
 //   GOLD:     reviewed ∧ unresolved=0 ∧ ¬suppressed ∧ latestCommit≠HEAD
 //   SILVER:   reviewed ∧ unresolved=0 ∧ suppressed
 //   BRONZE:   unreviewed ∨ unresolved>0
+//
+// 💎 Diamond is a reserved name for a future tier above Platinum — no
+// semantic assigned and intentionally NOT part of the type so nothing
+// can attempt to reach it.
 // ---------------------------------------------------------------------------
 
 export type CopilotTier = "bronze" | "silver" | "gold" | "platinum";
@@ -114,6 +118,19 @@ export const COPILOT_TIER_ORDER: readonly CopilotTier[] = [
 /** Returns negative if a < b, positive if a > b, 0 if equal. */
 export function compareCopilotTier(a: CopilotTier, b: CopilotTier): number {
   return COPILOT_TIER_ORDER.indexOf(a) - COPILOT_TIER_ORDER.indexOf(b);
+}
+
+/** Emoji for each tier, intended for user-visible rendering. */
+export const COPILOT_TIER_EMOJI: Readonly<Record<CopilotTier, string>> = {
+  bronze: "🥉",
+  silver: "🥈",
+  gold: "🥇",
+  platinum: "💠",
+};
+
+/** Render a tier as `"<emoji> (<label>)"` — e.g. `"💠 (platinum)"`. */
+export function formatCopilotTier(tier: CopilotTier): string {
+  return `${COPILOT_TIER_EMOJI[tier]} (${tier})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +157,8 @@ export type CopilotReport =
       readonly rounds: readonly CopilotReviewRound[];
       readonly threads: CopilotThreadSummary;
       readonly tier: CopilotTier;
+      /** Branded rendering of `tier` — `"<emoji> (<label>)"`, e.g. `"💠 (platinum)"`. */
+      readonly tier_display: string;
       /**
        * True when the latest review is on HEAD. Derived (latest.commit === head).
        * Stored explicitly so downstream consumers don't recompute.

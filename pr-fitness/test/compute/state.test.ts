@@ -16,8 +16,30 @@ describe("computeState", () => {
     assert.equal(state.assignees, 1);
     assert.equal(state.reviewers, 1);
     assert.equal(state.commits, 1);
+    assert.equal(state.behind, false);
     assert.equal(state.updated_at, "2026-03-30T08:00:00Z");
     assert.equal(state.last_commit_at, null);
+  });
+
+  it("detects BEHIND mergeStateStatus", () => {
+    const state = computeState(makePr({ mergeStateStatus: "BEHIND" }));
+    assert.equal(state.behind, true);
+  });
+
+  it("reports behind=false for other mergeStateStatus values", () => {
+    const others = [
+      "CLEAN",
+      "UNSTABLE",
+      "BLOCKED",
+      "DIRTY",
+      "DRAFT",
+      "HAS_HOOKS",
+      "UNKNOWN",
+    ] as const;
+    for (const status of others) {
+      const state = computeState(makePr({ mergeStateStatus: status }));
+      assert.equal(state.behind, false, `status=${status}`);
+    }
   });
 
   it("includes last_commit_at when provided", () => {

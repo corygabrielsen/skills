@@ -8,6 +8,28 @@
 import type { GitCommitSha, GitHubLogin, Timestamp } from "./branded.js";
 
 /** gh pr view --json ... */
+/**
+ * GitHub's composite merge-readiness state. See GitHub's docs for the
+ * full state machine; relevant values here:
+ *   CLEAN      — mergeable, all gates pass
+ *   UNSTABLE   — mergeable but non-required checks failing
+ *   BLOCKED    — blocked by required reviews / checks / resolution
+ *   BEHIND     — base has advanced past the merge base (needs rebase)
+ *   DIRTY      — tree-level merge conflict
+ *   DRAFT      — PR is a draft
+ *   HAS_HOOKS  — pre-merge hooks configured
+ *   UNKNOWN    — GitHub hasn't finished computing yet
+ */
+export type MergeStateStatus =
+  | "CLEAN"
+  | "UNSTABLE"
+  | "BLOCKED"
+  | "BEHIND"
+  | "DIRTY"
+  | "DRAFT"
+  | "HAS_HOOKS"
+  | "UNKNOWN";
+
 export interface GitHubPullRequestView {
   title: string;
   number: number;
@@ -16,6 +38,12 @@ export interface GitHubPullRequestView {
   state: "OPEN" | "MERGED" | "CLOSED";
   isDraft: boolean;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  /**
+   * Full merge-readiness gate from GitHub (required checks, reviews,
+   * base-branch drift, pre-merge hooks). Distinct from `mergeable`,
+   * which only covers tree-level conflicts.
+   */
+  mergeStateStatus: MergeStateStatus;
   headRefOid: string;
   baseRefName: string;
   updatedAt: string;

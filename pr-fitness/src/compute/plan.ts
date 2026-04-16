@@ -152,7 +152,7 @@ export function plan(
   //
   // Ordering within this section:
   //   1. Address unresolved threads (hard blocker; llm)
-  //   2. Copilot mechanical moves (free wins toward 💠 (platinum))
+  //   2. Copilot mechanical moves (free wins toward platinum)
   //   3. Wait on pending reviewers (bots, humans)
   //   4. Approval request (human click)
 

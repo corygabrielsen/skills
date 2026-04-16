@@ -97,6 +97,7 @@ describe("output contract", () => {
       assert.ok(
         ["bronze", "silver", "gold", "platinum"].includes(report.copilot.tier),
       );
+      assert.equal(typeof report.copilot.tier_display, "string");
       assert.equal(typeof report.copilot.fresh, "boolean");
     }
 

@@ -35,3 +35,5 @@ export type {
   CopilotRepoConfig,
   CopilotThreadSummary,
 } from "./types/copilot.js";
+
+export { COPILOT_TIER_EMOJI, formatCopilotTier } from "./types/copilot.js";

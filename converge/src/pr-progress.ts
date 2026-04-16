@@ -153,7 +153,7 @@ function appendSnapshot(
   if (report.snapshot === undefined) return;
   const merged = { ...extra, ...report.snapshot };
   lines.push("");
-  lines.push("<details><summary>📊 state</summary>");
+  lines.push("<details><summary>Fitness snapshot</summary>");
   lines.push("");
   lines.push("```json");
   lines.push(JSON.stringify(merged, null, 2));

@@ -6,6 +6,10 @@
   "head": "3634facc",
   "base": "master",
   "lifecycle": "open",
+  "score": 4,
+  "score_display": "💠 (platinum)",
+  "target": 4,
+  "target_display": "💠 (platinum)",
   "merged_at": null,
   "closed_at": null,
   "mergeable": true,
@@ -56,7 +60,7 @@
     "summary": null
   },
   "actions": [],
-  "summary": "Ready to merge",
+  "status": "Ready to merge",
   "timestamp": "2026-03-30T08:03:06.407Z",
   "duration_ms": 912
 }

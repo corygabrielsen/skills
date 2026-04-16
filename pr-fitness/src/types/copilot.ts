@@ -149,6 +149,38 @@ export function formatCopilotTier(tier: CopilotTier): string {
   return `${COPILOT_TIER_EMOJI[tier]} (${tier})`;
 }
 
+/**
+ * Map a 1..4 integer score to the corresponding Copilot tier, or null
+ * for out-of-range values. The mapping is fixed: 1=bronze, 2=silver,
+ * 3=gold, 4=platinum. Shared by Copilot-configured and non-Copilot PRs
+ * alike because the ordinal scale is identical.
+ */
+export function tierForScore(score: number): CopilotTier | null {
+  switch (score) {
+    case 1:
+      return "bronze";
+    case 2:
+      return "silver";
+    case 3:
+      return "gold";
+    case 4:
+      return "platinum";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Render an integer score as an emoji tier label. Falls back to the raw
+ * number for out-of-range scores (shouldn't happen in practice, but we
+ * don't want a crash to hide a useful display).
+ */
+export function formatScoreOrdinal(score: number): string {
+  const tier = tierForScore(score);
+  if (tier !== null) return formatCopilotTier(tier);
+  return `score ${String(score)}`;
+}
+
 // ---------------------------------------------------------------------------
 // CopilotReport — composite embedded in PullRequestFitnessReport.
 //

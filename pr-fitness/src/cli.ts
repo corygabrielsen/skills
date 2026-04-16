@@ -123,7 +123,7 @@ async function main(): Promise<void> {
   const report = await prFitness(repo, pr, target);
 
   if (summaryOnly) {
-    process.stdout.write(report.summary + "\n");
+    process.stdout.write(report.status + "\n");
   } else {
     const indent = compact ? undefined : 2;
     process.stdout.write(JSON.stringify(report, null, indent) + "\n");

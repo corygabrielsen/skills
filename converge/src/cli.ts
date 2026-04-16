@@ -13,6 +13,7 @@
  */
 
 import { converge } from "./converge.js";
+import { detectPrProgressTarget } from "./pr-progress.js";
 import { gcStaleSessions } from "./session.js";
 import type { HaltReport, HaltStatus } from "./types/index.js";
 import { LockHeldError, PreconditionError } from "./util/errors.js";
@@ -222,6 +223,10 @@ async function main(): Promise<void> {
 
   const sessionId = deriveSessionId(parsed.fitness, parsed.fitnessArgs);
   const resumeCmd = buildResumeCmd(parsed.fitness, parsed.fitnessArgs);
+  const prProgressTarget = detectPrProgressTarget(
+    parsed.fitness,
+    parsed.fitnessArgs,
+  );
   process.stderr.write(`session: /tmp/converge/${sessionId}/\n`);
 
   const abortController = new AbortController();
@@ -239,6 +244,7 @@ async function main(): Promise<void> {
       maxIterations: parsed.maxIterations,
       sessionId,
       resumeCmd,
+      prProgressTarget,
       signal: abortController.signal,
     });
   } catch (err) {

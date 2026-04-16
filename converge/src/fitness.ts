@@ -258,10 +258,22 @@ function parseAndValidate(stdout: string): FitnessReport {
     score: Score(rawScore),
     target: Score(rawTarget),
     actions,
-    ...(typeof obj["status"] === "string" ? { status: obj["status"] } : {}),
+    ...(nonEmptyString(obj["status"]) ? { status: obj["status"] } : {}),
+    ...(nonEmptyString(obj["score_display"])
+      ? { score_display: obj["score_display"] }
+      : {}),
+    ...(nonEmptyString(obj["target_display"])
+      ? { target_display: obj["target_display"] }
+      : {}),
     ...(isTerminal(obj["terminal"]) ? { terminal: obj["terminal"] } : {}),
   };
   return report;
+}
+
+// Empty strings carry no information; treat them as absent so consumers
+// only need to check for `undefined`.
+function nonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
 }
 
 function isTerminal(v: unknown): v is { readonly kind: string } {

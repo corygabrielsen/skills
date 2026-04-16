@@ -14,6 +14,7 @@ import type {
   Score as ScoreT,
 } from "./types/branded.js";
 import type { CopilotReport } from "./types/copilot.js";
+import { COPILOT_TIER_EMOJI, formatScoreOrdinal } from "./types/copilot.js";
 import type {
   CiSummary,
   Lifecycle,
@@ -49,6 +50,19 @@ function isMergeable(
  *   2: CI green but unresolved threads
  *   1: any hard blocker (CI fail, conflict, draft, wip, …)
  */
+/**
+ * Branded rendering of a score. Uses the tier emoji/label for any 1..4
+ * score — the ordinal scale is identical whether Copilot is configured
+ * or not, so 🥇 (gold) is just as motivating on a CI/review-only PR as
+ * on a Copilot one. Merged PRs get the top-tier emoji as a terminal
+ * marker; closed PRs get their own neutral marker.
+ */
+function computeScoreDisplay(lifecycle: Lifecycle, score: ScoreT): string {
+  if (lifecycle === "merged") return `${COPILOT_TIER_EMOJI.platinum} (merged)`;
+  if (lifecycle === "closed") return "⚫ (closed)";
+  return formatScoreOrdinal(score);
+}
+
 function computeScore(
   lifecycle: Lifecycle,
   blockers: readonly string[],
@@ -124,6 +138,9 @@ export async function prFitness(
       : [];
 
   const score = computeScore(lifecycle, blockers, ci, reviews, copilot);
+  const scoreDisplay = computeScoreDisplay(lifecycle, score);
+  const targetDisplay = formatScoreOrdinal(target);
+  const statusLine = summarize(lifecycle, blockers, data.pr.mergedAt);
 
   const durationMs = Math.round(performance.now() - start);
 
@@ -136,7 +153,9 @@ export async function prFitness(
     base: data.pr.baseRefName,
     lifecycle,
     score,
+    score_display: scoreDisplay,
     target,
+    target_display: targetDisplay,
     merged_at: data.pr.mergedAt ?? null,
     closed_at: data.pr.closedAt ?? null,
     mergeable: isMergeable(lifecycle, blockers),
@@ -147,7 +166,7 @@ export async function prFitness(
     state,
     graphite: data.graphite,
     actions,
-    summary: summarize(lifecycle, blockers, data.pr.mergedAt),
+    status: statusLine,
     timestamp: new Date().toISOString(),
     duration_ms: durationMs,
   };

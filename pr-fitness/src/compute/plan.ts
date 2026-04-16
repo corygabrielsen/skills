@@ -7,7 +7,6 @@ import type {
 import type { Action, TargetEffect } from "../types/action.js";
 import type { CopilotReport } from "../types/copilot.js";
 import { PositiveSeconds } from "../types/branded.js";
-import { formatCopilotTier } from "../types/copilot.js";
 
 /**
  * Attention-phase urgency for "waiting on async axis" actions.
@@ -197,11 +196,10 @@ export function plan(
         // either addressing suppressed findings or re-requesting.
         if (copilot.tier !== "platinum" && copilot.threads.unresolved === 0) {
           const latestRound = copilot.activity.latest;
-          const platinumDisplay = formatCopilotTier("platinum");
           if (copilot.tier === "silver") {
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
-              description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach ${platinumDisplay}`,
+              description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach platinum`,
               automation: "llm",
               target_effect: "advances",
               type: {
@@ -218,8 +216,8 @@ export function plan(
             const staleCount = copilot.threads.stale;
             const description =
               staleCount > 0
-                ? `Re-request Copilot so it reads ${String(staleCount)} post-review reply/replies to reach ${platinumDisplay}`
-                : `Re-request Copilot review on HEAD to reach ${platinumDisplay}`;
+                ? `Re-request Copilot so it reads ${String(staleCount)} post-review reply/replies to reach platinum`
+                : `Re-request Copilot review on HEAD to reach platinum`;
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
               description,

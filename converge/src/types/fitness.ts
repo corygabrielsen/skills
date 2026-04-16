@@ -53,6 +53,13 @@ export interface FitnessReport {
    */
   readonly axes?: readonly AxisLine[];
   /**
+   * Curated JSON-serializable state snapshot for machine readers.
+   * Pr-fitness constructs the base (ci, copilot, reviews, state, etc.);
+   * /converge enriches with iter + action + halt fields and renders it
+   * inside a `<details>` block on the PR comment.
+   */
+  readonly snapshot?: Readonly<Record<string, unknown>>;
+  /**
    * Skill-owned informational lines — rendered verbatim by /converge as
    * bullet points in the PR progress comment. Intended for context the
    * reader should see but that doesn't drive convergence (e.g. advisory

@@ -83,6 +83,12 @@ export interface PullRequestFitnessReport {
    * rendered as `{emoji} {name} {summary}`.
    */
   readonly axes: readonly AxisLine[];
+  /**
+   * Curated state snapshot for machine readers. Rendered inside a
+   * collapsed `<details>` block on the PR progress comment.
+   * /converge enriches it with iter + action + halt fields.
+   */
+  readonly snapshot: Readonly<Record<string, unknown>>;
   /** ISO 8601 timestamp of when this report was generated. */
   readonly timestamp: string;
   /** Milliseconds taken to generate this report. */

@@ -139,6 +139,23 @@ function appendNotes(lines: string[], notes: FitnessReport["notes"]): void {
   }
 }
 
+function appendSnapshot(
+  lines: string[],
+  report: FitnessReport,
+  extra: Record<string, unknown>,
+): void {
+  if (report.snapshot === undefined) return;
+  const merged = { ...extra, ...report.snapshot };
+  lines.push("");
+  lines.push("<details><summary>📊 state</summary>");
+  lines.push("");
+  lines.push("```json");
+  lines.push(JSON.stringify(merged, null, 2));
+  lines.push("```");
+  lines.push("");
+  lines.push("</details>");
+}
+
 function iterationBody(
   iter: number,
   report: FitnessReport,
@@ -152,6 +169,15 @@ function iterationBody(
   lines.push("");
   lines.push(`> ${action.description}`);
   appendNotes(lines, report.notes);
+  appendSnapshot(lines, report, {
+    type: "iteration",
+    iter,
+    action: {
+      kind: action.kind,
+      automation: action.automation,
+      description: action.description,
+    },
+  });
   return lines.join("\n");
 }
 
@@ -211,6 +237,25 @@ function haltBody(
   }
 
   appendNotes(lines, lastReport?.notes);
+  if (lastReport !== undefined) {
+    const extra: Record<string, unknown> = {
+      type: "halt",
+      halt: halt.status,
+      iter: halt.iterations,
+      action:
+        halt.status === "llm_needed" || halt.status === "hil"
+          ? {
+              kind: halt.action.kind,
+              automation: halt.action.automation,
+              description: halt.action.description,
+            }
+          : undefined,
+    };
+    if (halt.status === "llm_needed") {
+      extra["resume_cmd"] = halt.resume_cmd;
+    }
+    appendSnapshot(lines, lastReport, extra);
+  }
   return lines.join("\n");
 }
 

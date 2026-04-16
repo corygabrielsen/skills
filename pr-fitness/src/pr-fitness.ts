@@ -175,6 +175,72 @@ function computeAxes(
   return axes;
 }
 
+interface SnapshotInput {
+  readonly pr: { number: number; headRefOid: string; baseRefName: string };
+  readonly lifecycle: Lifecycle;
+  readonly score: ScoreT;
+  readonly target: ScoreT;
+  readonly blockers: readonly string[];
+  readonly ci: CiSummary;
+  readonly copilot: CopilotReport;
+  readonly reviews: ReviewSummary;
+  readonly state: import("./types/output.js").PullRequestState;
+  readonly graphiteStatus: string;
+}
+
+function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
+  const {
+    pr,
+    lifecycle,
+    score,
+    target,
+    blockers,
+    ci,
+    copilot,
+    reviews,
+    state,
+  } = input;
+  return {
+    version: VERSION,
+    pr: pr.number,
+    head: pr.headRefOid.slice(0, 8),
+    base: pr.baseRefName,
+    lifecycle,
+    score: score as number,
+    target: target as number,
+    blockers,
+    ci: {
+      pass: ci.pass,
+      fail: ci.fail,
+      pending: ci.pending,
+      failed: ci.failed_details.map((d) => ({ name: d.name, link: d.link })),
+      advisory_failed: ci.advisory.failed,
+    },
+    copilot: copilot.configured
+      ? {
+          tier: copilot.tier,
+          activity: copilot.activity.state,
+          fresh: copilot.fresh,
+          stale: copilot.threads.stale,
+          unresolved: copilot.threads.unresolved,
+        }
+      : { configured: false },
+    reviews: {
+      decision: reviews.decision,
+      threads_unresolved: reviews.threads_unresolved,
+      approvals_on_head: reviews.approvals_on_head,
+      pending_humans: reviews.pending_reviews.humans,
+      pending_bots: reviews.pending_reviews.bots,
+    },
+    state: {
+      conflict: state.conflict,
+      draft: state.draft,
+      behind: state.behind,
+    },
+    graphite: input.graphiteStatus,
+  };
+}
+
 export function computeScore(
   lifecycle: Lifecycle,
   blockers: readonly string[],
@@ -259,8 +325,20 @@ export async function prFitness(
     : {};
   const axes = lifecycle === "open" ? computeAxes(ci, copilot, reviews) : [];
   const targetTier = tierForScore(target);
-
   const durationMs = Math.round(performance.now() - start);
+  const timestamp = new Date().toISOString();
+  const snapshot = buildSnapshot({
+    pr: data.pr,
+    lifecycle,
+    score,
+    target,
+    blockers,
+    ci,
+    copilot,
+    reviews,
+    state,
+    graphiteStatus: data.graphite.status,
+  });
 
   const base: PullRequestFitnessReport = {
     version: VERSION,
@@ -291,7 +369,8 @@ export async function prFitness(
     score_label: scoreLabel(lifecycle, score),
     target_label: targetTier ?? `score ${String(target as number)}`,
     axes,
-    timestamp: new Date().toISOString(),
+    snapshot: { ...snapshot, timestamp, duration_ms: durationMs },
+    timestamp,
     duration_ms: durationMs,
   };
 

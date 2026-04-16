@@ -1,9 +1,12 @@
-import type { GhPrView, PrState } from "../types/index.js";
+import type {
+  GitHubPullRequestView,
+  PullRequestState,
+} from "../types/index.js";
 
 export function computeState(
-  pr: GhPrView,
+  pr: GitHubPullRequestView,
   lastCommitDate: string | null = null,
-): PrState {
+): PullRequestState {
   const title = pr.title;
   const prNum = pr.number;
   const body = pr.body ?? "";

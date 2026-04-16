@@ -1,16 +1,16 @@
 import type {
-  GhIssueComment,
-  GhPrView,
-  GhReview,
-  GhReviewThreadsResponse,
+  GitHubIssueComment,
+  GitHubPullRequestView,
+  GitHubPullRequestReview,
+  GitHubPullRequestReviewThreadsResponse,
   ReviewSummary,
 } from "../types/index.js";
 
 export function computeReviews(
-  pr: GhPrView,
-  threads: GhReviewThreadsResponse,
-  comments: readonly GhIssueComment[],
-  reviews: readonly GhReview[],
+  pr: GitHubPullRequestView,
+  threads: GitHubPullRequestReviewThreadsResponse,
+  comments: readonly GitHubIssueComment[],
+  reviews: readonly GitHubPullRequestReview[],
 ): ReviewSummary {
   const nodes = threads.data.repository.pullRequest.reviewThreads.nodes;
   const threadsTotal = nodes.length;

@@ -1,12 +1,12 @@
-import type { GhReviewThreadsResponse } from "../types/index.js";
+import type { GitHubPullRequestReviewThreadsResponse } from "../types/index.js";
 import { gh } from "../util/gh.js";
 
 export async function collectReviewThreads(
   owner: string,
   name: string,
   pr: number,
-): Promise<GhReviewThreadsResponse> {
-  return gh<GhReviewThreadsResponse>([
+): Promise<GitHubPullRequestReviewThreadsResponse> {
+  return gh<GitHubPullRequestReviewThreadsResponse>([
     "api",
     "graphql",
     "-f",

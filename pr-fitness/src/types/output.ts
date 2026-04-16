@@ -4,7 +4,7 @@
  * Every field is derived from live GitHub API queries.
  * Nothing is cached. Nothing is inferred from prior runs.
  */
-export interface PrFitnessReport {
+export interface PullRequestFitnessReport {
   readonly version: string;
   readonly pr: number;
   readonly url: string;
@@ -24,7 +24,8 @@ export interface PrFitnessReport {
   readonly blockers: readonly string[];
   readonly ci: CiSummary;
   readonly reviews: ReviewSummary;
-  readonly state: PrState;
+  readonly copilot: import("./copilot.js").CopilotReport;
+  readonly state: PullRequestState;
   /** Graphite stack-ordering check (separate from CI). */
   readonly graphite: GraphiteCheck;
   /** Ordered action plan to increase fitness. */
@@ -89,7 +90,7 @@ export type ReviewDecision =
   /** No review policy configured — approval is not required to merge. */
   | "NONE";
 
-export interface PrState {
+export interface PullRequestState {
   readonly conflict: ConflictState;
   readonly draft: boolean;
   readonly wip: boolean;

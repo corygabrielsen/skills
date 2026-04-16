@@ -1,10 +1,11 @@
 import type {
   CiSummary,
   GraphiteStatus,
-  PrState,
+  PullRequestState,
   ReviewSummary,
 } from "../types/output.js";
 import type { Action } from "../types/action.js";
+import type { CopilotReport } from "../types/copilot.js";
 
 /**
  * Derive an action plan from fitness dimensions.
@@ -16,8 +17,9 @@ import type { Action } from "../types/action.js";
 export function plan(
   ci: CiSummary,
   reviews: ReviewSummary,
-  state: PrState,
+  state: PullRequestState,
   graphite: GraphiteStatus,
+  copilot: CopilotReport,
 ): readonly Action[] {
   const actions: Action[] = [];
 
@@ -148,6 +150,60 @@ export function plan(
     } else {
       // Approval will come after other blockers are resolved.
       // Don't add a separate action — it's implied.
+    }
+  }
+
+  // ── Priority 3.5: Copilot ──────────────────────────────────────
+
+  if (copilot.configured) {
+    switch (copilot.activity.state) {
+      case "requested":
+        actions.push({
+          blocker: "copilot_not_acked",
+          description: "Waiting for Copilot to start reviewing",
+          automation: "wait",
+          type: { kind: "wait_for_copilot_ack" },
+        });
+        break;
+      case "working":
+        actions.push({
+          blocker: "copilot_reviewing",
+          description: "Waiting for Copilot to finish reviewing",
+          automation: "wait",
+          type: { kind: "wait_for_copilot_review" },
+        });
+        break;
+      case "reviewed":
+        // If tier isn't platinum and PR is otherwise clean, suggest
+        // either addressing suppressed findings or re-requesting.
+        if (copilot.tier !== "platinum" && copilot.threads.unresolved === 0) {
+          const latestRound = copilot.activity.latest;
+          if (copilot.tier === "silver") {
+            actions.push({
+              blocker: `copilot_tier_${copilot.tier}`,
+              description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach platinum`,
+              automation: "llm",
+              type: {
+                kind: "address_copilot_suppressed",
+                count: latestRound.commentsSuppressed,
+              },
+            });
+          } else {
+            actions.push({
+              blocker: `copilot_tier_${copilot.tier}`,
+              description:
+                "Re-request Copilot review on HEAD to reach platinum",
+              automation: "full",
+              type: { kind: "rerequest_copilot" },
+            });
+          }
+        }
+        break;
+      case "idle":
+      case "unconfigured":
+        // No action. idle = waiting on ready-for-review,
+        // unconfigured = not applicable.
+        break;
     }
   }
 

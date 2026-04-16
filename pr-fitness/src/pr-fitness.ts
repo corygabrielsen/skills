@@ -1,12 +1,15 @@
 import { collect } from "./collectors/index.js";
 import { computeBlockers } from "./compute/blockers.js";
 import { computeCi } from "./compute/ci.js";
+import { computeCopilot } from "./compute/copilot.js";
 import { plan } from "./compute/plan.js";
 import { computeReviews } from "./compute/reviews.js";
 import { computeState } from "./compute/state.js";
 import { summarize } from "./compute/summary.js";
 import { VERSION } from "./version.js";
-import type { Lifecycle, PrFitnessReport } from "./types/index.js";
+import { GitCommitSha } from "./types/branded.js";
+import type { PullRequestNumber, RepoSlug } from "./types/branded.js";
+import type { Lifecycle, PullRequestFitnessReport } from "./types/index.js";
 
 function toLifecycle(state: "OPEN" | "MERGED" | "CLOSED"): Lifecycle {
   return state.toLowerCase() as Lifecycle;
@@ -23,9 +26,9 @@ function isMergeable(
 
 /** Assess PR merge readiness. All state is queried live. */
 export async function prFitness(
-  repo: string,
-  pr: number,
-): Promise<PrFitnessReport> {
+  repo: RepoSlug,
+  pr: PullRequestNumber,
+): Promise<PullRequestFitnessReport> {
   const start = performance.now();
 
   const data = await collect(repo, pr);
@@ -40,13 +43,24 @@ export async function prFitness(
   );
   const state = computeState(data.pr, data.lastCommitDate);
 
+  const copilot = computeCopilot({
+    events: data.events,
+    reviews: data.reviews,
+    threads: data.threads,
+    requestedReviewers: data.requestedReviewers,
+    config: data.copilotConfig,
+    head: GitCommitSha(data.pr.headRefOid),
+  });
+
   // Merged/closed PRs have no actionable blockers.
   const blockers =
     lifecycle === "open"
       ? computeBlockers(ci, reviews, state, data.graphite.status)
       : [];
   const actions =
-    lifecycle === "open" ? plan(ci, reviews, state, data.graphite.status) : [];
+    lifecycle === "open"
+      ? plan(ci, reviews, state, data.graphite.status, copilot)
+      : [];
 
   const durationMs = Math.round(performance.now() - start);
 
@@ -64,6 +78,7 @@ export async function prFitness(
     blockers,
     ci,
     reviews,
+    copilot,
     state,
     graphite: data.graphite,
     actions,

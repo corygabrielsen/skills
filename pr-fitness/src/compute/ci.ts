@@ -1,8 +1,8 @@
-import type { CiSummary, FailedCheck, GhCheck } from "../types/index.js";
+import type { CiSummary, FailedCheck, GitHubCheck } from "../types/index.js";
 
 const GRAPHITE_CHECK = "Graphite / mergeability_check";
 
-export function computeCi(checks: readonly GhCheck[]): CiSummary {
+export function computeCi(checks: readonly GitHubCheck[]): CiSummary {
   let pass = 0;
   let completedAt: string | null = null;
   const failedDetails: FailedCheck[] = [];

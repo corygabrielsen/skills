@@ -1,11 +1,11 @@
 export type {
-  PrFitnessReport,
+  PullRequestFitnessReport,
   Lifecycle,
   CiSummary,
   FailedCheck,
   ReviewSummary,
   ReviewDecision,
-  PrState,
+  PullRequestState,
   ConflictState,
   GraphiteCheck,
   GraphiteStatus,
@@ -14,9 +14,43 @@ export type {
 export type { Action, Automation, ActionType } from "./action.js";
 
 export type {
-  GhPrView,
-  GhCheck,
-  GhReviewThreadsResponse,
-  GhIssueComment,
-  GhReview,
+  GitHubPullRequestView,
+  GitHubCheck,
+  GitHubPullRequestReviewThreadsResponse,
+  GitHubIssueComment,
+  GitHubPullRequestReview,
+  GitHubPullRequestReviewState,
 } from "./input.js";
+
+export type {
+  Actor,
+  GitHubIssueEvent,
+  GitHubPullRequestReviewRequestedEvent,
+  GitHubPullRequestReviewRequestRemovedEvent,
+  GitHubCopilotWorkStartedEvent,
+  GitHubOtherIssueEvent,
+  RequestedReviewerRef,
+  RequestedUserReviewer,
+  RequestedTeamReviewer,
+  GitHubRequestedReviewers,
+  GitHubRequestedReviewerUser,
+  GitHubRequestedReviewerTeam,
+  GitHubUserType,
+  GitHubCopilotRule,
+  GitHubOtherRule,
+  GitHubRule,
+  GitHubRuleset,
+  GitHubRulesetEnforcement,
+} from "./copilot-input.js";
+
+export type {
+  CopilotRepoConfig,
+  CopilotReviewRound,
+  CopilotThreadSummary,
+  CopilotActivity,
+  CopilotTier,
+  CopilotReport,
+  CopilotIdentitySource,
+} from "./copilot.js";
+
+export { COPILOT_TIER_ORDER, compareCopilotTier } from "./copilot.js";

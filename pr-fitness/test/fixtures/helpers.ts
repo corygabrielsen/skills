@@ -1,21 +1,24 @@
 import type {
-  GhCheck,
-  GhIssueComment,
-  GhPrView,
-  GhReview,
-  GhReviewThreadsResponse,
+  GitHubCheck,
+  GitHubIssueComment,
+  GitHubPullRequestView,
+  GitHubPullRequestReview,
+  GitHubPullRequestReviewThreadsResponse,
 } from "../../src/types/input.js";
 import type {
   CiSummary,
-  PrState,
+  PullRequestState,
   ReviewSummary,
 } from "../../src/types/output.js";
+import type { CopilotReport } from "../../src/types/copilot.js";
 
 const HEAD = "abc12345abc12345abc12345abc12345abc12345";
 
 // ── Raw API fixtures ────────────────────────────────────────────
 
-export function makePr(overrides: Partial<GhPrView> = {}): GhPrView {
+export function makePr(
+  overrides: Partial<GitHubPullRequestView> = {},
+): GitHubPullRequestView {
   return {
     title: "Fix a bug",
     number: 100,
@@ -38,14 +41,17 @@ export function makePr(overrides: Partial<GhPrView> = {}): GhPrView {
   };
 }
 
-export function makeCheck(name: string, state: GhCheck["state"]): GhCheck {
+export function makeCheck(
+  name: string,
+  state: GitHubCheck["state"],
+): GitHubCheck {
   return { name, state, description: "", link: "", completedAt: "" };
 }
 
 export function makeThreads(
   resolved: boolean[],
-  reviewRequests: GhReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewRequests"]["nodes"] = [],
-): GhReviewThreadsResponse {
+  reviewRequests: GitHubPullRequestReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewRequests"]["nodes"] = [],
+): GitHubPullRequestReviewThreadsResponse {
   return {
     data: {
       repository: {
@@ -63,7 +69,7 @@ export function makeThreads(
   };
 }
 
-export function makeComment(id: number, login: string): GhIssueComment {
+export function makeComment(id: number, login: string): GitHubIssueComment {
   return { id, login };
 }
 
@@ -71,7 +77,7 @@ export function makeReview(
   state: string,
   commit_id: string = HEAD,
   user: string = "someone",
-): GhReview {
+): GitHubPullRequestReview {
   return { user, state, commit_id, submitted_at: "2026-03-30T08:00:00Z" };
 }
 
@@ -101,7 +107,11 @@ export const APPROVED_REVIEWS: ReviewSummary = {
   bot_reviews: [],
 };
 
-export const CLEAN_STATE: PrState = {
+export const UNCONFIGURED_COPILOT: CopilotReport = {
+  configured: false,
+};
+
+export const CLEAN_STATE: PullRequestState = {
   conflict: "MERGEABLE",
   draft: false,
   wip: false,

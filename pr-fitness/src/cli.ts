@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { prFitness } from "./pr-fitness.js";
-import { GhError, PreconditionError } from "./util/errors.js";
+import { PullRequestNumberFromString, RepoSlug } from "./types/branded.js";
+import { GitHubError, PreconditionError } from "./util/errors.js";
 import { setQuiet } from "./util/log.js";
 import { VERSION } from "./version.js";
 
@@ -73,16 +74,14 @@ async function main(): Promise<void> {
     }
   }
 
-  const repo = positional[0];
-  const prStr = positional[1];
+  const rawRepo = positional[0];
+  const rawPr = positional[1];
 
-  if (!repo) die("missing argument: <owner/repo>");
-  if (!prStr) die("missing argument: <pr_number>");
-  if (!repo.includes("/"))
-    die(`invalid repo format: expected owner/repo, got ${repo}`);
+  if (!rawRepo) die("missing argument: <owner/repo>");
+  if (!rawPr) die("missing argument: <pr_number>");
 
-  const pr = Number(prStr);
-  if (!Number.isInteger(pr) || pr <= 0) die(`invalid PR number: ${prStr}`);
+  const repo = RepoSlug(rawRepo);
+  const pr = PullRequestNumberFromString(rawPr);
 
   const report = await prFitness(repo, pr);
 
@@ -104,7 +103,7 @@ main().catch((error: unknown) => {
   if (error instanceof PreconditionError) {
     die(error.message);
   }
-  if (error instanceof GhError) {
+  if (error instanceof GitHubError) {
     die(error.message);
   }
   if (process.env["DEBUG"]) {

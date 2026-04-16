@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { computeBlockers } from "../../src/compute/blockers.js";
 import type {
   CiSummary,
-  PrState,
+  PullRequestState,
   ReviewSummary,
 } from "../../src/types/output.js";
 import {
@@ -72,25 +72,29 @@ describe("computeBlockers", () => {
   });
 
   it("reports merge conflict", () => {
-    const state: PrState = { ...CLEAN_STATE, conflict: "CONFLICTING" };
+    const state: PullRequestState = { ...CLEAN_STATE, conflict: "CONFLICTING" };
     const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
     assert.ok(blockers.includes("merge_conflict"));
   });
 
   it("reports draft", () => {
-    const state: PrState = { ...CLEAN_STATE, draft: true };
+    const state: PullRequestState = { ...CLEAN_STATE, draft: true };
     const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
     assert.ok(blockers.includes("draft"));
   });
 
   it("reports WIP label", () => {
-    const state: PrState = { ...CLEAN_STATE, wip: true };
+    const state: PullRequestState = { ...CLEAN_STATE, wip: true };
     const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
     assert.ok(blockers.includes("wip_label"));
   });
 
   it("reports title too long", () => {
-    const state: PrState = { ...CLEAN_STATE, title_len: 55, title_ok: false };
+    const state: PullRequestState = {
+      ...CLEAN_STATE,
+      title_len: 55,
+      title_ok: false,
+    };
     const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
     assert.ok(blockers.includes("title_too_long"));
   });
@@ -106,7 +110,7 @@ describe("computeBlockers", () => {
       decision: "CHANGES_REQUESTED",
       threads_unresolved: 2,
     };
-    const state: PrState = { ...CLEAN_STATE, draft: true };
+    const state: PullRequestState = { ...CLEAN_STATE, draft: true };
     const blockers = computeBlockers(ci, reviews, state, "pass");
     assert.ok(blockers.length >= 4);
     assert.ok(blockers.some((b) => b.includes("ci_fail")));

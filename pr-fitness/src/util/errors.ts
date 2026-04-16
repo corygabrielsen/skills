@@ -7,7 +7,7 @@ export class PreconditionError extends Error {
 }
 
 /** A `gh` subprocess exited with non-zero or produced invalid output. */
-export class GhError extends Error {
+export class GitHubError extends Error {
   readonly command: string;
   readonly exitCode: number | null;
   readonly stderr: string;
@@ -16,7 +16,7 @@ export class GhError extends Error {
     const trimmed = stderr.trim();
     const detail = trimmed ? `\n  ${trimmed.split("\n").join("\n  ")}` : "";
     super(`gh failed (exit ${String(exitCode ?? "?")}): ${command}${detail}`);
-    this.name = "GhError";
+    this.name = "GitHubError";
     this.command = command;
     this.exitCode = exitCode;
     this.stderr = stderr;

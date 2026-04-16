@@ -54,7 +54,7 @@ export async function collectGraphiteCheck(
               commit {
                 committedDate
                 statusCheckRollup {
-                  contexts(first:50) {
+                  contexts(first:100) {
                     nodes {
                       ... on CheckRun {
                         __typename

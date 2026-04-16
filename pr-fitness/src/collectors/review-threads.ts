@@ -21,7 +21,7 @@ export async function collectReviewThreads(
               }
             }
           }
-          reviewRequests(first:20) {
+          reviewRequests(first:100) {
             nodes {
               requestedReviewer {
                 ... on User { __typename login }

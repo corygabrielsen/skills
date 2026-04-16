@@ -4,9 +4,13 @@ import { computeCi } from "../../src/compute/ci.js";
 import type { GitHubCheck } from "../../src/types/input.js";
 import { makeCheck } from "../fixtures/helpers.js";
 
-describe("computeCi", () => {
+function allRequired(checks: readonly GitHubCheck[]): string[] {
+  return checks.map((c) => c.name);
+}
+
+describe("computeCi — required counts", () => {
   it("counts empty checks as all zeros", () => {
-    const result = computeCi([]);
+    const result = computeCi([], []);
     assert.equal(result.pass, 0);
     assert.equal(result.fail, 0);
     assert.equal(result.pending, 0);
@@ -19,7 +23,7 @@ describe("computeCi", () => {
       makeCheck("B", "SKIPPED"),
       makeCheck("C", "NEUTRAL"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.pass, 3);
     assert.equal(result.fail, 0);
     assert.equal(result.pending, 0);
@@ -32,7 +36,7 @@ describe("computeCi", () => {
       makeCheck("Lint", "SUCCESS"),
       makeCheck("E2E", "FAILURE"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.fail, 2);
     assert.deepEqual(result.failed, ["Unit Tests", "E2E"]);
   });
@@ -48,7 +52,7 @@ describe("computeCi", () => {
       },
       makeCheck("Build", "SUCCESS"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.failed_details.length, 1);
     assert.equal(result.failed_details[0]!.name, "Lint");
     assert.equal(result.failed_details[0]!.description, "3 errors found");
@@ -61,7 +65,7 @@ describe("computeCi", () => {
       makeCheck("Deploy", "QUEUED"),
       makeCheck("Lint", "SUCCESS"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.pending, 2);
     assert.deepEqual(result.pending_names, ["Build", "Deploy"]);
   });
@@ -75,7 +79,7 @@ describe("computeCi", () => {
       makeCheck("E", "QUEUED"),
       makeCheck("F", "NEUTRAL"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.pass, 3);
     assert.equal(result.fail, 1);
     assert.equal(result.pending, 2);
@@ -87,9 +91,10 @@ describe("computeCi", () => {
       makeCheck("Lint", "SUCCESS"),
       makeCheck("Graphite / mergeability_check", "IN_PROGRESS"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, ["Lint"]);
     assert.equal(result.total, 1);
     assert.equal(result.pending, 0);
+    assert.equal(result.advisory.total, 0);
   });
 
   it("tracks most recent completed_at across all checks", () => {
@@ -98,7 +103,7 @@ describe("computeCi", () => {
       { ...makeCheck("B", "SUCCESS"), completedAt: "2026-03-30T09:00:00Z" },
       { ...makeCheck("C", "FAILURE"), completedAt: "2026-03-30T08:30:00Z" },
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.completed_at, "2026-03-30T09:00:00Z");
   });
 
@@ -107,12 +112,51 @@ describe("computeCi", () => {
       makeCheck("Build", "IN_PROGRESS"),
       makeCheck("Test", "QUEUED"),
     ];
-    const result = computeCi(checks);
+    const result = computeCi(checks, allRequired(checks));
     assert.equal(result.completed_at, null);
   });
 
   it("returns null completed_at for empty checks", () => {
-    const result = computeCi([]);
+    const result = computeCi([], []);
     assert.equal(result.completed_at, null);
+  });
+});
+
+describe("computeCi — required vs advisory split", () => {
+  it("routes non-required failing checks to advisory, keeps required counts clean", () => {
+    const checks = [
+      makeCheck("Unit Tests", "SUCCESS"),
+      makeCheck("Mergeability Check", "SUCCESS"),
+      makeCheck("Run Claude Code Review", "FAILURE"),
+    ];
+    const result = computeCi(checks, ["Unit Tests", "Mergeability Check"]);
+    assert.equal(result.fail, 0);
+    assert.deepEqual(result.failed, []);
+    assert.equal(result.advisory.fail, 1);
+    assert.deepEqual(result.advisory.failed, ["Run Claude Code Review"]);
+    assert.equal(result.advisory.failed_details.length, 1);
+  });
+
+  it("treats every check as advisory when required list is empty", () => {
+    const checks = [
+      makeCheck("Unit Tests", "SUCCESS"),
+      makeCheck("Lint", "FAILURE"),
+    ];
+    const result = computeCi(checks, []);
+    assert.equal(result.total, 0);
+    assert.equal(result.fail, 0);
+    assert.equal(result.advisory.total, 2);
+    assert.equal(result.advisory.fail, 1);
+    assert.deepEqual(result.advisory.failed, ["Lint"]);
+  });
+
+  it("keeps pending split too: required pending vs advisory pending", () => {
+    const checks = [
+      makeCheck("Unit Tests", "IN_PROGRESS"),
+      makeCheck("Optional E2E", "QUEUED"),
+    ];
+    const result = computeCi(checks, ["Unit Tests"]);
+    assert.deepEqual(result.pending_names, ["Unit Tests"]);
+    assert.deepEqual(result.advisory.pending_names, ["Optional E2E"]);
   });
 });

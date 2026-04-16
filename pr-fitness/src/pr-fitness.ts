@@ -109,7 +109,7 @@ export async function prFitness(
   const data = await collect(repo, pr);
 
   const lifecycle = toLifecycle(data.pr.state);
-  const ci = computeCi(data.checks);
+  const ci = computeCi(data.checks, data.requiredCheckNames);
   const reviews = computeReviews(
     data.pr,
     data.threads,

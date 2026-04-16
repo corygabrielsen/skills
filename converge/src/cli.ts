@@ -17,7 +17,7 @@ import { execFileSync } from "node:child_process";
 import { converge } from "./converge.js";
 import { detectPrProgressTarget } from "./pr-progress.js";
 import { gcStaleSessions } from "./session.js";
-import { FitnessId, SkillRef } from "./types/index.js";
+import { FitnessId, PR_FITNESS, SkillRef } from "./types/index.js";
 import type {
   HaltReport,
   HaltStatus,
@@ -173,7 +173,7 @@ function sanitize(s: string): string {
 }
 
 function deriveSessionId(fitness: FitnessIdT, args: readonly string[]): string {
-  if (fitness === "pr-fitness") {
+  if (fitness === PR_FITNESS) {
     const repo = args[0];
     const pr = args[1];
     if (repo !== undefined && pr !== undefined) {
@@ -231,7 +231,7 @@ function normalizePrFitnessArgs(
   fitness: FitnessIdT,
   args: readonly string[],
 ): readonly string[] {
-  if (fitness !== "pr-fitness") return args;
+  if (fitness !== PR_FITNESS) return args;
   if (args.length !== 1 || !/^\d+$/.test(args[0] ?? "")) return args;
   try {
     const repo = execFileSync(

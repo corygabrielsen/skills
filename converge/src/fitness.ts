@@ -26,7 +26,7 @@ import type {
   FitnessReport,
   JsonValue,
 } from "./types/index.js";
-import { PositiveSeconds, Score } from "./types/index.js";
+import { PR_FITNESS, PositiveSeconds, Score } from "./types/index.js";
 import { FitnessUnavailableError, PreconditionError } from "./util/errors.js";
 import { verbose } from "./util/log.js";
 import { sleep } from "./util/sleep.js";
@@ -76,7 +76,7 @@ function resolveCommand(
   fitnessName: FitnessId,
   fitnessArgs: readonly string[],
 ): readonly string[] {
-  if (fitnessName === "pr-fitness") {
+  if (fitnessName === PR_FITNESS) {
     const cli = path.join(
       os.homedir(),
       "code",

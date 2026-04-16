@@ -73,6 +73,8 @@ export function FitnessId(raw: string): FitnessId {
   return id as FitnessId;
 }
 
+export const PR_FITNESS: FitnessId = "pr-fitness" as FitnessId;
+
 // ---------------------------------------------------------------------------
 // SkillRef — a skill reference as an LLM types it in a prompt or as it
 // appears in a resume_cmd. Always has a leading `/`. Built from a

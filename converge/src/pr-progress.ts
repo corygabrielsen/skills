@@ -24,6 +24,7 @@ import type {
   FitnessReport,
   HaltReport,
 } from "./types/index.js";
+import { PR_FITNESS } from "./types/index.js";
 import { verbose } from "./util/log.js";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,7 @@ export function detectPrProgressTarget(
   fitness: FitnessId,
   args: readonly string[],
 ): PrProgressTarget | null {
-  if (fitness !== "pr-fitness") return null;
+  if (fitness !== PR_FITNESS) return null;
   const repo = args[0];
   const pr = args[1];
   if (repo === undefined || pr === undefined) return null;

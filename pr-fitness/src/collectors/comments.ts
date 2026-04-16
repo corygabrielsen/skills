@@ -8,6 +8,7 @@ export async function collectComments(
   return gh<GitHubIssueComment[]>([
     "api",
     `repos/${repo}/issues/${String(pr)}/comments`,
+    "--paginate",
     "--jq",
     "[.[] | {login: .user.login, id: .id}]",
   ]);

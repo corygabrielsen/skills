@@ -9,6 +9,7 @@ export async function collectReviews(
   return gh<GitHubPullRequestReview[]>([
     "api",
     `repos/${repo}/pulls/${String(pr)}/reviews`,
+    "--paginate",
     "--jq",
     "[.[] | {user: .user.login, state, commit_id, submitted_at, body}]",
   ]);

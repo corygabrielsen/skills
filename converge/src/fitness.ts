@@ -274,6 +274,16 @@ function parseAndValidate(stdout: string): FitnessReport {
     ...(isStringMap(obj["activity_state"])
       ? { activity_state: obj["activity_state"] }
       : {}),
+    ...(nonEmptyString(obj["score_emoji"])
+      ? { score_emoji: obj["score_emoji"] }
+      : {}),
+    ...(nonEmptyString(obj["score_label"])
+      ? { score_label: obj["score_label"] }
+      : {}),
+    ...(nonEmptyString(obj["target_label"])
+      ? { target_label: obj["target_label"] }
+      : {}),
+    ...(isAxisArray(obj["axes"]) ? { axes: obj["axes"] } : {}),
     ...(isTerminal(obj["terminal"]) ? { terminal: obj["terminal"] } : {}),
   };
   return report;
@@ -301,6 +311,20 @@ function isStringMap(v: unknown): v is Record<string, string> {
     if (typeof val !== "string") return false;
   }
   return true;
+}
+
+function isAxisArray(
+  v: unknown,
+): v is readonly { name: string; emoji: string; summary: string }[] {
+  if (!Array.isArray(v)) return false;
+  return v.every(
+    (x) =>
+      typeof x === "object" &&
+      x !== null &&
+      typeof (x as Record<string, unknown>)["name"] === "string" &&
+      typeof (x as Record<string, unknown>)["emoji"] === "string" &&
+      typeof (x as Record<string, unknown>)["summary"] === "string",
+  );
 }
 
 function isTerminal(v: unknown): v is { readonly kind: string } {

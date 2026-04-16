@@ -110,30 +110,32 @@ async function postComment(
 // ---------------------------------------------------------------------------
 
 /**
- * Render the score line for a progress comment.
- *
- * `score_display → target_display` when below target (the convergence
- * journey); just `score_display` when at/above target. Displays are
- * fitness-owned; converge falls back to em-dashes if unset so it stays
- * agnostic to the skill's vocabulary.
+ * Score hero line. Target emoji hidden until score reaches it — the
+ * reveal IS the dopamine hit. Below target: `{emoji} {label} → {text}`.
+ * At target: `{emoji} {label}`.
  */
 function scoreLine(report: FitnessReport): string {
-  const s = report.score_display ?? "—";
-  const t = report.target_display ?? "—";
-  if (report.score >= report.target) return s;
-  return `${s} → ${t}`;
+  const emoji = report.score_emoji ?? "";
+  const label = report.score_label ?? String(report.score as number);
+  if (report.score >= report.target) return `${emoji} ${label}`.trim();
+  const target = report.target_label ?? String(report.target as number);
+  return `${emoji} ${label} → ${target}`.trim();
 }
 
-function formatAction(action: Action): string {
-  return `\`${action.kind}\` · ${action.automation} · ${action.target_effect}`;
+function appendAxes(lines: string[], axes: FitnessReport["axes"]): void {
+  if (axes === undefined || axes.length === 0) return;
+  lines.push("");
+  for (const a of axes) {
+    const summary = a.summary.length > 0 ? ` ${a.summary}` : "";
+    lines.push(`${a.emoji} ${a.name}${summary}`);
+  }
 }
 
 function appendNotes(lines: string[], notes: FitnessReport["notes"]): void {
   if (notes === undefined || notes.length === 0) return;
   lines.push("");
-  lines.push("**Notes:**");
   for (const n of notes) {
-    lines.push(`- ${n}`);
+    lines.push(n);
   }
 }
 
@@ -143,21 +145,12 @@ function iterationBody(
   action: Action,
 ): string {
   const lines: string[] = [];
-  lines.push(`🤖 **/converge** · iter ${String(iter)}`);
+  lines.push(`🤖 **converge** · iter ${String(iter)}`);
   lines.push("");
-  lines.push(`**Score:** ${scoreLine(report)}`);
-  lines.push(`**Action:** ${formatAction(action)}`);
-  if (report.status !== undefined) {
-    lines.push(`**Status:** ${report.status}`);
-  }
+  lines.push(scoreLine(report));
+  appendAxes(lines, report.axes);
   lines.push("");
   lines.push(`> ${action.description}`);
-  if (action.automation === "full") {
-    lines.push("");
-    lines.push("```");
-    lines.push(action.execute.join(" "));
-    lines.push("```");
-  }
   appendNotes(lines, report.notes);
   return lines.join("\n");
 }
@@ -167,36 +160,34 @@ function haltBody(
   lastReport: FitnessReport | undefined,
 ): string {
   const lines: string[] = [];
-  const statusSuffix = halt.status === "success" ? " 🎉" : "";
+  const isSuccess = halt.status === "success";
+  const suffix = isSuccess ? " 🎉" : "";
   lines.push(
-    `🤖 **/converge halt** · iter ${String(halt.iterations)}${statusSuffix}`,
+    `🤖 **converge${isSuccess ? "" : " halt"}** · iter ${String(halt.iterations)}${suffix}`,
   );
   lines.push("");
-  lines.push(`**Status:** \`${halt.status}\``);
 
-  // Reuse the iteration shape. `halt.final_score` equals `lastReport.score`
-  // by construction (converge sets final_score from the same observation).
-  // Skipped for fitness_unavailable where no score was ever observed.
-  if (halt.status !== "fitness_unavailable" && lastReport !== undefined) {
-    lines.push(`**Score:** ${scoreLine(lastReport)}`);
+  if (lastReport !== undefined && halt.status !== "fitness_unavailable") {
+    lines.push(scoreLine(lastReport));
+    appendAxes(lines, lastReport.axes);
   }
 
   switch (halt.status) {
     case "success":
+      lines.push("");
+      lines.push("Target reached.");
       break;
     case "pr_terminal":
       lines.push("");
       lines.push(`PR is ${halt.terminal.kind}.`);
       break;
     case "llm_needed":
-      lines.push(`**Handoff:** ${formatAction(halt.action)}`);
       lines.push("");
       lines.push(`> ${halt.action.description}`);
       lines.push("");
       lines.push(`Resume: \`${halt.resume_cmd.join(" ")}\``);
       break;
     case "hil":
-      lines.push(`**Handoff:** ${formatAction(halt.action)}`);
       lines.push("");
       lines.push(`> ${halt.action.description}`);
       break;
@@ -210,7 +201,8 @@ function haltBody(
       break;
     case "error":
     case "fitness_unavailable":
-      lines.push(`**Cause:** ${halt.cause.message}`);
+      lines.push("");
+      lines.push(`Cause: ${halt.cause.message}`);
       break;
     case "cancelled":
       lines.push("");

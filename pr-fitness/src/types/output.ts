@@ -24,8 +24,15 @@ export interface PullRequestFitnessReport {
    * reserved name for a future tier above platinum — not yet emitted.
    */
   readonly score: Score;
+  /**
+   * Branded presentation of `score` for human-readable trace output —
+   * e.g. `"🥇 (gold)"`. /converge renders this in PR trace comments.
+   */
+  readonly score_display: string;
   /** Target score the caller asked for (default 💠 platinum, 4). */
   readonly target: Score;
+  /** Branded presentation of `target`, mirror of `score_display`. */
+  readonly target_display: string;
   /**
    * Terminal state — present iff the PR can no longer make progress
    * (merged, closed). /converge reads `kind` opaquely and halts.
@@ -47,8 +54,12 @@ export interface PullRequestFitnessReport {
   readonly graphite: GraphiteCheck;
   /** Ordered action plan to increase fitness. */
   readonly actions: readonly import("./action.js").Action[];
-  /** Human-readable one-liner for logging. */
-  readonly summary: string;
+  /**
+   * Human-readable one-liner. Named `status` to match /converge's
+   * `FitnessReport.status` contract so downstream consumers don't need
+   * a field-name translation layer.
+   */
+  readonly status: string;
   /** ISO 8601 timestamp of when this report was generated. */
   readonly timestamp: string;
   /** Milliseconds taken to generate this report. */

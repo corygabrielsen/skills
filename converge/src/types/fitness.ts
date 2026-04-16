@@ -18,6 +18,14 @@ export interface FitnessReport {
   /** Opaque human-readable status from the skill (e.g. a label). */
   readonly status?: string;
   /**
+   * Branded rendering of `score` for human-readable output — typically
+   * `"<emoji> (<label>)"`. When absent, /converge falls back to the
+   * numeric score.
+   */
+  readonly score_display?: string;
+  /** Branded rendering of `target`, mirror of `score_display`. */
+  readonly target_display?: string;
+  /**
    * Terminal state external to the fitness loop (e.g. PR merged/closed).
    * `kind` vocabulary is owned by the skill; /converge treats it opaquely
    * and halts `pr_terminal`.

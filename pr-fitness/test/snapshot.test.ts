@@ -35,7 +35,11 @@ describe("output contract", () => {
     assert.equal(typeof report.mergeable, "boolean");
     assert.ok(Array.isArray(report.blockers));
     assert.equal(typeof report.version, "string");
-    assert.equal(typeof report.summary, "string");
+    assert.equal(typeof report.status, "string");
+    assert.equal(typeof report.score_display, "string");
+    assert.ok(report.score_display.length > 0);
+    assert.equal(typeof report.target_display, "string");
+    assert.ok(report.target_display.length > 0);
     assert.equal(typeof report.timestamp, "string");
     assert.equal(typeof report.duration_ms, "number");
 

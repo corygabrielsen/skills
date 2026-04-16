@@ -27,6 +27,11 @@ import {
   writeInProgress,
 } from "./halt.js";
 import { appendHistory, openSession } from "./session.js";
+import {
+  reportHalt,
+  reportIteration,
+  type PrProgressTarget,
+} from "./pr-progress.js";
 import type {
   Action,
   FitnessReport,
@@ -55,6 +60,13 @@ export interface ConvergeOpts {
    * Example: `["/converge", "/pr-fitness", "example-org/repo", "566"]`.
    */
   readonly resumeCmd: readonly string[];
+  /**
+   * Optional PR to annotate with per-iteration + halt progress comments.
+   * Null disables reporting. Built by `detectPrProgressTarget` at the
+   * CLI layer; the loop itself is fitness-agnostic and only forwards it
+   * to pr-progress.
+   */
+  readonly prProgressTarget: PrProgressTarget | null;
   readonly signal: AbortSignal;
 }
 
@@ -115,6 +127,18 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
   const startIter = history.length + 1;
   const zeroScore = Score(0);
   let lastScore = history[history.length - 1]?.score ?? zeroScore;
+  // Most recent successful observation — kept for halt-time rendering so
+  // the halt comment can use the branded score display instead of a
+  // stale numeric. Undefined until the first observation succeeds.
+  let lastReport: FitnessReport | undefined;
+
+  // Per-iteration PR progress posts chain onto this tail so the loop's
+  // critical path never blocks on a `gh` call. The chain (vs parallel
+  // fire-and-forget) preserves timeline order across iterations and
+  // caps concurrency at 1 — avoids tripping GitHub's secondary rate
+  // limit on writes to the same PR. `finalize` awaits the tail before
+  // the halt comment so iteration comments land first.
+  let progressTail: Promise<void> = Promise.resolve();
 
   // Stub exit.json so a consumer never reads a stale prior run's halt as
   // belonging to this invocation. Overwritten by finalize() on halt.
@@ -125,6 +149,10 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
     await writeHalt(sessionDir, report);
     printHaltLine(report);
     printResumeHint(report);
+    await progressTail;
+    await reportHalt(opts.prProgressTarget, report, lastReport).catch(
+      () => undefined,
+    );
     return report;
   };
 
@@ -181,6 +209,7 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       }
 
       lastScore = report.score;
+      lastReport = report;
 
       // Decide.
       const action = pickAction(report.actions);
@@ -225,6 +254,11 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       }
 
       printTraceLine(iter, report.score, action);
+      progressTail = progressTail.then(() =>
+        reportIteration(opts.prProgressTarget, iter, report, action).catch(
+          () => undefined,
+        ),
+      );
 
       // Act.
       switch (action.automation) {

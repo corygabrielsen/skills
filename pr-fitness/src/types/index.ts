@@ -58,4 +58,6 @@ export {
   COPILOT_TIER_EMOJI,
   compareCopilotTier,
   formatCopilotTier,
+  formatScoreOrdinal,
+  tierForScore,
 } from "./copilot.js";

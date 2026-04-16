@@ -16,8 +16,8 @@ export async function collectReviewThreads(
           reviewThreads(first:100) {
             nodes {
               isResolved
-              comments(first:1) {
-                nodes { author { login } }
+              comments(first:100) {
+                nodes { author { login } createdAt }
               }
             }
           }

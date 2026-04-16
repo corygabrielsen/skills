@@ -60,7 +60,10 @@ export interface GitHubPullRequestReviewThreadsResponse {
           nodes: readonly {
             isResolved: boolean;
             comments: {
-              nodes: readonly { author: { login: string } }[];
+              nodes: readonly {
+                author: { login: string };
+                createdAt: string;
+              }[];
             };
           }[];
         };

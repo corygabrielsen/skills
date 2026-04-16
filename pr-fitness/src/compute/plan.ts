@@ -210,9 +210,19 @@ export function plan(
               },
             });
           } else {
+            // Two gold sub-cases land here:
+            //   stale>0: author replied/resolved without pushing — Copilot
+            //            hasn't seen the reply. Rerequest shows it.
+            //   else:    author pushed commits past latest review. Rerequest
+            //            gets Copilot onto HEAD.
+            const staleCount = copilot.threads.stale;
+            const description =
+              staleCount > 0
+                ? `Re-request Copilot so it reads ${String(staleCount)} post-review reply/replies to reach ${platinumDisplay}`
+                : `Re-request Copilot review on HEAD to reach ${platinumDisplay}`;
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
-              description: `Re-request Copilot review on HEAD to reach ${platinumDisplay}`,
+              description,
               automation: "full",
               target_effect: "advances",
               type: { kind: "rerequest_copilot" },

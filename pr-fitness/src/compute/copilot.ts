@@ -156,13 +156,27 @@ export function computeCopilotActivity(
   return { state: "requested", requestedAt: latest.requestedAt };
 }
 
+/**
+ * Summarize Copilot review threads.
+ *
+ * A thread is Copilot-authored iff its first comment is by Copilot.
+ * A Copilot thread is `stale` iff it has any non-Copilot comment with
+ * `createdAt > latestReviewedAt` — i.e., a reply the reviewer hasn't
+ * observed. When `latestReviewedAt` is null no review has completed so
+ * no thread can be stale.
+ *
+ * ISO 8601 strings compare lexicographically; that's the only ordering
+ * required here.
+ */
 export function countCopilotThreads(
   threads: GitHubPullRequestReviewThreadsResponse,
+  latestReviewedAt: Timestamp | null,
 ): CopilotThreadSummary {
   const nodes = threads.data.repository.pullRequest.reviewThreads.nodes;
   let total = 0;
   let resolved = 0;
   let unresolved = 0;
+  let stale = 0;
 
   for (const t of nodes) {
     const first = t.comments.nodes[0];
@@ -171,9 +185,19 @@ export function countCopilotThreads(
     total++;
     if (t.isResolved) resolved++;
     else unresolved++;
+
+    if (latestReviewedAt !== null) {
+      for (const c of t.comments.nodes) {
+        if (isCopilot(c.author.login)) continue;
+        if (c.createdAt > latestReviewedAt) {
+          stale++;
+          break;
+        }
+      }
+    }
   }
 
-  return { total, resolved, unresolved };
+  return { total, resolved, unresolved, stale };
 }
 
 export function scoreCopilotTier(
@@ -186,6 +210,7 @@ export function scoreCopilotTier(
   if (latest.reviewedAt === null) return "bronze";
   if (threads.unresolved > 0) return "bronze";
   if (latest.commentsSuppressed > 0) return "silver";
+  if (threads.stale > 0) return "gold";
   if (latest.commit === head) return "platinum";
   return "gold";
 }
@@ -213,7 +238,8 @@ export function computeCopilot(input: {
   const copilotReviews = input.reviews.filter((r) => isCopilot(r.user));
   const timeline = copilotTimeline(input.events);
   const rounds = correlateReviewRounds(timeline, copilotReviews);
-  const threads = countCopilotThreads(input.threads);
+  const latestReviewedAt = rounds.at(-1)?.reviewedAt ?? null;
+  const threads = countCopilotThreads(input.threads, latestReviewedAt);
   const activity = computeCopilotActivity(
     timeline,
     rounds,

@@ -59,7 +59,14 @@ export function makeThreads(
           reviewThreads: {
             nodes: resolved.map((isResolved) => ({
               isResolved,
-              comments: { nodes: [{ author: { login: "user" } }] },
+              comments: {
+                nodes: [
+                  {
+                    author: { login: "user" },
+                    createdAt: "2026-03-30T08:00:00Z",
+                  },
+                ],
+              },
             })),
           },
           reviewRequests: { nodes: reviewRequests },

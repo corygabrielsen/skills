@@ -34,6 +34,7 @@ import {
 } from "./pr-progress.js";
 import type {
   Action,
+  FitnessId,
   FitnessReport,
   HaltBody,
   HaltReport,
@@ -50,7 +51,7 @@ import { verbose } from "./util/log.js";
 import { sleep } from "./util/sleep.js";
 
 export interface ConvergeOpts {
-  readonly fitness: string;
+  readonly fitness: FitnessId;
   readonly args: readonly string[];
   readonly maxIterations: number;
   readonly sessionId: string;

@@ -20,7 +20,12 @@ import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { Action, FitnessReport, JsonValue } from "./types/index.js";
+import type {
+  Action,
+  FitnessId,
+  FitnessReport,
+  JsonValue,
+} from "./types/index.js";
 import { PositiveSeconds, Score } from "./types/index.js";
 import { FitnessUnavailableError, PreconditionError } from "./util/errors.js";
 import { verbose } from "./util/log.js";
@@ -68,7 +73,7 @@ function exponentialBackoffMs(attempt: number): number {
 // ---------------------------------------------------------------------------
 
 function resolveCommand(
-  fitnessName: string,
+  fitnessName: FitnessId,
   fitnessArgs: readonly string[],
 ): readonly string[] {
   if (fitnessName === "pr-fitness") {
@@ -360,7 +365,7 @@ function isJsonValue(v: unknown): v is JsonValue {
 // ---------------------------------------------------------------------------
 
 export async function invokeFitness(
-  fitnessName: string,
+  fitnessName: FitnessId,
   fitnessArgs: readonly string[],
   signal: AbortSignal,
 ): Promise<FitnessReport> {

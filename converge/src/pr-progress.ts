@@ -18,7 +18,12 @@
 
 import { spawn } from "node:child_process";
 
-import type { Action, FitnessReport, HaltReport } from "./types/index.js";
+import type {
+  Action,
+  FitnessId,
+  FitnessReport,
+  HaltReport,
+} from "./types/index.js";
 import { verbose } from "./util/log.js";
 
 // ---------------------------------------------------------------------------
@@ -39,7 +44,7 @@ const PR_RE = /^[0-9]+$/;
  * "progress reporting disabled" rather than an error.
  */
 export function detectPrProgressTarget(
-  fitness: string,
+  fitness: FitnessId,
   args: readonly string[],
 ): PrProgressTarget | null {
   if (fitness !== "pr-fitness") return null;

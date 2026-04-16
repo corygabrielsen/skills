@@ -1,11 +1,11 @@
-import type { GhIssueComment } from "../types/index.js";
+import type { GitHubIssueComment } from "../types/index.js";
 import { gh } from "../util/gh.js";
 
 export async function collectComments(
   repo: string,
   pr: number,
-): Promise<readonly GhIssueComment[]> {
-  return gh<GhIssueComment[]>([
+): Promise<readonly GitHubIssueComment[]> {
+  return gh<GitHubIssueComment[]>([
     "api",
     `repos/${repo}/issues/${String(pr)}/comments`,
     "--jq",

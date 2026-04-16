@@ -1,23 +1,23 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import type { PrFitnessReport } from "../src/types/output.js";
+import type { PullRequestFitnessReport } from "../src/types/output.js";
 
 /**
- * Validates that a captured fixture conforms to the PrFitnessReport
+ * Validates that a captured fixture conforms to the PullRequestFitnessReport
  * contract. This doesn't test live API calls — it ensures the output
  * shape is stable and all required fields are present.
  */
 describe("output contract", () => {
-  async function loadFixture(): Promise<PrFitnessReport> {
+  async function loadFixture(): Promise<PullRequestFitnessReport> {
     const raw = await readFile(
       new URL("./fixtures/pr-1563.json", import.meta.url),
       "utf-8",
     );
-    return JSON.parse(raw) as PrFitnessReport;
+    return JSON.parse(raw) as PullRequestFitnessReport;
   }
 
-  it("fixture conforms to PrFitnessReport shape", async () => {
+  it("fixture conforms to PullRequestFitnessReport shape", async () => {
     const report = await loadFixture();
 
     // Top-level fields
@@ -75,6 +75,30 @@ describe("output contract", () => {
     assert.equal(typeof report.reviews.bot_comments, "number");
     assert.equal(typeof report.reviews.approvals_on_head, "number");
     assert.equal(typeof report.reviews.approvals_stale, "number");
+
+    // Copilot (discriminated union on `configured`)
+    assert.equal(typeof report.copilot.configured, "boolean");
+    if (report.copilot.configured) {
+      assert.equal(typeof report.copilot.config.enabled, "boolean");
+      assert.equal(typeof report.copilot.config.reviewOnPush, "boolean");
+      assert.equal(
+        typeof report.copilot.config.reviewDraftPullRequests,
+        "boolean",
+      );
+      assert.ok(
+        ["unconfigured", "idle", "requested", "working", "reviewed"].includes(
+          report.copilot.activity.state,
+        ),
+      );
+      assert.ok(Array.isArray(report.copilot.rounds));
+      assert.equal(typeof report.copilot.threads.total, "number");
+      assert.equal(typeof report.copilot.threads.resolved, "number");
+      assert.equal(typeof report.copilot.threads.unresolved, "number");
+      assert.ok(
+        ["bronze", "silver", "gold", "platinum"].includes(report.copilot.tier),
+      );
+      assert.equal(typeof report.copilot.fresh, "boolean");
+    }
 
     // State
     assert.ok(

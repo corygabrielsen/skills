@@ -43,4 +43,8 @@ export type ActionType =
   | { kind: "add_description" }
   | { kind: "wait_for_ci"; pending: readonly string[] }
   | { kind: "wait_for_review"; reviewers: readonly string[] }
-  | { kind: "wait_for_human" };
+  | { kind: "wait_for_human" }
+  | { kind: "rerequest_copilot" }
+  | { kind: "wait_for_copilot_ack" }
+  | { kind: "wait_for_copilot_review" }
+  | { kind: "address_copilot_suppressed"; count: number };

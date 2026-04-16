@@ -1,11 +1,11 @@
-import type { GhCheck } from "../types/index.js";
+import type { GitHubCheck } from "../types/index.js";
 import { gh } from "../util/gh.js";
 
 export async function collectChecks(
   repo: string,
   pr: number,
-): Promise<readonly GhCheck[]> {
-  return gh<GhCheck[]>([
+): Promise<readonly GitHubCheck[]> {
+  return gh<GitHubCheck[]>([
     "pr",
     "checks",
     String(pr),

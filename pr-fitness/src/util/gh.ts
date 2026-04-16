@@ -8,7 +8,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { GhError, PreconditionError } from "./errors.js";
+import { GitHubError, PreconditionError } from "./errors.js";
 
 const exec = promisify(execFile);
 
@@ -26,7 +26,7 @@ export async function gh<T>(args: readonly string[]): Promise<T> {
       );
     }
     if (isExecError(error)) {
-      throw new GhError(
+      throw new GitHubError(
         `gh ${args.join(" ")}`,
         error.code !== undefined ? Number(error.code) : null,
         error.stderr ?? "",

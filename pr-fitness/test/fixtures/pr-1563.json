@@ -30,6 +30,9 @@
     "pending_reviews": { "bots": [], "humans": [] },
     "bot_reviews": []
   },
+  "copilot": {
+    "configured": false
+  },
   "state": {
     "conflict": "UNKNOWN",
     "draft": false,

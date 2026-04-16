@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeCi } from "../../src/compute/ci.js";
-import type { GhCheck } from "../../src/types/input.js";
+import type { GitHubCheck } from "../../src/types/input.js";
 import { makeCheck } from "../fixtures/helpers.js";
 
 describe("computeCi", () => {
@@ -38,7 +38,7 @@ describe("computeCi", () => {
   });
 
   it("includes failed_details with description and link", () => {
-    const checks: GhCheck[] = [
+    const checks: GitHubCheck[] = [
       {
         name: "Lint",
         state: "FAILURE",
@@ -93,7 +93,7 @@ describe("computeCi", () => {
   });
 
   it("tracks most recent completed_at across all checks", () => {
-    const checks: GhCheck[] = [
+    const checks: GitHubCheck[] = [
       { ...makeCheck("A", "SUCCESS"), completedAt: "2026-03-30T08:00:00Z" },
       { ...makeCheck("B", "SUCCESS"), completedAt: "2026-03-30T09:00:00Z" },
       { ...makeCheck("C", "FAILURE"), completedAt: "2026-03-30T08:30:00Z" },

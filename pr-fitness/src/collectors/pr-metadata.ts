@@ -1,4 +1,4 @@
-import type { GhPrView } from "../types/index.js";
+import type { GitHubPullRequestView } from "../types/index.js";
 import { gh } from "../util/gh.js";
 
 const PR_FIELDS = [
@@ -24,8 +24,8 @@ const PR_FIELDS = [
 export async function collectPrMetadata(
   repo: string,
   pr: number,
-): Promise<GhPrView> {
-  return gh<GhPrView>([
+): Promise<GitHubPullRequestView> {
+  return gh<GitHubPullRequestView>([
     "pr",
     "view",
     String(pr),

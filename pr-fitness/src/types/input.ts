@@ -5,8 +5,10 @@
  * Only fields we actually use are typed — the rest is ignored.
  */
 
+import type { GitCommitSha, GitHubLogin, Timestamp } from "./branded.js";
+
 /** gh pr view --json ... */
-export interface GhPrView {
+export interface GitHubPullRequestView {
   title: string;
   number: number;
   url: string;
@@ -32,7 +34,7 @@ export interface GhPrView {
 }
 
 /** gh pr checks --json name,state,description,link,completedAt */
-export interface GhCheck {
+export interface GitHubCheck {
   name: string;
   state:
     | "SUCCESS"
@@ -50,7 +52,7 @@ export interface GhCheck {
 }
 
 /** GraphQL reviewThreads + reviewRequests response */
-export interface GhReviewThreadsResponse {
+export interface GitHubPullRequestReviewThreadsResponse {
   data: {
     repository: {
       pullRequest: {
@@ -77,15 +79,23 @@ export interface GhReviewThreadsResponse {
 }
 
 /** gh api repos/.../issues/.../comments */
-export interface GhIssueComment {
+export interface GitHubIssueComment {
   id: number;
   login: string;
 }
 
 /** gh api repos/.../pulls/.../reviews */
-export interface GhReview {
-  user: string;
-  state: string;
-  commit_id: string;
-  submitted_at: string;
+export interface GitHubPullRequestReview {
+  readonly user: GitHubLogin;
+  readonly state: GitHubPullRequestReviewState;
+  readonly commit_id: GitCommitSha;
+  readonly submitted_at: Timestamp;
+  readonly body: string;
 }
+
+export type GitHubPullRequestReviewState =
+  | "APPROVED"
+  | "CHANGES_REQUESTED"
+  | "COMMENTED"
+  | "DISMISSED"
+  | "PENDING";

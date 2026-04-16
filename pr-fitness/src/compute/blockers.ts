@@ -1,7 +1,7 @@
 import type {
   CiSummary,
   GraphiteStatus,
-  PrState,
+  PullRequestState,
   ReviewSummary,
 } from "../types/index.js";
 
@@ -9,7 +9,7 @@ import type {
 export function computeBlockers(
   ci: CiSummary,
   reviews: ReviewSummary,
-  state: PrState,
+  state: PullRequestState,
   graphite: GraphiteStatus,
 ): readonly string[] {
   const blockers: string[] = [];

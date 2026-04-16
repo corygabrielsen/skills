@@ -1,14 +1,15 @@
-import type { GhReview } from "../types/index.js";
+import type { GitHubPullRequestReview } from "../types/index.js";
+import type { PullRequestNumber, RepoSlug } from "../types/branded.js";
 import { gh } from "../util/gh.js";
 
 export async function collectReviews(
-  repo: string,
-  pr: number,
-): Promise<readonly GhReview[]> {
-  return gh<GhReview[]>([
+  repo: RepoSlug,
+  pr: PullRequestNumber,
+): Promise<readonly GitHubPullRequestReview[]> {
+  return gh<GitHubPullRequestReview[]>([
     "api",
     `repos/${repo}/pulls/${String(pr)}/reviews`,
     "--jq",
-    "[.[] | {user: .user.login, state, commit_id, submitted_at}]",
+    "[.[] | {user: .user.login, state, commit_id, submitted_at, body}]",
   ]);
 }

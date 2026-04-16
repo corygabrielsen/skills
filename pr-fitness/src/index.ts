@@ -13,16 +13,25 @@
 export { prFitness } from "./pr-fitness.js";
 
 export type {
-  PrFitnessReport,
+  PullRequestFitnessReport,
   Lifecycle,
   CiSummary,
   FailedCheck,
   ReviewSummary,
   ReviewDecision,
-  PrState,
+  PullRequestState,
   ConflictState,
   GraphiteCheck,
   GraphiteStatus,
 } from "./types/output.js";
 
 export type { Action, Automation, ActionType } from "./types/action.js";
+
+export type {
+  CopilotReport,
+  CopilotTier,
+  CopilotActivity,
+  CopilotReviewRound,
+  CopilotRepoConfig,
+  CopilotThreadSummary,
+} from "./types/copilot.js";

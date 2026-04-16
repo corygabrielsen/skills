@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeReviews } from "../../src/compute/reviews.js";
-import type { GhReview } from "../../src/types/input.js";
+import type { GitHubPullRequestReview } from "../../src/types/input.js";
 import { HEAD, makePr, makeReview, makeThreads } from "../fixtures/helpers.js";
 
 describe("computeReviews", () => {
@@ -27,7 +27,7 @@ describe("computeReviews", () => {
   });
 
   it("detects approvals on current HEAD", () => {
-    const reviews: GhReview[] = [
+    const reviews: GitHubPullRequestReview[] = [
       makeReview("APPROVED", HEAD, "alice"),
       makeReview("APPROVED", "old_sha", "bob"),
       makeReview("COMMENTED", HEAD, "charlie"),
@@ -117,7 +117,7 @@ describe("computeReviews", () => {
   });
 
   it("surfaces submitted bot reviews", () => {
-    const reviews: GhReview[] = [
+    const reviews: GitHubPullRequestReview[] = [
       makeReview("COMMENTED", HEAD, "copilot-pull-request-reviewer[bot]"),
       makeReview("APPROVED", HEAD, "audieleon"),
       makeReview("COMMENTED", HEAD, "cursor[bot]"),
@@ -132,7 +132,9 @@ describe("computeReviews", () => {
   });
 
   it("returns empty bot_reviews when no bots reviewed", () => {
-    const reviews: GhReview[] = [makeReview("APPROVED", HEAD, "audieleon")];
+    const reviews: GitHubPullRequestReview[] = [
+      makeReview("APPROVED", HEAD, "audieleon"),
+    ];
     const result = computeReviews(makePr(), makeThreads([]), [], reviews);
     assert.equal(result.bot_reviews.length, 0);
   });

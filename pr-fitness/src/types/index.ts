@@ -2,6 +2,8 @@ export type {
   PullRequestFitnessReport,
   Lifecycle,
   CiSummary,
+  CheckBucketSummary,
+  AdvisorySummary,
   FailedCheck,
   ReviewSummary,
   ReviewDecision,

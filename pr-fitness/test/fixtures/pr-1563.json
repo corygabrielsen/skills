@@ -22,7 +22,16 @@
     "failed": [],
     "pending_names": [],
     "failed_details": [],
-    "completed_at": "2026-03-30T07:55:00Z"
+    "completed_at": "2026-03-30T07:55:00Z",
+    "advisory": {
+      "pass": 0,
+      "fail": 0,
+      "pending": 0,
+      "total": 0,
+      "failed": [],
+      "pending_names": [],
+      "failed_details": []
+    }
   },
   "reviews": {
     "decision": "APPROVED",

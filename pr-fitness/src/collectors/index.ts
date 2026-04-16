@@ -20,12 +20,14 @@ import { collectGraphiteCheck } from "./graphite.js";
 import { collectIssueEvents } from "./issue-events.js";
 import { collectPrMetadata } from "./pr-metadata.js";
 import { collectRequestedReviewers } from "./requested-reviewers.js";
+import { collectRequiredCheckNames } from "./required-checks.js";
 import { collectReviewThreads } from "./review-threads.js";
 import { collectReviews } from "./reviews.js";
 
 export interface CollectedData {
   readonly pr: GitHubPullRequestView;
   readonly checks: readonly GitHubCheck[];
+  readonly requiredCheckNames: readonly string[];
   readonly threads: GitHubPullRequestReviewThreadsResponse;
   readonly comments: readonly GitHubIssueComment[];
   readonly reviews: readonly GitHubPullRequestReview[];
@@ -49,6 +51,7 @@ export async function collect(
   const [
     prData,
     checks,
+    requiredCheckNames,
     threads,
     comments,
     reviews,
@@ -59,6 +62,7 @@ export async function collect(
   ] = await Promise.all([
     collectPrMetadata(repo, pr),
     collectChecks(repo, pr),
+    collectRequiredCheckNames(repo, pr),
     collectReviewThreads(ownerPart, namePart, pr),
     collectComments(repo, pr),
     collectReviews(repo, pr),
@@ -73,6 +77,7 @@ export async function collect(
   return {
     pr: prData,
     checks,
+    requiredCheckNames,
     threads,
     comments,
     reviews,

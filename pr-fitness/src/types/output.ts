@@ -68,17 +68,38 @@ export interface PullRequestFitnessReport {
 
 export type Lifecycle = "open" | "merged" | "closed";
 
-export interface CiSummary {
+/** Bucketed check counts — shared shape between required and advisory. */
+export interface CheckBucketSummary {
   readonly pass: number;
   readonly fail: number;
   readonly pending: number;
   readonly total: number;
   readonly failed: readonly string[];
   readonly pending_names: readonly string[];
-  /** Details for failed checks (summary, link). */
   readonly failed_details: readonly FailedCheck[];
-  /** ISO 8601 — most recent check completion time. Null if no checks completed. */
+}
+
+/** Non-required check summary — reported but not gating. */
+export type AdvisorySummary = CheckBucketSummary;
+
+/**
+ * CI state for the PR.
+ *
+ * Top-level counts reflect **required** checks only — those that gate
+ * merge per branch protection or rulesets. Advisory-only failures (e.g.
+ * optional AI-review bots that hit upstream regressions) surface in
+ * `advisory` but never drive `fix_ci` actions or appear in blocker
+ * lists.
+ *
+ * When the PR has zero required checks configured, every check falls
+ * into `advisory` and the required counts are all zero — a legitimate
+ * state meaning "nothing is gating CI."
+ */
+export interface CiSummary extends CheckBucketSummary {
+  /** ISO 8601 — most recent check completion time across all checks. Null if none completed. */
   readonly completed_at: string | null;
+  /** Non-required check state, surfaced for visibility only. */
+  readonly advisory: AdvisorySummary;
 }
 
 export interface FailedCheck {

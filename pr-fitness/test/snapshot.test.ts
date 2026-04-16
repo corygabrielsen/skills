@@ -67,6 +67,20 @@ describe("output contract", () => {
       report.ci.pass + report.ci.fail + report.ci.pending,
       report.ci.total,
     );
+    // Advisory subgroup mirrors the shape but tracks non-required checks.
+    assert.equal(typeof report.ci.advisory.pass, "number");
+    assert.equal(typeof report.ci.advisory.fail, "number");
+    assert.equal(typeof report.ci.advisory.pending, "number");
+    assert.equal(typeof report.ci.advisory.total, "number");
+    assert.ok(Array.isArray(report.ci.advisory.failed));
+    assert.ok(Array.isArray(report.ci.advisory.pending_names));
+    assert.ok(Array.isArray(report.ci.advisory.failed_details));
+    assert.equal(
+      report.ci.advisory.pass +
+        report.ci.advisory.fail +
+        report.ci.advisory.pending,
+      report.ci.advisory.total,
+    );
 
     // Reviews
     assert.ok(

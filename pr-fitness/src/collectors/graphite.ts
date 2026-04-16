@@ -1,3 +1,4 @@
+import { GRAPHITE_MERGEABILITY_CHECK } from "../constants.js";
 import type { GraphiteCheck } from "../types/output.js";
 import { gh } from "../util/gh.js";
 
@@ -34,8 +35,6 @@ interface GraphiteNode {
   title?: string | null;
   summary?: string | null;
 }
-
-const GRAPHITE_CHECK_NAME = "Graphite / mergeability_check";
 
 export async function collectGraphiteCheck(
   owner: string,
@@ -86,7 +85,8 @@ export async function collectGraphiteCheck(
   }
 
   const check = rollup.contexts.nodes.find(
-    (n) => n.__typename === "CheckRun" && n.name === GRAPHITE_CHECK_NAME,
+    (n) =>
+      n.__typename === "CheckRun" && n.name === GRAPHITE_MERGEABILITY_CHECK,
   );
 
   if (!check) {

@@ -12,6 +12,8 @@
  * stdout is reserved; all human-readable output goes to stderr.
  */
 
+import { execFileSync } from "node:child_process";
+
 import { converge } from "./converge.js";
 import { detectPrProgressTarget } from "./pr-progress.js";
 import { gcStaleSessions } from "./session.js";
@@ -63,6 +65,7 @@ Exit codes:
 
 Examples:
   converge pr-fitness example/widgets 1716
+  converge pr-fitness 1716                        (infers repo from cwd)
   converge pr-fitness example-org/infrastructure 566 --max-iterations=30
 `);
   process.exit(0);
@@ -214,6 +217,33 @@ function buildResumeCmd(
   return ["/converge", `/${fitness}`, ...fitnessArgs];
 }
 
+/**
+ * When pr-fitness is invoked with just a PR number (no owner/repo),
+ * infer the repo from the current directory's git remote via `gh`.
+ * Returns the normalized args with the repo prepended.
+ */
+function normalizePrFitnessArgs(
+  fitness: string,
+  args: readonly string[],
+): readonly string[] {
+  if (fitness !== "pr-fitness") return args;
+  if (args.length !== 1 || !/^\d+$/.test(args[0] ?? "")) return args;
+  try {
+    const repo = execFileSync(
+      "gh",
+      ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+      { encoding: "utf8", timeout: 10_000 },
+    ).trim();
+    if (repo.length > 0) {
+      return [repo, ...args];
+    }
+  } catch {
+    // Fall through — the missing-arg error from pr-fitness will be
+    // more informative than a generic "couldn't detect repo."
+  }
+  return args;
+}
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   setVerbose(parsed.verbose);
@@ -221,12 +251,13 @@ async function main(): Promise<void> {
   // Best-effort, non-blocking stale-session sweep.
   gcStaleSessions(SEVEN_DAYS_MS).catch(() => undefined);
 
-  const sessionId = deriveSessionId(parsed.fitness, parsed.fitnessArgs);
-  const resumeCmd = buildResumeCmd(parsed.fitness, parsed.fitnessArgs);
-  const prProgressTarget = detectPrProgressTarget(
+  const fitnessArgs = normalizePrFitnessArgs(
     parsed.fitness,
     parsed.fitnessArgs,
   );
+  const sessionId = deriveSessionId(parsed.fitness, fitnessArgs);
+  const resumeCmd = buildResumeCmd(parsed.fitness, fitnessArgs);
+  const prProgressTarget = detectPrProgressTarget(parsed.fitness, fitnessArgs);
   process.stderr.write(`session: /tmp/converge/${sessionId}/\n`);
 
   const abortController = new AbortController();
@@ -240,7 +271,7 @@ async function main(): Promise<void> {
   try {
     report = await converge({
       fitness: parsed.fitness,
-      args: parsed.fitnessArgs,
+      args: fitnessArgs,
       maxIterations: parsed.maxIterations,
       sessionId,
       resumeCmd,

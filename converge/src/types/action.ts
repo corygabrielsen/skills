@@ -23,6 +23,14 @@ interface ActionBase {
   readonly description: string;
   /** How this action relates to the target score. */
   readonly target_effect: TargetEffect;
+  /**
+   * Skill-owned discriminated payload. Opaque to /converge — folded
+   * into the iteration key so actions with the same `kind` but
+   * different content (e.g. `fix_ci` for check-A vs check-B,
+   * `wait_for_ci` with a shrinking `pending[]` list) count as distinct
+   * transitions. Missing when a skill doesn't emit a payload.
+   */
+  readonly type?: JsonValue;
 }
 
 /** Fully automatable: spawn `execute` argv with optional timeout. */

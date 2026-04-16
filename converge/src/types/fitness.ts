@@ -26,6 +26,13 @@ export interface FitnessReport {
   /** Branded rendering of `target`, mirror of `score_display`. */
   readonly target_display?: string;
   /**
+   * Skill-owned informational lines — rendered verbatim by /converge as
+   * bullet points in the PR progress comment. Intended for context the
+   * reader should see but that doesn't drive convergence (e.g. advisory
+   * check failures, informational warnings). Each entry is one line.
+   */
+  readonly notes?: readonly string[];
+  /**
    * Terminal state external to the fitness loop (e.g. PR merged/closed).
    * `kind` vocabulary is owned by the skill; /converge treats it opaquely
    * and halts `pr_terminal`.

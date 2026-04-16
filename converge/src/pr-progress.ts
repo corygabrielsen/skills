@@ -128,6 +128,15 @@ function formatAction(action: Action): string {
   return `\`${action.kind}\` · ${action.automation} · ${action.target_effect}`;
 }
 
+function appendNotes(lines: string[], notes: FitnessReport["notes"]): void {
+  if (notes === undefined || notes.length === 0) return;
+  lines.push("");
+  lines.push("**Notes:**");
+  for (const n of notes) {
+    lines.push(`- ${n}`);
+  }
+}
+
 function iterationBody(
   iter: number,
   report: FitnessReport,
@@ -149,6 +158,7 @@ function iterationBody(
     lines.push(action.execute.join(" "));
     lines.push("```");
   }
+  appendNotes(lines, report.notes);
   return lines.join("\n");
 }
 
@@ -208,6 +218,7 @@ function haltBody(
       break;
   }
 
+  appendNotes(lines, lastReport?.notes);
   return lines.join("\n");
 }
 

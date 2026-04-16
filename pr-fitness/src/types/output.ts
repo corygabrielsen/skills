@@ -60,6 +60,12 @@ export interface PullRequestFitnessReport {
    * a field-name translation layer.
    */
   readonly status: string;
+  /**
+   * Informational lines surfaced by /converge as bullet points. Used
+   * today for advisory-check context ("2 advisory checks failing: …").
+   * Empty when there's nothing noteworthy to flag.
+   */
+  readonly notes: readonly string[];
   /** ISO 8601 timestamp of when this report was generated. */
   readonly timestamp: string;
   /** Milliseconds taken to generate this report. */

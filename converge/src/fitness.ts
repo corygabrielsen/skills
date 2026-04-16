@@ -284,6 +284,9 @@ function parseAndValidate(stdout: string): FitnessReport {
       ? { target_label: obj["target_label"] }
       : {}),
     ...(isAxisArray(obj["axes"]) ? { axes: obj["axes"] } : {}),
+    ...(isPlainObject(obj["snapshot"])
+      ? { snapshot: obj["snapshot"] as Record<string, unknown> }
+      : {}),
     ...(isTerminal(obj["terminal"]) ? { terminal: obj["terminal"] } : {}),
   };
   return report;
@@ -325,6 +328,12 @@ function isAxisArray(
       typeof (x as Record<string, unknown>)["emoji"] === "string" &&
       typeof (x as Record<string, unknown>)["summary"] === "string",
   );
+}
+
+function isPlainObject(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  const proto: unknown = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 function isTerminal(v: unknown): v is { readonly kind: string } {

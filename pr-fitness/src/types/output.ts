@@ -166,6 +166,13 @@ export interface PullRequestState {
   readonly reviewers: number;
   readonly merge_when_ready: boolean;
   readonly commits: number;
+  /**
+   * True when the PR's base branch has advanced past the merge base —
+   * the PR is stale relative to its parent (master for bottom-of-stack,
+   * the upstream PR's branch for middle/top). Surfaced for observation;
+   * no action fires on it yet.
+   */
+  readonly behind: boolean;
   /** ISO 8601 — last update to the PR (push, comment, label, etc). */
   readonly updated_at: string;
   /** ISO 8601 — when the HEAD commit was authored. Null if unavailable. */

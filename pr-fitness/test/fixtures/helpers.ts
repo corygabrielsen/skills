@@ -27,6 +27,7 @@ export function makePr(
     state: "OPEN",
     isDraft: false,
     mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
     headRefOid: HEAD,
     baseRefName: "master",
     updatedAt: "2026-03-30T08:00:00Z",
@@ -132,6 +133,7 @@ export const CLEAN_STATE: PullRequestState = {
   reviewers: 1,
   merge_when_ready: true,
   commits: 1,
+  behind: false,
   updated_at: "2026-03-30T08:00:00Z",
   last_commit_at: null,
 };

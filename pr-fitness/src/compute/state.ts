@@ -30,6 +30,7 @@ export function computeState(
     reviewers: pr.reviewRequests.length,
     merge_when_ready: labels.includes("merge-when-ready"),
     commits: pr.commits.length,
+    behind: pr.mergeStateStatus === "BEHIND",
     updated_at: pr.updatedAt,
     last_commit_at: lastCommitDate,
   };

@@ -9,6 +9,7 @@ const PR_FIELDS = [
   "state",
   "isDraft",
   "mergeable",
+  "mergeStateStatus",
   "headRefOid",
   "baseRefName",
   "updatedAt",

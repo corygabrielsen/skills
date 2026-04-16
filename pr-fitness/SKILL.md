@@ -63,15 +63,15 @@ npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -e <owner/repo> <pr>
 
 ```bash
 # Quick status check (one-liner, no JSON)
-npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -s example/widgets 1563
+npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -s <owner/repo> <pr>
 # → "Ready to merge" | "Blocked: ..." | "Merged ..."
 
 # Exit code for conditionals
-npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -e example/widgets 1563
+npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -e <owner/repo> <pr>
 # 0=mergeable, 1=blocked, 2=merged, 3=closed
 
 # Full JSON in a convergence loop
-RESULT=$(npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -c example/widgets 1563)
+RESULT=$(npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -c <owner/repo> <pr>)
 LIFECYCLE=$(echo "$RESULT" | jq -r '.lifecycle')
 MERGEABLE=$(echo "$RESULT" | jq -r '.mergeable')
 

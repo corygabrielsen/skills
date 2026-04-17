@@ -5,12 +5,28 @@
  * is `npx tsx ${HOME}/code/skills/pr-fitness/src/cli.ts -q -c <...args>`.
  * Output is JSON on stdout; stderr is captured for error classification.
  *
- * Failure taxonomy (by stderr regex):
- *   - auth           → no retry, rethrow (`FitnessUnavailableError`).
- *   - rate-limit     → honor `Retry-After` if present, else backoff.
- *   - network        → exponential backoff (1s, 2s, 4s).
- *   - parse failure  → no retry, rethrow as error with source `parse`.
- *   - other non-zero → rethrow immediately (surface to loop).
+ * ## Error boundary role (post-I₃)
+ *
+ * This module classifies pr-fitness's *stderr* at the subprocess boundary.
+ * This is distinct from I₁ (gh() classifies gh's stderr inside pr-fitness).
+ * With I₁–I₃, application-level failures (empty API results, individual
+ * collector errors for non-fatal collectors) are handled inside pr-fitness:
+ * the subprocess exits 0 with a degraded report. Only infrastructure
+ * failures that prevent pr-fitness from producing any report reach here.
+ *
+ * ## Failure taxonomy (by stderr regex)
+ *
+ * Error classes that reach this layer:
+ *   - rate-limit  → transient; honor `Retry-After` if present, else backoff.
+ *   - network     → transient; exponential backoff (1s, 2s, 4s).
+ *   - auth        → permanent; rethrow immediately (`FitnessUnavailableError`).
+ *   - other       → permanent; rethrow immediately (e.g. pr-fitness crash,
+ *                   fatal collector failure, unexpected runtime error).
+ *
+ * Error classes that NO LONGER reach this layer (handled by I₁–I₃):
+ *   - "no required checks reported" → I₂: empty → []
+ *   - non-fatal collector failures  → I₃: degrade, still exit 0
+ *   - individual API empty results  → I₂: per-collector domain semantics
  *
  * Max 3 attempts. On exhaustion, throw `FitnessUnavailableError` carrying
  * the last stderr.
@@ -34,6 +50,12 @@ import { sleep } from "./util/sleep.js";
 const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1_000;
 
+// Subprocess stderr classifiers. Regex is appropriate here because this is a
+// process boundary: pr-fitness is a child process whose only error channel is
+// stderr text. Inside pr-fitness, I₁ classifies gh errors structurally via
+// GhResult — no regex needed there. These regexes target infrastructure
+// failures (rate-limit, network, auth) that prevent pr-fitness from running
+// at all. Application-level errors are handled inside pr-fitness (I₂/I₃).
 const RATE_LIMIT_RE = /rate limit|secondary rate limit/i;
 const RETRY_AFTER_RE = /Retry-After:\s*(\d+)/i;
 const AUTH_RE = /Bad credentials|authentication required|not authenticated/i;
@@ -406,14 +428,17 @@ export async function invokeFitness(
       return parseAndValidate(result.stdout);
     }
 
-    // Classify failure.
+    // Classify failure. Post-I₃, non-zero exit means an infrastructure failure
+    // (rate-limit, network, auth) or a genuine pr-fitness crash. Application-
+    // level "data not ready" cases exit 0 with a degraded report.
     if (isAuth(result.stderr)) {
       throw new FitnessUnavailableError(attempt, result.stderr);
     }
 
     const isTransient = isNetwork(result.stderr) || isRateLimit(result.stderr);
     if (!isTransient) {
-      // Non-transient non-zero exit — terminal.
+      // Non-transient non-zero exit — permanent. Includes pr-fitness crashes,
+      // fatal collector errors, and unknown runtime failures.
       throw new FitnessUnavailableError(attempt, result.stderr);
     }
 

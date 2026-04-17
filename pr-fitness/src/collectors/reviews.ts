@@ -1,16 +1,27 @@
 import type { GitHubPullRequestReview } from "../types/index.js";
 import type { PullRequestNumber, RepoSlug } from "../types/branded.js";
-import { gh } from "../util/gh.js";
+import { gh, match } from "../util/gh.js";
+import { ghErrorThrow } from "../util/collector-error.js";
 
+/**
+ * All reviews submitted on the PR.
+ *
+ * I₂: `empty → []` — no reviews yet is valid.
+ */
 export async function collectReviews(
   repo: RepoSlug,
   pr: PullRequestNumber,
 ): Promise<readonly GitHubPullRequestReview[]> {
-  return gh<GitHubPullRequestReview[]>([
+  const result = await gh<GitHubPullRequestReview[]>([
     "api",
     `repos/${repo}/pulls/${String(pr)}/reviews`,
     "--paginate",
     "--jq",
     "[.[] | {user: .user.login, state, commit_id, submitted_at, body}]",
   ]);
+  if (result.ok) return result.data;
+  return match(result.error, {
+    ...ghErrorThrow("reviews"),
+    empty: () => [],
+  });
 }

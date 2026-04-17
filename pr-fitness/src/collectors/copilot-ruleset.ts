@@ -5,7 +5,8 @@ import type {
   GitHubRule,
   GitHubRuleset,
 } from "../types/index.js";
-import { gh } from "../util/gh.js";
+import { gh, match } from "../util/gh.js";
+import { ghErrorThrow } from "../util/collector-error.js";
 
 interface RulesetSummary {
   readonly id: number;
@@ -26,24 +27,47 @@ function isCopilotRule(rule: GitHubRule): rule is GitHubCopilotRule {
  *
  * Returns `{ enabled: true, ... }` iff an active ruleset contains a
  * `copilot_code_review` rule; otherwise `DISABLED`.
+ *
+ * I₂: `empty → DISABLED` for the list call (no rulesets configured).
+ * Individual ruleset fetches also handle `empty → skip` since a
+ * vanished ruleset between list and fetch is benign.
  */
 export async function collectCopilotRuleset(
   repo: RepoSlug,
 ): Promise<CopilotRepoConfig> {
-  const summaries = await gh<readonly RulesetSummary[]>([
+  const listResult = await gh<readonly RulesetSummary[]>([
     "api",
     `repos/${repo}/rulesets?per_page=100`,
   ]);
 
+  if (!listResult.ok) {
+    return match(listResult.error, {
+      ...ghErrorThrow("copilot-ruleset"),
+      empty: () => DISABLED,
+    });
+  }
+
+  const summaries = listResult.data;
   if (summaries.length === 0) return DISABLED;
 
-  const rulesets = await Promise.all(
+  const rulesetResults = await Promise.all(
     summaries.map((s) =>
       gh<GitHubRuleset>(["api", `repos/${repo}/rulesets/${String(s.id)}`]),
     ),
   );
 
-  for (const ruleset of rulesets) {
+  for (const rulesetResult of rulesetResults) {
+    if (!rulesetResult.ok) {
+      // A vanished ruleset between list and fetch is benign on empty;
+      // all other errors are fatal.
+      match(rulesetResult.error, {
+        ...ghErrorThrow("copilot-ruleset"),
+        empty: () => undefined,
+      });
+      continue;
+    }
+
+    const ruleset = rulesetResult.data;
     if (ruleset.enforcement !== "active") continue;
     for (const rule of ruleset.rules) {
       if (isCopilotRule(rule)) {

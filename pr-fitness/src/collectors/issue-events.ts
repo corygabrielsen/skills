@@ -1,6 +1,7 @@
 import type { GitHubIssueEvent } from "../types/index.js";
 import type { PullRequestNumber, RepoSlug } from "../types/branded.js";
-import { gh } from "../util/gh.js";
+import { gh, match } from "../util/gh.js";
+import { ghErrorThrow } from "../util/collector-error.js";
 
 // Shape events into the domain type. For review_requested /
 // review_request_removed, synthesize a discriminated `requested` field
@@ -20,15 +21,25 @@ const JQ_FILTER = `[.[] | . as $e | {
   else {} end
 )]`;
 
+/**
+ * Timeline events on the PR (issue-events endpoint).
+ *
+ * I₂: `empty → []` — no events yet is valid.
+ */
 export async function collectIssueEvents(
   repo: RepoSlug,
   pr: PullRequestNumber,
 ): Promise<readonly GitHubIssueEvent[]> {
-  return gh<GitHubIssueEvent[]>([
+  const result = await gh<GitHubIssueEvent[]>([
     "api",
     `repos/${repo}/issues/${String(pr)}/events`,
     "--paginate",
     "--jq",
     JQ_FILTER,
   ]);
+  if (result.ok) return result.data;
+  return match(result.error, {
+    ...ghErrorThrow("issue-events"),
+    empty: () => [],
+  });
 }

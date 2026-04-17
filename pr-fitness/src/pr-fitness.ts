@@ -6,6 +6,7 @@ import { plan } from "./compute/plan.js";
 import { computeReviews } from "./compute/reviews.js";
 import { computeState } from "./compute/state.js";
 import { summarize } from "./compute/summary.js";
+import type { CollectorError } from "./util/collector-error.js";
 import { VERSION } from "./version.js";
 import { GitCommitSha, Score } from "./types/branded.js";
 import type {
@@ -46,9 +47,13 @@ function isMergeable(
 /**
  * Collect informational lines that shouldn't drive fitness but that a
  * human reader should see — e.g. advisory check failures that didn't
- * block merge but did fail. Empty when nothing needs flagging.
+ * block merge but did fail, or degraded collectors whose errors were
+ * absorbed. Empty when nothing needs flagging.
  */
-function computeNotes(ci: CiSummary): readonly string[] {
+function computeNotes(
+  ci: CiSummary,
+  degraded: readonly CollectorError[],
+): readonly string[] {
   const notes: string[] = [];
   if (ci.advisory.fail > 0) {
     notes.push(
@@ -56,6 +61,9 @@ function computeNotes(ci: CiSummary): readonly string[] {
         ci.advisory.fail === 1 ? "" : "s"
       } failing (non-blocking): ${ci.advisory.failed.join(", ")}`,
     );
+  }
+  for (const d of degraded) {
+    notes.push(`⚠ ${d.collector} degraded: ${d.ghError.kind}`);
   }
   return notes;
 }
@@ -186,6 +194,7 @@ interface SnapshotInput {
   readonly reviews: ReviewSummary;
   readonly state: import("./types/output.js").PullRequestState;
   readonly graphiteStatus: string;
+  readonly degraded: readonly CollectorError[];
 }
 
 function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
@@ -199,8 +208,9 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
     copilot,
     reviews,
     state,
+    degraded,
   } = input;
-  return {
+  const snap: Record<string, unknown> = {
     version: VERSION,
     pr: pr.number,
     head: pr.headRefOid.slice(0, 8),
@@ -239,6 +249,13 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
     },
     graphite: input.graphiteStatus,
   };
+  if (degraded.length > 0) {
+    snap.degraded = degraded.map((d) => ({
+      collector: d.collector,
+      error: d.ghError.kind,
+    }));
+  }
+  return snap;
 }
 
 export function computeScore(
@@ -319,7 +336,7 @@ export async function prFitness(
   const scoreDisplay = computeScoreDisplay(lifecycle, score);
   const targetDisplay = formatScoreOrdinal(target);
   const statusLine = summarize(lifecycle, blockers, data.pr.mergedAt);
-  const notes = computeNotes(ci);
+  const notes = computeNotes(ci, data.degraded);
   const activityState: Record<string, string> = copilot.configured
     ? { copilot: copilot.activity.state }
     : {};
@@ -338,6 +355,7 @@ export async function prFitness(
     reviews,
     state,
     graphiteStatus: data.graphite.status,
+    degraded: data.degraded,
   });
 
   const base: PullRequestFitnessReport = {

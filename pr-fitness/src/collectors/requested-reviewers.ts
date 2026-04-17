@@ -24,7 +24,5 @@ export async function collectRequestedReviewers(
     JQ_FILTER,
   ]);
   if (result.ok) return result.data;
-  return match(result.error, {
-    ...ghErrorThrow("requested-reviewers"),
-  });
+  return match(result.error, ghErrorThrow("requested-reviewers"));
 }

@@ -21,7 +21,5 @@ export async function collectChecks(
     "name,state,description,link,completedAt",
   ]);
   if (result.ok) return result.data;
-  return match(result.error, {
-    ...ghErrorThrow("checks"),
-  });
+  return match(result.error, ghErrorThrow("checks"));
 }

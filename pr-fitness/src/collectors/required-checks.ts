@@ -14,7 +14,8 @@ interface RequiredCheckRow {
  * shouldn't error: the fallback falls through to review/approval gates.
  *
  * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
- * possibly transient. All other GhError variants are fatal.
+ * The --required timing race (exit 1 after force-push) lands as
+ * unknown → CollectorError → settle degrades → [] fallback.
  */
 export async function collectRequiredCheckNames(
   repo: string,
@@ -31,7 +32,5 @@ export async function collectRequiredCheckNames(
     "name",
   ]);
   if (result.ok) return result.data.map((r) => r.name);
-  return match(result.error, {
-    ...ghErrorThrow("required-checks"),
-  });
+  return match(result.error, ghErrorThrow("required-checks"));
 }

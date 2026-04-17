@@ -19,7 +19,5 @@ export async function collectComments(
     "[.[] | {login: .user.login, id: .id}]",
   ]);
   if (result.ok) return result.data;
-  return match(result.error, {
-    ...ghErrorThrow("comments"),
-  });
+  return match(result.error, ghErrorThrow("comments"));
 }

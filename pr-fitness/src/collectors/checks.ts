@@ -1,11 +1,17 @@
 import type { GitHubCheck } from "../types/index.js";
-import { gh } from "../util/gh.js";
+import { gh, match } from "../util/gh.js";
+import { ghErrorThrow } from "../util/collector-error.js";
 
+/**
+ * All check runs on the PR (required and optional).
+ *
+ * I₂: `empty → []` — no check runs yet is valid (e.g. just pushed).
+ */
 export async function collectChecks(
   repo: string,
   pr: number,
 ): Promise<readonly GitHubCheck[]> {
-  return gh<GitHubCheck[]>([
+  const result = await gh<GitHubCheck[]>([
     "pr",
     "checks",
     String(pr),
@@ -14,4 +20,9 @@ export async function collectChecks(
     "--json",
     "name,state,description,link,completedAt",
   ]);
+  if (result.ok) return result.data;
+  return match(result.error, {
+    ...ghErrorThrow("checks"),
+    empty: () => [],
+  });
 }

@@ -1,6 +1,7 @@
 import { GRAPHITE_MERGEABILITY_CHECK } from "../constants.js";
 import type { GraphiteCheck } from "../types/output.js";
-import { gh } from "../util/gh.js";
+import { gh, match } from "../util/gh.js";
+import { ghErrorThrow } from "../util/collector-error.js";
 
 interface GraphiteCheckRun {
   data: {
@@ -36,6 +37,17 @@ interface GraphiteNode {
   summary?: string | null;
 }
 
+/** Result when no data is available from the API. */
+const EMPTY_RESULT: GraphiteCollectorResult = {
+  check: { status: "none", title: null, summary: null },
+  lastCommitDate: null,
+};
+
+/**
+ * Graphite mergeability check status (GraphQL).
+ *
+ * I₂: `empty →` no-check result with `status: "none"`.
+ */
 export async function collectGraphiteCheck(
   owner: string,
   name: string,
@@ -73,7 +85,14 @@ export async function collectGraphiteCheck(
     }`,
   ]);
 
-  const commitNode = result.data.repository.pullRequest.commits.nodes[0];
+  if (!result.ok) {
+    return match(result.error, {
+      ...ghErrorThrow("graphite"),
+      empty: () => EMPTY_RESULT,
+    });
+  }
+
+  const commitNode = result.data.data.repository.pullRequest.commits.nodes[0];
   const lastCommitDate = commitNode?.commit.committedDate ?? null;
   const rollup = commitNode?.commit.statusCheckRollup;
 

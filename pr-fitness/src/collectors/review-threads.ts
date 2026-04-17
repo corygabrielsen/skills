@@ -1,12 +1,30 @@
 import type { GitHubPullRequestReviewThreadsResponse } from "../types/index.js";
-import { gh } from "../util/gh.js";
+import { gh, match } from "../util/gh.js";
+import { ghErrorThrow } from "../util/collector-error.js";
 
+/** Minimal valid response that downstream compute functions can handle. */
+const EMPTY_THREADS: GitHubPullRequestReviewThreadsResponse = {
+  data: {
+    repository: {
+      pullRequest: {
+        reviewThreads: { nodes: [] },
+        reviewRequests: { nodes: [] },
+      },
+    },
+  },
+};
+
+/**
+ * Review threads and pending review requests (GraphQL).
+ *
+ * I₂: `empty →` minimal valid response with empty nodes arrays.
+ */
 export async function collectReviewThreads(
   owner: string,
   name: string,
   pr: number,
 ): Promise<GitHubPullRequestReviewThreadsResponse> {
-  return gh<GitHubPullRequestReviewThreadsResponse>([
+  const result = await gh<GitHubPullRequestReviewThreadsResponse>([
     "api",
     "graphql",
     "-f",
@@ -35,4 +53,9 @@ export async function collectReviewThreads(
       }
     }`,
   ]);
+  if (result.ok) return result.data;
+  return match(result.error, {
+    ...ghErrorThrow("review-threads"),
+    empty: () => EMPTY_THREADS,
+  });
 }

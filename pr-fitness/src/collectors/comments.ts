@@ -5,7 +5,7 @@ import { ghErrorThrow } from "../util/collector-error.js";
 /**
  * Issue-level comments on the PR (not inline review comments).
  *
- * I₂: `empty → []` — no comments yet is valid.
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectComments(
   repo: string,
@@ -21,6 +21,5 @@ export async function collectComments(
   if (result.ok) return result.data;
   return match(result.error, {
     ...ghErrorThrow("comments"),
-    empty: () => [],
   });
 }

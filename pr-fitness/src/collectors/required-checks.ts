@@ -13,7 +13,7 @@ interface RequiredCheckRow {
  * array means "nothing is required," which is a legitimate config and
  * shouldn't error: the fallback falls through to review/approval gates.
  *
- * I₂: `empty → []` — the bug fix. No required checks right now is valid,
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  * possibly transient. All other GhError variants are fatal.
  */
 export async function collectRequiredCheckNames(
@@ -33,6 +33,5 @@ export async function collectRequiredCheckNames(
   if (result.ok) return result.data.map((r) => r.name);
   return match(result.error, {
     ...ghErrorThrow("required-checks"),
-    empty: () => [],
   });
 }

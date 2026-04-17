@@ -18,12 +18,15 @@ import { collectChecks } from "./checks.js";
 import { collectComments } from "./comments.js";
 import { collectCopilotRuleset } from "./copilot-ruleset.js";
 import type { GraphiteCollectorResult } from "./graphite.js";
-import { collectGraphiteCheck } from "./graphite.js";
+import {
+  collectGraphiteCheck,
+  EMPTY_RESULT as EMPTY_GRAPHITE,
+} from "./graphite.js";
 import { collectIssueEvents } from "./issue-events.js";
 import { collectPrMetadata } from "./pr-metadata.js";
 import { collectRequestedReviewers } from "./requested-reviewers.js";
 import { collectRequiredCheckNames } from "./required-checks.js";
-import { collectReviewThreads } from "./review-threads.js";
+import { collectReviewThreads, EMPTY_THREADS } from "./review-threads.js";
 import { collectReviews } from "./reviews.js";
 
 export interface CollectedData {
@@ -69,24 +72,6 @@ async function settle<T>(
     throw err;
   }
 }
-
-/** Empty review-threads response — mirrors EMPTY_THREADS in review-threads.ts. */
-const EMPTY_THREADS: GitHubPullRequestReviewThreadsResponse = {
-  data: {
-    repository: {
-      pullRequest: {
-        reviewThreads: { nodes: [] },
-        reviewRequests: { nodes: [] },
-      },
-    },
-  },
-};
-
-/** Empty Graphite result — mirrors EMPTY_RESULT in graphite.ts. */
-const EMPTY_GRAPHITE: GraphiteCollectorResult = {
-  check: { status: "none", title: null, summary: null },
-  lastCommitDate: null,
-};
 
 /** Run all API calls in parallel and return collected data. */
 export async function collect(

@@ -7,7 +7,7 @@ import {
   Score,
 } from "./types/branded.js";
 import type { Score as ScoreT } from "./types/branded.js";
-import { GitHubError, PreconditionError } from "./util/errors.js";
+import { PreconditionError } from "./util/errors.js";
 import { setQuiet } from "./util/log.js";
 import { VERSION } from "./version.js";
 
@@ -138,9 +138,6 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   if (error instanceof PreconditionError) {
-    die(error.message);
-  }
-  if (error instanceof GitHubError) {
     die(error.message);
   }
   if (process.env["DEBUG"]) {

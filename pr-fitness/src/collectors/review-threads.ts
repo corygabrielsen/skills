@@ -3,7 +3,7 @@ import { gh, match } from "../util/gh.js";
 import { ghErrorThrow } from "../util/collector-error.js";
 
 /** Minimal valid response that downstream compute functions can handle. */
-const EMPTY_THREADS: GitHubPullRequestReviewThreadsResponse = {
+export const EMPTY_THREADS: GitHubPullRequestReviewThreadsResponse = {
   data: {
     repository: {
       pullRequest: {

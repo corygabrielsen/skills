@@ -38,7 +38,7 @@ interface GraphiteNode {
 }
 
 /** Result when no data is available from the API. */
-const EMPTY_RESULT: GraphiteCollectorResult = {
+export const EMPTY_RESULT: GraphiteCollectorResult = {
   check: { status: "none", title: null, summary: null },
   lastCommitDate: null,
 };

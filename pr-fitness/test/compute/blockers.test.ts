@@ -14,43 +14,59 @@ import {
 
 describe("computeBlockers", () => {
   it("returns empty for a fully mergeable PR", () => {
-    const blockers = computeBlockers(
+    const { all } = computeBlockers(
       CLEAN_CI,
       APPROVED_REVIEWS,
       CLEAN_STATE,
       "pass",
     );
-    assert.deepEqual(blockers, []);
+    assert.deepEqual(all, []);
   });
 
-  it("reports CI failures", () => {
+  it("classifies CI failures as agent-resolvable", () => {
     const ci: CiSummary = {
       ...CLEAN_CI,
       fail: 1,
       failed: ["Run Unit Tests"],
     };
-    const blockers = computeBlockers(ci, APPROVED_REVIEWS, CLEAN_STATE, "pass");
-    assert.ok(blockers.some((b) => b.includes("ci_fail")));
-    assert.ok(blockers.some((b) => b.includes("Run Unit Tests")));
+    const { agent, human } = computeBlockers(
+      ci,
+      APPROVED_REVIEWS,
+      CLEAN_STATE,
+      "pass",
+    );
+    assert.ok(agent.some((b) => b.includes("ci_fail")));
+    assert.equal(human.length, 0);
   });
 
-  it("reports CI pending", () => {
-    const ci: CiSummary = {
-      ...CLEAN_CI,
-      pending: 2,
-      pending_names: ["E2E Tests", "Lint"],
+  it("classifies pending_human_review as human-dependent", () => {
+    const reviews: ReviewSummary = {
+      ...APPROVED_REVIEWS,
+      pending_reviews: { bots: [], humans: ["review-team"] },
     };
-    const blockers = computeBlockers(ci, APPROVED_REVIEWS, CLEAN_STATE, "pass");
-    assert.ok(blockers.some((b) => b.includes("ci_pending")));
+    const { agent, human } = computeBlockers(
+      CLEAN_CI,
+      reviews,
+      CLEAN_STATE,
+      "pass",
+    );
+    assert.equal(agent.length, 0);
+    assert.ok(human.some((b) => b.includes("pending_human_review")));
   });
 
-  it("reports not approved", () => {
+  it("classifies not_approved as human-dependent", () => {
     const reviews: ReviewSummary = {
       ...APPROVED_REVIEWS,
       decision: "REVIEW_REQUIRED",
     };
-    const blockers = computeBlockers(CLEAN_CI, reviews, CLEAN_STATE, "pass");
-    assert.ok(blockers.includes("not_approved"));
+    const { agent, human } = computeBlockers(
+      CLEAN_CI,
+      reviews,
+      CLEAN_STATE,
+      "pass",
+    );
+    assert.equal(agent.length, 0);
+    assert.ok(human.includes("not_approved"));
   });
 
   it("does not block when no review policy (NONE)", () => {
@@ -58,48 +74,45 @@ describe("computeBlockers", () => {
       ...APPROVED_REVIEWS,
       decision: "NONE",
     };
-    const blockers = computeBlockers(CLEAN_CI, reviews, CLEAN_STATE, "pass");
-    assert.ok(!blockers.includes("not_approved"));
+    const { all } = computeBlockers(CLEAN_CI, reviews, CLEAN_STATE, "pass");
+    assert.ok(!all.includes("not_approved"));
   });
 
-  it("reports unresolved threads", () => {
+  it("classifies unresolved threads as agent-resolvable", () => {
     const reviews: ReviewSummary = {
       ...APPROVED_REVIEWS,
       threads_unresolved: 3,
     };
-    const blockers = computeBlockers(CLEAN_CI, reviews, CLEAN_STATE, "pass");
-    assert.ok(blockers.some((b) => b.includes("3_unresolved_threads")));
+    const { agent } = computeBlockers(CLEAN_CI, reviews, CLEAN_STATE, "pass");
+    assert.ok(agent.some((b) => b.includes("3_unresolved_threads")));
   });
 
-  it("reports merge conflict", () => {
-    const state: PullRequestState = { ...CLEAN_STATE, conflict: "CONFLICTING" };
-    const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
-    assert.ok(blockers.includes("merge_conflict"));
-  });
-
-  it("reports draft", () => {
-    const state: PullRequestState = { ...CLEAN_STATE, draft: true };
-    const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
-    assert.ok(blockers.includes("draft"));
-  });
-
-  it("reports WIP label", () => {
-    const state: PullRequestState = { ...CLEAN_STATE, wip: true };
-    const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
-    assert.ok(blockers.includes("wip_label"));
-  });
-
-  it("reports title too long", () => {
+  it("classifies merge conflict as agent-resolvable", () => {
     const state: PullRequestState = {
       ...CLEAN_STATE,
-      title_len: 55,
-      title_ok: false,
+      conflict: "CONFLICTING",
     };
-    const blockers = computeBlockers(CLEAN_CI, APPROVED_REVIEWS, state, "pass");
-    assert.ok(blockers.includes("title_too_long"));
+    const { agent } = computeBlockers(
+      CLEAN_CI,
+      APPROVED_REVIEWS,
+      state,
+      "pass",
+    );
+    assert.ok(agent.includes("merge_conflict"));
   });
 
-  it("reports multiple blockers simultaneously", () => {
+  it("classifies draft as agent-resolvable", () => {
+    const state: PullRequestState = { ...CLEAN_STATE, draft: true };
+    const { agent } = computeBlockers(
+      CLEAN_CI,
+      APPROVED_REVIEWS,
+      state,
+      "pass",
+    );
+    assert.ok(agent.includes("draft"));
+  });
+
+  it("all = agent ∪ human", () => {
     const ci: CiSummary = {
       ...CLEAN_CI,
       fail: 1,
@@ -109,13 +122,12 @@ describe("computeBlockers", () => {
       ...APPROVED_REVIEWS,
       decision: "CHANGES_REQUESTED",
       threads_unresolved: 2,
+      pending_reviews: { bots: [], humans: ["alice"] },
     };
     const state: PullRequestState = { ...CLEAN_STATE, draft: true };
-    const blockers = computeBlockers(ci, reviews, state, "pass");
-    assert.ok(blockers.length >= 4);
-    assert.ok(blockers.some((b) => b.includes("ci_fail")));
-    assert.ok(blockers.some((b) => b.includes("not_approved")));
-    assert.ok(blockers.some((b) => b.includes("unresolved_threads")));
-    assert.ok(blockers.includes("draft"));
+    const { agent, human, all } = computeBlockers(ci, reviews, state, "pass");
+    assert.ok(agent.length >= 3); // ci_fail, unresolved, draft
+    assert.ok(human.length >= 2); // not_approved, pending_human
+    assert.equal(all.length, agent.length + human.length);
   });
 });

@@ -28,7 +28,6 @@ const exec = promisify(execFile);
  * pattern-match on `kind`; they never inspect raw stderr.
  */
 export type GhError =
-  | { readonly kind: "empty" }
   | { readonly kind: "not_found"; readonly detail: string }
   | { readonly kind: "auth"; readonly detail: string }
   | { readonly kind: "rate_limit"; readonly retryAfter: number | null }
@@ -123,10 +122,6 @@ const CLASSIFICATION_RULES: ReadonlyArray<
   [
     /Could not resolve to a/,
     (stderr) => ({ kind: "not_found", detail: stderr.trim() }),
-  ],
-  [
-    /no required checks reported|no checks reported/i,
-    () => ({ kind: "empty" }),
   ],
 ];
 

@@ -6,7 +6,7 @@ import { ghErrorThrow } from "../util/collector-error.js";
 /**
  * All reviews submitted on the PR.
  *
- * I₂: `empty → []` — no reviews yet is valid.
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectReviews(
   repo: RepoSlug,
@@ -22,6 +22,5 @@ export async function collectReviews(
   if (result.ok) return result.data;
   return match(result.error, {
     ...ghErrorThrow("reviews"),
-    empty: () => [],
   });
 }

@@ -11,7 +11,7 @@ const JQ_FILTER = `{
 /**
  * Currently requested reviewers (users and teams).
  *
- * I₂: `empty → { users: [], teams: [] }` — no pending requests is valid.
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectRequestedReviewers(
   repo: RepoSlug,
@@ -26,6 +26,5 @@ export async function collectRequestedReviewers(
   if (result.ok) return result.data;
   return match(result.error, {
     ...ghErrorThrow("requested-reviewers"),
-    empty: () => ({ users: [], teams: [] }),
   });
 }

@@ -46,7 +46,7 @@ export const EMPTY_RESULT: GraphiteCollectorResult = {
 /**
  * Graphite mergeability check status (GraphQL).
  *
- * I₂: `empty →` no-check result with `status: "none"`.
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectGraphiteCheck(
   owner: string,
@@ -86,10 +86,7 @@ export async function collectGraphiteCheck(
   ]);
 
   if (!result.ok) {
-    return match(result.error, {
-      ...ghErrorThrow("graphite"),
-      empty: () => EMPTY_RESULT,
-    });
+    return match(result.error, ghErrorThrow("graphite"));
   }
 
   const commitNode = result.data.data.repository.pullRequest.commits.nodes[0];

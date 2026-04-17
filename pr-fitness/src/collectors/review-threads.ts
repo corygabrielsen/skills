@@ -17,7 +17,7 @@ export const EMPTY_THREADS: GitHubPullRequestReviewThreadsResponse = {
 /**
  * Review threads and pending review requests (GraphQL).
  *
- * I₂: `empty →` minimal valid response with empty nodes arrays.
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectReviewThreads(
   owner: string,
@@ -56,6 +56,5 @@ export async function collectReviewThreads(
   if (result.ok) return result.data;
   return match(result.error, {
     ...ghErrorThrow("review-threads"),
-    empty: () => EMPTY_THREADS,
   });
 }

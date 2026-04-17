@@ -5,7 +5,7 @@ import { ghErrorThrow } from "../util/collector-error.js";
 /**
  * All check runs on the PR (required and optional).
  *
- * I₂: `empty → []` — no check runs yet is valid (e.g. just pushed).
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectChecks(
   repo: string,
@@ -23,6 +23,5 @@ export async function collectChecks(
   if (result.ok) return result.data;
   return match(result.error, {
     ...ghErrorThrow("checks"),
-    empty: () => [],
   });
 }

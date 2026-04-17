@@ -28,8 +28,7 @@ function isCopilotRule(rule: GitHubRule): rule is GitHubCopilotRule {
  * Returns `{ enabled: true, ... }` iff an active ruleset contains a
  * `copilot_code_review` rule; otherwise `DISABLED`.
  *
- * I₂: `empty → DISABLED` for the list call (no rulesets configured).
- * Individual ruleset fetches also handle `empty → skip` since a
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  * vanished ruleset between list and fetch is benign.
  */
 export async function collectCopilotRuleset(
@@ -43,7 +42,6 @@ export async function collectCopilotRuleset(
   if (!listResult.ok) {
     return match(listResult.error, {
       ...ghErrorThrow("copilot-ruleset"),
-      empty: () => DISABLED,
     });
   }
 
@@ -58,12 +56,9 @@ export async function collectCopilotRuleset(
 
   for (const rulesetResult of rulesetResults) {
     if (!rulesetResult.ok) {
-      // A vanished ruleset between list and fetch is benign on empty;
-      // all other errors are fatal.
-      match(rulesetResult.error, {
-        ...ghErrorThrow("copilot-ruleset"),
-        empty: () => undefined,
-      });
+      // A vanished ruleset between list and fetch is non-fatal —
+      // skip this ruleset, continue checking others.
+      match(rulesetResult.error, ghErrorThrow("copilot-ruleset"));
       continue;
     }
 

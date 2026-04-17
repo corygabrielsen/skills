@@ -24,7 +24,7 @@ const JQ_FILTER = `[.[] | . as $e | {
 /**
  * Timeline events on the PR (issue-events endpoint).
  *
- * I₂: `empty → []` — no events yet is valid.
+ * I₂: All GhError variants throw CollectorError. I₃ degrades non-fatal.
  */
 export async function collectIssueEvents(
   repo: RepoSlug,
@@ -40,6 +40,5 @@ export async function collectIssueEvents(
   if (result.ok) return result.data;
   return match(result.error, {
     ...ghErrorThrow("issue-events"),
-    empty: () => [],
   });
 }

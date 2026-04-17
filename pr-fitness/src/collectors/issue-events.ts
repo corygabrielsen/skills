@@ -38,7 +38,5 @@ export async function collectIssueEvents(
     JQ_FILTER,
   ]);
   if (result.ok) return result.data;
-  return match(result.error, {
-    ...ghErrorThrow("issue-events"),
-  });
+  return match(result.error, ghErrorThrow("issue-events"));
 }

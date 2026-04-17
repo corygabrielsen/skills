@@ -54,7 +54,5 @@ export async function collectReviewThreads(
     }`,
   ]);
   if (result.ok) return result.data;
-  return match(result.error, {
-    ...ghErrorThrow("review-threads"),
-  });
+  return match(result.error, ghErrorThrow("review-threads"));
 }

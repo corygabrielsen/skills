@@ -20,7 +20,5 @@ export async function collectReviews(
     "[.[] | {user: .user.login, state, commit_id, submitted_at, body}]",
   ]);
   if (result.ok) return result.data;
-  return match(result.error, {
-    ...ghErrorThrow("reviews"),
-  });
+  return match(result.error, ghErrorThrow("reviews"));
 }

@@ -260,19 +260,19 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
 
 export function computeScore(
   lifecycle: Lifecycle,
-  blockers: readonly string[],
+  agentBlockers: readonly string[],
   copilot: CopilotReport,
 ): ScoreT {
   if (lifecycle === "merged") return Score(4);
   if (lifecycle === "closed") return Score(0);
 
-  // Any hard blocker caps score at 1 regardless of Copilot tier.
-  // Copilot being platinum means Copilot is happy — it doesn't
-  // mean the PR is merge-ready. CI failures, missing approvals,
-  // merge conflicts, and other gates are orthogonal to Copilot's
-  // assessment; a PR with any of those outstanding cannot be at
-  // target.
-  if (blockers.length > 0) return Score(1);
+  // Only agent-resolvable blockers cap the score. Human-dependent
+  // blockers (pending review, not approved) drive hil halts but
+  // don't regress the score — the PR's quality hasn't decreased,
+  // a human just hasn't acted yet. This lets the emoji progression
+  // converge (🥉→🥈→🥇→💠) while the agent works, with the hil
+  // halt at the end saying "your turn."
+  if (agentBlockers.length > 0) return Score(1);
 
   if (copilot.configured) {
     switch (copilot.tier) {
@@ -323,19 +323,21 @@ export async function prFitness(
   });
 
   // Merged/closed PRs have no actionable blockers.
-  const blockers =
+  const blockerSplit =
     lifecycle === "open"
       ? computeBlockers(ci, reviews, state, data.graphite.status)
-      : [];
+      : { agent: [] as string[], human: [] as string[], all: [] as string[] };
   const actions =
     lifecycle === "open"
       ? plan(ci, reviews, state, data.graphite.status, copilot, repo, pr)
       : [];
 
-  const score = computeScore(lifecycle, blockers, copilot);
+  // Score reflects agent-achievable fitness. Human-dependent blockers
+  // (pending review, not approved) drive hil halts but don't cap score.
+  const score = computeScore(lifecycle, blockerSplit.agent, copilot);
   const scoreDisplay = computeScoreDisplay(lifecycle, score);
   const targetDisplay = formatScoreOrdinal(target);
-  const statusLine = summarize(lifecycle, blockers, data.pr.mergedAt);
+  const statusLine = summarize(lifecycle, blockerSplit.all, data.pr.mergedAt);
   const notes = computeNotes(ci, data.degraded);
   const activityState: Record<string, string> = copilot.configured
     ? { copilot: copilot.activity.state }
@@ -349,7 +351,7 @@ export async function prFitness(
     lifecycle,
     score,
     target,
-    blockers,
+    blockers: blockerSplit.all,
     ci,
     copilot,
     reviews,
@@ -372,8 +374,8 @@ export async function prFitness(
     target_display: targetDisplay,
     merged_at: data.pr.mergedAt ?? null,
     closed_at: data.pr.closedAt ?? null,
-    mergeable: isMergeable(lifecycle, blockers),
-    blockers,
+    mergeable: isMergeable(lifecycle, blockerSplit.all),
+    blockers: blockerSplit.all,
     ci,
     reviews,
     copilot,

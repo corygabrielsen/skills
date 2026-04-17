@@ -37,3 +37,6 @@ export type {
 } from "./types/copilot.js";
 
 export { COPILOT_TIER_EMOJI, formatCopilotTier } from "./types/copilot.js";
+
+export type { GhError, GhResult, GhErrorMatch } from "./util/gh.js";
+export { gh, match } from "./util/gh.js";

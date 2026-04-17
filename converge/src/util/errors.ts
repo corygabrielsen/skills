@@ -24,7 +24,9 @@ export class FitnessUnavailableError extends Error {
   readonly lastStderr: string;
 
   constructor(attempts: number, lastStderr: string) {
-    super(`fitness unavailable after ${String(attempts)} attempt(s)`);
+    super(
+      `fitness unavailable after ${String(attempts)} attempt${attempts === 1 ? "" : "s"}`,
+    );
     this.name = "FitnessUnavailableError";
     this.attempts = attempts;
     this.lastStderr = lastStderr;

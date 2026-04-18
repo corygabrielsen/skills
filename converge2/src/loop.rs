@@ -16,6 +16,7 @@ use crate::halt::{
 };
 use crate::hook::Hook;
 use crate::protocol::{Action, Automation, FitnessReport, TargetEffect};
+use crate::session::now_iso;
 use crate::session::Session;
 
 const MAX_POLLS_PER_ITER: u32 = 20;
@@ -41,7 +42,7 @@ fn target_reached(report: &FitnessReport) -> bool {
 fn action_summary(action: &Action) -> ActionSummary {
     ActionSummary {
         kind: action.kind.clone(),
-        automation: format!("{:?}", action.automation).to_lowercase(),
+        automation: action.automation,
     }
 }
 
@@ -93,16 +94,6 @@ fn iter_key(action: &Action, report: &FitnessReport) -> String {
         .unwrap_or_else(|| "null".to_string());
 
     format!("{}\0{}\0{}\0{}", action.kind, type_digest, blocker_str, activity)
-}
-
-fn now_iso() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    let nanos = dur.subsec_nanos();
-    // Rough ISO 8601 from epoch — no chrono dependency.
-    format!("{secs}.{nanos}")
 }
 
 fn trace(verbose: bool, msg: &str) {

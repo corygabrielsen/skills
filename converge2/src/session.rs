@@ -24,14 +24,22 @@ impl Session {
             .map_err(|e| format!("cannot create session dir {}: {e}", dir.display()))?;
 
         let lock_path = dir.join("lock");
-        // Simple lock: create exclusively. Not flock — good enough for
-        // single-machine use. The lock file contains our PID.
-        if lock_path.exists() {
-            let content = fs::read_to_string(&lock_path).unwrap_or_default();
-            return Err(format!("session locked (pid {content})"));
+        // Atomic lock via O_CREAT|O_EXCL — no TOCTOU race.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                let _ = write!(f, "{}", std::process::id());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let content = fs::read_to_string(&lock_path).unwrap_or_default();
+                return Err(format!("session locked (pid {content})"));
+            }
+            Err(e) => return Err(format!("cannot create lock: {e}")),
         }
-        fs::write(&lock_path, std::process::id().to_string())
-            .map_err(|e| format!("cannot write lock: {e}"))?;
 
         let history = load_history(&dir);
 
@@ -90,12 +98,30 @@ fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), String> 
         .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-fn now_iso() -> String {
-    // Use system time without chrono dependency.
+/// ISO 8601 UTC timestamp without external dependencies.
+pub fn now_iso() -> String {
     let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    // Rough ISO 8601 — good enough for session metadata.
     let secs = dur.as_secs();
-    format!("{secs}")
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let mut days = secs / 86400;
+    // Compute year/month/day from days since epoch (1970-01-01).
+    let mut y = 1970i64;
+    loop {
+        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if days < dy { break; }
+        days -= dy;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 0usize;
+    while mo < 11 && days >= mdays[mo] {
+        days -= mdays[mo];
+        mo += 1;
+    }
+    format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, days + 1)
 }

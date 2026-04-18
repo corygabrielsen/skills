@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{Action, FitnessReport};
+use crate::protocol::{Action, Automation, FitnessReport};
 
 /// Terminal outcome of the convergence loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ pub struct IterLog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionSummary {
     pub kind: String,
-    pub automation: String,
+    pub automation: Automation,
 }
 
 /// Structured cause for error and fitness_unavailable halts.

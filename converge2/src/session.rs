@@ -103,7 +103,12 @@ pub fn now_iso() -> String {
     let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = dur.as_secs();
+    epoch_to_iso(dur.as_secs())
+}
+
+/// Convert epoch seconds to ISO 8601 UTC string.
+/// Extracted from `now_iso` to enable deterministic testing.
+fn epoch_to_iso(secs: u64) -> String {
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
@@ -124,4 +129,59 @@ pub fn now_iso() -> String {
         mo += 1;
     }
     format!("{y:04}-{:02}-{:02}T{h:02}:{m:02}:{s:02}Z", mo + 1, days + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn now_iso_format_matches_iso8601() {
+        let ts = now_iso();
+        // Pattern: YYYY-MM-DDTHH:MM:SSZ
+        assert_eq!(ts.len(), 20);
+        assert_eq!(&ts[4..5], "-");
+        assert_eq!(&ts[7..8], "-");
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[13..14], ":");
+        assert_eq!(&ts[16..17], ":");
+        assert_eq!(&ts[19..20], "Z");
+        // Year, month, day, hour, minute, second should all parse as numbers.
+        ts[0..4].parse::<u32>().expect("year");
+        ts[5..7].parse::<u32>().expect("month");
+        ts[8..10].parse::<u32>().expect("day");
+        ts[11..13].parse::<u32>().expect("hour");
+        ts[14..16].parse::<u32>().expect("minute");
+        ts[17..19].parse::<u32>().expect("second");
+    }
+
+    #[test]
+    fn epoch_zero_is_1970_01_01() {
+        assert_eq!(epoch_to_iso(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn known_epoch_2026_04_17_noon() {
+        // 2026-04-17T12:00:00Z = 1776427200 epoch seconds.
+        assert_eq!(epoch_to_iso(1776427200), "2026-04-17T12:00:00Z");
+    }
+
+    #[test]
+    fn leap_year_feb_29() {
+        // 2024-02-29T00:00:00Z = 1709164800 epoch seconds.
+        assert_eq!(epoch_to_iso(1709164800), "2024-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn end_of_day() {
+        // 2026-04-17T23:59:59Z = 1776470399 epoch seconds.
+        assert_eq!(epoch_to_iso(1776470399), "2026-04-17T23:59:59Z");
+    }
+
+    #[test]
+    fn year_2000_leap_century() {
+        // 2000-03-01T00:00:00Z = 951868800 epoch seconds.
+        // 2000 is a leap year (divisible by 400).
+        assert_eq!(epoch_to_iso(951868800), "2000-03-01T00:00:00Z");
+    }
 }

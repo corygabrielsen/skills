@@ -98,3 +98,123 @@ pub enum HookEvent<'a> {
         last_report: Option<&'a FitnessReport>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_success() {
+        assert_eq!(HaltStatus::Success.exit_code(), 0);
+    }
+
+    #[test]
+    fn exit_code_stalled() {
+        assert_eq!(HaltStatus::Stalled.exit_code(), 1);
+    }
+
+    #[test]
+    fn exit_code_timeout() {
+        assert_eq!(HaltStatus::Timeout.exit_code(), 2);
+    }
+
+    #[test]
+    fn exit_code_hil() {
+        assert_eq!(HaltStatus::Hil.exit_code(), 3);
+    }
+
+    #[test]
+    fn exit_code_error() {
+        assert_eq!(HaltStatus::Error.exit_code(), 4);
+    }
+
+    #[test]
+    fn exit_code_agent_needed() {
+        assert_eq!(HaltStatus::AgentNeeded.exit_code(), 5);
+    }
+
+    #[test]
+    fn exit_code_terminal() {
+        assert_eq!(HaltStatus::Terminal.exit_code(), 6);
+    }
+
+    #[test]
+    fn exit_code_cancelled() {
+        assert_eq!(HaltStatus::Cancelled.exit_code(), 7);
+    }
+
+    #[test]
+    fn exit_code_fitness_unavailable() {
+        assert_eq!(HaltStatus::FitnessUnavailable.exit_code(), 8);
+    }
+
+    #[test]
+    fn halt_report_serialization() {
+        let report = HaltReport {
+            stage: "final".to_string(),
+            status: HaltStatus::Success,
+            timestamp: "2026-04-17T12:00:00Z".to_string(),
+            session_id: "test-session".to_string(),
+            resume_cmd: vec!["converge2".to_string(), "--".to_string(), "fitness".to_string()],
+            iterations: 3,
+            final_score: Some(1.0),
+            structural_blockers: None,
+            action: None,
+            terminal: None,
+            cause: None,
+            history: vec![],
+        };
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["stage"], "final");
+        assert_eq!(json["status"], "success");
+        assert_eq!(json["timestamp"], "2026-04-17T12:00:00Z");
+        assert_eq!(json["session_id"], "test-session");
+        assert_eq!(json["iterations"], 3);
+        assert_eq!(json["final_score"], 1.0);
+        // Optional None fields should be absent.
+        assert!(json.get("structural_blockers").is_none());
+        assert!(json.get("action").is_none());
+        assert!(json.get("terminal").is_none());
+        assert!(json.get("cause").is_none());
+        // Empty history should be absent (skip_serializing_if = "Vec::is_empty").
+        assert!(json.get("history").is_none());
+    }
+
+    #[test]
+    fn halt_report_roundtrip_with_cause() {
+        let report = HaltReport {
+            stage: "final".to_string(),
+            status: HaltStatus::Error,
+            timestamp: "2026-04-17T12:00:00Z".to_string(),
+            session_id: "err-session".to_string(),
+            resume_cmd: vec![],
+            iterations: 1,
+            final_score: None,
+            structural_blockers: None,
+            action: None,
+            terminal: None,
+            cause: Some(ErrorCause {
+                source: "fitness".to_string(),
+                message: "command not found".to_string(),
+                stderr: Some("sh: fitness: not found".to_string()),
+                action_kind: None,
+            }),
+            history: vec![IterLog {
+                iter: 1,
+                score: 0.5,
+                action_summary: ActionSummary {
+                    kind: "rebase".to_string(),
+                    automation: Automation::Full,
+                },
+            }],
+        };
+
+        let json_str = serde_json::to_string(&report).unwrap();
+        let roundtripped: HaltReport = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(roundtripped.status, HaltStatus::Error);
+        assert_eq!(roundtripped.cause.as_ref().unwrap().source, "fitness");
+        assert_eq!(roundtripped.history.len(), 1);
+        assert_eq!(roundtripped.history[0].iter, 1);
+    }
+}

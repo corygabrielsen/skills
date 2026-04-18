@@ -101,3 +101,143 @@ pub struct AxisLine {
     pub emoji: String,
     pub summary: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_full_fitness_report() {
+        let json = r#"{
+            "score": 0.75,
+            "target": 1.0,
+            "actions": [{
+                "kind": "rebase",
+                "description": "Rebase on latest master",
+                "automation": "full",
+                "target_effect": "advances",
+                "execute": ["git", "rebase", "origin/master"],
+                "next_poll_seconds": 30.0,
+                "timeout_seconds": 120.0
+            }],
+            "status": "in_progress",
+            "score_display": "75%",
+            "target_display": "100%",
+            "score_emoji": "🟡",
+            "score_label": "Almost there",
+            "target_label": "Merge-ready",
+            "axes": [{"name": "ci", "emoji": "✅", "summary": "All green"}],
+            "snapshot": {"sha": "abc123"},
+            "notes": ["CI passed", "Reviews pending"],
+            "blockers": ["needs-review"],
+            "blocker_split": {
+                "agent": ["lint-fix"],
+                "human": ["approval"],
+                "structural": ["branch-protection"]
+            },
+            "activity_state": {"last_push": "2026-04-17"},
+            "terminal": {"kind": "merged"}
+        }"#;
+
+        let report: FitnessReport = serde_json::from_str(json).unwrap();
+        assert_eq!(report.score, 0.75);
+        assert_eq!(report.target, 1.0);
+        assert_eq!(report.actions.len(), 1);
+        assert_eq!(report.actions[0].kind, "rebase");
+        assert_eq!(report.actions[0].automation, Automation::Full);
+        assert_eq!(report.actions[0].target_effect, TargetEffect::Advances);
+        assert_eq!(report.actions[0].execute.as_ref().unwrap(), &["git", "rebase", "origin/master"]);
+        assert_eq!(report.status.as_deref(), Some("in_progress"));
+        assert_eq!(report.score_display.as_deref(), Some("75%"));
+        assert_eq!(report.target_display.as_deref(), Some("100%"));
+        assert_eq!(report.score_emoji.as_deref(), Some("🟡"));
+        assert_eq!(report.score_label.as_deref(), Some("Almost there"));
+        assert_eq!(report.target_label.as_deref(), Some("Merge-ready"));
+        assert_eq!(report.axes.as_ref().unwrap().len(), 1);
+        assert_eq!(report.axes.as_ref().unwrap()[0].name, "ci");
+        assert!(report.snapshot.is_some());
+        assert_eq!(report.notes.as_ref().unwrap(), &["CI passed", "Reviews pending"]);
+        assert_eq!(report.blockers.as_ref().unwrap(), &["needs-review"]);
+        let split = report.blocker_split.as_ref().unwrap();
+        assert_eq!(split.agent, vec!["lint-fix"]);
+        assert_eq!(split.human, vec!["approval"]);
+        assert_eq!(split.structural, vec!["branch-protection"]);
+        assert!(report.activity_state.is_some());
+        assert_eq!(report.terminal.as_ref().unwrap().kind, "merged");
+    }
+
+    #[test]
+    fn deserialize_minimal_fitness_report() {
+        let json = r#"{
+            "score": 0.5,
+            "target": 1.0,
+            "actions": []
+        }"#;
+
+        let report: FitnessReport = serde_json::from_str(json).unwrap();
+        assert_eq!(report.score, 0.5);
+        assert_eq!(report.target, 1.0);
+        assert!(report.actions.is_empty());
+        assert!(report.status.is_none());
+        assert!(report.score_display.is_none());
+        assert!(report.target_display.is_none());
+        assert!(report.score_emoji.is_none());
+        assert!(report.score_label.is_none());
+        assert!(report.target_label.is_none());
+        assert!(report.axes.is_none());
+        assert!(report.snapshot.is_none());
+        assert!(report.notes.is_none());
+        assert!(report.blockers.is_none());
+        assert!(report.blocker_split.is_none());
+        assert!(report.activity_state.is_none());
+        assert!(report.terminal.is_none());
+    }
+
+    #[test]
+    fn automation_deserializes_all_variants() {
+        assert_eq!(
+            serde_json::from_str::<Automation>(r#""full""#).unwrap(),
+            Automation::Full
+        );
+        assert_eq!(
+            serde_json::from_str::<Automation>(r#""agent""#).unwrap(),
+            Automation::Agent
+        );
+        assert_eq!(
+            serde_json::from_str::<Automation>(r#""wait""#).unwrap(),
+            Automation::Wait
+        );
+        assert_eq!(
+            serde_json::from_str::<Automation>(r#""human""#).unwrap(),
+            Automation::Human
+        );
+    }
+
+    #[test]
+    fn target_effect_deserializes_all_variants() {
+        assert_eq!(
+            serde_json::from_str::<TargetEffect>(r#""advances""#).unwrap(),
+            TargetEffect::Advances
+        );
+        assert_eq!(
+            serde_json::from_str::<TargetEffect>(r#""blocks""#).unwrap(),
+            TargetEffect::Blocks
+        );
+        assert_eq!(
+            serde_json::from_str::<TargetEffect>(r#""neutral""#).unwrap(),
+            TargetEffect::Neutral
+        );
+    }
+
+    #[test]
+    fn unknown_automation_value_errors() {
+        let result = serde_json::from_str::<Automation>(r#""magic""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_target_effect_value_errors() {
+        let result = serde_json::from_str::<TargetEffect>(r#""destroys""#);
+        assert!(result.is_err());
+    }
+}

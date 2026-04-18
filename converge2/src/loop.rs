@@ -450,3 +450,218 @@ fn interruptible_sleep(ms: u64, cancelled: &AtomicBool) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_action(kind: &str, effect: TargetEffect) -> Action {
+        Action {
+            kind: kind.to_string(),
+            description: "test".to_string(),
+            automation: Automation::Full,
+            target_effect: effect,
+            r#type: None,
+            execute: None,
+            context: None,
+            next_poll_seconds: None,
+            timeout_seconds: None,
+        }
+    }
+
+    fn make_report(score: f64, target: f64, actions: Vec<Action>) -> FitnessReport {
+        FitnessReport {
+            score,
+            target,
+            actions,
+            status: None,
+            score_display: None,
+            target_display: None,
+            score_emoji: None,
+            score_label: None,
+            target_label: None,
+            axes: None,
+            snapshot: None,
+            notes: None,
+            blockers: None,
+            blocker_split: None,
+            activity_state: None,
+            terminal: None,
+        }
+    }
+
+    // -- pick_action --
+
+    #[test]
+    fn pick_action_skips_neutral() {
+        let actions = vec![
+            make_action("noop", TargetEffect::Neutral),
+            make_action("rebase", TargetEffect::Advances),
+        ];
+        let picked = pick_action(&actions).unwrap();
+        assert_eq!(picked.kind, "rebase");
+    }
+
+    #[test]
+    fn pick_action_returns_first_non_neutral() {
+        let actions = vec![
+            make_action("neutral1", TargetEffect::Neutral),
+            make_action("blocker", TargetEffect::Blocks),
+            make_action("advancer", TargetEffect::Advances),
+        ];
+        let picked = pick_action(&actions).unwrap();
+        assert_eq!(picked.kind, "blocker");
+    }
+
+    #[test]
+    fn pick_action_none_when_all_neutral() {
+        let actions = vec![
+            make_action("a", TargetEffect::Neutral),
+            make_action("b", TargetEffect::Neutral),
+        ];
+        assert!(pick_action(&actions).is_none());
+    }
+
+    #[test]
+    fn pick_action_none_when_empty() {
+        assert!(pick_action(&[]).is_none());
+    }
+
+    // -- target_reached --
+
+    #[test]
+    fn target_reached_true_when_score_equals_target() {
+        let report = make_report(1.0, 1.0, vec![]);
+        assert!(target_reached(&report));
+    }
+
+    #[test]
+    fn target_reached_true_when_score_exceeds_target() {
+        let report = make_report(1.5, 1.0, vec![]);
+        assert!(target_reached(&report));
+    }
+
+    #[test]
+    fn target_reached_false_when_score_below_target() {
+        let report = make_report(0.5, 1.0, vec![]);
+        assert!(!target_reached(&report));
+    }
+
+    // -- stable_json --
+
+    #[test]
+    fn stable_json_null() {
+        assert_eq!(stable_json(&json!(null)), "null");
+    }
+
+    #[test]
+    fn stable_json_bool() {
+        assert_eq!(stable_json(&json!(true)), "true");
+        assert_eq!(stable_json(&json!(false)), "false");
+    }
+
+    #[test]
+    fn stable_json_number() {
+        assert_eq!(stable_json(&json!(42)), "42");
+    }
+
+    #[test]
+    fn stable_json_string() {
+        assert_eq!(stable_json(&json!("hello")), r#""hello""#);
+    }
+
+    #[test]
+    fn stable_json_string_with_quotes() {
+        assert_eq!(stable_json(&json!("say \"hi\"")), r#""say \"hi\"""#);
+    }
+
+    #[test]
+    fn stable_json_sorted_keys() {
+        let obj = json!({"z": 1, "a": 2, "m": 3});
+        assert_eq!(stable_json(&obj), r#"{"a":2,"m":3,"z":1}"#);
+    }
+
+    #[test]
+    fn stable_json_nested_object_and_array() {
+        let val = json!({"b": [1, {"x": true}], "a": null});
+        assert_eq!(stable_json(&val), r#"{"a":null,"b":[1,{"x":true}]}"#);
+    }
+
+    #[test]
+    fn stable_json_empty_array() {
+        assert_eq!(stable_json(&json!([])), "[]");
+    }
+
+    #[test]
+    fn stable_json_empty_object() {
+        assert_eq!(stable_json(&json!({})), "{}");
+    }
+
+    // -- iter_key --
+
+    #[test]
+    fn iter_key_differs_for_different_blockers() {
+        let action = make_action("rebase", TargetEffect::Advances);
+        let mut r1 = make_report(0.5, 1.0, vec![]);
+        r1.blockers = Some(vec!["ci-red".to_string()]);
+        let mut r2 = make_report(0.5, 1.0, vec![]);
+        r2.blockers = Some(vec!["review-pending".to_string()]);
+
+        assert_ne!(iter_key(&action, &r1), iter_key(&action, &r2));
+    }
+
+    #[test]
+    fn iter_key_same_for_same_state() {
+        let action = make_action("rebase", TargetEffect::Advances);
+        let mut report = make_report(0.5, 1.0, vec![]);
+        report.blockers = Some(vec!["ci-red".to_string()]);
+
+        assert_eq!(iter_key(&action, &report), iter_key(&action, &report));
+    }
+
+    #[test]
+    fn iter_key_excludes_score() {
+        let action = make_action("rebase", TargetEffect::Advances);
+        let r1 = make_report(0.3, 1.0, vec![]);
+        let r2 = make_report(0.7, 1.0, vec![]);
+
+        assert_eq!(iter_key(&action, &r1), iter_key(&action, &r2));
+    }
+
+    #[test]
+    fn iter_key_differs_for_different_action_kind() {
+        let a1 = make_action("rebase", TargetEffect::Advances);
+        let a2 = make_action("merge", TargetEffect::Advances);
+        let report = make_report(0.5, 1.0, vec![]);
+
+        assert_ne!(iter_key(&a1, &report), iter_key(&a2, &report));
+    }
+
+    #[test]
+    fn iter_key_differs_for_different_activity_state() {
+        let action = make_action("wait", TargetEffect::Advances);
+        let mut r1 = make_report(0.5, 1.0, vec![]);
+        let mut m1 = serde_json::Map::new();
+        m1.insert("run_id".to_string(), json!("aaa"));
+        r1.activity_state = Some(m1);
+
+        let mut r2 = make_report(0.5, 1.0, vec![]);
+        let mut m2 = serde_json::Map::new();
+        m2.insert("run_id".to_string(), json!("bbb"));
+        r2.activity_state = Some(m2);
+
+        assert_ne!(iter_key(&action, &r1), iter_key(&action, &r2));
+    }
+
+    #[test]
+    fn iter_key_blocker_order_independent() {
+        let action = make_action("fix", TargetEffect::Advances);
+        let mut r1 = make_report(0.5, 1.0, vec![]);
+        r1.blockers = Some(vec!["b".to_string(), "a".to_string()]);
+        let mut r2 = make_report(0.5, 1.0, vec![]);
+        r2.blockers = Some(vec!["a".to_string(), "b".to_string()]);
+
+        assert_eq!(iter_key(&action, &r1), iter_key(&action, &r2));
+    }
+}

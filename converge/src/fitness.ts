@@ -1,18 +1,17 @@
 /**
  * Fitness skill invocation with bounded retry/backoff.
  *
- * v1 dispatch is hardcoded: only `pr-fitness` is recognized. The subprocess
- * is `npx tsx ${HOME}/code/skills/pr-fitness/src/cli.ts -q -c <...args>`.
- * Output is JSON on stdout; stderr is captured for error classification.
+ * Receives a fully-resolved argv from the caller and spawns it as a
+ * subprocess. Output is JSON on stdout; stderr is captured for error
+ * classification.
  *
- * ## Error boundary role (post-I₃)
+ * ## Error boundary role
  *
- * This module classifies pr-fitness's *stderr* at the subprocess boundary.
- * This is distinct from I₁ (gh() classifies gh's stderr inside pr-fitness).
- * With I₁–I₃, application-level failures (empty API results, individual
- * collector errors for non-fatal collectors) are handled inside pr-fitness:
- * the subprocess exits 0 with a degraded report. Only infrastructure
- * failures that prevent pr-fitness from producing any report reach here.
+ * This module classifies the fitness skill's *stderr* at the subprocess
+ * boundary. Application-level failures that the skill handles internally
+ * (degraded reports, empty results) never reach here — the subprocess
+ * exits 0 with a degraded report. Only infrastructure failures that
+ * prevent the skill from producing any report reach this layer.
  *
  * ## Failure taxonomy (by stderr regex)
  *
@@ -20,29 +19,21 @@
  *   - rate-limit  → transient; honor `Retry-After` if present, else backoff.
  *   - network     → transient; exponential backoff (1s, 2s, 4s).
  *   - auth        → permanent; rethrow immediately (`FitnessUnavailableError`).
- *   - other       → permanent; rethrow immediately (e.g. pr-fitness crash,
- *                   fatal collector failure, unexpected runtime error).
- *
- * Error classes that NO LONGER reach this layer (handled by I₁–I₃):
- *   - "no required checks reported" → I₂: empty → []
- *   - non-fatal collector failures  → I₃: degrade, still exit 0
- *   - individual API empty results  → I₂: per-collector domain semantics
+ *   - other       → permanent; rethrow immediately (e.g. skill crash,
+ *                   fatal failure, unexpected runtime error).
  *
  * Max 3 attempts. On exhaustion, throw `FitnessUnavailableError` carrying
  * the last stderr.
  */
 
 import { spawn } from "node:child_process";
-import * as os from "node:os";
-import * as path from "node:path";
 
 import type {
   Action,
-  FitnessId,
   FitnessReport,
   JsonValue,
 } from "./types/index.js";
-import { PR_FITNESS, PositiveSeconds, Score } from "./types/index.js";
+import { PositiveSeconds, Score } from "./types/index.js";
 import { FitnessUnavailableError, PreconditionError } from "./util/errors.js";
 import { verbose } from "./util/log.js";
 import { sleep } from "./util/sleep.js";
@@ -51,11 +42,10 @@ const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 1_000;
 
 // Subprocess stderr classifiers. Regex is appropriate here because this is a
-// process boundary: pr-fitness is a child process whose only error channel is
-// stderr text. Inside pr-fitness, I₁ classifies gh errors structurally via
-// GhResult — no regex needed there. These regexes target infrastructure
-// failures (rate-limit, network, auth) that prevent pr-fitness from running
-// at all. Application-level errors are handled inside pr-fitness (I₂/I₃).
+// process boundary: the fitness skill is a child process whose only error
+// channel is stderr text. These regexes target infrastructure failures
+// (rate-limit, network, auth) that prevent the skill from running at all.
+// Application-level errors are handled inside the skill.
 const RATE_LIMIT_RE = /rate limit|secondary rate limit/i;
 const RETRY_AFTER_RE = /Retry-After:\s*(\d+)/i;
 const AUTH_RE = /Bad credentials|authentication required|not authenticated/i;
@@ -90,26 +80,6 @@ function retryAfterSeconds(stderr: string): number | null {
 
 function exponentialBackoffMs(attempt: number): number {
   return BASE_BACKOFF_MS * 2 ** (attempt - 1);
-}
-
-// ---------------------------------------------------------------------------
-
-function resolveCommand(
-  fitnessName: FitnessId,
-  fitnessArgs: readonly string[],
-): readonly string[] {
-  if (fitnessName === PR_FITNESS) {
-    const cli = path.join(
-      os.homedir(),
-      "code",
-      "skills",
-      "pr-fitness",
-      "src",
-      "cli.ts",
-    );
-    return ["npx", "tsx", cli, "-q", "-c", ...fitnessArgs];
-  }
-  throw new PreconditionError(`unknown fitness skill: ${fitnessName}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +235,7 @@ function parseAndValidate(stdout: string): FitnessReport {
           next_poll_seconds: PositiveSeconds(nps),
         };
       }
-      case "llm": {
+      case "agent": {
         return {
           kind,
           description,
@@ -387,12 +357,9 @@ function isJsonValue(v: unknown): v is JsonValue {
 // ---------------------------------------------------------------------------
 
 export async function invokeFitness(
-  fitnessName: FitnessId,
-  fitnessArgs: readonly string[],
+  argv: readonly string[],
   signal: AbortSignal,
 ): Promise<FitnessReport> {
-  const argv = resolveCommand(fitnessName, fitnessArgs);
-
   let lastStderr = "";
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -428,8 +395,8 @@ export async function invokeFitness(
       return parseAndValidate(result.stdout);
     }
 
-    // Classify failure. Post-I₃, non-zero exit means an infrastructure failure
-    // (rate-limit, network, auth) or a genuine pr-fitness crash. Application-
+    // Classify failure. Non-zero exit means an infrastructure failure
+    // (rate-limit, network, auth) or a genuine skill crash. Application-
     // level "data not ready" cases exit 0 with a degraded report.
     if (isAuth(result.stderr)) {
       throw new FitnessUnavailableError(attempt, result.stderr);
@@ -437,8 +404,8 @@ export async function invokeFitness(
 
     const isTransient = isNetwork(result.stderr) || isRateLimit(result.stderr);
     if (!isTransient) {
-      // Non-transient non-zero exit — permanent. Includes pr-fitness crashes,
-      // fatal collector errors, and unknown runtime failures.
+      // Non-transient non-zero exit — permanent. Includes skill crashes,
+      // fatal errors, and unknown runtime failures.
       throw new FitnessUnavailableError(attempt, result.stderr);
     }
 

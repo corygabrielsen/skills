@@ -1,6 +1,5 @@
 import type {
   CiSummary,
-  GraphiteStatus,
   PullRequestState,
   ReviewSummary,
 } from "../types/output.js";
@@ -50,28 +49,12 @@ export function plan(
   ci: CiSummary,
   reviews: ReviewSummary,
   state: PullRequestState,
-  graphite: GraphiteStatus,
   copilot: CopilotReport,
   repo: string,
   pr: number,
 ): readonly Action[] {
   const actions: Action[] = [];
   const prArg = String(pr);
-
-  // ── Priority 0: Stack ordering ─────────────────────────────────
-  // Graphite's mergeability check is pending until downstack merges.
-  // Nothing to do — it resolves automatically.
-
-  if (graphite === "pending") {
-    pushAction(actions, {
-      blocker: "stack_blocked",
-      description: "Waiting for downstack PR to merge",
-      automation: "wait",
-      target_effect: "blocks",
-      type: { kind: "wait_for_ci", pending: ["downstack merge"] },
-      next_poll_seconds: PositiveSeconds(60),
-    });
-  }
 
   // ── Priority 1: CI ─────────────────────────────────────────────
   // Fix CI before anything else. A review fix that breaks CI wastes
@@ -95,9 +78,20 @@ export function plan(
     pushAction(actions, {
       blocker: `ci_fail: ${name}`,
       description: `Fix failing check: ${name}`,
-      automation: "llm",
+      automation: "agent",
       target_effect: "blocks",
       type: { kind: "fix_ci", check_name: name },
+    });
+  }
+
+  if (ci.missing > 0) {
+    pushAction(actions, {
+      blocker: `ci_missing: ${ci.missing_names.join(", ")}`,
+      description: `${String(ci.missing)} required check(s) not started: ${ci.missing_names.join(", ")}`,
+      automation: "wait",
+      target_effect: "blocks",
+      type: { kind: "wait_for_ci", pending: ci.missing_names },
+      next_poll_seconds: PositiveSeconds(60),
     });
   }
 
@@ -110,7 +104,7 @@ export function plan(
     pushAction(actions, {
       blocker: "merge_conflict",
       description: "Rebase to resolve merge conflicts",
-      automation: "llm",
+      automation: "agent",
       target_effect: "blocks",
       type: { kind: "rebase" },
     });
@@ -142,7 +136,7 @@ export function plan(
     pushAction(actions, {
       blocker: "title_too_long",
       description: `Shorten title (${String(state.title_len)} chars, max 50)`,
-      automation: "llm",
+      automation: "agent",
       target_effect: "blocks",
       type: { kind: "shorten_title", current_len: state.title_len },
     });
@@ -160,7 +154,7 @@ export function plan(
     pushAction(actions, {
       blocker: `${String(reviews.threads_unresolved)}_unresolved_threads`,
       description: `Address ${String(reviews.threads_unresolved)} unresolved review thread(s)`,
-      automation: "llm",
+      automation: "agent",
       target_effect: "blocks",
       type: {
         kind: "address_threads",
@@ -200,7 +194,7 @@ export function plan(
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
               description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach platinum`,
-              automation: "llm",
+              automation: "agent",
               target_effect: "advances",
               type: {
                 kind: "address_copilot_suppressed",
@@ -296,7 +290,7 @@ export function plan(
     pushAction(actions, {
       blocker: "missing_content_label",
       description: "Add bug or enhancement label",
-      automation: "llm",
+      automation: "agent",
       target_effect: "neutral",
       type: { kind: "add_content_label" },
     });
@@ -322,7 +316,7 @@ export function plan(
     pushAction(actions, {
       blocker: "no_reviewer",
       description: "Request reviewers",
-      automation: "llm",
+      automation: "agent",
       target_effect: "neutral",
       type: { kind: "add_reviewer" },
     });
@@ -332,7 +326,7 @@ export function plan(
     pushAction(actions, {
       blocker: "no_description",
       description: "Add PR description",
-      automation: "llm",
+      automation: "agent",
       target_effect: "neutral",
       type: { kind: "add_description" },
     });

@@ -19,7 +19,6 @@ describe("plan", () => {
       CLEAN_CI,
       APPROVED_REVIEWS,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -37,7 +36,6 @@ describe("plan", () => {
       ci,
       APPROVED_REVIEWS,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -57,14 +55,13 @@ describe("plan", () => {
       ci,
       APPROVED_REVIEWS,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
     );
     const fixes = actions.filter((a) => a.type.kind === "fix_ci");
     assert.equal(fixes.length, 2);
-    assert.equal(fixes[0]!.automation, "llm");
+    assert.equal(fixes[0]!.automation, "agent");
   });
 
   it("prescribes rebase for conflicts", () => {
@@ -73,7 +70,6 @@ describe("plan", () => {
       CLEAN_CI,
       APPROVED_REVIEWS,
       state,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -87,7 +83,6 @@ describe("plan", () => {
       CLEAN_CI,
       APPROVED_REVIEWS,
       state,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -103,7 +98,6 @@ describe("plan", () => {
       CLEAN_CI,
       APPROVED_REVIEWS,
       state,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -121,14 +115,13 @@ describe("plan", () => {
       CLEAN_CI,
       APPROVED_REVIEWS,
       state,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
     );
     const a = actions.find((a) => a.type.kind === "shorten_title");
     assert.ok(a);
-    assert.equal(a.automation, "llm");
+    assert.equal(a.automation, "agent");
   });
 
   it("prescribes address_threads", () => {
@@ -140,14 +133,13 @@ describe("plan", () => {
       CLEAN_CI,
       reviews,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
     );
     const a = actions.find((a) => a.type.kind === "address_threads");
     assert.ok(a);
-    assert.equal(a.automation, "llm");
+    assert.equal(a.automation, "agent");
     assert.equal(a.type.kind === "address_threads" && a.type.count, 3);
   });
 
@@ -160,7 +152,6 @@ describe("plan", () => {
       CLEAN_CI,
       reviews,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -182,7 +173,6 @@ describe("plan", () => {
       ci,
       reviews,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -199,7 +189,6 @@ describe("plan", () => {
       CLEAN_CI,
       reviews,
       CLEAN_STATE,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -219,7 +208,6 @@ describe("plan", () => {
       CLEAN_CI,
       APPROVED_REVIEWS,
       state,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,
@@ -244,7 +232,6 @@ describe("plan", () => {
       ci,
       reviews,
       state,
-      "pass",
       UNCONFIGURED_COPILOT,
       "example/widgets",
       100,

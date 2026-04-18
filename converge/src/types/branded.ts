@@ -44,8 +44,8 @@ export function PositiveSeconds(n: number): PositiveSeconds {
 }
 
 // ---------------------------------------------------------------------------
-// JsonValue — JSON-safe recursive union. Used for `LlmAction.context`
-// payloads, which are serialized to disk and forwarded to the LLM verbatim.
+// JsonValue — JSON-safe recursive union. Used for `AgentAction.context`
+// payloads, which are serialized to disk and forwarded to the agent verbatim.
 // ---------------------------------------------------------------------------
 
 export type JsonValue =
@@ -59,7 +59,7 @@ export type JsonValue =
 // ---------------------------------------------------------------------------
 // FitnessId — internal dispatch key for a fitness skill. Always bare,
 // never slash-prefixed. Canonicalized at the CLI boundary by stripping
-// any leading slashes so `/pr-fitness` and `pr-fitness` resolve the same.
+// any leading slashes so `/my-fitness` and `my-fitness` resolve the same.
 // ---------------------------------------------------------------------------
 
 declare const fitnessIdBrand: unique symbol;
@@ -72,8 +72,6 @@ export function FitnessId(raw: string): FitnessId {
   }
   return id as FitnessId;
 }
-
-export const PR_FITNESS: FitnessId = "pr-fitness" as FitnessId;
 
 // ---------------------------------------------------------------------------
 // SkillRef — a skill reference as an LLM types it in a prompt or as it

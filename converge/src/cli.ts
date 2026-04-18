@@ -13,16 +13,25 @@
  */
 
 import { execFileSync } from "node:child_process";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { converge } from "./converge.js";
-import { detectPrProgressTarget } from "./pr-progress.js";
+import {
+  detectPrProgressTarget,
+  reportHalt,
+  reportIteration,
+  setPrProgressVerbose,
+} from "../../pr-fitness/src/pr-progress.js";
 import { gcStaleSessions } from "./session.js";
-import { FitnessId, PR_FITNESS, SkillRef } from "./types/index.js";
+import { FitnessId, SkillRef } from "./types/index.js";
 import type {
   HaltReport,
   HaltStatus,
   FitnessId as FitnessIdT,
 } from "./types/index.js";
+
+const PR_FITNESS: FitnessIdT = "pr-fitness" as FitnessIdT;
 import { LockHeldError, PreconditionError } from "./util/errors.js";
 import { setVerbose } from "./util/log.js";
 import { VERSION } from "./version.js";
@@ -50,7 +59,7 @@ Fitness skills (v1):
   pr-fitness  <owner/repo> <pr>   Pull request convergence
 
 Options:
-  --max-iterations=N    Cap on iteration count (default ${String(DEFAULT_MAX_ITERATIONS)})
+  -n N, --max-iter=N    Cap on iteration count (default ${String(DEFAULT_MAX_ITERATIONS)})
   -v, --verbose         Verbose logging
   -h, --help            This message
   --version             Print version
@@ -61,8 +70,8 @@ Exit codes:
    2 timeout              iteration cap hit
    3 hil                  action requires human
    4 error                runtime failure
-   5 llm_needed           action requires LLM judgment
-   6 pr_terminal          PR merged/closed mid-loop
+   5 agent_needed           action requires agent judgment
+   6 terminal          subject reached terminal state
    7 cancelled            SIGINT / SIGTERM
    8 fitness_unavailable  fitness skill unavailable
    9 lock_held            session lock held by another process
@@ -71,7 +80,7 @@ Exit codes:
 Examples:
   converge pr-fitness example/widgets 1716
   converge pr-fitness 1716                        (infers repo from cwd)
-  converge pr-fitness example-org/infrastructure 566 --max-iterations=30
+  converge pr-fitness example-org/infrastructure 566 --max-iter=30
 `);
   process.exit(0);
 }
@@ -84,11 +93,11 @@ function die(message: string, code = 64): never {
 
 function parseMaxIterations(raw: string): number {
   if (!/^\d+$/.test(raw)) {
-    die(`invalid --max-iterations: ${raw} (expected positive integer)`);
+    die(`invalid --max-iter: ${raw} (expected positive integer)`);
   }
   const n = Number.parseInt(raw, 10);
   if (!Number.isInteger(n) || n <= 0) {
-    die(`invalid --max-iterations: ${raw} (expected positive integer)`);
+    die(`invalid --max-iter: ${raw} (expected positive integer)`);
   }
   return n;
 }
@@ -121,13 +130,13 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       verbose = true;
       continue;
     }
-    if (arg.startsWith("--max-iterations=")) {
-      maxIterations = parseMaxIterations(arg.slice("--max-iterations=".length));
+    if (arg.startsWith("--max-iter=")) {
+      maxIterations = parseMaxIterations(arg.slice("--max-iter=".length));
       continue;
     }
-    if (arg === "--max-iterations") {
+    if (arg === "--max-iter" || arg === "-n") {
       const next = argv[i + 1];
-      if (next === undefined) die("--max-iterations requires a value");
+      if (next === undefined) die("--max-iter requires a value");
       maxIterations = parseMaxIterations(next);
       i++;
       continue;
@@ -197,9 +206,9 @@ function haltToExitCode(status: HaltStatus): number {
       return 3;
     case "error":
       return 4;
-    case "llm_needed":
+    case "agent_needed":
       return 5;
-    case "pr_terminal":
+    case "terminal":
       return 6;
     case "cancelled":
       return 7;
@@ -211,7 +220,7 @@ function haltToExitCode(status: HaltStatus): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a resume command in skill-form — what a user or outer LLM agent
+ * Build a resume command in skill-form — what a user or outer agent
  * types as a prompt. NOT the underlying CLI argv. Leading `/` prefixes
  * are how Claude Code identifies skill invocations.
  */
@@ -249,9 +258,28 @@ function normalizePrFitnessArgs(
   return args;
 }
 
+function resolveCommand(
+  fitnessName: FitnessIdT,
+  fitnessArgs: readonly string[],
+): readonly string[] {
+  if (fitnessName === PR_FITNESS) {
+    const cli = path.join(
+      os.homedir(),
+      "code",
+      "skills",
+      "pr-fitness",
+      "src",
+      "cli.ts",
+    );
+    return ["npx", "tsx", cli, "-q", "-c", ...fitnessArgs];
+  }
+  throw new PreconditionError(`unknown fitness skill: ${fitnessName}`);
+}
+
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   setVerbose(parsed.verbose);
+  setPrProgressVerbose(parsed.verbose);
 
   // Best-effort, non-blocking stale-session sweep.
   gcStaleSessions(SEVEN_DAYS_MS).catch(() => undefined);
@@ -272,15 +300,22 @@ async function main(): Promise<void> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
 
+  const fitnessArgv = resolveCommand(parsed.fitness, fitnessArgs);
   let report: HaltReport;
   try {
     report = await converge({
-      fitness: parsed.fitness,
-      args: fitnessArgs,
+      fitnessArgv,
       maxIterations: parsed.maxIterations,
       sessionId,
       resumeCmd,
-      prProgressTarget,
+      ...(prProgressTarget
+        ? {
+            onIteration: (iter, rpt, action) =>
+              reportIteration(prProgressTarget, iter, rpt, action),
+            onHalt: (halt, lastReport) =>
+              reportHalt(prProgressTarget, halt, lastReport),
+          }
+        : {}),
       signal: abortController.signal,
     });
   } catch (err) {

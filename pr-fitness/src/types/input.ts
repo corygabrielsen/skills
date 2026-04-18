@@ -61,6 +61,23 @@ export interface GitHubPullRequestView {
   commits: readonly { oid: string }[];
 }
 
+/**
+ * A check name that branch rules demand before merge.
+ *
+ * Sourced from two co-equal authoritative surfaces:
+ *   - Rulesets (modern): `GET /repos/{o}/{r}/rules/branches/{b}`
+ *   - Branch Protection (legacy): `GET /repos/{o}/{r}/branches/{b}/protection/required_status_checks`
+ *
+ * The union of both is the complete set of configured requirements.
+ * `context` is an exact string match against check-run names.
+ */
+export interface RequiredCheckConfig {
+  /** Exact check-run name (literal match, no patterns). */
+  readonly context: string;
+  /** GitHub App ID that produces this check. Null when unspecified. */
+  readonly integration_id: number | null;
+}
+
 /** gh pr checks --json name,state,description,link,completedAt */
 export interface GitHubCheck {
   name: string;

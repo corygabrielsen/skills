@@ -97,11 +97,22 @@ export const CLEAN_CI: CiSummary = {
   pass: 10,
   fail: 0,
   pending: 0,
+  missing: 0,
+  missing_names: [],
   total: 10,
   failed: [],
   pending_names: [],
   failed_details: [],
   completed_at: null,
+  advisory: {
+    pass: 0,
+    fail: 0,
+    pending: 0,
+    total: 0,
+    failed: [],
+    pending_names: [],
+    failed_details: [],
+  },
 };
 
 export const APPROVED_REVIEWS: ReviewSummary = {

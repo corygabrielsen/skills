@@ -2,7 +2,7 @@
  * Action — what a fitness skill prescribes for the next iteration.
  *
  * Discriminated on `automation`. Each variant carries only the fields its
- * executor needs. /converge drives `full` actions itself, surfaces `llm`
+ * executor needs. /converge drives `full` actions itself, surfaces `agent`
  * and `human` actions as halt reasons, and sleeps on `wait`.
  */
 
@@ -17,7 +17,7 @@ import type { JsonValue, PositiveSeconds } from "./branded.js";
 export type TargetEffect = "advances" | "blocks" | "neutral";
 
 interface ActionBase {
-  /** Stable identifier for the action variety (e.g. `"rerequest_copilot"`). */
+  /** Stable identifier for the action variety (e.g. `"fix_check"`). */
   readonly kind: string;
   /** Human-readable summary. */
   readonly description: string;
@@ -40,9 +40,9 @@ export interface FullAction extends ActionBase {
   readonly timeout_seconds?: PositiveSeconds;
 }
 
-/** Requires LLM judgment. /converge halts `llm_needed` with context attached. */
-export interface LlmAction extends ActionBase {
-  readonly automation: "llm";
+/** Requires agent judgment. /converge halts `agent_needed` with context attached. */
+export interface AgentAction extends ActionBase {
+  readonly automation: "agent";
   readonly context?: JsonValue;
 }
 
@@ -57,4 +57,4 @@ export interface HumanAction extends ActionBase {
   readonly automation: "human";
 }
 
-export type Action = FullAction | LlmAction | WaitAction | HumanAction;
+export type Action = FullAction | AgentAction | WaitAction | HumanAction;

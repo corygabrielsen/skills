@@ -17,6 +17,7 @@ export type {
 export type { Action, Automation, ActionType, TargetEffect } from "./action.js";
 
 export type {
+  RequiredCheckConfig,
   GitHubPullRequestView,
   GitHubCheck,
   GitHubPullRequestReviewThreadsResponse,

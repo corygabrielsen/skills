@@ -120,7 +120,7 @@ const CLASSIFICATION_RULES: ReadonlyArray<
     (stderr) => ({ kind: "network", detail: stderr.trim() }),
   ],
   [
-    /Could not resolve to a/,
+    /Could not resolve to a|HTTP 404/,
     (stderr) => ({ kind: "not_found", detail: stderr.trim() }),
   ],
 ];

@@ -6,7 +6,7 @@
  * (agent, human, CI) needs to either resume or act on the halt reason.
  */
 
-import type { Action, HumanAction, LlmAction } from "./action.js";
+import type { Action, HumanAction, AgentAction } from "./action.js";
 import type { Score } from "./branded.js";
 
 export type HaltStatus =
@@ -14,8 +14,8 @@ export type HaltStatus =
   | "stalled"
   | "timeout"
   | "hil"
-  | "llm_needed"
-  | "pr_terminal"
+  | "agent_needed"
+  | "terminal"
   | "error"
   | "cancelled"
   | "fitness_unavailable";
@@ -32,7 +32,7 @@ export interface IterLog {
  * Structured cause for `error` and `fitness_unavailable` halts.
  *
  * `retry_after_seconds` is intentionally unbranded — it's raw from a
- * GitHub `Retry-After` header, which may exceed any local clamp.
+ * upstream `Retry-After` header, which may exceed any local clamp.
  */
 export interface ErrorCause {
   readonly source:
@@ -85,6 +85,8 @@ export type HaltBody =
       readonly status: "success";
       readonly iterations: number;
       readonly final_score: Score;
+      /** Non-empty when fitness target reached but structural blockers remain. */
+      readonly structural_blockers?: readonly string[];
       readonly history: readonly IterLog[];
     }
   | {
@@ -107,14 +109,14 @@ export type HaltBody =
       readonly history: readonly IterLog[];
     }
   | {
-      readonly status: "llm_needed";
+      readonly status: "agent_needed";
       readonly iterations: number;
       readonly final_score: Score;
-      readonly action: LlmAction;
+      readonly action: AgentAction;
       readonly history: readonly IterLog[];
     }
   | {
-      readonly status: "pr_terminal";
+      readonly status: "terminal";
       readonly iterations: number;
       readonly final_score: Score;
       readonly terminal: { readonly kind: string };

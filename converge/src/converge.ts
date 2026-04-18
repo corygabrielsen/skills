@@ -6,8 +6,8 @@
  *     Released in `finally`, including on cancellation.
  *   - `history` grows by one IterLog per observation (before action dispatch).
  *     Iteration count restarts at `history.length + 1` to support resume
- *     after `llm_needed` halts.
- *   - First terminal condition wins (target → pr_terminal → stalled → action
+ *     after `agent_needed` halts.
+ *   - First terminal condition wins (target → terminal → stalled → action
  *     dispatch). This mirrors the v3 spec precedence.
  *   - AbortSignal from the caller composes with per-iteration children;
  *     `AbortError` from anywhere inside is funneled to a `cancelled` halt.
@@ -27,14 +27,8 @@ import {
   writeInProgress,
 } from "./halt.js";
 import { appendHistory, openSession } from "./session.js";
-import {
-  reportHalt,
-  reportIteration,
-  type PrProgressTarget,
-} from "./pr-progress.js";
 import type {
   Action,
-  FitnessId,
   FitnessReport,
   HaltBody,
   HaltReport,
@@ -51,23 +45,19 @@ import { verbose } from "./util/log.js";
 import { sleep } from "./util/sleep.js";
 
 export interface ConvergeOpts {
-  readonly fitness: FitnessId;
-  readonly args: readonly string[];
+  readonly fitnessArgv: readonly string[];
   readonly maxIterations: number;
   readonly sessionId: string;
   /**
    * Skill-form invocation a caller can re-run after a resumable halt
-   * (llm_needed). Written to exit.json's `resume_cmd` header field.
-   * Example: `["/converge", "/pr-fitness", "owner/repo", "123"]`.
+   * (agent_needed). Written to exit.json's `resume_cmd` header field.
+   * Example: `["/converge", "/my-fitness", "arg1", "arg2"]`.
    */
   readonly resumeCmd: readonly string[];
-  /**
-   * Optional PR to annotate with per-iteration + halt progress comments.
-   * Null disables reporting. Built by `detectPrProgressTarget` at the
-   * CLI layer; the loop itself is fitness-agnostic and only forwards it
-   * to pr-progress.
-   */
-  readonly prProgressTarget: PrProgressTarget | null;
+  /** Called after each non-agent, non-human iteration for progress reporting. */
+  readonly onIteration?: (iter: number, report: FitnessReport, action: Action) => Promise<void>;
+  /** Called after the loop halts, for final-state reporting. */
+  readonly onHalt?: (halt: HaltReport, lastReport: FitnessReport | undefined) => Promise<void>;
   readonly signal: AbortSignal;
 }
 
@@ -125,7 +115,7 @@ function stableStringify(value: unknown): string {
 /**
  * Iteration key: identity of a logical state. Two observations with the
  * same key represent the same iteration — they don't trigger a new
- * iteration, history entry, or PR comment.
+ * iteration, history entry, or progress callback.
  *
  * Deliberately excludes `score` from the key so tier progression under
  * the same action (bronze → silver on the same wait_for_ci) doesn't
@@ -142,17 +132,17 @@ function iterKey(action: Action, report: FitnessReport): string {
 /**
  * Max polls per logical iteration. A session that never advances the
  * key over 20 consecutive polls is treated as runaway and halted with
- * `timeout`. Generous enough to cover real Copilot review cycles at
- * 60s cadence (~20 minutes).
+ * `timeout`. Generous enough to cover real external-service poll cycles
+ * at 60s cadence (~20 minutes).
  */
 const MAX_POLLS_PER_ITERATION = 20;
 
 /**
  * Minimum delay before re-observing after a `full` action executed.
- * Guards against tight-looping when GitHub's state hasn't propagated
- * (e.g. rerequest_copilot just fired but the next observation still
- * sees the old activity). Set conservatively — state usually propagates
- * within seconds; this is a floor, not a budget.
+ * Guards against tight-looping when external state hasn't propagated
+ * (e.g. an action just fired but the next observation still sees the
+ * old activity). Set conservatively — state usually propagates within
+ * seconds; this is a floor, not a budget.
  */
 const POST_FULL_REOBSERVE_MS = 15_000;
 
@@ -178,21 +168,19 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
   const sessionDir = handle.dir;
   const history = handle.history;
 
-  // Iteration counter resumes after any prior halts (e.g. llm_needed).
+  // Iteration counter resumes after any prior halts (e.g. agent_needed).
   const startIter = history.length + 1;
   const zeroScore = Score(0);
   let lastScore = history[history.length - 1]?.score ?? zeroScore;
-  // Most recent successful observation — kept for halt-time rendering so
-  // the halt comment can use the branded score display instead of a
-  // stale numeric. Undefined until the first observation succeeds.
+  // Most recent successful observation — passed to onHalt so the callback
+  // can render branded score display. Undefined until first observation.
   let lastReport: FitnessReport | undefined;
 
-  // Per-iteration PR progress posts chain onto this tail so the loop's
-  // critical path never blocks on a `gh` call. The chain (vs parallel
+  // Per-iteration progress callbacks chain onto this tail so the loop's
+  // critical path never blocks on I/O. The chain (vs parallel
   // fire-and-forget) preserves timeline order across iterations and
-  // caps concurrency at 1 — avoids tripping GitHub's secondary rate
-  // limit on writes to the same PR. `finalize` awaits the tail before
-  // the halt comment so iteration comments land first.
+  // caps concurrency at 1. `finalize` awaits the tail before
+  // the halt callback so iteration reports land first.
   let progressTail: Promise<void> = Promise.resolve();
 
   // Stub exit.json so a consumer never reads a stale prior run's halt as
@@ -205,9 +193,9 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
     printHaltLine(report);
     printResumeHint(report);
     await progressTail;
-    await reportHalt(opts.prProgressTarget, report, lastReport).catch(
-      () => undefined,
-    );
+    if (opts.onHalt) {
+      await opts.onHalt(report, lastReport).catch(() => undefined);
+    }
     return report;
   };
 
@@ -235,7 +223,7 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       // Observe.
       let report: FitnessReport;
       try {
-        report = await invokeFitness(opts.fitness, opts.args, opts.signal);
+        report = await invokeFitness(opts.fitnessArgv, opts.signal);
       } catch (err) {
         if (isAbortError(err)) {
           return await finalize(cancelledBody(iter, lastScore, history));
@@ -282,16 +270,18 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
       const action = pickAction(report.actions);
 
       if (targetReached(report)) {
+        const structural = report.blocker_split?.structural ?? [];
         return await finalize({
           status: "success",
           iterations: iter,
           final_score: report.score,
+          ...(structural.length > 0 ? { structural_blockers: structural } : {}),
           history: [...history],
         });
       }
       if (report.terminal !== undefined) {
         return await finalize({
-          status: "pr_terminal",
+          status: "terminal",
           iterations: iter,
           final_score: report.score,
           terminal: report.terminal,
@@ -332,15 +322,15 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
         });
 
         printTraceLine(iter, report.score, action);
-        // For llm/human actions the halt comment will fire immediately
-        // with the same description + a resume command, so skip the
-        // iteration comment to avoid two near-identical posts.
-        if (action.automation !== "llm" && action.automation !== "human") {
-          progressTail = progressTail.then(() =>
-            reportIteration(opts.prProgressTarget, iter, report, action).catch(
-              () => undefined,
-            ),
-          );
+        // For agent/human actions the halt fires immediately with the
+        // same description, so skip the iteration callback to avoid
+        // near-identical duplicate reports.
+        if (opts.onIteration && action.automation !== "agent" && action.automation !== "human") {
+          const cb = opts.onIteration;
+          const iterSnap = iter;
+          const reportSnap = report;
+          const actionSnap = action;
+          progressTail = progressTail.then(() => cb(iterSnap, reportSnap, actionSnap).catch(() => undefined));
         }
       }
 
@@ -395,9 +385,9 @@ export async function converge(opts: ConvergeOpts): Promise<HaltReport> {
           }
           break;
         }
-        case "llm": {
+        case "agent": {
           return await finalize({
-            status: "llm_needed",
+            status: "agent_needed",
             iterations: iter,
             final_score: report.score,
             action,

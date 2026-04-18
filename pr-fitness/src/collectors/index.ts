@@ -8,6 +8,7 @@ import type {
   GitHubPullRequestReview,
   GitHubPullRequestReviewThreadsResponse,
   GitHubRequestedReviewers,
+  RequiredCheckConfig,
 } from "../types/index.js";
 import type { CopilotRepoConfig } from "../types/copilot.js";
 import type { GraphiteCheck } from "../types/output.js";
@@ -25,14 +26,19 @@ import {
 import { collectIssueEvents } from "./issue-events.js";
 import { collectPrMetadata } from "./pr-metadata.js";
 import { collectRequestedReviewers } from "./requested-reviewers.js";
-import { collectRequiredCheckNames } from "./required-checks.js";
+import {
+  collectRequiredCheckConfig,
+  resolveStackRoot,
+} from "./required-checks.js";
 import { collectReviewThreads, EMPTY_THREADS } from "./review-threads.js";
 import { collectReviews } from "./reviews.js";
 
 export interface CollectedData {
   readonly pr: GitHubPullRequestView;
+  /** Branch the stack ultimately targets (e.g. master for mid-stack PRs). */
+  readonly stackRoot: string;
   readonly checks: readonly GitHubCheck[];
-  readonly requiredCheckNames: readonly string[];
+  readonly requiredCheckConfig: readonly RequiredCheckConfig[];
   readonly threads: GitHubPullRequestReviewThreadsResponse;
   readonly comments: readonly GitHubIssueComment[];
   readonly reviews: readonly GitHubPullRequestReview[];
@@ -94,11 +100,19 @@ export async function collect(
     thunk: () => collectChecks(repo, pr),
     fallback: [],
   };
-  const requiredCheckNames: NonFatalCollector<readonly string[]> = {
-    name: "required-checks",
-    thunk: () => collectRequiredCheckNames(repo, pr),
-    fallback: [],
-  };
+  // Stack root resolution runs inside the required-checks thunk so it
+  // overlaps with the other collectors in Promise.all. The resolved
+  // root is captured for CollectedData.
+  let stackRoot = prData.baseRefName;
+  const requiredCheckConfig: NonFatalCollector<readonly RequiredCheckConfig[]> =
+    {
+      name: "required-checks",
+      thunk: async () => {
+        stackRoot = await resolveStackRoot(repo, prData.baseRefName);
+        return collectRequiredCheckConfig(repo, stackRoot);
+      },
+      fallback: [],
+    };
   const threads: NonFatalCollector<GitHubPullRequestReviewThreadsResponse> = {
     name: "review-threads",
     thunk: () => collectReviewThreads(ownerPart, namePart, pr),
@@ -141,7 +155,7 @@ export async function collect(
 
   const [
     checksVal,
-    requiredCheckNamesVal,
+    requiredCheckConfigVal,
     threadsVal,
     commentsVal,
     reviewsVal,
@@ -151,7 +165,7 @@ export async function collect(
     copilotConfigVal,
   ] = await Promise.all([
     settle(checks, degraded),
-    settle(requiredCheckNames, degraded),
+    settle(requiredCheckConfig, degraded),
     settle(threads, degraded),
     settle(comments, degraded),
     settle(reviews, degraded),
@@ -165,8 +179,9 @@ export async function collect(
 
   return {
     pr: prData,
+    stackRoot,
     checks: checksVal,
-    requiredCheckNames: requiredCheckNamesVal,
+    requiredCheckConfig: requiredCheckConfigVal,
     threads: threadsVal,
     comments: commentsVal,
     reviews: reviewsVal,

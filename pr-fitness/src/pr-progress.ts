@@ -3,9 +3,9 @@
  *
  * Policy (v1 — deliberately noisy):
  *   - One comment per iteration where /converge takes or delegates an
- *     action (full, llm, wait, human).
+ *     action (full, agent, wait, human).
  *   - One comment on every halt (success, stalled, timeout, error,
- *     llm_needed, hil, pr_terminal, cancelled, fitness_unavailable).
+ *     agent_needed, hil, terminal, cancelled, fitness_unavailable).
  *   - Hygiene actions (`target_effect: "neutral"`) don't appear because
  *     /converge never picks them as the iteration's action.
  *
@@ -18,14 +18,58 @@
 
 import { spawn } from "node:child_process";
 
-import type {
-  Action,
-  FitnessId,
-  FitnessReport,
-  HaltReport,
-} from "./types/index.js";
-import { PR_FITNESS } from "./types/index.js";
-import { verbose } from "./util/log.js";
+// ---------------------------------------------------------------------------
+// Minimal type surface consumed from /converge's domain. These are the
+// shapes pr-progress reads from structured reports — they don't need to
+// be the full converge types. Defining them locally avoids a cross-package
+// dependency from pr-fitness → converge.
+// ---------------------------------------------------------------------------
+
+interface AxisLine {
+  readonly name: string;
+  readonly emoji: string;
+  readonly summary: string;
+}
+
+/** Subset of converge's FitnessReport used for rendering. */
+export interface FitnessReportView {
+  readonly score: number;
+  readonly target: number;
+  readonly score_emoji?: string;
+  readonly score_label?: string;
+  readonly target_label?: string;
+  readonly axes?: readonly AxisLine[];
+  readonly notes?: readonly string[];
+  readonly snapshot?: Readonly<Record<string, unknown>>;
+  readonly blocker_split?: {
+    readonly agent: readonly string[];
+    readonly human: readonly string[];
+    readonly structural: readonly string[];
+  };
+}
+
+/** Subset of converge's Action used for rendering. */
+export interface ActionView {
+  readonly kind: string;
+  readonly automation: string;
+  readonly description: string;
+}
+
+/** Subset of converge's HaltReport used for rendering. */
+export interface HaltReportView {
+  readonly status: string;
+  readonly iterations: number;
+  readonly resume_cmd: readonly string[];
+  readonly action?: ActionView;
+  readonly terminal?: { readonly kind: string };
+  readonly cause?: {
+    readonly source: string;
+    readonly message: string;
+    readonly stderr?: string;
+  };
+  readonly structural_blockers?: readonly string[];
+  readonly final_score?: number;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -45,15 +89,30 @@ const PR_RE = /^[0-9]+$/;
  * "progress reporting disabled" rather than an error.
  */
 export function detectPrProgressTarget(
-  fitness: FitnessId,
+  fitness: string,
   args: readonly string[],
 ): PrProgressTarget | null {
-  if (fitness !== PR_FITNESS) return null;
+  if (fitness !== "pr-fitness") return null;
   const repo = args[0];
   const pr = args[1];
   if (repo === undefined || pr === undefined) return null;
   if (!REPO_RE.test(repo) || !PR_RE.test(pr)) return null;
   return { repo, pr };
+}
+
+// ---------------------------------------------------------------------------
+
+let verboseEnabled = false;
+
+/** Enable verbose logging for pr-progress. */
+export function setPrProgressVerbose(v: boolean): void {
+  verboseEnabled = v;
+}
+
+function verbose(message: string): void {
+  if (verboseEnabled) {
+    process.stderr.write(`${message}\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -120,15 +179,18 @@ async function postComment(
  * reveal IS the dopamine hit. Below target: `{emoji} {label} → {text}`.
  * At target: `{emoji} {label}`.
  */
-function scoreLine(report: FitnessReport): string {
+function scoreLine(report: FitnessReportView): string {
   const emoji = report.score_emoji ?? "";
-  const label = report.score_label ?? String(report.score as number);
+  const label = report.score_label ?? String(report.score);
   if (report.score >= report.target) return `${emoji} ${label}`.trim();
-  const target = report.target_label ?? String(report.target as number);
+  const target = report.target_label ?? String(report.target);
   return `${emoji} ${label} → ${target}`.trim();
 }
 
-function appendAxes(lines: string[], axes: FitnessReport["axes"]): void {
+function appendAxes(
+  lines: string[],
+  axes: FitnessReportView["axes"],
+): void {
   if (axes === undefined || axes.length === 0) return;
   lines.push("");
   for (const a of axes) {
@@ -137,7 +199,10 @@ function appendAxes(lines: string[], axes: FitnessReport["axes"]): void {
   }
 }
 
-function appendNotes(lines: string[], notes: FitnessReport["notes"]): void {
+function appendNotes(
+  lines: string[],
+  notes: FitnessReportView["notes"],
+): void {
   if (notes === undefined || notes.length === 0) return;
   lines.push("");
   for (const n of notes) {
@@ -147,7 +212,7 @@ function appendNotes(lines: string[], notes: FitnessReport["notes"]): void {
 
 function appendSnapshot(
   lines: string[],
-  report: FitnessReport,
+  report: FitnessReportView,
   extra: Record<string, unknown>,
 ): void {
   if (report.snapshot === undefined) return;
@@ -164,8 +229,8 @@ function appendSnapshot(
 
 function iterationBody(
   iter: number,
-  report: FitnessReport,
-  action: Action,
+  report: FitnessReportView,
+  action: ActionView,
 ): string {
   const lines: string[] = [];
   lines.push(`🤖 **converge** · iter ${String(iter)}`);
@@ -188,8 +253,8 @@ function iterationBody(
 }
 
 function haltBody(
-  halt: HaltReport,
-  lastReport: FitnessReport | undefined,
+  halt: HaltReportView,
+  lastReport: FitnessReportView | undefined,
 ): string {
   const lines: string[] = [];
   const isSuccess = halt.status === "success";
@@ -207,21 +272,36 @@ function haltBody(
   switch (halt.status) {
     case "success":
       lines.push("");
-      lines.push("Target reached.");
+      if (
+        halt.structural_blockers !== undefined &&
+        halt.structural_blockers.length > 0
+      ) {
+        lines.push("Target reached — structural blockers remain.");
+        lines.push("");
+        lines.push(`Resume: \`${halt.resume_cmd.join(" ")}\``);
+      } else {
+        lines.push("Target reached.");
+      }
       break;
-    case "pr_terminal":
+    case "terminal":
       lines.push("");
-      lines.push(`PR is ${halt.terminal.kind}.`);
+      if (halt.terminal !== undefined) {
+        lines.push(`PR is ${halt.terminal.kind}.`);
+      }
       break;
-    case "llm_needed":
+    case "agent_needed":
       lines.push("");
-      lines.push(`> ${halt.action.description}`);
+      if (halt.action !== undefined) {
+        lines.push(`> ${halt.action.description}`);
+      }
       lines.push("");
       lines.push(`Resume: \`${halt.resume_cmd.join(" ")}\``);
       break;
     case "hil":
       lines.push("");
-      lines.push(`> ${halt.action.description}`);
+      if (halt.action !== undefined) {
+        lines.push(`> ${halt.action.description}`);
+      }
       break;
     case "stalled":
       lines.push("");
@@ -234,13 +314,16 @@ function haltBody(
     case "error":
     case "fitness_unavailable": {
       lines.push("");
-      lines.push(`Cause: ${halt.cause.message}`);
-      const stderr = halt.cause.stderr;
-      if (stderr !== undefined && stderr.length > 0) {
-        lines.push("");
-        lines.push("```");
-        lines.push(stderr.trim().slice(0, 500));
-        lines.push("```");
+      const cause = halt.cause;
+      if (cause !== undefined) {
+        lines.push(`Cause: ${cause.message}`);
+        const stderr = cause.stderr;
+        if (stderr !== undefined && stderr.length > 0) {
+          lines.push("");
+          lines.push("```");
+          lines.push(stderr.trim().slice(0, 500));
+          lines.push("```");
+        }
       }
       break;
     }
@@ -260,17 +343,23 @@ function haltBody(
     halt: halt.status,
     iter: halt.iterations,
   };
-  if (halt.status === "llm_needed" || halt.status === "hil") {
+  if (
+    (halt.status === "agent_needed" || halt.status === "hil") &&
+    halt.action !== undefined
+  ) {
     extra["action"] = {
       kind: halt.action.kind,
       automation: halt.action.automation,
       description: halt.action.description,
     };
   }
-  if (halt.status === "llm_needed") {
+  if (halt.status === "agent_needed") {
     extra["resume_cmd"] = halt.resume_cmd;
   }
-  if (halt.status === "error" || halt.status === "fitness_unavailable") {
+  if (
+    (halt.status === "error" || halt.status === "fitness_unavailable") &&
+    halt.cause !== undefined
+  ) {
     extra["cause"] = {
       source: halt.cause.source,
       message: halt.cause.message,
@@ -301,8 +390,8 @@ function haltBody(
 export async function reportIteration(
   target: PrProgressTarget | null,
   iter: number,
-  report: FitnessReport,
-  action: Action,
+  report: FitnessReportView,
+  action: ActionView,
 ): Promise<void> {
   if (target === null) return;
   await postComment(target, iterationBody(iter, report, action));
@@ -310,8 +399,8 @@ export async function reportIteration(
 
 export async function reportHalt(
   target: PrProgressTarget | null,
-  halt: HaltReport,
-  lastReport: FitnessReport | undefined,
+  halt: HaltReportView,
+  lastReport: FitnessReportView | undefined,
 ): Promise<void> {
   if (target === null) return;
   await postComment(target, haltBody(halt, lastReport));

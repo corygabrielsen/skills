@@ -46,6 +46,16 @@ export interface PullRequestFitnessReport {
   readonly mergeable: boolean;
   /** Human-readable blocker descriptions. Empty when mergeable or merged. */
   readonly blockers: readonly string[];
+  /**
+   * Blockers split by resolution authority. Agent blockers cap score;
+   * human and structural don't. Converge uses this to choose halt
+   * behavior: "keep working" vs "your turn" vs "waiting on downstack."
+   */
+  readonly blocker_split: {
+    readonly agent: readonly string[];
+    readonly human: readonly string[];
+    readonly structural: readonly string[];
+  };
   readonly ci: CiSummary;
   readonly reviews: ReviewSummary;
   readonly copilot: import("./copilot.js").CopilotReport;
@@ -115,16 +125,26 @@ export type AdvisorySummary = CheckBucketSummary;
  * CI state for the PR.
  *
  * Top-level counts reflect **required** checks only — those that gate
- * merge per branch protection or rulesets. Advisory-only failures (e.g.
- * optional AI-review bots that hit upstream regressions) surface in
- * `advisory` but never drive `fix_ci` actions or appear in blocker
- * lists.
+ * merge per branch protection or rulesets. The required set is derived
+ * from branch rules configuration (`rules/branches/{base}` + legacy
+ * branch protection), then joined with observed check-runs on the PR.
+ *
+ * `missing` captures configured requirements with no corresponding
+ * check-run — the skipped-job case where a required job's `needs:`
+ * dependency failed and the check-run was never created.
+ *
+ * Advisory-only failures surface in `advisory` but never drive
+ * `fix_ci` actions or appear in blocker lists.
  *
  * When the PR has zero required checks configured, every check falls
  * into `advisory` and the required counts are all zero — a legitimate
  * state meaning "nothing is gating CI."
  */
 export interface CiSummary extends CheckBucketSummary {
+  /** Required checks configured but absent — no check-run exists on the PR. */
+  readonly missing: number;
+  /** Names of missing required checks. */
+  readonly missing_names: readonly string[];
   /** ISO 8601 — most recent check completion time across all checks. Null if none completed. */
   readonly completed_at: string | null;
   /** Non-required check state, surfaced for visibility only. */

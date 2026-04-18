@@ -78,8 +78,15 @@ export function printHaltLine(report: HaltReport): void {
   }
   const score = String(report.final_score as number);
   let suffix = "";
-  if (report.status === "llm_needed" || report.status === "hil") {
+  if (report.status === "agent_needed" || report.status === "hil") {
     suffix = ` action=${report.action.kind} desc="${report.action.description}"`;
+  }
+  if (
+    report.status === "success" &&
+    report.structural_blockers !== undefined &&
+    report.structural_blockers.length > 0
+  ) {
+    suffix = ` structural=${report.structural_blockers.join(",")}`;
   }
   log(
     `halt ${report.status} iter ${report.iterations} score=${score}${suffix}`,
@@ -88,8 +95,17 @@ export function printHaltLine(report: HaltReport): void {
 
 /** Print the "to resume" hint when the caller is expected to re-invoke. */
 export function printResumeHint(report: HaltReport): void {
-  if (report.status !== "llm_needed") return;
-  log(`to resume: ${report.resume_cmd.join(" ")}`);
+  if (report.status === "agent_needed") {
+    log(`to resume: ${report.resume_cmd.join(" ")}`);
+    return;
+  }
+  if (
+    report.status === "success" &&
+    report.structural_blockers !== undefined &&
+    report.structural_blockers.length > 0
+  ) {
+    log(`to resume: ${report.resume_cmd.join(" ")}`);
+  }
 }
 
 export function printTraceLine(

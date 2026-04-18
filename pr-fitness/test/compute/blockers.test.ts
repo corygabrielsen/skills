@@ -78,6 +78,22 @@ describe("computeBlockers", () => {
     assert.ok(!all.includes("not_approved"));
   });
 
+  it("classifies missing required checks as agent-resolvable", () => {
+    const ci: CiSummary = {
+      ...CLEAN_CI,
+      missing: 1,
+      missing_names: ["Mergeability Check"],
+    };
+    const { agent, human } = computeBlockers(
+      ci,
+      APPROVED_REVIEWS,
+      CLEAN_STATE,
+      "pass",
+    );
+    assert.ok(agent.some((b) => b.includes("ci_missing")));
+    assert.equal(human.length, 0);
+  });
+
   it("classifies unresolved threads as agent-resolvable", () => {
     const reviews: ReviewSummary = {
       ...APPROVED_REVIEWS,
@@ -112,7 +128,19 @@ describe("computeBlockers", () => {
     assert.ok(agent.includes("draft"));
   });
 
-  it("all = agent ∪ human", () => {
+  it("classifies stack_blocked as structural", () => {
+    const { agent, human, structural } = computeBlockers(
+      CLEAN_CI,
+      APPROVED_REVIEWS,
+      CLEAN_STATE,
+      "pending",
+    );
+    assert.equal(agent.length, 0);
+    assert.equal(human.length, 0);
+    assert.ok(structural.includes("stack_blocked"));
+  });
+
+  it("all = agent ∪ human ∪ structural", () => {
     const ci: CiSummary = {
       ...CLEAN_CI,
       fail: 1,
@@ -125,9 +153,15 @@ describe("computeBlockers", () => {
       pending_reviews: { bots: [], humans: ["alice"] },
     };
     const state: PullRequestState = { ...CLEAN_STATE, draft: true };
-    const { agent, human, all } = computeBlockers(ci, reviews, state, "pass");
+    const { agent, human, structural, all } = computeBlockers(
+      ci,
+      reviews,
+      state,
+      "pending",
+    );
     assert.ok(agent.length >= 3); // ci_fail, unresolved, draft
     assert.ok(human.length >= 2); // not_approved, pending_human
-    assert.equal(all.length, agent.length + human.length);
+    assert.ok(structural.includes("stack_blocked"));
+    assert.equal(all.length, agent.length + human.length + structural.length);
   });
 });

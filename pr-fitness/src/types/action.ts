@@ -42,8 +42,8 @@ export type TargetEffect = "advances" | "blocks" | "neutral";
 export type Automation =
   /** Agent can do this without any human input. */
   | "full"
-  /** Agent needs LLM judgment (read logs, write code, respond to review). */
-  | "llm"
+  /** Agent needs judgment (read logs, write code, respond to review). */
+  | "agent"
   /** Requires a human (approve, clarify, decide). */
   | "human"
   /** Nothing to do — just wait. */

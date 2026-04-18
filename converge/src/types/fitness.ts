@@ -9,7 +9,7 @@ import type { Action } from "./action.js";
 import type { Score } from "./branded.js";
 
 /**
- * One row in the progress comment's axis display. Pr-fitness constructs
+ * One row in the progress display. The fitness skill constructs
  * these from its computed state; /converge renders them verbatim as
  * `{emoji} {name} {summary}` lines. Converge never interprets what
  * the axes mean — the fitness skill owns the vocabulary.
@@ -37,7 +37,7 @@ export interface FitnessReport {
   readonly score_display?: string;
   /** Branded rendering of `target`, mirror of `score_display`. */
   readonly target_display?: string;
-  /** Decomposed score components for the PR progress comment. */
+  /** Decomposed score components for progress rendering. */
   readonly score_emoji?: string;
   readonly score_label?: string;
   /**
@@ -47,23 +47,22 @@ export interface FitnessReport {
    */
   readonly target_label?: string;
   /**
-   * Per-axis status lines for the PR progress comment. Each entry is
-   * rendered as `{emoji} {name} {summary}`. Pr-fitness constructs them;
-   * converge renders them.
+   * Per-axis status lines for progress rendering. Each entry is
+   * rendered as `{emoji} {name} {summary}`. The fitness skill constructs
+   * them; converge renders them.
    */
   readonly axes?: readonly AxisLine[];
   /**
    * Curated JSON-serializable state snapshot for machine readers.
-   * Pr-fitness constructs the base (ci, copilot, reviews, state, etc.);
-   * /converge enriches with iter + action + halt fields and renders it
-   * inside a `<details>` block on the PR comment.
+   * The fitness skill constructs the base; /converge enriches with
+   * iter + action + halt fields and forwards it to progress callbacks.
    */
   readonly snapshot?: Readonly<Record<string, unknown>>;
   /**
-   * Skill-owned informational lines — rendered verbatim by /converge as
-   * bullet points in the PR progress comment. Intended for context the
-   * reader should see but that doesn't drive convergence (e.g. advisory
-   * check failures, informational warnings). Each entry is one line.
+   * Skill-owned informational lines — forwarded verbatim by /converge to
+   * progress callbacks. Intended for context the reader should see but
+   * that doesn't drive convergence (e.g. advisory warnings). Each entry
+   * is one line.
    */
   readonly notes?: readonly string[];
   /**
@@ -73,19 +72,30 @@ export interface FitnessReport {
    */
   readonly blockers?: readonly string[];
   /**
+   * Blockers split by resolution authority. /converge uses this to
+   * distinguish halt behavior when score reaches target:
+   *   - agent non-empty → keep working (shouldn't happen at target)
+   *   - structural non-empty → halt with re-entry hint
+   *   - human non-empty → halt with "your turn"
+   */
+  readonly blocker_split?: {
+    readonly agent: readonly string[];
+    readonly human: readonly string[];
+    readonly structural: readonly string[];
+  };
+  /**
    * Per-axis activity state the skill wants /converge to track for
-   * iteration boundaries. E.g. pr-fitness emits `{ copilot: "working" }`
-   * so a Copilot `working → reviewed` transition advances the iteration
-   * even when the picked action and blockers haven't changed.
+   * iteration boundaries. E.g. a fitness skill emits `{ axis: "pending" }`
+   * so a `pending → done` transition advances the iteration even
+   * when the picked action and blockers haven't changed.
    *
    * Keys are skill-defined labels; values are opaque state strings. The
    * map is folded into the iteration key without interpretation.
    */
   readonly activity_state?: Readonly<Record<string, string>>;
   /**
-   * Terminal state external to the fitness loop (e.g. PR merged/closed).
-   * `kind` vocabulary is owned by the skill; /converge treats it opaquely
-   * and halts `pr_terminal`.
+   * Terminal state external to the fitness loop. `kind` vocabulary is
+   * owned by the skill; /converge treats it opaquely and halts `terminal`.
    */
   readonly terminal?: { readonly kind: string };
 }

@@ -1,5 +1,5 @@
 import { collect } from "./collectors/index.js";
-import { computeBlockers } from "./compute/blockers.js";
+import { computeBlockers, EMPTY_BLOCKERS } from "./compute/blockers.js";
 import { computeCi } from "./compute/ci.js";
 import { computeCopilot } from "./compute/copilot.js";
 import { plan } from "./compute/plan.js";
@@ -99,24 +99,37 @@ function computeAxes(
   ci: CiSummary,
   copilot: CopilotReport,
   reviews: ReviewSummary,
+  requiredChecksDegraded: boolean,
 ): readonly AxisLine[] {
   const axes: AxisLine[] = [];
 
-  // CI axis
-  if (ci.fail > 0) {
+  // Required Checks axis — says what it is, not the generic "CI"
+  if (requiredChecksDegraded) {
     axes.push({
-      name: "CI",
+      name: "Required Checks",
+      emoji: "❓",
+      summary: "config unavailable (query failed)",
+    });
+  } else if (ci.fail > 0) {
+    axes.push({
+      name: "Required Checks",
       emoji: "❌",
       summary: ci.failed.join(", ") + " failing",
     });
+  } else if (ci.missing > 0) {
+    axes.push({
+      name: "Required Checks",
+      emoji: "❓",
+      summary: `${ci.missing_names.join(", ")} not started`,
+    });
   } else if (ci.pending > 0) {
     axes.push({
-      name: "CI",
+      name: "Required Checks",
       emoji: "⏳",
       summary: `${String(ci.pending)} check${ci.pending === 1 ? "" : "s"} running`,
     });
   } else {
-    axes.push({ name: "CI", emoji: "✅", summary: "" });
+    axes.push({ name: "Required Checks", emoji: "✅", summary: "" });
   }
 
   // Copilot axis
@@ -223,7 +236,9 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
       pass: ci.pass,
       fail: ci.fail,
       pending: ci.pending,
+      missing: ci.missing,
       failed: ci.failed_details.map((d) => ({ name: d.name, link: d.link })),
+      missing_names: ci.missing_names,
       advisory_failed: ci.advisory.failed,
     },
     copilot: copilot.configured
@@ -304,7 +319,7 @@ export async function prFitness(
   const data = await collect(repo, pr);
 
   const lifecycle = toLifecycle(data.pr.state);
-  const ci = computeCi(data.checks, data.requiredCheckNames);
+  const ci = computeCi(data.checks, data.requiredCheckConfig);
   const reviews = computeReviews(
     data.pr,
     data.threads,
@@ -326,10 +341,10 @@ export async function prFitness(
   const blockerSplit =
     lifecycle === "open"
       ? computeBlockers(ci, reviews, state, data.graphite.status)
-      : { agent: [] as string[], human: [] as string[], all: [] as string[] };
+      : EMPTY_BLOCKERS;
   const actions =
     lifecycle === "open"
-      ? plan(ci, reviews, state, data.graphite.status, copilot, repo, pr)
+      ? plan(ci, reviews, state, copilot, repo, pr)
       : [];
 
   // Score reflects agent-achievable fitness. Human-dependent blockers
@@ -342,7 +357,13 @@ export async function prFitness(
   const activityState: Record<string, string> = copilot.configured
     ? { copilot: copilot.activity.state }
     : {};
-  const axes = lifecycle === "open" ? computeAxes(ci, copilot, reviews) : [];
+  const requiredChecksDegraded = data.degraded.some(
+    (d) => d.collector === "required-checks",
+  );
+  const axes =
+    lifecycle === "open"
+      ? computeAxes(ci, copilot, reviews, requiredChecksDegraded)
+      : [];
   const targetTier = tierForScore(target);
   const durationMs = Math.round(performance.now() - start);
   const timestamp = new Date().toISOString();
@@ -376,6 +397,11 @@ export async function prFitness(
     closed_at: data.pr.closedAt ?? null,
     mergeable: isMergeable(lifecycle, blockerSplit.all),
     blockers: blockerSplit.all,
+    blocker_split: {
+      agent: blockerSplit.agent,
+      human: blockerSplit.human,
+      structural: blockerSplit.structural,
+    },
     ci,
     reviews,
     copilot,

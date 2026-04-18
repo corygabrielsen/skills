@@ -11,7 +11,7 @@ import type { PullRequestFitnessReport } from "../src/types/output.js";
 describe("output contract", () => {
   async function loadFixture(): Promise<PullRequestFitnessReport> {
     const raw = await readFile(
-      new URL("./fixtures/pr-1563.json", import.meta.url),
+      new URL("./fixtures/report.json", import.meta.url),
       "utf-8",
     );
     return JSON.parse(raw) as PullRequestFitnessReport;
@@ -34,6 +34,9 @@ describe("output contract", () => {
     );
     assert.equal(typeof report.mergeable, "boolean");
     assert.ok(Array.isArray(report.blockers));
+    assert.ok(Array.isArray(report.blocker_split.agent));
+    assert.ok(Array.isArray(report.blocker_split.human));
+    assert.ok(Array.isArray(report.blocker_split.structural));
     assert.equal(typeof report.version, "string");
     assert.equal(typeof report.status, "string");
     assert.ok(Array.isArray(report.notes));
@@ -60,9 +63,11 @@ describe("output contract", () => {
     assert.equal(typeof report.ci.pass, "number");
     assert.equal(typeof report.ci.fail, "number");
     assert.equal(typeof report.ci.pending, "number");
+    assert.equal(typeof report.ci.missing, "number");
     assert.equal(typeof report.ci.total, "number");
     assert.ok(Array.isArray(report.ci.failed));
     assert.ok(Array.isArray(report.ci.pending_names));
+    assert.ok(Array.isArray(report.ci.missing_names));
     assert.ok(Array.isArray(report.ci.failed_details));
     assert.ok(
       report.ci.completed_at === null ||

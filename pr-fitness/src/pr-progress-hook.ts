@@ -1,9 +1,9 @@
 #!/usr/bin/env npx tsx
 /**
- * Hook coprocess for converge2. Reads JSONL events from stdin,
+ * Hook coprocess for converge. Reads JSONL events from stdin,
  * posts PR comments via the existing pr-progress rendering logic.
  *
- * Usage (as converge2 --hook argument):
+ * Usage (as converge --hook argument):
  *   npx tsx pr-progress-hook.ts <owner/repo> <pr-number>
  *
  * Expects two positional arguments: the repo slug and PR number.

@@ -155,7 +155,7 @@ mod tests {
             status: HaltStatus::Success,
             timestamp: "2026-04-17T12:00:00Z".to_string(),
             session_id: "test-session".to_string(),
-            resume_cmd: vec!["converge2".to_string(), "--".to_string(), "fitness".to_string()],
+            resume_cmd: vec!["converge".to_string(), "--".to_string(), "fitness".to_string()],
             iterations: 3,
             final_score: Some(1.0),
             structural_blockers: None,

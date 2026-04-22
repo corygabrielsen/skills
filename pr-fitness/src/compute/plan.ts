@@ -153,7 +153,7 @@ export function plan(
   if (reviews.threads_unresolved > 0) {
     pushAction(actions, {
       blocker: `${String(reviews.threads_unresolved)}_unresolved_threads`,
-      description: `Address ${String(reviews.threads_unresolved)} unresolved review thread(s)`,
+      description: `Address ${String(reviews.threads_unresolved)} unresolved review thread(s). For each fix, consider whether the underlying issue recurs elsewhere and fix all instances.`,
       automation: "agent",
       target_effect: "blocks",
       type: {

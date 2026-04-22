@@ -1,5 +1,5 @@
 [package]
-name = "converge2"
+name = "converge"
 version = "0.1.0"
 edition = "2024"
 description = "Domain-agnostic observe→decide→act convergence loop"

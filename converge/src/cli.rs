@@ -12,7 +12,7 @@ const DEFAULT_MAX_ITER: u32 = 20;
 
 fn usage() -> ! {
     eprintln!(
-        "Usage: converge2 [options] -- <command> [args...]
+        "Usage: converge [options] -- <command> [args...]
 
 Observe→decide→act loop. Runs <command> repeatedly, reads a JSON
 fitness report from its stdout, and dispatches prescribed actions
@@ -42,7 +42,7 @@ Exit codes:
 }
 
 fn die(msg: &str) -> ! {
-    eprintln!("converge2: {msg}");
+    eprintln!("converge: {msg}");
     std::process::exit(64);
 }
 
@@ -92,7 +92,7 @@ fn parse_args() -> ParsedArgs {
         match arg.as_str() {
             "-h" | "--help" => usage(),
             "--version" => {
-                println!("converge2 {VERSION}");
+                println!("converge {VERSION}");
                 std::process::exit(0);
             }
             "-v" | "--verbose" => verbose = true,
@@ -184,7 +184,7 @@ pub fn run() -> i32 {
     match converge(opts, &cancelled) {
         Ok(halt) => halt.status.exit_code(),
         Err(msg) => {
-            eprintln!("converge2: {msg}");
+            eprintln!("converge: {msg}");
             4 // error
         }
     }

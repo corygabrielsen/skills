@@ -387,6 +387,51 @@ function haltBody(
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Standalone fitness comment (no converge context)
+// ---------------------------------------------------------------------------
+
+function fitnessCommentBody(
+  report: FitnessReportView,
+  topAction: ActionView | undefined,
+): string {
+  const lines: string[] = [];
+  lines.push(scoreLine(report));
+  appendAxes(lines, report.axes);
+  if (topAction !== undefined) {
+    lines.push("");
+    lines.push(`> ${topAction.description}`);
+  }
+  appendNotes(lines, report.notes);
+  appendSnapshot(lines, report, {
+    type: "fitness",
+    action: topAction
+      ? {
+          kind: topAction.kind,
+          automation: topAction.automation,
+          description: topAction.description,
+        }
+      : undefined,
+  });
+  return lines.join("\n");
+}
+
+/**
+ * Render a standalone fitness comment body. Used by `--comment`
+ * mode — no converge iteration context, just current PR state.
+ */
+export function renderFitnessComment(
+  report: FitnessReportView,
+  topAction: ActionView | undefined,
+): string {
+  return fitnessCommentBody(report, topAction);
+}
+
+/** Post a pre-rendered comment body on a PR. */
+export { postComment };
+
+// ---------------------------------------------------------------------------
+
 export async function reportIteration(
   target: PrProgressTarget | null,
   iter: number,

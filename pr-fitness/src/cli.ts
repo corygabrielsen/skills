@@ -105,6 +105,14 @@ async function maybePostComment(
   const actionView = topAction
     ? { kind: topAction.kind, automation: topAction.automation, description: topAction.description }
     : undefined;
+  // Strip volatile fields from snapshot so dedup hash is stable.
+  const stableSnapshot = report.snapshot
+    ? Object.fromEntries(
+        Object.entries(report.snapshot).filter(
+          ([k]) => k !== "timestamp" && k !== "duration_ms",
+        ),
+      )
+    : undefined;
   const reportView = {
     score: report.score as number,
     target: report.target as number,
@@ -117,10 +125,12 @@ async function maybePostComment(
     blocker_split: report.blocker_split,
   };
 
+  // Render the full body (with timestamps for display), but hash
+  // a stable version (without timestamps) for dedup.
   const body = renderFitnessComment(reportView, actionView);
-
-  // Dedup: skip if body hasn't changed since last post.
-  const hash = createHash("sha256").update(body).digest("hex").slice(0, 16);
+  const stableView = { ...reportView, ...(stableSnapshot !== undefined ? { snapshot: stableSnapshot } : {}) };
+  const stableBody = renderFitnessComment(stableView, actionView);
+  const hash = createHash("sha256").update(stableBody).digest("hex").slice(0, 16);
   const hashFile = join(tmpdir(), `pr-fitness-comment-${repo.replace("/", "-")}-${pr}.hash`);
 
   try {

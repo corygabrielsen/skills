@@ -98,6 +98,25 @@ function scoreLabel(lifecycle: Lifecycle, score: ScoreT): string {
   return tier ?? `score ${String(score as number)}`;
 }
 
+/**
+ * Render the `reviewed` detail suffix for a bot axis. Shared between
+ * Copilot and Cursor — both check unresolved → stale → non-HEAD in
+ * that order.
+ */
+function reviewedDetail(
+  threads: { readonly unresolved: number; readonly stale: number },
+  fresh: boolean,
+): string {
+  if (threads.unresolved > 0) {
+    return `${String(threads.unresolved)} unresolved thread${threads.unresolved === 1 ? "" : "s"}`;
+  }
+  if (threads.stale > 0) {
+    return `hasn't seen ${String(threads.stale)} post-review repl${threads.stale === 1 ? "y" : "ies"}`;
+  }
+  if (!fresh) return "reviewed, not at HEAD";
+  return "reviewed at HEAD";
+}
+
 function computeAxes(
   ci: CiSummary,
   copilot: CopilotReport,
@@ -156,25 +175,13 @@ function computeAxes(
           summary: `reviewing (round ${String(copilot.rounds.length)})`,
         });
         break;
-      case "reviewed": {
-        const tierEmoji = COPILOT_TIER_EMOJI[copilot.tier];
-        let detail = "";
-        if (copilot.threads.unresolved > 0) {
-          detail = `${String(copilot.threads.unresolved)} unresolved thread${copilot.threads.unresolved === 1 ? "" : "s"}`;
-        } else if (copilot.threads.stale > 0) {
-          detail = `hasn't seen ${String(copilot.threads.stale)} post-review repl${copilot.threads.stale === 1 ? "y" : "ies"}`;
-        } else if (!copilot.fresh) {
-          detail = "reviewed, not at HEAD";
-        } else {
-          detail = "reviewed at HEAD";
-        }
+      case "reviewed":
         axes.push({
           name: "Copilot",
-          emoji: tierEmoji,
-          summary: `${copilot.tier}${detail.length > 0 ? " · " + detail : ""}`,
+          emoji: COPILOT_TIER_EMOJI[copilot.tier],
+          summary: `${copilot.tier} · ${reviewedDetail(copilot.threads, copilot.fresh)}`,
         });
         break;
-      }
       case "unconfigured":
         break;
     }
@@ -182,8 +189,7 @@ function computeAxes(
 
   // Cursor axis
   if (cursor.configured) {
-    const tierEmoji = COPILOT_TIER_EMOJI[cursor.tier];
-    let detail = "";
+    let detail: string;
     switch (cursor.activity.state) {
       case "idle":
         detail = "awaiting review";
@@ -194,25 +200,14 @@ function computeAxes(
       case "clean":
         detail = "clean at HEAD";
         break;
-      case "reviewed": {
-        if (cursor.threads.unresolved > 0) {
-          detail = `${String(cursor.threads.unresolved)} unresolved thread${cursor.threads.unresolved === 1 ? "" : "s"}`;
-        } else if (cursor.threads.stale > 0) {
-          detail = `hasn't seen ${String(cursor.threads.stale)} post-review repl${cursor.threads.stale === 1 ? "y" : "ies"}`;
-        } else if (!cursor.fresh) {
-          detail = "reviewed, not at HEAD";
-        } else {
-          detail = "reviewed at HEAD";
-        }
-        break;
-      }
-      case "unconfigured":
+      case "reviewed":
+        detail = reviewedDetail(cursor.threads, cursor.fresh);
         break;
     }
     axes.push({
       name: "Cursor",
-      emoji: tierEmoji,
-      summary: `${cursor.tier}${detail.length > 0 ? " · " + detail : ""}`,
+      emoji: COPILOT_TIER_EMOJI[cursor.tier],
+      summary: `${cursor.tier} · ${detail}`,
     });
   }
 

@@ -21,6 +21,7 @@ import type {
 } from "../types/index.js";
 import { isCopilot } from "../types/copilot-identity.js";
 import { formatCopilotTier } from "../types/copilot.js";
+import { countBotThreads } from "./bot-threads.js";
 
 const VISIBLE_RE = /generated (\d+) comments?\./;
 const SUPPRESSED_RE = /Comments suppressed due to low confidence \((\d+)\)/;
@@ -156,48 +157,11 @@ export function computeCopilotActivity(
   return { state: "requested", requestedAt: latest.requestedAt };
 }
 
-/**
- * Summarize Copilot review threads.
- *
- * A thread is Copilot-authored iff its first comment is by Copilot.
- * A Copilot thread is `stale` iff it has any non-Copilot comment with
- * `createdAt > latestReviewedAt` — i.e., a reply the reviewer hasn't
- * observed. When `latestReviewedAt` is null no review has completed so
- * no thread can be stale.
- *
- * ISO 8601 strings compare lexicographically; that's the only ordering
- * required here.
- */
 export function countCopilotThreads(
   threads: GitHubPullRequestReviewThreadsResponse,
   latestReviewedAt: Timestamp | null,
 ): CopilotThreadSummary {
-  const nodes = threads.data.repository.pullRequest.reviewThreads.nodes;
-  let total = 0;
-  let resolved = 0;
-  let unresolved = 0;
-  let stale = 0;
-
-  for (const t of nodes) {
-    const first = t.comments.nodes[0];
-    if (first === undefined) continue;
-    if (!isCopilot(first.author.login)) continue;
-    total++;
-    if (t.isResolved) resolved++;
-    else unresolved++;
-
-    if (latestReviewedAt !== null) {
-      for (const c of t.comments.nodes) {
-        if (isCopilot(c.author.login)) continue;
-        if (c.createdAt > latestReviewedAt) {
-          stale++;
-          break;
-        }
-      }
-    }
-  }
-
-  return { total, resolved, unresolved, stale };
+  return countBotThreads(threads, latestReviewedAt, isCopilot);
 }
 
 export function scoreCopilotTier(

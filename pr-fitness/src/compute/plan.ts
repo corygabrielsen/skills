@@ -5,6 +5,7 @@ import type {
 } from "../types/output.js";
 import type { Action, TargetEffect } from "../types/action.js";
 import type { CopilotReport } from "../types/copilot.js";
+import type { CursorReport } from "../types/cursor.js";
 import { PositiveSeconds } from "../types/branded.js";
 
 /**
@@ -50,6 +51,7 @@ export function plan(
   reviews: ReviewSummary,
   state: PullRequestState,
   copilot: CopilotReport,
+  cursor: CursorReport,
   repo: string,
   pr: number,
 ): readonly Action[] {
@@ -153,7 +155,11 @@ export function plan(
   if (reviews.threads_unresolved > 0) {
     pushAction(actions, {
       blocker: `${String(reviews.threads_unresolved)}_unresolved_threads`,
-      description: `Address ${String(reviews.threads_unresolved)} unresolved review thread(s). For each issue, think deeply about the entire class of issue, in general, and solve the general form of the issue across all relevant code. This ensures the entire category of each issue is solved in general.`,
+      description: addressThreadsDescription(
+        reviews.threads_unresolved,
+        copilot,
+        cursor,
+      ),
       automation: "agent",
       target_effect: "blocks",
       type: {
@@ -345,4 +351,45 @@ export function plan(
  */
 function pushAction(actions: Action[], partial: Omit<Action, "kind">): void {
   actions.push({ ...partial, kind: partial.type.kind });
+}
+
+/**
+ * Build the address_threads description with per-bot context when
+ * available. Symmetric shape: "<Bot>: <facts>." then the generalization
+ * directive.
+ */
+function addressThreadsDescription(
+  total: number,
+  copilot: CopilotReport,
+  cursor: CursorReport,
+): string {
+  const parts: string[] = [`Address ${String(total)} unresolved review thread(s).`];
+
+  if (cursor.configured && cursor.threads.unresolved > 0) {
+    const { high, medium, low } = cursor.severity;
+    const sev: string[] = [];
+    if (high > 0) sev.push(`${String(high)} high`);
+    if (medium > 0) sev.push(`${String(medium)} medium`);
+    if (low > 0) sev.push(`${String(low)} low`);
+    if (sev.length > 0) parts.push(`Cursor: ${sev.join(", ")}.`);
+  }
+
+  if (copilot.configured && copilot.activity.state === "reviewed") {
+    const issues = copilot.threads.unresolved;
+    const suppressed = copilot.activity.latest.commentsSuppressed;
+    const bits: string[] = [];
+    if (issues > 0) bits.push(`${String(issues)} issue${issues === 1 ? "" : "s"}`);
+    if (suppressed > 0) {
+      bits.push(
+        `${String(suppressed)} low-confidence finding${suppressed === 1 ? "" : "s"}`,
+      );
+    }
+    if (bits.length > 0) parts.push(`Copilot: ${bits.join(", ")}.`);
+  }
+
+  parts.push(
+    "For each issue, think deeply about the entire class of issue, in general, and solve the general form of the issue across all relevant code. This ensures the entire category of each issue is solved in general.",
+  );
+
+  return parts.join(" ");
 }

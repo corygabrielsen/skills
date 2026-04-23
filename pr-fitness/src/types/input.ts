@@ -108,6 +108,7 @@ export interface GitHubPullRequestReviewThreadsResponse {
               nodes: readonly {
                 author: { login: string };
                 createdAt: string;
+                body: string;
               }[];
             };
           }[];

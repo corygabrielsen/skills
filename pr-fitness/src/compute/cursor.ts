@@ -15,6 +15,7 @@ import type {
   CursorActivity,
   CursorReport,
   CursorReviewRound,
+  CursorSeverityBreakdown,
   CursorThreadSummary,
   CursorTier,
 } from "../types/cursor.js";
@@ -57,6 +58,43 @@ export function countCursorThreads(
   latestReviewedAt: Timestamp | null,
 ): CursorThreadSummary {
   return countBotThreads(threads, latestReviewedAt, isCursor);
+}
+
+const SEVERITY_RE = /\*\*(High|Medium|Low) Severity\*\*/;
+
+/**
+ * Count Cursor severity tags across unresolved cursor-authored threads.
+ * Resolved threads are excluded — the breakdown is about work left.
+ */
+export function countCursorSeverity(
+  threads: GitHubPullRequestReviewThreadsResponse,
+): CursorSeverityBreakdown {
+  const nodes = threads.data.repository.pullRequest.reviewThreads.nodes;
+  let high = 0;
+  let medium = 0;
+  let low = 0;
+
+  for (const t of nodes) {
+    if (t.isResolved) continue;
+    const first = t.comments.nodes[0];
+    if (first === undefined) continue;
+    if (!isCursor(first.author.login)) continue;
+    const match = first.body.match(SEVERITY_RE);
+    if (match === undefined || match === null) continue;
+    switch (match[1]) {
+      case "High":
+        high++;
+        break;
+      case "Medium":
+        medium++;
+        break;
+      case "Low":
+        low++;
+        break;
+    }
+  }
+
+  return { high, medium, low };
 }
 
 export function computeCursorActivity(
@@ -132,6 +170,7 @@ export function computeCursor(input: {
 
   const latestReviewedAt = rounds.at(-1)?.reviewedAt ?? null;
   const threads = countCursorThreads(input.threads, latestReviewedAt);
+  const severity = countCursorSeverity(input.threads);
   const activity = computeCursorActivity(rounds, check);
   const tier = scoreCursorTier(rounds, threads, check);
   const fresh = isFresh(rounds, input.head);
@@ -141,6 +180,7 @@ export function computeCursor(input: {
     activity,
     rounds,
     threads,
+    severity,
     tier,
     tier_display: formatCopilotTier(tier),
     fresh,

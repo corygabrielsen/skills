@@ -80,6 +80,13 @@ export type CursorTier = CopilotTier;
 // this PR, Cursor is active.
 // ---------------------------------------------------------------------------
 
+/** Severity breakdown of Cursor's unresolved findings, parsed from comment bodies. */
+export interface CursorSeverityBreakdown {
+  readonly high: number;
+  readonly medium: number;
+  readonly low: number;
+}
+
 export type CursorReport =
   | {
       readonly configured: false;
@@ -90,6 +97,8 @@ export type CursorReport =
       /** All review rounds with findings, oldest first. Empty if never found issues. */
       readonly rounds: readonly CursorReviewRound[];
       readonly threads: CursorThreadSummary;
+      /** Severity counts across unresolved Cursor threads only. */
+      readonly severity: CursorSeverityBreakdown;
       readonly tier: CursorTier;
       readonly tier_display: string;
       /** True when the latest activity is at HEAD. */

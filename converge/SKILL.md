@@ -101,6 +101,17 @@ for the hook — delivery is ordered by the stdin stream. If no
 
 Re-run the same command when the blocking condition clears.
 
+## Example: converge with pr-fitness
+
+```bash
+~/code/skills/converge/target/release/converge \
+  -s pr-OWNER-REPO-PR \
+  --hook 'npx tsx ~/code/skills/pr-fitness/src/pr-progress-hook.ts OWNER/REPO PR' \
+  -- npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -c OWNER/REPO PR
+```
+
+Always pass `--hook` with pr-fitness to post progress comments on the PR.
+
 ## Compose
 
 ```

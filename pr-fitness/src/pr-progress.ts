@@ -120,6 +120,14 @@ function verbose(message: string): void {
 const COMMENT_TIMEOUT_MS = 15_000;
 const HARD_KILL_GRACE_MS = 2_000;
 
+/** Render a (possibly multi-line) string as a GitHub-flavored blockquote. */
+function blockquote(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
 async function postComment(
   target: PrProgressTarget,
   body: string,
@@ -238,7 +246,7 @@ function iterationBody(
   lines.push(scoreLine(report));
   appendAxes(lines, report.axes);
   lines.push("");
-  lines.push(`> ${action.description}`);
+  lines.push(blockquote(action.description));
   appendNotes(lines, report.notes);
   appendSnapshot(lines, report, {
     type: "iteration",
@@ -292,7 +300,7 @@ function haltBody(
     case "agent_needed":
       lines.push("");
       if (halt.action !== undefined) {
-        lines.push(`> ${halt.action.description}`);
+        lines.push(blockquote(halt.action.description));
       }
       lines.push("");
       lines.push(`Resume: \`${halt.resume_cmd.join(" ")}\``);
@@ -300,7 +308,7 @@ function haltBody(
     case "hil":
       lines.push("");
       if (halt.action !== undefined) {
-        lines.push(`> ${halt.action.description}`);
+        lines.push(blockquote(halt.action.description));
       }
       break;
     case "stalled":
@@ -400,7 +408,7 @@ function fitnessCommentBody(
   appendAxes(lines, report.axes);
   if (topAction !== undefined) {
     lines.push("");
-    lines.push(`> ${topAction.description}`);
+    lines.push(blockquote(topAction.description));
   }
   appendNotes(lines, report.notes);
   appendSnapshot(lines, report, {

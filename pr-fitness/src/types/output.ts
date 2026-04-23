@@ -59,6 +59,7 @@ export interface PullRequestFitnessReport {
   readonly ci: CiSummary;
   readonly reviews: ReviewSummary;
   readonly copilot: import("./copilot.js").CopilotReport;
+  readonly cursor: import("./cursor.js").CursorReport;
   readonly state: PullRequestState;
   /** Graphite stack-ordering check (separate from CI). */
   readonly graphite: GraphiteCheck;

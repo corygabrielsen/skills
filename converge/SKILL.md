@@ -105,12 +105,11 @@ Re-run the same command when the blocking condition clears.
 
 ```bash
 ~/code/skills/converge/target/release/converge \
-  -s pr-OWNER-REPO-PR \
-  --hook 'npx tsx ~/code/skills/pr-fitness/src/pr-progress-hook.ts OWNER/REPO PR' \
-  -- npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -c OWNER/REPO PR
+  -- npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -c -C OWNER/REPO PR
 ```
 
-Always pass `--hook` with pr-fitness to post progress comments on the PR.
+The `-C` flag tells pr-fitness to post progress comments on the PR
+(deduped — only posts when state changes).
 
 ## Compose
 

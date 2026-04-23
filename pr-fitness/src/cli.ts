@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { DEFAULT_TARGET, prFitness } from "./pr-fitness.js";
 import {
   PullRequestNumberFromString,
@@ -7,6 +12,11 @@ import {
   Score,
 } from "./types/branded.js";
 import type { Score as ScoreT } from "./types/branded.js";
+import type { PullRequestFitnessReport } from "./types/output.js";
+import {
+  renderFitnessComment,
+  postComment,
+} from "./pr-progress.js";
 import { PreconditionError } from "./util/errors.js";
 import { setQuiet } from "./util/log.js";
 import { VERSION } from "./version.js";
@@ -22,6 +32,7 @@ Options:
   -q, --quiet         Suppress stderr progress
   -c, --compact       Compact JSON (single line)
   -s, --summary       Print one-line summary instead of JSON
+  -C, --comment       Post fitness state as a PR comment (deduped)
   -e, --exit-code     Exit code reflects state (for scripts)
                         0 = open + mergeable
                         1 = open + blocked
@@ -80,11 +91,54 @@ function parseTarget(raw: string): ScoreT {
   return Score(mapped);
 }
 
+/**
+ * Post a fitness comment on the PR, deduplicating by content hash.
+ * Skips posting if the rendered body hasn't changed since the last
+ * comment, preventing spam during converge polling.
+ */
+async function maybePostComment(
+  repo: string,
+  pr: string,
+  report: PullRequestFitnessReport,
+): Promise<void> {
+  const topAction = report.actions[0];
+  const actionView = topAction
+    ? { kind: topAction.kind, automation: topAction.automation, description: topAction.description }
+    : undefined;
+  const reportView = {
+    score: report.score as number,
+    target: report.target as number,
+    score_emoji: report.score_emoji,
+    score_label: report.score_label,
+    target_label: report.target_label,
+    axes: report.axes,
+    notes: report.notes,
+    snapshot: report.snapshot,
+    blocker_split: report.blocker_split,
+  };
+
+  const body = renderFitnessComment(reportView, actionView);
+
+  // Dedup: skip if body hasn't changed since last post.
+  const hash = createHash("sha256").update(body).digest("hex").slice(0, 16);
+  const hashFile = join(tmpdir(), `pr-fitness-comment-${repo.replace("/", "-")}-${pr}.hash`);
+
+  try {
+    if (existsSync(hashFile) && readFileSync(hashFile, "utf8").trim() === hash) {
+      return;
+    }
+  } catch { /* ignore */ }
+
+  await postComment({ repo, pr }, body);
+  try { writeFileSync(hashFile, hash + "\n"); } catch { /* ignore */ }
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const positional: string[] = [];
   let compact = false;
   let summaryOnly = false;
+  let comment = false;
   let exitCode = false;
   let target: ScoreT = DEFAULT_TARGET;
 
@@ -98,6 +152,8 @@ async function main(): Promise<void> {
       setQuiet(true);
     } else if (arg === "-c" || arg === "--compact") {
       compact = true;
+    } else if (arg === "-C" || arg === "--comment") {
+      comment = true;
     } else if (arg === "-s" || arg === "--summary") {
       summaryOnly = true;
     } else if (arg === "-e" || arg === "--exit-code") {
@@ -121,6 +177,10 @@ async function main(): Promise<void> {
   const pr = PullRequestNumberFromString(rawPr);
 
   const report = await prFitness(repo, pr, target);
+
+  if (comment) {
+    await maybePostComment(repo, rawPr, report);
+  }
 
   if (summaryOnly) {
     process.stdout.write(report.status + "\n");

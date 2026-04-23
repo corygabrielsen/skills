@@ -10,6 +10,8 @@ args:
     description: Compact output (single-line JSON)
   - name: -s
     description: Summary only (one-line human-readable)
+  - name: -C, --comment
+    description: Post fitness state as a PR comment (deduped by content)
   - name: -e
     description: Exit code reflects state (0=mergeable, 1=blocked, 2=merged, 3=closed)
 ---

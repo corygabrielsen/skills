@@ -29,7 +29,7 @@ function ts(s: string): TimestampT {
 
 function thread(
   isResolved: boolean,
-  comments: { login: string; createdAt: string }[],
+  comments: { login: string; createdAt: string; body?: string }[],
 ): GitHubPullRequestReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][number] {
   return {
     isResolved,
@@ -37,6 +37,7 @@ function thread(
       nodes: comments.map((c) => ({
         author: { login: c.login },
         createdAt: c.createdAt,
+        body: c.body ?? "",
       })),
     },
   };

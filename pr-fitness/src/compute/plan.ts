@@ -7,6 +7,7 @@ import type { Action, TargetEffect } from "../types/action.js";
 import type { CopilotReport } from "../types/copilot.js";
 import type { CursorReport } from "../types/cursor.js";
 import { PositiveSeconds } from "../types/branded.js";
+import { pluralize } from "../util/text.js";
 
 /**
  * Attention-phase urgency for "waiting on async axis" actions.
@@ -62,21 +63,16 @@ export function plan(
   // Fix CI before anything else. A review fix that breaks CI wastes
   // a loop iteration.
 
-  // Compute triage signals: if CI would cause a wait but other
-  // signals suggest potentially-actionable work in parallel, hand
-  // off to the agent instead of sleeping.
-  const ambiguityTriggered =
-    ci.fail === 0 &&
-    (ci.pending > 0 || ci.missing > 0) &&
-    (triageSignal_inProgressBotReview(cursor) ||
-      triageSignal_advisoryFailure(ci) ||
-      triageSignal_copilotAdvance(copilot));
+  const blockedChecks = [...ci.pending_names, ...ci.missing_names];
+  const triage =
+    ci.fail === 0 && blockedChecks.length > 0
+      ? triageDescription(blockedChecks, ci, cursor, copilot)
+      : null;
 
-  if (ambiguityTriggered) {
-    const blockedChecks = [...ci.pending_names, ...ci.missing_names];
+  if (triage !== null) {
     pushAction(actions, {
       blocker: `ci_triage: ${blockedChecks.join(", ")}`,
-      description: triageDescription(blockedChecks, ci, cursor, copilot),
+      description: triage,
       automation: "agent",
       target_effect: "blocks",
       type: { kind: "triage_wait", blocked_checks: blockedChecks },
@@ -374,69 +370,52 @@ function pushAction(actions: Action[], partial: Omit<Action, "kind">): void {
   actions.push({ ...partial, kind: partial.type.kind });
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Triage signals — conditions under which a CI wait should be
-// upgraded to an agent handoff because other signals suggest
-// potentially-actionable work runs in parallel.
-// ──────────────────────────────────────────────────────────────────
-
-function triageSignal_inProgressBotReview(cursor: CursorReport): boolean {
-  return cursor.configured && cursor.activity.state === "reviewing";
-}
-
-function triageSignal_advisoryFailure(ci: CiSummary): boolean {
-  return ci.advisory.failed.length > 0;
-}
-
-function triageSignal_copilotAdvance(copilot: CopilotReport): boolean {
-  return (
-    copilot.configured &&
-    copilot.activity.state === "reviewed" &&
-    copilot.threads.unresolved === 0 &&
-    copilot.tier !== "platinum"
-  );
-}
-
+/**
+ * Build a triage description when a CI wait coincides with other
+ * signals suggesting parallel work is possible. Returns null when
+ * no ambiguity signals apply — caller falls back to a normal wait.
+ */
 function triageDescription(
   blockedChecks: readonly string[],
   ci: CiSummary,
   cursor: CursorReport,
   copilot: CopilotReport,
-): string {
-  const quoted = blockedChecks.map((n) => `"${n}"`).join(", ");
-  const lines: string[] = [`CI waiting on ${quoted}. Concurrent state:`];
+): string | null {
+  const signals: string[] = [];
 
-  if (triageSignal_inProgressBotReview(cursor)) {
-    lines.push("- Cursor check in progress");
+  if (cursor.configured && cursor.activity.state === "reviewing") {
+    signals.push("- Cursor check in progress");
   }
   for (const name of ci.advisory.failed) {
-    lines.push(`- Advisory "${name}" failed`);
+    signals.push(`- Advisory "${name}" failed`);
   }
-  if (
-    copilot.configured &&
-    copilot.activity.state === "reviewed" &&
-    copilot.threads.unresolved === 0 &&
-    copilot.tier !== "platinum"
-  ) {
-    const detail: string[] = [];
-    if (copilot.threads.stale > 0) {
-      detail.push(
-        `${String(copilot.threads.stale)} stale repl${copilot.threads.stale === 1 ? "y" : "ies"}`,
-      );
-    } else if (!copilot.fresh) {
-      detail.push("not at HEAD");
-    }
-    const suppressed = copilot.activity.latest.commentsSuppressed;
-    if (suppressed > 0) {
-      detail.push(
-        `${String(suppressed)} low-confidence finding${suppressed === 1 ? "" : "s"}`,
-      );
-    }
-    const tail = detail.length > 0 ? ` · ${detail.join(", ")}` : "";
-    lines.push(`- Copilot ${copilot.tier}${tail}`);
-  }
+  const copilotLine = copilotAdvanceLine(copilot);
+  if (copilotLine !== null) signals.push(copilotLine);
 
-  return lines.join("\n");
+  if (signals.length === 0) return null;
+
+  const quoted = blockedChecks.map((n) => `"${n}"`).join(", ");
+  return [`CI waiting on ${quoted}. Concurrent state:`, ...signals].join("\n");
+}
+
+function copilotAdvanceLine(copilot: CopilotReport): string | null {
+  if (!copilot.configured) return null;
+  if (copilot.activity.state !== "reviewed") return null;
+  if (copilot.threads.unresolved !== 0) return null;
+  if (copilot.tier === "platinum") return null;
+
+  const detail: string[] = [];
+  if (copilot.threads.stale > 0) {
+    detail.push(pluralize(copilot.threads.stale, "stale reply", "stale replies"));
+  } else if (!copilot.fresh) {
+    detail.push("not at HEAD");
+  }
+  const suppressed = copilot.activity.latest.commentsSuppressed;
+  if (suppressed > 0) {
+    detail.push(pluralize(suppressed, "low-confidence finding"));
+  }
+  const tail = detail.length > 0 ? ` · ${detail.join(", ")}` : "";
+  return `- Copilot ${copilot.tier}${tail}`;
 }
 
 /**
@@ -464,12 +443,8 @@ function addressThreadsDescription(
     const issues = copilot.threads.unresolved;
     const suppressed = copilot.activity.latest.commentsSuppressed;
     const bits: string[] = [];
-    if (issues > 0) bits.push(`${String(issues)} issue${issues === 1 ? "" : "s"}`);
-    if (suppressed > 0) {
-      bits.push(
-        `${String(suppressed)} low-confidence finding${suppressed === 1 ? "" : "s"}`,
-      );
-    }
+    if (issues > 0) bits.push(pluralize(issues, "issue"));
+    if (suppressed > 0) bits.push(pluralize(suppressed, "low-confidence finding"));
     if (bits.length > 0) parts.push(`Copilot: ${bits.join(", ")}.`);
   }
 

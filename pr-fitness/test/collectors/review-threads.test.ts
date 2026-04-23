@@ -27,7 +27,7 @@ function makePage(
               isResolved: t.isResolved,
               comments: {
                 nodes: [
-                  { author: { login: "user" }, createdAt: "2026-04-21T00:00:00Z" },
+                  { author: { login: "user" }, createdAt: "2026-04-21T00:00:00Z", body: "" },
                 ],
               },
             })),

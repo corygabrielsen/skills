@@ -8,6 +8,7 @@ import { computeReviews } from "./compute/reviews.js";
 import { computeState } from "./compute/state.js";
 import { summarize } from "./compute/summary.js";
 import type { CollectorError } from "./util/collector-error.js";
+import { pluralize } from "./util/text.js";
 import { VERSION } from "./version.js";
 import { GitCommitSha, Score } from "./types/branded.js";
 import type {
@@ -108,10 +109,10 @@ function reviewedDetail(
   fresh: boolean,
 ): string {
   if (threads.unresolved > 0) {
-    return `${String(threads.unresolved)} unresolved thread${threads.unresolved === 1 ? "" : "s"}`;
+    return pluralize(threads.unresolved, "unresolved thread");
   }
   if (threads.stale > 0) {
-    return `hasn't seen ${String(threads.stale)} post-review repl${threads.stale === 1 ? "y" : "ies"}`;
+    return `hasn't seen ${pluralize(threads.stale, "post-review reply", "post-review replies")}`;
   }
   if (!fresh) return "reviewed, not at HEAD";
   return "reviewed at HEAD";

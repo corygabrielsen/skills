@@ -80,7 +80,7 @@ export function countCursorSeverity(
     if (first === undefined) continue;
     if (!isCursor(first.author.login)) continue;
     const match = first.body.match(SEVERITY_RE);
-    if (match === undefined || match === null) continue;
+    if (match === null) continue;
     switch (match[1]) {
       case "High":
         high++;

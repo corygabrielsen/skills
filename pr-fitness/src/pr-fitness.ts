@@ -414,7 +414,7 @@ export async function prFitness(
       : EMPTY_BLOCKERS;
   const actions =
     lifecycle === "open"
-      ? plan(ci, reviews, state, copilot, repo, pr)
+      ? plan(ci, reviews, state, copilot, cursor, repo, pr)
       : [];
 
   // Score reflects agent-achievable fitness. Human-dependent blockers

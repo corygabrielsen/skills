@@ -97,7 +97,7 @@ export async function collectReviewThreads(
               nodes {
                 isResolved
                 comments(first:100) {
-                  nodes { author { login } createdAt }
+                  nodes { author { login } createdAt body }
                 }
               }
             }

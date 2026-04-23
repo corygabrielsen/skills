@@ -7,7 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { plan } from "../../src/compute/plan.js";
-import { GitCommitSha, Score, Timestamp } from "../../src/types/branded.js";
+import { GitCommitSha, Timestamp } from "../../src/types/branded.js";
 import type { CopilotReport } from "../../src/types/copilot.js";
 import type { CursorReport } from "../../src/types/cursor.js";
 import type {

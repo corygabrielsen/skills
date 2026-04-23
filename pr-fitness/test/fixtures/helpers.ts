@@ -11,8 +11,14 @@ import type {
   ReviewSummary,
 } from "../../src/types/output.js";
 import type { CopilotReport } from "../../src/types/copilot.js";
+import type { CursorReport } from "../../src/types/cursor.js";
+import {
+  GitCommitSha,
+  GitHubLogin,
+  Timestamp,
+} from "../../src/types/branded.js";
 
-const HEAD = "abc12345abc12345abc12345abc12345abc12345";
+const HEAD = GitCommitSha("abc12345abc12345abc12345abc12345abc12345");
 
 // ── Raw API fixtures ────────────────────────────────────────────
 
@@ -65,6 +71,7 @@ export function makeThreads(
                   {
                     author: { login: "user" },
                     createdAt: "2026-03-30T08:00:00Z",
+                    body: "",
                   },
                 ],
               },
@@ -82,11 +89,17 @@ export function makeComment(id: number, login: string): GitHubIssueComment {
 }
 
 export function makeReview(
-  state: string,
-  commit_id: string = HEAD,
+  state: GitHubPullRequestReview["state"],
+  commit_id: GitCommitSha = HEAD,
   user: string = "someone",
 ): GitHubPullRequestReview {
-  return { user, state, commit_id, submitted_at: "2026-03-30T08:00:00Z" };
+  return {
+    user: GitHubLogin(user),
+    state,
+    commit_id,
+    submitted_at: Timestamp("2026-03-30T08:00:00Z"),
+    body: "",
+  };
 }
 
 export { HEAD };
@@ -127,6 +140,10 @@ export const APPROVED_REVIEWS: ReviewSummary = {
 };
 
 export const UNCONFIGURED_COPILOT: CopilotReport = {
+  configured: false,
+};
+
+export const UNCONFIGURED_CURSOR: CursorReport = {
   configured: false,
 };
 

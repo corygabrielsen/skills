@@ -35,6 +35,7 @@ function thread(
       nodes: comments.map((c) => ({
         author: { login: c.login },
         createdAt: c.createdAt,
+        body: "",
       })),
     },
   };

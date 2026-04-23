@@ -21,7 +21,7 @@
     "format": "prettier --write .",
     "test": "tsx --test test/**/*.test.ts",
     "test:live": "tsx src/cli.ts example/widgets 1563",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "check": "npm run typecheck && npm run lint && npm run test"
   },
   "engines": {

@@ -6,11 +6,15 @@ import type {
   PullRequestState,
   ReviewSummary,
 } from "../../src/types/output.js";
+import type { CopilotReport } from "../../src/types/copilot.js";
+import { Timestamp } from "../../src/types/branded.js";
 import {
   APPROVED_REVIEWS,
   CLEAN_CI,
   CLEAN_STATE,
+  HEAD,
   UNCONFIGURED_COPILOT,
+  UNCONFIGURED_CURSOR,
 } from "../fixtures/helpers.js";
 
 describe("plan", () => {
@@ -20,6 +24,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -37,6 +42,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -56,6 +62,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -71,6 +78,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       state,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -84,6 +92,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       state,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -99,6 +108,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       state,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -116,6 +126,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       state,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -134,6 +145,7 @@ describe("plan", () => {
       reviews,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -153,6 +165,7 @@ describe("plan", () => {
       reviews,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -174,6 +187,7 @@ describe("plan", () => {
       reviews,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -190,6 +204,7 @@ describe("plan", () => {
       reviews,
       CLEAN_STATE,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -209,6 +224,7 @@ describe("plan", () => {
       APPROVED_REVIEWS,
       state,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -233,6 +249,7 @@ describe("plan", () => {
       reviews,
       state,
       UNCONFIGURED_COPILOT,
+      UNCONFIGURED_CURSOR,
       "example/widgets",
       100,
     );
@@ -244,5 +261,45 @@ describe("plan", () => {
 
     assert.ok(ciIdx < threadIdx, "CI should come before reviews");
     assert.ok(threadIdx < labelIdx, "reviews should come before metadata");
+  });
+
+  it("emits address_copilot_suppressed when silver, fresh, no stale", () => {
+    const silverFreshCopilot: CopilotReport = {
+      configured: true,
+      config: {
+        enabled: true,
+        reviewOnPush: false,
+        reviewDraftPullRequests: false,
+      },
+      activity: {
+        state: "reviewed",
+        latest: {
+          round: 1,
+          requestedAt: Timestamp("2026-04-23T10:00:00Z"),
+          ackAt: Timestamp("2026-04-23T10:01:00Z"),
+          reviewedAt: Timestamp("2026-04-23T10:05:00Z"),
+          commit: HEAD,
+          commentsVisible: 3,
+          commentsSuppressed: 2,
+        },
+      },
+      rounds: [],
+      threads: { total: 0, resolved: 0, unresolved: 0, stale: 0 },
+      tier: "silver",
+      tier_display: "🥈 (silver)",
+      fresh: true,
+    };
+    const actions = plan(
+      CLEAN_CI,
+      APPROVED_REVIEWS,
+      CLEAN_STATE,
+      silverFreshCopilot,
+      UNCONFIGURED_CURSOR,
+      "example/widgets",
+      100,
+    );
+    const action = actions.find((a) => a.type.kind === "address_copilot_suppressed");
+    assert.ok(action, "address_copilot_suppressed should fire when silver is sole barrier");
+    assert.ok(actions.every((a) => a.type.kind !== "rerequest_copilot"));
   });
 });

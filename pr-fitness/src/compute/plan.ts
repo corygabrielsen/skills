@@ -186,31 +186,23 @@ export function plan(
         });
         break;
       case "reviewed":
-        // If tier isn't platinum and PR is otherwise clean, suggest
-        // either addressing suppressed findings or re-requesting.
         if (copilot.tier !== "platinum" && copilot.threads.unresolved === 0) {
           const latestRound = copilot.activity.latest;
-          if (copilot.tier === "silver") {
-            pushAction(actions, {
-              blocker: `copilot_tier_${copilot.tier}`,
-              description: `Address ${String(latestRound.commentsSuppressed)} Copilot low-confidence finding(s) to reach platinum`,
-              automation: "agent",
-              target_effect: "advances",
-              type: {
-                kind: "address_copilot_suppressed",
-                count: latestRound.commentsSuppressed,
-              },
-            });
-          } else {
-            // Two gold sub-cases land here:
-            //   stale>0: author replied/resolved without pushing — Copilot
-            //            hasn't seen the reply. Rerequest shows it.
-            //   else:    author pushed commits past latest review. Rerequest
-            //            gets Copilot onto HEAD.
-            const staleCount = copilot.threads.stale;
+          const staleCount = copilot.threads.stale;
+          const notAtHead = !copilot.fresh;
+
+          // Rerequest when Copilot hasn't seen recent activity — a fresh
+          // review may resolve stale replies AND reset the suppressed
+          // count in one pass. Low-confidence findings aren't directly
+          // "addressable"; the only real action on them is to push code
+          // (which triggers a new review anyway). So rerequest dominates
+          // address_suppressed whenever stale>0 or !fresh, regardless of
+          // tier. Address_suppressed is only the primary action when
+          // suppressed findings are the SOLE barrier.
+          if (staleCount > 0 || notAtHead) {
             const description =
               staleCount > 0
-                ? `Re-request Copilot so it reads ${String(staleCount)} post-review reply/replies to reach platinum`
+                ? `Re-request Copilot so it reads ${String(staleCount)} post-review reply/replies — may also clear low-confidence findings`
                 : `Re-request Copilot review on HEAD to reach platinum`;
             pushAction(actions, {
               blocker: `copilot_tier_${copilot.tier}`,
@@ -227,6 +219,17 @@ export function plan(
                 "-f",
                 "reviewers[]=copilot-pull-request-reviewer[bot]",
               ],
+            });
+          } else if (copilot.tier === "silver") {
+            pushAction(actions, {
+              blocker: `copilot_tier_${copilot.tier}`,
+              description: `Copilot flagged ${String(latestRound.commentsSuppressed)} low-confidence finding(s). Investigate and push fixes for any that are real — the next review may clear them.`,
+              automation: "agent",
+              target_effect: "advances",
+              type: {
+                kind: "address_copilot_suppressed",
+                count: latestRound.commentsSuppressed,
+              },
             });
           }
         }

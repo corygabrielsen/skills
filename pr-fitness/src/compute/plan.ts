@@ -62,18 +62,50 @@ export function plan(
   // Fix CI before anything else. A review fix that breaks CI wastes
   // a loop iteration.
 
-  if (ci.pending > 0) {
-    // Pre-first-signal CI is attention-grabbing (need to know if it will
-    // pass). Post-green pending CI is background — an incremental re-run
-    // after a push; trust the prior green until it flips to red.
+  // Compute triage signals: if CI would cause a wait but other
+  // signals suggest potentially-actionable work in parallel, hand
+  // off to the agent instead of sleeping.
+  const ambiguityTriggered =
+    ci.fail === 0 &&
+    (ci.pending > 0 || ci.missing > 0) &&
+    (triageSignal_inProgressBotReview(cursor) ||
+      triageSignal_advisoryFailure(ci) ||
+      triageSignal_copilotAdvance(copilot));
+
+  if (ambiguityTriggered) {
+    const blockedChecks = [...ci.pending_names, ...ci.missing_names];
     pushAction(actions, {
-      blocker: `ci_pending: ${ci.pending_names.join(", ")}`,
-      description: `Wait for ${String(ci.pending)} pending check(s)`,
-      automation: "wait",
-      target_effect: pendingAxisEffect(ci.completed_at !== null, ci.fail > 0),
-      type: { kind: "wait_for_ci", pending: ci.pending_names },
-      next_poll_seconds: PositiveSeconds(60),
+      blocker: `ci_triage: ${blockedChecks.join(", ")}`,
+      description: triageDescription(blockedChecks, ci, cursor, copilot),
+      automation: "agent",
+      target_effect: "blocks",
+      type: { kind: "triage_wait", blocked_checks: blockedChecks },
     });
+  } else {
+    if (ci.pending > 0) {
+      // Pre-first-signal CI is attention-grabbing (need to know if it will
+      // pass). Post-green pending CI is background — an incremental re-run
+      // after a push; trust the prior green until it flips to red.
+      pushAction(actions, {
+        blocker: `ci_pending: ${ci.pending_names.join(", ")}`,
+        description: `Wait for ${String(ci.pending)} pending check(s)`,
+        automation: "wait",
+        target_effect: pendingAxisEffect(ci.completed_at !== null, ci.fail > 0),
+        type: { kind: "wait_for_ci", pending: ci.pending_names },
+        next_poll_seconds: PositiveSeconds(60),
+      });
+    }
+
+    if (ci.missing > 0) {
+      pushAction(actions, {
+        blocker: `ci_missing: ${ci.missing_names.join(", ")}`,
+        description: `${String(ci.missing)} required check(s) not started: ${ci.missing_names.join(", ")}`,
+        automation: "wait",
+        target_effect: "blocks",
+        type: { kind: "wait_for_ci", pending: ci.missing_names },
+        next_poll_seconds: PositiveSeconds(60),
+      });
+    }
   }
 
   for (const name of ci.failed) {
@@ -83,17 +115,6 @@ export function plan(
       automation: "agent",
       target_effect: "blocks",
       type: { kind: "fix_ci", check_name: name },
-    });
-  }
-
-  if (ci.missing > 0) {
-    pushAction(actions, {
-      blocker: `ci_missing: ${ci.missing_names.join(", ")}`,
-      description: `${String(ci.missing)} required check(s) not started: ${ci.missing_names.join(", ")}`,
-      automation: "wait",
-      target_effect: "blocks",
-      type: { kind: "wait_for_ci", pending: ci.missing_names },
-      next_poll_seconds: PositiveSeconds(60),
     });
   }
 
@@ -351,6 +372,71 @@ export function plan(
  */
 function pushAction(actions: Action[], partial: Omit<Action, "kind">): void {
   actions.push({ ...partial, kind: partial.type.kind });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Triage signals — conditions under which a CI wait should be
+// upgraded to an agent handoff because other signals suggest
+// potentially-actionable work runs in parallel.
+// ──────────────────────────────────────────────────────────────────
+
+function triageSignal_inProgressBotReview(cursor: CursorReport): boolean {
+  return cursor.configured && cursor.activity.state === "reviewing";
+}
+
+function triageSignal_advisoryFailure(ci: CiSummary): boolean {
+  return ci.advisory.failed.length > 0;
+}
+
+function triageSignal_copilotAdvance(copilot: CopilotReport): boolean {
+  return (
+    copilot.configured &&
+    copilot.activity.state === "reviewed" &&
+    copilot.threads.unresolved === 0 &&
+    copilot.tier !== "platinum"
+  );
+}
+
+function triageDescription(
+  blockedChecks: readonly string[],
+  ci: CiSummary,
+  cursor: CursorReport,
+  copilot: CopilotReport,
+): string {
+  const quoted = blockedChecks.map((n) => `"${n}"`).join(", ");
+  const lines: string[] = [`CI waiting on ${quoted}. Concurrent state:`];
+
+  if (triageSignal_inProgressBotReview(cursor)) {
+    lines.push("- Cursor check in progress");
+  }
+  for (const name of ci.advisory.failed) {
+    lines.push(`- Advisory "${name}" failed`);
+  }
+  if (
+    copilot.configured &&
+    copilot.activity.state === "reviewed" &&
+    copilot.threads.unresolved === 0 &&
+    copilot.tier !== "platinum"
+  ) {
+    const detail: string[] = [];
+    if (copilot.threads.stale > 0) {
+      detail.push(
+        `${String(copilot.threads.stale)} stale repl${copilot.threads.stale === 1 ? "y" : "ies"}`,
+      );
+    } else if (!copilot.fresh) {
+      detail.push("not at HEAD");
+    }
+    const suppressed = copilot.activity.latest.commentsSuppressed;
+    if (suppressed > 0) {
+      detail.push(
+        `${String(suppressed)} low-confidence finding${suppressed === 1 ? "" : "s"}`,
+      );
+    }
+    const tail = detail.length > 0 ? ` · ${detail.join(", ")}` : "";
+    lines.push(`- Copilot ${copilot.tier}${tail}`);
+  }
+
+  return lines.join("\n");
 }
 
 /**

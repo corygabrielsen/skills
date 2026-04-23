@@ -45,17 +45,17 @@ export interface CursorThreadSummary {
 }
 
 // ---------------------------------------------------------------------------
-// CursorActivity — discriminated union on `state`.
+// CursorActivity — discriminated union on `state`. Only reachable when
+// `CursorReport.configured === true`; configured-ness lives on the
+// outer discriminant.
 //
-//   unconfigured  no Cursor activity observed on this PR
-//   idle          configured but no review or check run yet
-//   reviewing     Cursor Bugbot check at HEAD is queued/in_progress
-//   reviewed      Cursor has reviewed (with findings) at least once
-//   clean         Cursor Bugbot check at HEAD completed with `success`
+//   idle       configured but no review or check run at HEAD yet
+//   reviewing  Cursor Bugbot check at HEAD is queued/in_progress
+//   reviewed   Cursor has reviewed (with findings) at least once
+//   clean      Cursor Bugbot check at HEAD completed with `success`
 // ---------------------------------------------------------------------------
 
 export type CursorActivity =
-  | { readonly state: "unconfigured" }
   | { readonly state: "idle" }
   | { readonly state: "reviewing" }
   | { readonly state: "reviewed"; readonly latest: CursorReviewRound }

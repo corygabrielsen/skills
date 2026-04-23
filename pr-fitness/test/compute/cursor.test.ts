@@ -143,14 +143,14 @@ describe("countCursorThreads — cursor-authored detection", () => {
 describe("scoreCursorTier — tier semantics", () => {
   it("platinum: check at HEAD = SUCCESS (bot says clean)", () => {
     assert.equal(
-      scoreCursorTier([], cleanThreads, check("SUCCESS"), HEAD),
+      scoreCursorTier([], cleanThreads, check("SUCCESS")),
       "platinum",
     );
   });
 
   it("bronze: unresolved threads dominate any check state", () => {
     assert.equal(
-      scoreCursorTier([round()], oneUnresolved, check("SUCCESS"), HEAD),
+      scoreCursorTier([round()], oneUnresolved, check("SUCCESS")),
       "bronze",
     );
   });
@@ -161,7 +161,6 @@ describe("scoreCursorTier — tier semantics", () => {
         [round({ commit: OLD })],
         oneResolved,
         check("IN_PROGRESS"),
-        HEAD,
       ),
       "silver",
     );
@@ -170,7 +169,6 @@ describe("scoreCursorTier — tier semantics", () => {
         [round({ commit: OLD })],
         oneResolved,
         check("QUEUED"),
-        HEAD,
       ),
       "silver",
     );
@@ -178,14 +176,14 @@ describe("scoreCursorTier — tier semantics", () => {
 
   it("bronze: check in progress but no prior review (first-time)", () => {
     assert.equal(
-      scoreCursorTier([], cleanThreads, check("IN_PROGRESS"), HEAD),
+      scoreCursorTier([], cleanThreads, check("IN_PROGRESS")),
       "bronze",
     );
   });
 
   it("gold: findings at HEAD resolved (check NEUTRAL)", () => {
     assert.equal(
-      scoreCursorTier([round()], oneResolved, check("NEUTRAL"), HEAD),
+      scoreCursorTier([round()], oneResolved, check("NEUTRAL")),
       "gold",
     );
   });
@@ -196,13 +194,12 @@ describe("scoreCursorTier — tier semantics", () => {
         [round({ commit: OLD })],
         oneResolved,
         null,
-        HEAD,
       ),
       "gold",
     );
   });
 
   it("bronze: never reviewed, no check", () => {
-    assert.equal(scoreCursorTier([], cleanThreads, null, HEAD), "bronze");
+    assert.equal(scoreCursorTier([], cleanThreads, null), "bronze");
   });
 });

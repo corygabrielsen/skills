@@ -65,6 +65,7 @@ export type ActionType =
   | { kind: "add_reviewer" }
   | { kind: "add_description" }
   | { kind: "wait_for_ci"; pending: readonly string[] }
+  | { kind: "triage_wait"; blocked_checks: readonly string[] }
   | { kind: "wait_for_review"; reviewers: readonly string[] }
   | { kind: "wait_for_human" }
   | { kind: "rerequest_copilot" }

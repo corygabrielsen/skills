@@ -2,6 +2,7 @@ import { collect } from "./collectors/index.js";
 import { computeBlockers, EMPTY_BLOCKERS } from "./compute/blockers.js";
 import { computeCi } from "./compute/ci.js";
 import { computeCopilot } from "./compute/copilot.js";
+import { computeCursor } from "./compute/cursor.js";
 import { plan } from "./compute/plan.js";
 import { computeReviews } from "./compute/reviews.js";
 import { computeState } from "./compute/state.js";
@@ -14,12 +15,14 @@ import type {
   RepoSlug,
   Score as ScoreT,
 } from "./types/branded.js";
-import type { CopilotReport } from "./types/copilot.js";
+import type { CopilotReport, CopilotTier } from "./types/copilot.js";
 import {
   COPILOT_TIER_EMOJI,
+  compareCopilotTier,
   formatScoreOrdinal,
   tierForScore,
 } from "./types/copilot.js";
+import type { CursorReport } from "./types/cursor.js";
 import type {
   AxisLine,
   CiSummary,
@@ -98,6 +101,7 @@ function scoreLabel(lifecycle: Lifecycle, score: ScoreT): string {
 function computeAxes(
   ci: CiSummary,
   copilot: CopilotReport,
+  cursor: CursorReport,
   reviews: ReviewSummary,
   requiredChecksDegraded: boolean,
 ): readonly AxisLine[] {
@@ -176,6 +180,42 @@ function computeAxes(
     }
   }
 
+  // Cursor axis
+  if (cursor.configured) {
+    const tierEmoji = COPILOT_TIER_EMOJI[cursor.tier];
+    let detail = "";
+    switch (cursor.activity.state) {
+      case "idle":
+        detail = "awaiting review";
+        break;
+      case "reviewing":
+        detail = "reviewing";
+        break;
+      case "clean":
+        detail = "clean at HEAD";
+        break;
+      case "reviewed": {
+        if (cursor.threads.unresolved > 0) {
+          detail = `${String(cursor.threads.unresolved)} unresolved thread${cursor.threads.unresolved === 1 ? "" : "s"}`;
+        } else if (cursor.threads.stale > 0) {
+          detail = `hasn't seen ${String(cursor.threads.stale)} post-review repl${cursor.threads.stale === 1 ? "y" : "ies"}`;
+        } else if (!cursor.fresh) {
+          detail = "reviewed, not at HEAD";
+        } else {
+          detail = "reviewed at HEAD";
+        }
+        break;
+      }
+      case "unconfigured":
+        break;
+    }
+    axes.push({
+      name: "Cursor",
+      emoji: tierEmoji,
+      summary: `${cursor.tier}${detail.length > 0 ? " · " + detail : ""}`,
+    });
+  }
+
   // Approval axis
   if (reviews.pending_reviews.humans.length > 0) {
     axes.push({
@@ -204,6 +244,7 @@ interface SnapshotInput {
   readonly blockers: readonly string[];
   readonly ci: CiSummary;
   readonly copilot: CopilotReport;
+  readonly cursor: CursorReport;
   readonly reviews: ReviewSummary;
   readonly state: import("./types/output.js").PullRequestState;
   readonly graphiteStatus: string;
@@ -219,6 +260,7 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
     blockers,
     ci,
     copilot,
+    cursor,
     reviews,
     state,
     degraded,
@@ -250,6 +292,15 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
           unresolved: copilot.threads.unresolved,
         }
       : { configured: false },
+    cursor: cursor.configured
+      ? {
+          tier: cursor.tier,
+          activity: cursor.activity.state,
+          fresh: cursor.fresh,
+          stale: cursor.threads.stale,
+          unresolved: cursor.threads.unresolved,
+        }
+      : { configured: false },
     reviews: {
       decision: reviews.decision,
       threads_unresolved: reviews.threads_unresolved,
@@ -273,10 +324,26 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
   return snap;
 }
 
+/**
+ * Combine configured reviewer-bot tiers by taking the minimum
+ * (worst). If neither is configured, returns null.
+ */
+function combinedBotTier(
+  copilot: CopilotReport,
+  cursor: CursorReport,
+): CopilotTier | null {
+  const tiers: CopilotTier[] = [];
+  if (copilot.configured) tiers.push(copilot.tier);
+  if (cursor.configured) tiers.push(cursor.tier);
+  if (tiers.length === 0) return null;
+  return tiers.reduce((min, t) => (compareCopilotTier(t, min) < 0 ? t : min));
+}
+
 export function computeScore(
   lifecycle: Lifecycle,
   agentBlockers: readonly string[],
   copilot: CopilotReport,
+  cursor: CursorReport,
 ): ScoreT {
   if (lifecycle === "merged") return Score(4);
   if (lifecycle === "closed") return Score(0);
@@ -289,8 +356,9 @@ export function computeScore(
   // halt at the end saying "your turn."
   if (agentBlockers.length > 0) return Score(1);
 
-  if (copilot.configured) {
-    switch (copilot.tier) {
+  const botTier = combinedBotTier(copilot, cursor);
+  if (botTier !== null) {
+    switch (botTier) {
       case "bronze":
         return Score(1);
       case "silver":
@@ -302,9 +370,9 @@ export function computeScore(
     }
   }
 
-  // No blockers, no Copilot — every gate (CI, reviews, conflicts,
-  // metadata) passed because any fail would have emitted a blocker
-  // above. Score is at target.
+  // No blockers, no reviewer bots configured — every gate (CI,
+  // reviews, conflicts, metadata) passed because any fail would
+  // have emitted a blocker above. Score is at target.
   return Score(4);
 }
 
@@ -337,6 +405,13 @@ export async function prFitness(
     head: GitCommitSha(data.pr.headRefOid),
   });
 
+  const cursor = computeCursor({
+    reviews: data.reviews,
+    threads: data.threads,
+    checks: data.checks,
+    head: GitCommitSha(data.pr.headRefOid),
+  });
+
   // Merged/closed PRs have no actionable blockers.
   const blockerSplit =
     lifecycle === "open"
@@ -349,20 +424,21 @@ export async function prFitness(
 
   // Score reflects agent-achievable fitness. Human-dependent blockers
   // (pending review, not approved) drive hil halts but don't cap score.
-  const score = computeScore(lifecycle, blockerSplit.agent, copilot);
+  const score = computeScore(lifecycle, blockerSplit.agent, copilot, cursor);
   const scoreDisplay = computeScoreDisplay(lifecycle, score);
   const targetDisplay = formatScoreOrdinal(target);
   const statusLine = summarize(lifecycle, blockerSplit.all, data.pr.mergedAt);
   const notes = computeNotes(ci, data.degraded);
-  const activityState: Record<string, string> = copilot.configured
-    ? { copilot: copilot.activity.state }
-    : {};
+  const activityState: Record<string, string> = {
+    ...(copilot.configured ? { copilot: copilot.activity.state } : {}),
+    ...(cursor.configured ? { cursor: cursor.activity.state } : {}),
+  };
   const requiredChecksDegraded = data.degraded.some(
     (d) => d.collector === "required-checks",
   );
   const axes =
     lifecycle === "open"
-      ? computeAxes(ci, copilot, reviews, requiredChecksDegraded)
+      ? computeAxes(ci, copilot, cursor, reviews, requiredChecksDegraded)
       : [];
   const targetTier = tierForScore(target);
   const durationMs = Math.round(performance.now() - start);
@@ -375,6 +451,7 @@ export async function prFitness(
     blockers: blockerSplit.all,
     ci,
     copilot,
+    cursor,
     reviews,
     state,
     graphiteStatus: data.graphite.status,
@@ -405,6 +482,7 @@ export async function prFitness(
     ci,
     reviews,
     copilot,
+    cursor,
     state,
     graphite: data.graphite,
     actions,

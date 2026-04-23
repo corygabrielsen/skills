@@ -12,8 +12,11 @@ import assert from "node:assert/strict";
 import { computeScore } from "../../src/pr-fitness.js";
 import { GitCommitSha, Timestamp } from "../../src/types/branded.js";
 import type { CopilotReport } from "../../src/types/copilot.js";
+import type { CursorReport } from "../../src/types/cursor.js";
 
 const HEAD = GitCommitSha("abc12345abc12345abc12345abc12345abc12345");
+
+const noCursor: CursorReport = { configured: false };
 
 function platinumCopilot(): CopilotReport {
   return {
@@ -49,6 +52,7 @@ describe("computeScore — agent blocker cap", () => {
       "open",
       ["ci_fail: Mergeability Check"],
       platinumCopilot(),
+      noCursor,
     );
     assert.equal(score as number, 1);
   });
@@ -56,7 +60,7 @@ describe("computeScore — agent blocker cap", () => {
   it("does NOT cap on human-only blockers — score reflects Copilot tier", () => {
     // This is the concept algebra fix: pending_human_review is a
     // hil-halt trigger, not a score regression.
-    const score = computeScore("open", [], platinumCopilot());
+    const score = computeScore("open", [], platinumCopilot(), noCursor);
     assert.equal(score as number, 4);
     // The key: "not_approved" and "pending_human_review" are NOT
     // passed as agentBlockers — they're in blockerSplit.human,
@@ -64,17 +68,17 @@ describe("computeScore — agent blocker cap", () => {
   });
 
   it("returns 4 for merged PRs regardless of blockers", () => {
-    const score = computeScore("merged", ["stale_blocker"], platinumCopilot());
+    const score = computeScore("merged", ["stale_blocker"], platinumCopilot(), noCursor);
     assert.equal(score as number, 4);
   });
 
   it("returns 0 for closed PRs", () => {
-    const score = computeScore("closed", [], platinumCopilot());
+    const score = computeScore("closed", [], platinumCopilot(), noCursor);
     assert.equal(score as number, 0);
   });
 
   it("returns 4 when Copilot is platinum and no agent blockers", () => {
-    const score = computeScore("open", [], platinumCopilot());
+    const score = computeScore("open", [], platinumCopilot(), noCursor);
     assert.equal(score as number, 4);
   });
 
@@ -89,19 +93,19 @@ describe("computeScore — agent blocker cap", () => {
       tier: "gold",
       tier_display: "🥇 (gold)",
     } as CopilotReport;
-    assert.equal(computeScore("open", [], silver) as number, 2);
-    assert.equal(computeScore("open", [], gold) as number, 3);
+    assert.equal(computeScore("open", [], silver, noCursor) as number, 2);
+    assert.equal(computeScore("open", [], gold, noCursor) as number, 3);
   });
 
   it("returns 4 for non-Copilot PR with no agent blockers", () => {
     const unconfigured: CopilotReport = { configured: false };
-    const score = computeScore("open", [], unconfigured);
+    const score = computeScore("open", [], unconfigured, noCursor);
     assert.equal(score as number, 4);
   });
 
   it("returns 1 for non-Copilot PR with any agent blocker", () => {
     const unconfigured: CopilotReport = { configured: false };
-    const score = computeScore("open", ["ci_fail: lint"], unconfigured);
+    const score = computeScore("open", ["ci_fail: lint"], unconfigured, noCursor);
     assert.equal(score as number, 1);
   });
 });

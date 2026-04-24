@@ -51,7 +51,8 @@ for await (const line of rl) {
   };
 
   try {
-    event = JSON.parse(line);
+    // Trust converge to emit the agreed event schema; no runtime validation.
+    event = JSON.parse(line) as typeof event;
   } catch {
     continue; // Skip malformed lines.
   }

@@ -30,7 +30,11 @@ describe("computeReviews", () => {
   it("detects approvals on current HEAD", () => {
     const reviews: GitHubPullRequestReview[] = [
       makeReview("APPROVED", HEAD, "alice"),
-      makeReview("APPROVED", GitCommitSha("def67890def67890def67890def67890def67890"), "bob"),
+      makeReview(
+        "APPROVED",
+        GitCommitSha("def67890def67890def67890def67890def67890"),
+        "bob",
+      ),
       makeReview("COMMENTED", HEAD, "charlie"),
     ];
     const result = computeReviews(makePr(), makeThreads([]), [], reviews);

@@ -85,7 +85,9 @@ const oneResolved = { total: 1, resolved: 1, unresolved: 0, stale: 0 };
 describe("parseCursorReviewBody", () => {
   it("extracts findings count from 'found N potential issue(s)'", () => {
     assert.equal(
-      parseCursorReviewBody("Cursor Bugbot has reviewed your changes and found 3 potential issues.").findingsCount,
+      parseCursorReviewBody(
+        "Cursor Bugbot has reviewed your changes and found 3 potential issues.",
+      ).findingsCount,
       3,
     );
     assert.equal(
@@ -102,7 +104,13 @@ describe("parseCursorReviewBody", () => {
 describe("findCursorCheck", () => {
   it("finds Cursor Bugbot by exact name", () => {
     const checks = [
-      { name: "Lint", state: "SUCCESS" as const, description: "", link: "", completedAt: "" },
+      {
+        name: "Lint",
+        state: "SUCCESS" as const,
+        description: "",
+        link: "",
+        completedAt: "",
+      },
       check("IN_PROGRESS"),
     ];
     const found = findCursorCheck(checks);
@@ -166,11 +174,7 @@ describe("scoreCursorTier — tier semantics", () => {
       "silver",
     );
     assert.equal(
-      scoreCursorTier(
-        [round({ commit: OLD })],
-        oneResolved,
-        check("QUEUED"),
-      ),
+      scoreCursorTier([round({ commit: OLD })], oneResolved, check("QUEUED")),
       "silver",
     );
   });
@@ -191,11 +195,7 @@ describe("scoreCursorTier — tier semantics", () => {
 
   it("gold: reviewed at non-HEAD, no check at HEAD", () => {
     assert.equal(
-      scoreCursorTier(
-        [round({ commit: OLD })],
-        oneResolved,
-        null,
-      ),
+      scoreCursorTier([round({ commit: OLD })], oneResolved, null),
       "gold",
     );
   });

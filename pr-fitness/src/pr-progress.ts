@@ -195,10 +195,7 @@ function scoreLine(report: FitnessReportView): string {
   return `${emoji} ${label} → ${target}`.trim();
 }
 
-function appendAxes(
-  lines: string[],
-  axes: FitnessReportView["axes"],
-): void {
+function appendAxes(lines: string[], axes: FitnessReportView["axes"]): void {
   if (axes === undefined || axes.length === 0) return;
   lines.push("");
   for (const a of axes) {
@@ -207,10 +204,7 @@ function appendAxes(
   }
 }
 
-function appendNotes(
-  lines: string[],
-  notes: FitnessReportView["notes"],
-): void {
+function appendNotes(lines: string[], notes: FitnessReportView["notes"]): void {
   if (notes === undefined || notes.length === 0) return;
   lines.push("");
   for (const n of notes) {

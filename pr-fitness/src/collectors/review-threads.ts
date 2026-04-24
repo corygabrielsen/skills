@@ -40,30 +40,33 @@ export type FetchPage = (cursor: string | null) => Promise<ThreadsPage>;
 export async function paginateThreads(
   fetchPage: FetchPage,
 ): Promise<GitHubPullRequestReviewThreadsResponse> {
-  type ThreadNode = GitHubPullRequestReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][number];
-  const allThreads: ThreadNode[] = [];
-  let cursor: string | null = null;
-  let reviewRequests: GitHubPullRequestReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewRequests"] | null = null;
+  type ThreadNode =
+    GitHubPullRequestReviewThreadsResponse["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][number];
 
-  do {
+  // reviewRequests is page-invariant — read once from the first page.
+  const firstPage = await fetchPage(null);
+  const firstPull = firstPage.data.repository.pullRequest;
+  const reviewRequests = firstPull.reviewRequests;
+  const allThreads: ThreadNode[] = [...firstPull.reviewThreads.nodes];
+
+  let cursor: string | null = firstPull.reviewThreads.pageInfo.hasNextPage
+    ? firstPull.reviewThreads.pageInfo.endCursor
+    : null;
+
+  while (cursor) {
     const page: ThreadsPage = await fetchPage(cursor);
     const pull = page.data.repository.pullRequest;
     allThreads.push(...pull.reviewThreads.nodes);
-
-    if (!reviewRequests) {
-      reviewRequests = pull.reviewRequests;
-    }
-
     const pageInfo = pull.reviewThreads.pageInfo;
     cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null;
-  } while (cursor);
+  }
 
   return {
     data: {
       repository: {
         pullRequest: {
           reviewThreads: { nodes: allThreads },
-          reviewRequests: reviewRequests!,
+          reviewRequests,
         },
       },
     },
@@ -85,11 +88,12 @@ export async function collectReviewThreads(
 ): Promise<GitHubPullRequestReviewThreadsResponse> {
   return paginateThreads(async (cursor) => {
     const afterClause: string = cursor ? `,after:"${cursor}"` : "";
-    const result: Awaited<ReturnType<typeof gh<ThreadsPage>>> = await gh<ThreadsPage>([
-      "api",
-      "graphql",
-      "-f",
-      `query={
+    const result: Awaited<ReturnType<typeof gh<ThreadsPage>>> =
+      await gh<ThreadsPage>([
+        "api",
+        "graphql",
+        "-f",
+        `query={
         repository(owner:"${owner}",name:"${name}") {
           pullRequest(number:${String(pr)}) {
             reviewThreads(first:100${afterClause}) {
@@ -114,7 +118,7 @@ export async function collectReviewThreads(
           }
         }
       }`,
-    ]);
+      ]);
 
     if (!result.ok) {
       match(result.error, ghErrorThrow("review-threads"));

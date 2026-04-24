@@ -68,7 +68,12 @@ describe("computeScore — agent blocker cap", () => {
   });
 
   it("returns 4 for merged PRs regardless of blockers", () => {
-    const score = computeScore("merged", ["stale_blocker"], platinumCopilot(), noCursor);
+    const score = computeScore(
+      "merged",
+      ["stale_blocker"],
+      platinumCopilot(),
+      noCursor,
+    );
     assert.equal(score as number, 4);
   });
 
@@ -105,7 +110,12 @@ describe("computeScore — agent blocker cap", () => {
 
   it("returns 1 for non-Copilot PR with any agent blocker", () => {
     const unconfigured: CopilotReport = { configured: false };
-    const score = computeScore("open", ["ci_fail: lint"], unconfigured, noCursor);
+    const score = computeScore(
+      "open",
+      ["ci_fail: lint"],
+      unconfigured,
+      noCursor,
+    );
     assert.equal(score as number, 1);
   });
 });

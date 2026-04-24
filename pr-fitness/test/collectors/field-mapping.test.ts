@@ -87,7 +87,13 @@ describe("reviews field mapping", () => {
   });
 
   it("preserves all review states", () => {
-    for (const state of ["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"]) {
+    for (const state of [
+      "APPROVED",
+      "CHANGES_REQUESTED",
+      "COMMENTED",
+      "DISMISSED",
+      "PENDING",
+    ]) {
       const raw: RawReview = {
         user: { login: "reviewer" },
         state,
@@ -112,8 +118,20 @@ describe("reviews field mapping", () => {
 
   it("maps multiple reviews preserving order", () => {
     const raws: RawReview[] = [
-      { user: { login: "alice" }, state: "APPROVED", commit_id: "a", submitted_at: "t1", body: "" },
-      { user: { login: "bob" }, state: "CHANGES_REQUESTED", commit_id: "b", submitted_at: "t2", body: "fix" },
+      {
+        user: { login: "alice" },
+        state: "APPROVED",
+        commit_id: "a",
+        submitted_at: "t1",
+        body: "",
+      },
+      {
+        user: { login: "bob" },
+        state: "CHANGES_REQUESTED",
+        commit_id: "b",
+        submitted_at: "t2",
+        body: "fix",
+      },
     ];
     const result = raws.map(mapReview);
     assert.equal(result[0]!.user, "alice");

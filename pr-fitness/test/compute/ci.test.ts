@@ -212,10 +212,7 @@ describe("computeCi — missing checks (join model)", () => {
     assert.equal(result.fail, 0);
     assert.equal(result.pending, 0);
     assert.equal(result.missing, 2);
-    assert.deepEqual(result.missing_names, [
-      "Mergeability Check",
-      "Build",
-    ]);
+    assert.deepEqual(result.missing_names, ["Mergeability Check", "Build"]);
     assert.equal(result.total, 0);
   });
 

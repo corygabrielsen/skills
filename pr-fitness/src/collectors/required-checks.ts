@@ -78,8 +78,10 @@ export async function resolveStackRoot(
       "--limit",
       "1",
     ]);
-    if (!result.ok || result.data.length === 0) break;
-    current = result.data[0]!.baseRefName;
+    if (!result.ok) break;
+    const first = result.data[0];
+    if (!first) break;
+    current = first.baseRefName;
   }
   return current;
 }

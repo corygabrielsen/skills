@@ -298,8 +298,13 @@ describe("plan", () => {
       "example/widgets",
       100,
     );
-    const action = actions.find((a) => a.type.kind === "address_copilot_suppressed");
-    assert.ok(action, "address_copilot_suppressed should fire when silver is sole barrier");
+    const action = actions.find(
+      (a) => a.type.kind === "address_copilot_suppressed",
+    );
+    assert.ok(
+      action,
+      "address_copilot_suppressed should fire when silver is sole barrier",
+    );
     assert.ok(actions.every((a) => a.type.kind !== "rerequest_copilot"));
   });
 });

@@ -18,9 +18,7 @@ import type {
 
 const HEAD = GitCommitSha("abc12345abc12345abc12345abc12345abc12345");
 
-function quietCi(
-  overrides: Partial<CiSummary> = {},
-): CiSummary {
+function quietCi(overrides: Partial<CiSummary> = {}): CiSummary {
   return {
     pass: 1,
     fail: 0,
@@ -131,8 +129,10 @@ const quietState: PullRequestState = {
   last_commit_at: "2026-04-23T10:00:00Z",
 };
 
-describe("triage_wait — fires on ambiguity signals", () => {
-  it("cursor reviewing + missing CI → triage, not wait_for_ci", () => {
+describe("triage_wait — fires only on advisory failures", () => {
+  it("cursor reviewing + missing CI → plain wait_for_ci (not triage)", () => {
+    // Cursor re-reviewing is self-resolving; converge should just wait
+    // rather than hand off to an agent.
     const actions = plan(
       ciMissing(),
       emptyReviews,
@@ -143,8 +143,8 @@ describe("triage_wait — fires on ambiguity signals", () => {
       1,
     );
     const kinds = actions.map((a) => a.kind);
-    assert.ok(kinds.includes("triage_wait"), "triage_wait should fire");
-    assert.ok(!kinds.includes("wait_for_ci"), "wait_for_ci should be suppressed");
+    assert.ok(kinds.includes("wait_for_ci"), "wait_for_ci should fire");
+    assert.ok(!kinds.includes("triage_wait"), "triage_wait should not fire");
   });
 
   it("advisory failure + missing CI → triage", () => {
@@ -161,13 +161,23 @@ describe("triage_wait — fires on ambiguity signals", () => {
         failed_details: [{ name: "Lint", description: "", link: "" }],
       },
     });
-    const actions = plan(ci, emptyReviews, quietState, noCopilot(), noCursor(), "w/r", 1);
+    const actions = plan(
+      ci,
+      emptyReviews,
+      quietState,
+      noCopilot(),
+      noCursor(),
+      "w/r",
+      1,
+    );
     const triage = actions.find((a) => a.kind === "triage_wait");
     assert.ok(triage, "triage_wait should fire");
     assert.match(triage.description, /Advisory "Lint" failed/);
   });
 
-  it("copilot gold + missing CI → triage", () => {
+  it("copilot gold + missing CI → rerequest_copilot + wait_for_ci (not triage)", () => {
+    // Stale Copilot has a concrete self-drivable action (rerequest)
+    // that converge runs itself; triage handoff would shadow it.
     const actions = plan(
       ciMissing(),
       emptyReviews,
@@ -177,9 +187,16 @@ describe("triage_wait — fires on ambiguity signals", () => {
       "w/r",
       1,
     );
-    const triage = actions.find((a) => a.kind === "triage_wait");
-    assert.ok(triage);
-    assert.match(triage.description, /Copilot gold/);
+    const kinds = actions.map((a) => a.kind);
+    assert.ok(
+      kinds.includes("wait_for_ci"),
+      "wait_for_ci should fire for missing CI",
+    );
+    assert.ok(
+      kinds.includes("rerequest_copilot"),
+      "rerequest_copilot should be available",
+    );
+    assert.ok(!kinds.includes("triage_wait"), "triage_wait should not fire");
   });
 
   it("no signals + missing CI → normal wait_for_ci", () => {

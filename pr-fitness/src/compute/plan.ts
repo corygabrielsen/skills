@@ -64,15 +64,20 @@ export function plan(
   // a loop iteration.
 
   const blockedChecks = [...ci.pending_names, ...ci.missing_names];
-  const triage =
-    ci.fail === 0 && blockedChecks.length > 0
-      ? triageDescription(blockedChecks, ci, cursor, copilot)
-      : null;
+  const triageOnAdvisory =
+    ci.fail === 0 && blockedChecks.length > 0 && ci.advisory.failed.length > 0;
 
-  if (triage !== null) {
+  if (triageOnAdvisory) {
+    const quoted = blockedChecks.map((n) => `"${n}"`).join(", ");
+    const advisoryLines = ci.advisory.failed.map(
+      (name) => `- Advisory "${name}" failed`,
+    );
     pushAction(actions, {
       blocker: `ci_triage: ${blockedChecks.join(", ")}`,
-      description: triage,
+      description: [
+        `CI waiting on ${quoted}. Concurrent state:`,
+        ...advisoryLines,
+      ].join("\n"),
       automation: "agent",
       target_effect: "blocks",
       type: { kind: "triage_wait", blocked_checks: blockedChecks },
@@ -371,54 +376,6 @@ function pushAction(actions: Action[], partial: Omit<Action, "kind">): void {
 }
 
 /**
- * Build a triage description when a CI wait coincides with other
- * signals suggesting parallel work is possible. Returns null when
- * no ambiguity signals apply — caller falls back to a normal wait.
- */
-function triageDescription(
-  blockedChecks: readonly string[],
-  ci: CiSummary,
-  cursor: CursorReport,
-  copilot: CopilotReport,
-): string | null {
-  const signals: string[] = [];
-
-  if (cursor.configured && cursor.activity.state === "reviewing") {
-    signals.push("- Cursor check in progress");
-  }
-  for (const name of ci.advisory.failed) {
-    signals.push(`- Advisory "${name}" failed`);
-  }
-  const copilotLine = copilotAdvanceLine(copilot);
-  if (copilotLine !== null) signals.push(copilotLine);
-
-  if (signals.length === 0) return null;
-
-  const quoted = blockedChecks.map((n) => `"${n}"`).join(", ");
-  return [`CI waiting on ${quoted}. Concurrent state:`, ...signals].join("\n");
-}
-
-function copilotAdvanceLine(copilot: CopilotReport): string | null {
-  if (!copilot.configured) return null;
-  if (copilot.activity.state !== "reviewed") return null;
-  if (copilot.threads.unresolved !== 0) return null;
-  if (copilot.tier === "platinum") return null;
-
-  const detail: string[] = [];
-  if (copilot.threads.stale > 0) {
-    detail.push(pluralize(copilot.threads.stale, "stale reply", "stale replies"));
-  } else if (!copilot.fresh) {
-    detail.push("not at HEAD");
-  }
-  const suppressed = copilot.activity.latest.commentsSuppressed;
-  if (suppressed > 0) {
-    detail.push(pluralize(suppressed, "low-confidence finding"));
-  }
-  const tail = detail.length > 0 ? ` · ${detail.join(", ")}` : "";
-  return `- Copilot ${copilot.tier}${tail}`;
-}
-
-/**
  * Build the address_threads description with per-bot context when
  * available. Symmetric shape: "<Bot>: <facts>." then the generalization
  * directive.
@@ -428,7 +385,9 @@ function addressThreadsDescription(
   copilot: CopilotReport,
   cursor: CursorReport,
 ): string {
-  const parts: string[] = [`Address ${String(total)} unresolved review thread(s).`];
+  const parts: string[] = [
+    `Address ${String(total)} unresolved review thread(s).`,
+  ];
 
   if (cursor.configured && cursor.threads.unresolved > 0) {
     const { high, medium, low } = cursor.severity;
@@ -444,7 +403,8 @@ function addressThreadsDescription(
     const suppressed = copilot.activity.latest.commentsSuppressed;
     const bits: string[] = [];
     if (issues > 0) bits.push(pluralize(issues, "issue"));
-    if (suppressed > 0) bits.push(pluralize(suppressed, "low-confidence finding"));
+    if (suppressed > 0)
+      bits.push(pluralize(suppressed, "low-confidence finding"));
     if (bits.length > 0) parts.push(`Copilot: ${bits.join(", ")}.`);
   }
 

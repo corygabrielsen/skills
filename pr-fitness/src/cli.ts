@@ -13,10 +13,7 @@ import {
 } from "./types/branded.js";
 import type { Score as ScoreT } from "./types/branded.js";
 import type { PullRequestFitnessReport } from "./types/output.js";
-import {
-  renderFitnessComment,
-  postComment,
-} from "./pr-progress.js";
+import { renderFitnessComment, postComment } from "./pr-progress.js";
 import { PreconditionError } from "./util/errors.js";
 import { setQuiet } from "./util/log.js";
 import { VERSION } from "./version.js";
@@ -103,7 +100,11 @@ async function maybePostComment(
 ): Promise<void> {
   const topAction = report.actions[0];
   const actionView = topAction
-    ? { kind: topAction.kind, automation: topAction.automation, description: topAction.description }
+    ? {
+        kind: topAction.kind,
+        automation: topAction.automation,
+        description: topAction.description,
+      }
     : undefined;
   // Strip volatile fields from snapshot so dedup hash is stable.
   const stableSnapshot = Object.fromEntries(
@@ -128,17 +129,32 @@ async function maybePostComment(
   const body = renderFitnessComment(reportView, actionView);
   const stableView = { ...reportView, snapshot: stableSnapshot };
   const stableBody = renderFitnessComment(stableView, actionView);
-  const hash = createHash("sha256").update(stableBody).digest("hex").slice(0, 16);
-  const hashFile = join(tmpdir(), `pr-fitness-comment-${repo.replace("/", "-")}-${pr}.hash`);
+  const hash = createHash("sha256")
+    .update(stableBody)
+    .digest("hex")
+    .slice(0, 16);
+  const hashFile = join(
+    tmpdir(),
+    `pr-fitness-comment-${repo.replace("/", "-")}-${pr}.hash`,
+  );
 
   try {
-    if (existsSync(hashFile) && readFileSync(hashFile, "utf8").trim() === hash) {
+    if (
+      existsSync(hashFile) &&
+      readFileSync(hashFile, "utf8").trim() === hash
+    ) {
       return;
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   await postComment({ repo, pr }, body);
-  try { writeFileSync(hashFile, hash + "\n"); } catch { /* ignore */ }
+  try {
+    writeFileSync(hashFile, hash + "\n");
+  } catch {
+    /* ignore */
+  }
 }
 
 async function main(): Promise<void> {

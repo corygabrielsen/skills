@@ -27,7 +27,11 @@ function makePage(
               isResolved: t.isResolved,
               comments: {
                 nodes: [
-                  { author: { login: "user" }, createdAt: "2026-04-21T00:00:00Z", body: "" },
+                  {
+                    author: { login: "user" },
+                    createdAt: "2026-04-21T00:00:00Z",
+                    body: "",
+                  },
                 ],
               },
             })),
@@ -41,10 +45,7 @@ function makePage(
 
 describe("paginateThreads", () => {
   it("returns single page when hasNextPage is false", async () => {
-    const page = makePage(
-      [{ isResolved: true }, { isResolved: false }],
-      null,
-    );
+    const page = makePage([{ isResolved: true }, { isResolved: false }], null);
     const fetchPage: FetchPage = async (cursor) => {
       assert.equal(cursor, null);
       return page;
@@ -59,14 +60,8 @@ describe("paginateThreads", () => {
 
   it("merges two pages of threads", async () => {
     const pages: ThreadsPage[] = [
-      makePage(
-        [{ isResolved: true }, { isResolved: true }],
-        "cursor-1",
-      ),
-      makePage(
-        [{ isResolved: false }],
-        null,
-      ),
+      makePage([{ isResolved: true }, { isResolved: true }], "cursor-1"),
+      makePage([{ isResolved: false }], null),
     ];
     let callIndex = 0;
     const fetchPage: FetchPage = async (cursor) => {
@@ -98,10 +93,7 @@ describe("paginateThreads", () => {
     const result = await paginateThreads(fetchPage);
     const nodes = result.data.repository.pullRequest.reviewThreads.nodes;
     assert.equal(nodes.length, 203);
-    assert.equal(
-      nodes.filter((n) => !n.isResolved).length,
-      3,
-    );
+    assert.equal(nodes.filter((n) => !n.isResolved).length, 3);
   });
 
   it("takes reviewRequests from first page only", async () => {
@@ -136,7 +128,10 @@ describe("paginateThreads", () => {
     const result = await paginateThreads(fetchPage);
     const requests = result.data.repository.pullRequest.reviewRequests.nodes;
     assert.equal(requests.length, 1);
-    assert.equal(requests[0]!.requestedReviewer!.login, "copilot-pull-request-reviewer");
+    assert.equal(
+      requests[0]!.requestedReviewer!.login,
+      "copilot-pull-request-reviewer",
+    );
   });
 
   it("passes correct cursor to each fetch call", async () => {

@@ -71,4 +71,5 @@ export type ActionType =
   | { kind: "rerequest_copilot" }
   | { kind: "wait_for_copilot_ack" }
   | { kind: "wait_for_copilot_review" }
-  | { kind: "address_copilot_suppressed"; count: number };
+  | { kind: "address_copilot_suppressed"; count: number }
+  | { kind: "wait_for_cursor_review" };

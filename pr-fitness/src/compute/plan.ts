@@ -268,6 +268,20 @@ export function plan(
     }
   }
 
+  if (cursor.configured && cursor.activity.state === "reviewing") {
+    // Cursor Bugbot is mid-review (check run QUEUED/IN_PROGRESS at HEAD).
+    // Block until it finishes — its findings may add unresolved threads
+    // that need addressing before the PR can advance to platinum.
+    pushAction(actions, {
+      blocker: "cursor_reviewing",
+      description: "Waiting for Cursor Bugbot to finish reviewing",
+      automation: "wait",
+      target_effect: "blocks",
+      type: { kind: "wait_for_cursor_review" },
+      next_poll_seconds: PositiveSeconds(60),
+    });
+  }
+
   if (reviews.pending_reviews.bots.length > 0) {
     pushAction(actions, {
       blocker: `pending_bot_review: ${reviews.pending_reviews.bots.join(", ")}`,

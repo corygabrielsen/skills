@@ -307,4 +307,34 @@ describe("plan", () => {
     );
     assert.ok(actions.every((a) => a.type.kind !== "rerequest_copilot"));
   });
+
+  it("emits wait_for_cursor_review when Cursor is mid-review", () => {
+    // Regression: when CI was green, Copilot at platinum, no unresolved
+    // threads, but Cursor's check run was still IN_PROGRESS at HEAD,
+    // converge halted "success" because nothing emitted a blocker.
+    // Cursor's findings could still fire — block until it finishes.
+    const reviewingCursor = {
+      configured: true as const,
+      activity: { state: "reviewing" as const },
+      rounds: [],
+      threads: { total: 0, resolved: 0, unresolved: 0, stale: 0 },
+      severity: { high: 0, medium: 0, low: 0 },
+      tier: "bronze" as const,
+      tier_display: "🥉 (bronze)",
+      fresh: false,
+    };
+    const actions = plan(
+      CLEAN_CI,
+      APPROVED_REVIEWS,
+      CLEAN_STATE,
+      UNCONFIGURED_COPILOT,
+      reviewingCursor,
+      "example/widgets",
+      100,
+    );
+    const wait = actions.find((a) => a.type.kind === "wait_for_cursor_review");
+    assert.ok(wait, "wait_for_cursor_review should fire while Cursor reviews");
+    assert.equal(wait.automation, "wait");
+    assert.equal(wait.target_effect, "blocks");
+  });
 });

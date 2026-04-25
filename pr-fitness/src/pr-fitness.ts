@@ -322,14 +322,25 @@ function buildSnapshot(input: SnapshotInput): Record<string, unknown> {
 
 /**
  * Combine configured reviewer-bot tiers by taking the minimum
- * (worst). If neither is configured, returns null.
+ * (worst). If neither is configured (or both are dormant), returns
+ * null.
+ *
+ * `Copilot.configured` reflects repo-wide ruleset enablement, not
+ * per-PR engagement, so a Copilot that was never requested for this
+ * PR shows up as `configured: true, activity: idle, tier: bronze`.
+ * Including that bronze in the combined tier would falsely cap every
+ * such PR at bronze even when other bots are platinum. Skip
+ * configured-but-idle Copilot here. Cursor's `configured` is already
+ * activity-gated, so no symmetric guard is needed.
  */
 function combinedBotTier(
   copilot: CopilotReport,
   cursor: CursorReport,
 ): CopilotTier | null {
   const tiers: CopilotTier[] = [];
-  if (copilot.configured) tiers.push(copilot.tier);
+  if (copilot.configured && copilot.activity.state !== "idle") {
+    tiers.push(copilot.tier);
+  }
   if (cursor.configured) tiers.push(cursor.tier);
   if (tiers.length === 0) return null;
   return tiers.reduce((min, t) => (compareCopilotTier(t, min) < 0 ? t : min));

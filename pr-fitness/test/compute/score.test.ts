@@ -118,4 +118,39 @@ describe("computeScore — agent blocker cap", () => {
     );
     assert.equal(score as number, 1);
   });
+
+  it("idle Copilot does not drag a platinum Cursor down to bronze", () => {
+    // Regression: Copilot.configured comes from the repo ruleset,
+    // independent of whether Copilot was requested for THIS PR.
+    // When the ruleset is enabled but Copilot was never asked,
+    // activity is "idle" and tier defaults to "bronze". Including
+    // that bronze in combinedBotTier capped score=1 forever — the
+    // "false stall" agents observed on green PRs.
+    const idleCopilot: CopilotReport = {
+      configured: true,
+      config: {
+        enabled: true,
+        reviewOnPush: false,
+        reviewDraftPullRequests: false,
+      },
+      activity: { state: "idle" },
+      rounds: [],
+      threads: { total: 0, resolved: 0, unresolved: 0, stale: 0 },
+      tier: "bronze",
+      tier_display: "🥉 (bronze)",
+      fresh: false,
+    };
+    const platinumCursor: CursorReport = {
+      configured: true,
+      activity: { state: "clean" },
+      rounds: [],
+      threads: { total: 0, resolved: 0, unresolved: 0, stale: 0 },
+      severity: { high: 0, medium: 0, low: 0 },
+      tier: "platinum",
+      tier_display: "💠 (platinum)",
+      fresh: true,
+    };
+    const score = computeScore("open", [], idleCopilot, platinumCursor);
+    assert.equal(score as number, 4);
+  });
 });

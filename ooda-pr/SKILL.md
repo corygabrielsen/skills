@@ -1,85 +1,98 @@
 ---
 name: ooda-pr
-description: PR-specific OODA loop. Drives a PR through observe → orient → decide → act until merge or external resolution. Replaces /converge + /pr-fitness.
+description: Drive a PR through observe → orient → decide → act until merge or external resolution. Default mode loops until halt; `inspect` runs one pass and exits with the decision class encoded as an exit code.
 args:
   - name: <owner/repo> <pr>
     description: PR to drive
-  - name: --once
+  - name: inspect
     description: One observe/orient/decide pass; print decision and exit. No act, no loop.
   - name: --max-iter N
-    description: Iteration cap (default 50)
+    description: Iteration cap (default 50; ignored by inspect)
+  - name: --comment
+    description: Post a fitness comment on the PR each iteration (deduped)
 ---
 
 # /ooda-pr
 
-Compiled Rust binary. Single binary, single process, no JSON
-boundary. Run as a **single command in its own Bash call** — the
-exit code is the communication channel.
+Drives one PR to its terminal state. Single Rust binary, single
+process, single-shot from the agent's perspective. **Run it in its
+own Bash call** — the exit code is the entire communication channel.
+
+## How to call
 
 ```bash
-~/.claude/skills/ooda-pr/run [opts] <owner/repo> <pr>
+~/.claude/skills/ooda-pr/run [options] <owner/repo> <pr>           # loop
+~/.claude/skills/ooda-pr/run inspect [options] <owner/repo> <pr>   # one pass
 ```
 
 The `run` script builds the release binary on demand
 (`cargo build --release` is a fast no-op when up-to-date) and execs
-it. `target/` is gitignored so the wrapper is required on fresh
-installs; the binary path
-`~/.claude/skills/ooda-pr/target/release/ooda-pr` works directly
-once built.
+it. Once built, the binary at
+`~/.claude/skills/ooda-pr/target/release/ooda-pr` works directly.
 
-## Modes
+| Flag           | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `--max-iter N` | Iteration cap. Default 50. Ignored by `inspect`.                                                   |
+| `--comment`    | Post a fitness comment to the PR each iteration. Deduped — same structural state does not re-post. |
+| `-h`, `--help` | Print usage to stdout, exit 0.                                                                     |
 
-`--once` runs one observe → orient → decide pass and prints the
-top decision. No `act`, no loop. Use for inspection — same role
-as `pr-fitness <repo> <pr>` had.
+## What you get back
 
-Default mode runs the full loop: observe → orient → decide → act
-→ repeat. Halts on success (PR at target), terminal lifecycle
-(merged/closed), agent or human handoff, stall (same action twice
-in a row), or iteration cap.
+Stdout/stderr carry human-readable diagnostics. **The exit code is
+the decision** — dispatch on `$?`, do not parse stdout.
 
-## Halt taxonomy (by exit code)
+| Exit | Class          | What it means                                                                                               | What you do next                                                                       |
+| ---- | -------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 0    | `success`      | PR reached its target. Either no advancing actions, or terminal (merged / closed).                          | Done. Move on.                                                                         |
+| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row. State isn't advancing.                                  | Investigate why. The last action and its description are on stderr.                    |
+| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                          | Re-run to continue, or raise `--max-iter`.                                             |
+| 3    | `human_needed` | A human must act (approve, push, …).                                                                        | Surface the description on stderr to the human verbatim. Re-run later.                 |
+| 4    | `in_progress`  | **`inspect` only.** Top decision is an executable action; the loop would auto-run it but the probe did not. | Re-invoke without `inspect` to actually drive it.                                      |
+| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                             | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after. |
+| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                          | Distinct from `stalled`. Retry, or alert on persistent failure.                        |
+| 64   | `usage`        | Bad arguments.                                                                                              | Fix the invocation. `--help` shows the usage.                                          |
 
-| Exit | Status       | What it means / agent response                                                                                          |
-| ---- | ------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| 0    | success      | PR reached its target — no advancing actions, or terminal (merged/closed).                                              |
-| 1    | stalled      | Same (kind, blocker) action fired twice in a row. State isn't advancing.                                                |
-| 2    | cap_reached  | Iteration cap hit without halting. Re-run to continue, or raise --max-iter.                                             |
-| 3    | human_needed | Action requires a human (approve, push, …). Surface description; re-run later.                                          |
-| 4    | in_progress  | `--once` only: top decision is an executable action (Wait/Full). The full loop would auto-run it; the probe did not.    |
-| 5    | agent_needed | Action requires an agent (address threads, fix CI, …). Run agent and re-invoke.                                         |
-| 6    | runtime      | `gh` subprocess or transport failure (auth, network, missing CLI). Distinct from `stalled` so wrappers can retry/alert. |
-| 64   | usage        | Bad arguments. Fix invocation.                                                                                          |
+The action description on `agent_needed` / `human_needed` halts is
+prompt material — surface it verbatim to the resolver. Do not
+paraphrase.
 
-The action description on `agent_needed` / `human_needed` halts
-is the prompt material — surface it verbatim to the resolver.
+## When to use which mode
 
-## What's different vs /converge + /pr-fitness
+- **Default (loop)** — what you normally want. Drives until halt.
+  Halts include success and external handoffs (agent / human),
+  which the outer driver re-invokes after resolving.
+- **`inspect`** — diagnostic. One pass. Use to ask "what would
+  ooda-pr do right now?" without side effects. Exit code is the
+  same decision class the loop would produce on its first
+  iteration. **Use this when you want a probe, not a driver.**
 
-- **One binary, no JSON pipe.** observe → orient → decide → act
-  all live in process. Decide consumes typed Rust structs from
-  orient, no string parsing or schema versioning.
-- **No combined bot tier scalar.** Halt is a predicate over the
-  candidate-action set, not a `score >= target` comparison.
-  Idle bots emit no candidates and contribute nothing —
-  structurally rules out the false-stall bug class where a
-  configured-but-dormant Copilot capped a green PR at bronze.
-- **Per-bot state preserved.** Copilot and Cursor each have their
-  own report; absence-of-signal stays distinct from low-signal.
-- **Parallel observe.** Ten GitHub fetchers fan out via
-  `std::thread::scope`. End-to-end ~3-4s per iteration on a
-  typical PR.
+## Loop semantics
 
-## When to use
+The loop runs `(observe ∘ orient ∘ decide ∘ act)*` until one of:
 
-- Use `/ooda-pr` for any PR convergence task once it's installed.
-- The old `/converge /pr-fitness …` invocation still works and
-  remains the fallback while ooda-pr is being shaken out.
+- `decide` returns a halt (success / terminal / agent / human)
+- The same `(kind, blocker)` action fires twice without observable
+  state change (stall — exit 1)
+- Iteration cap hit (exit 2)
+
+`Wait` actions are **expected** to repeat (polling external state)
+and do not trip the stall detector.
+
+## Per-bot reports
+
+Copilot and Cursor each have their own typed report. Absence of
+signal (`None`) is structurally distinct from low signal
+(`Some(report)` with `Idle` activity) — a configured-but-dormant
+bot does not block a green PR.
 
 ## Build
+
+The `run` wrapper builds on demand. To build manually:
 
 ```bash
 cd ~/code/skills/ooda-pr && cargo build --release
 ```
 
-The release binary is at `~/code/skills/ooda-pr/target/release/ooda-pr`.
+Binary lands at `~/code/skills/ooda-pr/target/release/ooda-pr`.
+
+For the type-level specification see `README.md`.

@@ -125,7 +125,6 @@ The loop terminates on:
 Manual build: `cd ~/.claude/skills/ooda-pr && cargo build --release`.
 
 For deeper semantics — the type-level algebra (`Decision`,
-`Action`, `Automation`, the orient axes, named invariants
-[H1]–[T1]) — see `~/.claude/skills/ooda-pr/README.md`. The
-caller does not need to consult it for normal use; this SKILL is
-self-sufficient.
+`Action`, `Automation`, the orient axes, the named invariants) —
+see `~/.claude/skills/ooda-pr/README.md`. The caller does not
+need to consult it for normal use; this SKILL is self-sufficient.

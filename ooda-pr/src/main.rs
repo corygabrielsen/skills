@@ -9,6 +9,7 @@ mod ids;
 mod observe;
 mod orient;
 mod runner;
+mod text;
 
 use decide::decide;
 use decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};

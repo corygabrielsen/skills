@@ -74,9 +74,9 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Advancing,
                     description: format!(
-                        "Copilot flagged {suppressed} low-confidence finding(s). \
-                         Investigate and push fixes for any that are real — the \
-                         next review may clear them."
+                        "Copilot flagged {}. Investigate and push fixes for any \
+                         that are real — the next review may clear them.",
+                        crate::text::count(suppressed as usize, "low-confidence finding"),
                     ),
                     blocker: BlockerKey::tag("copilot_tier_silver"),
                 });

@@ -145,8 +145,10 @@ fn address_threads_description(
     copilot: Option<&CopilotReport>,
     cursor: Option<&CursorReport>,
 ) -> String {
-    let mut parts: Vec<String> =
-        vec![format!("Address {total} unresolved review thread(s).")];
+    let mut parts: Vec<String> = vec![format!(
+        "Address {}.",
+        crate::text::count(total as usize, "unresolved review thread"),
+    )];
 
     if let Some(c) = cursor
         && c.threads.unresolved > 0
@@ -164,10 +166,13 @@ fn address_threads_description(
         let suppressed = latest.comments_suppressed;
         let mut bits: Vec<String> = Vec::new();
         if issues > 0 {
-            bits.push(format!("{issues} issue(s)"));
+            bits.push(crate::text::count(issues as usize, "issue"));
         }
         if suppressed > 0 {
-            bits.push(format!("{suppressed} low-confidence finding(s)"));
+            bits.push(crate::text::count(
+                suppressed as usize,
+                "low-confidence finding",
+            ));
         }
         if !bits.is_empty() {
             parts.push(format!("Copilot: {}.", bits.join(", ")));

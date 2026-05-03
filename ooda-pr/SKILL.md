@@ -16,11 +16,13 @@ args:
 
 # /ooda-pr
 
-Drives one PR to its terminal state. **Do not chain it inside a
-single Bash tool call** — any of `&&`, `||`, `|`, `;`, `&` corrupts
-the exit code, breaking the dispatch contract. (Separate Bash calls
-in the same turn are fine.) To capture stderr, redirect (`2>file`);
-never pipe.
+Drives one PR to its terminal state. **`$?` must reflect ooda-pr's
+exit** — that means: do not pipe (`|`) it, do not background (`&`)
+it, and do not put it on the _left_ of `&&` or `||`. ooda-pr on the
+right of `&&`/`||`, or as the last command after `;`, is fine
+(`$?` reflects the last command). To capture stderr, redirect
+(`2>file`); never pipe. Separate Bash calls in the same turn are
+fine.
 
 ## How to call
 
@@ -49,7 +51,7 @@ the decision** — dispatch on `$?`, do not parse stdout.
 | Exit | Class          | What it means                                                                                                                                                                                                      | What you do next                                                                                                            |
 | ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | 0    | `success`      | PR reached its target. Either no advancing actions (PR open, just paused), or terminal (merged / closed). Discriminate via stderr: `Halt: PR merged` / `Halt: PR closed` / `Halt: Success — no advancing actions`. | Stop driving. If terminal, done. If non-terminal, re-run later when state may have changed.                                 |
-| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row. State isn't advancing.                                                                                                                                         | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
+| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row (`kind` = action variant like `AddressThreads`; `blocker` = stable string identifying the underlying issue). State isn't advancing.                             | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
 | 2    | `cap_reached`  | Iteration cap hit without halting.                                                                                                                                                                                 | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
 | 3    | `human_needed` | A human must act (approve, push, …).                                                                                                                                                                               | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |
 | 4    | `in_progress`  | **`inspect` only.** Top decision is an executable action; the loop would auto-run it but the probe did not.                                                                                                        | Re-invoke without `inspect` to actually drive it.                                                                           |
@@ -84,7 +86,7 @@ The loop runs `(observe ; orient ; decide ; act)*` until one of:
 - Iteration cap hit (`cap_reached` — exit 2)
 
 An action's _automation_ is one of `Full`, `Agent`, `Wait`, or
-`Human` — printed alongside its kind in iter logs.
+`Human` — printed alongside its kind in iteration logs.
 `Wait`-automation actions (e.g. `WaitForCi`, `WaitForBotReview`)
 are **expected** to repeat — they poll external state — and do
 not trip the stall detector.

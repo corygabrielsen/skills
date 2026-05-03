@@ -5,7 +5,6 @@
 //! Full (we run it) or Wait (we sleep next_poll_seconds and return).
 
 use std::thread;
-use std::time::Duration;
 
 use crate::decide::action::{Action, ActionKind, Automation};
 use crate::ids::{PullRequestNumber, RepoSlug};
@@ -50,8 +49,8 @@ pub fn act(
 ) -> Result<(), ActError> {
     match action.automation {
         Automation::Full => run_full(&action.kind, slug, pr),
-        Automation::Wait { seconds } => {
-            thread::sleep(Duration::from_secs(u64::from(seconds)));
+        Automation::Wait { interval } => {
+            thread::sleep(interval);
             Ok(())
         }
         Automation::Agent | Automation::Human => Err(ActError::UnsupportedAutomation),

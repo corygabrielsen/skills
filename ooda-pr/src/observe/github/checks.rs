@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Deserializer};
 
-use crate::ids::{PullRequestNumber, RepoSlug, Timestamp};
+use crate::ids::{CheckName, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{gh_json_lenient, GhError};
 
@@ -31,7 +31,7 @@ pub fn fetch_pr_checks(
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestCheck {
-    pub name: String,
+    pub name: CheckName,
     pub state: CheckState,
     /// Check output title (one-liner). Often empty.
     #[serde(default)]
@@ -97,7 +97,7 @@ mod tests {
         assert_eq!(checks.len(), 32);
         // Every check has a non-empty name and a valid state.
         for c in &checks {
-            assert!(!c.name.is_empty(), "name empty: {c:?}");
+            assert!(!c.name.as_str().is_empty(), "name empty: {c:?}");
         }
     }
 

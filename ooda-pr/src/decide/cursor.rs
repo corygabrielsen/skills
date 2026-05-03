@@ -5,6 +5,9 @@
 //! "Reviewed at non-HEAD" doesn't yield an action — we just wait
 //! for the user's next push to trigger Bugbot.
 
+use crate::ids::BlockerKey;
+use std::time::Duration;
+
 use crate::orient::cursor::{CursorActivity, CursorReport};
 
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
@@ -14,11 +17,11 @@ pub fn candidates(report: &CursorReport) -> Vec<Action> {
     if matches!(report.activity, CursorActivity::Reviewing) {
         out.push(Action {
             kind: ActionKind::WaitForCursorReview,
-            automation: Automation::Wait { seconds: 60 },
+            automation: Automation::Wait { interval: Duration::from_secs(60) },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "Waiting for Cursor Bugbot to finish reviewing".into(),
-            blocker: "cursor_reviewing".into(),
+            blocker: BlockerKey::tag("cursor_reviewing"),
         });
     }
     out

@@ -56,7 +56,7 @@ pub struct GitHubObservations {
     /// Branch the rules + protection were resolved against. Differs
     /// from `pr_view.base_ref_name` when this PR is mid-stack and
     /// the protected branch is downstream.
-    pub stack_root_branch: String,
+    pub stack_root_branch: crate::ids::BranchName,
     /// `None` when no active ruleset has a `copilot_code_review`
     /// rule. Resolved by walking ruleset summaries + details during
     /// fetch_all.

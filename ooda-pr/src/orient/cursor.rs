@@ -125,7 +125,7 @@ pub fn orient_cursor(
         return None;
     }
 
-    let latest_reviewed_at = rounds.last().map(|r| r.reviewed_at.clone());
+    let latest_reviewed_at = rounds.last().map(|r| r.reviewed_at);
     let thread_summary =
         count_bot_threads(threads, latest_reviewed_at.as_ref(), is_cursor);
     let severity = count_severity(threads);
@@ -189,17 +189,14 @@ fn correlate_rounds(reviews: &[PullRequestReview]) -> Vec<CursorReviewRound> {
         .iter()
         .filter(|r| r.user.as_ref().is_some_and(|u| is_cursor(u.login.as_str())))
         .collect();
-    sorted.sort_by(|a, b| {
-        let ats = a.submitted_at.as_ref().map(Timestamp::as_str).unwrap_or("");
-        let bts = b.submitted_at.as_ref().map(Timestamp::as_str).unwrap_or("");
-        ats.cmp(bts)
-    });
+    // Reviews without a submitted_at sort first (None < Some).
+    sorted.sort_by_key(|a| a.submitted_at);
 
     sorted
         .into_iter()
         .enumerate()
         .filter_map(|(i, r)| {
-            let reviewed_at = r.submitted_at.clone()?;
+            let reviewed_at = r.submitted_at?;
             Some(CursorReviewRound {
                 round: i as u32 + 1,
                 reviewed_at,
@@ -211,7 +208,7 @@ fn correlate_rounds(reviews: &[PullRequestReview]) -> Vec<CursorReviewRound> {
 }
 
 fn find_cursor_check(checks: &[PullRequestCheck]) -> Option<&PullRequestCheck> {
-    checks.iter().find(|c| c.name == CURSOR_CHECK_NAME)
+    checks.iter().find(|c| c.name.as_str() == CURSOR_CHECK_NAME)
 }
 
 // ── Severity counting ────────────────────────────────────────────────
@@ -345,7 +342,7 @@ mod tests {
     }
     fn cursor_check(state: CheckState) -> PullRequestCheck {
         PullRequestCheck {
-            name: CURSOR_CHECK_NAME.into(),
+            name: crate::ids::CheckName::parse(CURSOR_CHECK_NAME).unwrap(),
             state,
             description: String::new(),
             link: String::new(),

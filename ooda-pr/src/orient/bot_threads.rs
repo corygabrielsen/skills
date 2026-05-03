@@ -51,7 +51,7 @@ where
                 if is_bot(a.login.as_str()) {
                     continue;
                 }
-                if c.created_at.as_str() > reviewed_at.as_str() {
+                if &c.created_at > reviewed_at {
                     s.stale += 1;
                     break;
                 }

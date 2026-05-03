@@ -25,6 +25,17 @@ use state::PullRequestState;
 /// No combined "score" or "tier" — those are derived display values
 /// that decide computes on demand. The struct is per-axis so adding
 /// a sixth (e.g. codex) is purely additive.
+///
+/// **Asymmetric optionality is intentional.** `ci`, `state`, and
+/// `reviews` are always-present (every PR has CI buckets, lifecycle
+/// state, and a review summary — possibly empty). `copilot` and
+/// `cursor` are `Option` because absence of bot signal is
+/// *structurally distinct* from low signal — a repo without
+/// Copilot configured (`None`) must not be treated the same as a
+/// repo with Copilot configured but dormant on this PR
+/// (`Some(report)` with `activity = Idle`). The old combined-score
+/// approach conflated these and produced false halts; the
+/// per-axis `Option` makes the distinction unrepresentable.
 #[derive(Debug, Clone)]
 pub struct OrientedState {
     pub ci: CiSummary,
@@ -36,7 +47,9 @@ pub struct OrientedState {
     /// engaged on this PR).
     pub copilot: Option<CopilotReport>,
     /// `None` when no Cursor activity exists for this PR (no rounds
-    /// and no Bugbot check). Activity-gated, not config-gated.
+    /// and no Bugbot check). Activity-gated, not config-gated —
+    /// Cursor has no equivalent of a ruleset config endpoint, so
+    /// "configured" is observable only via activity.
     pub cursor: Option<CursorReport>,
 }
 

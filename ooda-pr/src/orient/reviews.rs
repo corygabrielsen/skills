@@ -6,7 +6,7 @@
 //! (PR head SHA × per-review commit SHA; thread/request data from
 //! GraphQL).
 
-use crate::ids::{GitCommitSha, GitHubLogin, Timestamp};
+use crate::ids::{GitCommitSha, GitHubLogin, Reviewer, Timestamp};
 use crate::observe::github::comments::IssueComment;
 use crate::observe::github::pr_view::{PullRequestView, ReviewDecision};
 use crate::observe::github::review_threads::{
@@ -31,8 +31,10 @@ pub struct ReviewSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingReviews {
-    pub bots: Vec<String>,
-    pub humans: Vec<String>,
+    /// Bots always have logins (GraphQL Bot or User-with-`[bot]`-suffix).
+    pub bots: Vec<GitHubLogin>,
+    /// Humans may be users (logins) or teams (slugs).
+    pub humans: Vec<Reviewer>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +80,7 @@ pub fn orient_reviews(
             login.is_bot().then(|| BotReview {
                 user: login.clone(),
                 state: r.state,
-                submitted_at: r.submitted_at.clone(),
+                submitted_at: r.submitted_at,
             })
         })
         .collect();
@@ -129,18 +131,20 @@ fn pending_split<'a>(
     let mut out = PendingReviews::default();
     for r in reviewers {
         match r {
-            RequestedReviewer::Bot { login } => out.bots.push(login.to_string()),
+            RequestedReviewer::Bot { login } => out.bots.push(login.clone()),
             RequestedReviewer::User { login } => {
                 if login.is_bot() {
-                    out.bots.push(login.to_string());
+                    out.bots.push(login.clone());
                 } else {
-                    out.humans.push(login.to_string());
+                    out.humans.push(Reviewer::User(login.clone()));
                 }
             }
             RequestedReviewer::Mannequin { login } => {
-                out.humans.push(login.to_string());
+                out.humans.push(Reviewer::User(login.clone()));
             }
-            RequestedReviewer::Team { name } => out.humans.push(name.clone()),
+            RequestedReviewer::Team { name } => {
+                out.humans.push(Reviewer::Team(name.clone()));
+            }
         }
     }
     out
@@ -176,7 +180,7 @@ mod tests {
             mergeable: Mergeable::Mergeable,
             merge_state_status: MergeStateStatus::Clean,
             head_ref_oid: GitCommitSha::parse(HEAD).unwrap(),
-            base_ref_name: "master".into(),
+            base_ref_name: crate::ids::BranchName::parse("master").unwrap(),
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             closed_at: None,
             merged_at: None,
@@ -311,7 +315,7 @@ mod tests {
                 login: GitHubLogin::parse("dependabot[bot]").unwrap(),
             }),
             req(RequestedReviewer::Team {
-                name: "backend".into(),
+                name: crate::ids::TeamName::parse("backend").unwrap(),
             }),
             req(RequestedReviewer::Mannequin {
                 login: GitHubLogin::parse("ghost").unwrap(),
@@ -322,11 +326,12 @@ mod tests {
             }),
         ];
         let s = orient_reviews(&pr(), &threads(vec![], nodes), &[], &[]);
-        assert_eq!(s.pending_reviews.bots, vec!["dependabot[bot]", "copilot[bot]"]);
-        assert_eq!(
-            s.pending_reviews.humans,
-            vec!["alice", "backend", "ghost"]
-        );
+        let bot_strs: Vec<String> =
+            s.pending_reviews.bots.iter().map(|l| l.to_string()).collect();
+        assert_eq!(bot_strs, vec!["dependabot[bot]", "copilot[bot]"]);
+        let human_strs: Vec<String> =
+            s.pending_reviews.humans.iter().map(|r| r.to_string()).collect();
+        assert_eq!(human_strs, vec!["alice", "backend", "ghost"]);
     }
 
     #[test]

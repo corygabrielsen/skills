@@ -11,7 +11,7 @@
 
 use serde::Deserialize;
 
-use crate::ids::RepoSlug;
+use crate::ids::{CheckName, RepoSlug};
 
 use super::gh::{gh_json, gh_json_paginate, GhError};
 
@@ -189,7 +189,7 @@ pub struct RequiredStatusChecksParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RequiredStatusCheck {
-    pub context: String,
+    pub context: CheckName,
     /// Null when the required check is not pinned to a GitHub App
     /// (status posted from any source matching the context name).
     /// Modeling as `u64` would silently drop the entire rule.
@@ -381,7 +381,7 @@ mod tests {
         }"#;
         let params: RequiredStatusChecksParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.required_status_checks.len(), 2);
-        assert_eq!(params.required_status_checks[0].context, "Lint");
+        assert_eq!(params.required_status_checks[0].context.as_str(), "Lint");
         assert_eq!(params.required_status_checks[0].integration_id, Some(15368));
     }
 }

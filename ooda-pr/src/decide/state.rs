@@ -2,6 +2,9 @@
 //! hygiene (non-blocking metadata). decide.rs emits hygiene last so
 //! it doesn't shadow review/bot work.
 
+use crate::ids::BlockerKey;
+use std::time::Duration;
+
 use crate::observe::github::pr_view::{Mergeable, MergeStateStatus};
 use crate::orient::state::PullRequestState;
 
@@ -23,7 +26,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
             description: "Mark PR as ready for review".into(),
-            blocker: "draft".into(),
+            blocker: BlockerKey::tag("draft"),
         });
     }
     if state.wip {
@@ -33,7 +36,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
             description: "Remove \"work in progress\" label".into(),
-            blocker: "wip_label".into(),
+            blocker: BlockerKey::tag("wip_label"),
         });
     }
     if !state.title_ok {
@@ -48,7 +51,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
                 "Shorten title ({} chars, max 50)",
                 state.title_len
             ),
-            blocker: "title_too_long".into(),
+            blocker: BlockerKey::tag("title_too_long"),
         });
     }
 
@@ -57,11 +60,11 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
     if state.conflict == Mergeable::Unknown {
         out.push(Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait { seconds: 30 },
+            automation: Automation::Wait { interval: Duration::from_secs(30) },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "GitHub is still computing mergeability — wait and re-observe".into(),
-            blocker: "mergeability_unknown".into(),
+            blocker: BlockerKey::tag("mergeability_unknown"),
         });
     } else if state.conflict == Mergeable::Conflicting {
         out.push(Action {
@@ -70,7 +73,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
             description: "Rebase to resolve merge conflicts".into(),
-            blocker: "merge_conflict".into(),
+            blocker: BlockerKey::tag("merge_conflict"),
         });
     } else if state.behind {
         out.push(Action {
@@ -79,7 +82,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
             description: "Rebase onto the latest base branch".into(),
-            blocker: "behind_base".into(),
+            blocker: BlockerKey::tag("behind_base"),
         });
     }
 
@@ -114,23 +117,23 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
                 commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
                 the specific gate."
                 .into(),
-            blocker: "merge_blocked_unmodeled".into(),
+            blocker: BlockerKey::tag("merge_blocked_unmodeled"),
         }],
         MergeStateStatus::HasHooks => vec![Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait { seconds: 30 },
+            automation: Automation::Wait { interval: Duration::from_secs(30) },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "Commit hooks are still running — wait and re-observe".into(),
-            blocker: "merge_state_has_hooks".into(),
+            blocker: BlockerKey::tag("merge_state_has_hooks"),
         }],
         MergeStateStatus::Unknown => vec![Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait { seconds: 30 },
+            automation: Automation::Wait { interval: Duration::from_secs(30) },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "GitHub is still computing merge state — wait and re-observe".into(),
-            blocker: "merge_state_unknown".into(),
+            blocker: BlockerKey::tag("merge_state_unknown"),
         }],
         // Clean / Behind / Dirty / Draft / Unstable / HasHooks
         // handled by other axes or non-blocking by definition.
@@ -153,7 +156,7 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
             description: "Add a content label (bug or enhancement)".into(),
-            blocker: "no_content_label".into(),
+            blocker: BlockerKey::tag("no_content_label"),
         });
     }
     if state.assignees == 0 {
@@ -163,7 +166,7 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
             description: "Assign the PR (default: author)".into(),
-            blocker: "no_assignee".into(),
+            blocker: BlockerKey::tag("no_assignee"),
         });
     }
     // Fire when ANY of {body present, Summary heading, Test plan
@@ -187,7 +190,7 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
                 "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
                 missing.join(", ")
             ),
-            blocker: "incomplete_description".into(),
+            blocker: BlockerKey::tag("incomplete_description"),
         });
     }
 

@@ -5,7 +5,7 @@
 //! changes within the same structural state don't suppress posts.
 
 use crate::decide::action::{Action, Automation, TargetEffect};
-use crate::decide::decision::{Decision, HaltReason, Terminal};
+use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::orient::copilot::CopilotActivity;
 use crate::orient::OrientedState;
 
@@ -62,14 +62,20 @@ pub fn render(oriented: &OrientedState, decision: &Decision) -> Rendered {
 fn decision_blocker_tag(d: &Decision) -> String {
     let action = match d {
         Decision::Execute(a) => Some(a),
-        Decision::Halt(HaltReason::AgentNeeded(a))
-        | Decision::Halt(HaltReason::HumanNeeded(a)) => Some(a),
+        Decision::Halt(DecisionHalt::AgentNeeded(a))
+        | Decision::Halt(DecisionHalt::HumanNeeded(a)) => Some(a),
         Decision::Halt(_) => None,
     };
     match action {
         None => String::new(),
         Some(a) => format!("{}|{}", a.blocker, action_payload_tag(a)),
     }
+}
+
+/// Comma-join any `Display` slice. Used for dedup tags, where the
+/// stringified payload distinguishes otherwise-identical actions.
+fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
+    items.iter().map(T::to_string).collect::<Vec<_>>().join(",")
 }
 
 /// Stringify any in-action counts that materially change the
@@ -80,12 +86,11 @@ fn action_payload_tag(a: &Action) -> String {
     match &a.kind {
         ActionKind::AddressThreads { count }
         | ActionKind::AddressCopilotSuppressed { count } => count.to_string(),
-        ActionKind::FixCi { check_name } => check_name.clone(),
-        ActionKind::WaitForCi { pending } | ActionKind::TriageWait { blocked_checks: pending } => {
-            pending.join(",")
-        }
-        ActionKind::WaitForBotReview { reviewers }
-        | ActionKind::WaitForHumanReview { reviewers } => reviewers.join(","),
+        ActionKind::FixCi { check_name } => check_name.to_string(),
+        ActionKind::WaitForCi { pending } => join_display(pending),
+        ActionKind::TriageWait { blocked_checks } => join_display(blocked_checks),
+        ActionKind::WaitForBotReview { reviewers } => join_display(reviewers),
+        ActionKind::WaitForHumanReview { reviewers } => join_display(reviewers),
         ActionKind::ShortenTitle { current_len } => current_len.to_string(),
         // No payload that affects the rendered comment.
         _ => String::new(),
@@ -97,10 +102,16 @@ fn action_payload_tag(a: &Action) -> String {
 fn ci_line(o: &OrientedState) -> String {
     let ci = &o.ci;
     if ci.required.fail() > 0 {
+        let names: Vec<String> = ci
+            .required
+            .failed_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
         format!(
             "❌ CI · {} required check(s) failing: {}",
             ci.required.fail(),
-            ci.required.failed_names().join(", ")
+            names.join(", "),
         )
     } else if ci.required.pending() > 0 {
         format!(
@@ -108,10 +119,12 @@ fn ci_line(o: &OrientedState) -> String {
             ci.required.pending()
         )
     } else if ci.missing() > 0 {
+        let names: Vec<String> =
+            ci.missing_names.iter().map(|n| n.to_string()).collect();
         format!(
             "❓ CI · {} required check(s) not started: {}",
             ci.missing(),
-            ci.missing_names.join(", ")
+            names.join(", "),
         )
     } else {
         "✅ CI · required checks pass".into()
@@ -182,23 +195,20 @@ fn reviews_line(o: &OrientedState) -> String {
 fn decision_block(d: &Decision) -> String {
     match d {
         Decision::Execute(action) => action_block("Top action", action),
-        Decision::Halt(HaltReason::Success) => {
+        Decision::Halt(DecisionHalt::Success) => {
             "**Halt:** Success — no advancing actions remain.".into()
         }
-        Decision::Halt(HaltReason::Terminal(Terminal::Merged)) => {
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)) => {
             "**Halt:** PR merged.".into()
         }
-        Decision::Halt(HaltReason::Terminal(Terminal::Closed)) => {
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)) => {
             "**Halt:** PR closed.".into()
         }
-        Decision::Halt(HaltReason::AgentNeeded(action)) => {
+        Decision::Halt(DecisionHalt::AgentNeeded(action)) => {
             action_block("Agent needed", action)
         }
-        Decision::Halt(HaltReason::HumanNeeded(action)) => {
+        Decision::Halt(DecisionHalt::HumanNeeded(action)) => {
             action_block("Human needed", action)
-        }
-        Decision::Halt(HaltReason::Stalled) => {
-            "**Halt:** Stalled — same action repeating without progress.".into()
         }
     }
 }
@@ -206,7 +216,7 @@ fn decision_block(d: &Decision) -> String {
 fn action_block(prefix: &str, action: &Action) -> String {
     let auto = match action.automation {
         Automation::Full => "auto".to_owned(),
-        Automation::Wait { seconds } => format!("wait {seconds}s"),
+        Automation::Wait { interval } => format!("wait {}s", interval.as_secs()),
         Automation::Agent => "agent".to_owned(),
         Automation::Human => "human".to_owned(),
     };
@@ -234,11 +244,10 @@ fn blockquote(text: &str) -> String {
 fn decision_kind_tag(d: &Decision) -> &'static str {
     match d {
         Decision::Execute(_) => "exec",
-        Decision::Halt(HaltReason::Success) => "halt:success",
-        Decision::Halt(HaltReason::Terminal(_)) => "halt:terminal",
-        Decision::Halt(HaltReason::AgentNeeded(_)) => "halt:agent",
-        Decision::Halt(HaltReason::HumanNeeded(_)) => "halt:human",
-        Decision::Halt(HaltReason::Stalled) => "halt:stalled",
+        Decision::Halt(DecisionHalt::Success) => "halt:success",
+        Decision::Halt(DecisionHalt::Terminal(_)) => "halt:terminal",
+        Decision::Halt(DecisionHalt::AgentNeeded(_)) => "halt:agent",
+        Decision::Halt(DecisionHalt::HumanNeeded(_)) => "halt:human",
     }
 }
 
@@ -246,7 +255,7 @@ fn decision_kind_tag(d: &Decision) -> &'static str {
 mod tests {
     use super::*;
     use crate::decide::action::{Action, ActionKind, Automation, TargetEffect};
-    use crate::decide::decision::{Decision, HaltReason};
+    use crate::decide::decision::{Decision, DecisionHalt};
     use crate::ids::Timestamp;
     use crate::observe::github::pr_view::Mergeable;
     use crate::orient::ci::{CheckBucket, CiSummary, FailedCheck};
@@ -306,7 +315,7 @@ mod tests {
     fn ci_line_failure_lists_names() {
         let mut o = empty_oriented();
         o.ci.required.failed = vec![FailedCheck {
-            name: "Lint".into(),
+            name: crate::ids::CheckName::parse("Lint").unwrap(),
             description: String::new(),
             link: String::new(),
         }];
@@ -335,7 +344,7 @@ mod tests {
     #[test]
     fn render_halt_success_yields_concise_block() {
         let o = empty_oriented();
-        let r = render(&o, &Decision::Halt(HaltReason::Success));
+        let r = render(&o, &Decision::Halt(DecisionHalt::Success));
         assert!(r.body.contains("Halt:"));
         assert!(r.body.contains("Success"));
         assert!(r.dedup_key.contains("halt:success"));
@@ -350,7 +359,7 @@ mod tests {
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
             description: "line one\nline two\nline three".into(),
-            blocker: "unresolved_threads".into(),
+            blocker: crate::ids::BlockerKey::tag("unresolved_threads"),
         };
         let r = render(&o, &Decision::Execute(action));
         assert!(r.body.contains("> line one"));
@@ -361,8 +370,8 @@ mod tests {
     #[test]
     fn dedup_key_stable_across_volatile_render_calls() {
         let o = empty_oriented();
-        let r1 = render(&o, &Decision::Halt(HaltReason::Success));
-        let r2 = render(&o, &Decision::Halt(HaltReason::Success));
+        let r1 = render(&o, &Decision::Halt(DecisionHalt::Success));
+        let r2 = render(&o, &Decision::Halt(DecisionHalt::Success));
         assert_eq!(r1.dedup_key, r2.dedup_key);
     }
 }

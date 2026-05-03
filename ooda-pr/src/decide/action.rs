@@ -6,9 +6,14 @@
 //!   * `target_effect`: how this action changes blocker/tier state
 //!   * `description`: human-readable prompt material for handoff
 //!
-//! The `kind` taxonomy intentionally mirrors pr-fitness's plan.ts so
-//! we can compare 1:1 during the migration. Once decide is the sole
-//! consumer we can prune.
+//! Payloads use domain newtypes (`CheckName`, `GitHubLogin`) rather
+//! than `String` — promotes a class of "right name in the wrong
+//! position" bugs into compile errors, and keeps each `Display`
+//! impl on the type it describes.
+
+use std::time::Duration;
+
+use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
@@ -27,9 +32,12 @@ pub struct Action {
     /// Human-readable. For agent handoff actions, this is the prompt.
     pub description: String,
     /// Stable iteration key — runner detects stalls by comparing
-    /// (kind, blocker) against the prior iteration. Must NOT embed
-    /// varying counts or other progress markers.
-    pub blocker: String,
+    /// (kind, blocker) against the prior iteration. The
+    /// [`BlockerKey`] newtype prevents accidental confusion with
+    /// `description` (also `String`-shaped) and documents the
+    /// invariant that the value MUST NOT embed varying counts or
+    /// other progress markers.
+    pub blocker: BlockerKey,
 }
 
 /// Sort order for candidate actions. Lower variants are higher
@@ -73,8 +81,9 @@ pub enum Automation {
     /// Hand off to an agent with the description as prompt.
     Agent,
     /// Wait for an external signal (CI, bot review, etc.) — poll
-    /// after `seconds` and re-iterate.
-    Wait { seconds: u32 },
+    /// after `interval` and re-iterate. `Duration` (not `u32`) so
+    /// future backoff/jitter compose without changing the type.
+    Wait { interval: Duration },
     /// Halt and surface to a human — only they can resolve.
     Human,
 }
@@ -94,16 +103,16 @@ pub enum TargetEffect {
 pub enum ActionKind {
     // ── CI ──
     FixCi {
-        check_name: String,
+        check_name: CheckName,
     },
     WaitForCi {
-        pending: Vec<String>,
+        pending: Vec<CheckName>,
     },
     /// CI is blocked on a fan-in (e.g. Mergeability) AND something
     /// genuinely ambiguous is co-occurring (advisory failure). Hand
     /// to an agent to triage.
     TriageWait {
-        blocked_checks: Vec<String>,
+        blocked_checks: Vec<CheckName>,
     },
 
     // ── Reviews ──
@@ -150,10 +159,13 @@ pub enum ActionKind {
     WaitForCursorReview,
 
     // ── Pending reviewers ──
+    /// Bot reviewers always have logins (no `Team` variant).
     WaitForBotReview {
-        reviewers: Vec<String>,
+        reviewers: Vec<GitHubLogin>,
     },
+    /// Human reviewers may be a user OR a team — preserve the
+    /// distinction at the type level.
     WaitForHumanReview {
-        reviewers: Vec<String>,
+        reviewers: Vec<Reviewer>,
     },
 }

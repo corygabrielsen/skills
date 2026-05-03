@@ -87,7 +87,7 @@ mod tests {
         let params: RequiredStatusChecksParams =
             serde_json::from_value(rules[0].parameters.clone().unwrap()).unwrap();
         assert_eq!(params.required_status_checks.len(), 1);
-        assert_eq!(params.required_status_checks[0].context, "Lint");
+        assert_eq!(params.required_status_checks[0].context.as_str(), "Lint");
     }
 
     #[test]

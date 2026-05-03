@@ -10,6 +10,7 @@ pub mod cursor;
 pub mod required_checks;
 pub mod reviews;
 pub mod state;
+pub mod thread;
 
 use crate::ids::Timestamp;
 use crate::observe::github::GitHubObservations;
@@ -19,6 +20,7 @@ use copilot::{orient_copilot, CopilotRepoConfig, CopilotReport};
 use cursor::{orient_cursor, CursorReport};
 use reviews::ReviewSummary;
 use state::PullRequestState;
+use thread::ReviewThread;
 
 /// All five orient axes assembled from a single observation bundle.
 ///
@@ -51,6 +53,12 @@ pub struct OrientedState {
     /// Cursor has no equivalent of a ruleset config endpoint, so
     /// "configured" is observable only via activity.
     pub cursor: Option<CursorReport>,
+    /// All review threads on the PR, projected from the wire model
+    /// into the typed domain. Always-present (empty vec ≡ no
+    /// threads); each carries author, location, body, and lifecycle
+    /// state. The witness for `AddressThreads` actions and the
+    /// canonical source for any per-author thread query.
+    pub threads: Vec<ReviewThread>,
 }
 
 /// Compose all axes from a single GitHub observation bundle.
@@ -90,11 +98,23 @@ pub fn orient(
         &obs.pr_view.head_ref_oid,
     );
 
+    let threads: Vec<ReviewThread> = obs
+        .review_threads_page
+        .data
+        .repository
+        .pull_request
+        .review_threads
+        .nodes
+        .iter()
+        .filter_map(ReviewThread::from_wire)
+        .collect();
+
     OrientedState {
         ci,
         state: pr_state,
         reviews,
         copilot,
         cursor,
+        threads,
     }
 }

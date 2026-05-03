@@ -5,8 +5,7 @@ use crate::ids::BlockerKey;
 use std::time::Duration;
 
 use crate::observe::github::pr_view::ReviewDecision;
-use crate::orient::copilot::{CopilotActivity, CopilotReport};
-use crate::orient::cursor::CursorReport;
+use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 use crate::orient::OrientedState;
 
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
@@ -23,25 +22,26 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     let reviews = &oriented.reviews;
     let ci = &oriented.ci;
-    let copilot = oriented.copilot.as_ref();
-    let cursor = oriented.cursor.as_ref();
     let mut out: Vec<Action> = Vec::new();
 
-    if reviews.threads_unresolved > 0 {
+    let live_threads: Vec<ReviewThread> = oriented
+        .threads
+        .iter()
+        .filter(|t| t.state == ThreadState::Live)
+        .cloned()
+        .collect();
+
+    if !live_threads.is_empty() {
+        let description = address_threads_description(&live_threads);
         out.push(Action {
-            kind: ActionKind::AddressThreads {
-                count: reviews.threads_unresolved as u32,
-            },
+            kind: ActionKind::AddressThreads { threads: live_threads },
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: address_threads_description(
-                reviews.threads_unresolved as u32,
-                copilot,
-                cursor,
-            ),
-            // Stable key — count lives in ActionKind, never in the
-            // blocker string, so 3→2 progress doesn't mask as stall.
+            description,
+            // Stable key — the action carries the witness; the
+            // blocker remains a fixed tag so 3→2 progress doesn't
+            // mask as stall.
             blocker: BlockerKey::tag("unresolved_threads"),
         });
     }
@@ -82,7 +82,10 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     // payload) would otherwise mis-route through this branch.
     let needs_approval = matches!(reviews.decision, Some(ReviewDecision::ReviewRequired));
     let ci_clean = ci.required.fail() == 0 && ci.required.pending() == 0;
-    let threads_clean = reviews.threads_unresolved == 0;
+    let threads_clean = !oriented
+        .threads
+        .iter()
+        .any(|t| t.state == ThreadState::Live);
     if needs_approval && ci_clean && threads_clean {
         out.push(Action {
             kind: ActionKind::RequestApproval,
@@ -137,46 +140,40 @@ fn address_change_request_description() -> String {
         .into()
 }
 
-/// Build the address_threads prompt with per-bot context when
-/// available. Symmetric shape: "<Bot>: <facts>." then the
-/// generalization directive.
-fn address_threads_description(
-    total: u32,
-    copilot: Option<&CopilotReport>,
-    cursor: Option<&CursorReport>,
-) -> String {
+/// Build the address_threads prompt with the threads themselves
+/// inlined as witnesses. Structure:
+///
+/// 1. Headline count
+/// 2. Per-author breakdown
+/// 3. Numbered threads with location and full body
+/// 4. The generalization directive
+///
+/// The actor receives the prompt material directly — no second
+/// `gh api graphql` round-trip required to discover what to fix.
+fn address_threads_description(threads: &[ReviewThread]) -> String {
     let mut parts: Vec<String> = vec![format!(
         "Address {}.",
-        crate::text::count(total as usize, "unresolved review thread"),
+        crate::text::count(threads.len(), "unresolved review thread"),
     )];
 
-    if let Some(c) = cursor
-        && c.threads.unresolved > 0
-    {
-        let sev = c.severity.nonzero_parts();
-        if !sev.is_empty() {
-            parts.push(format!("Cursor: {}.", sev.join(", ")));
-        }
+    let by_author = count_by_author(threads);
+    if !by_author.is_empty() {
+        let bits: Vec<String> = by_author
+            .iter()
+            .map(|(author, count)| {
+                format!("{}: {}", author, crate::text::count(*count, "issue"))
+            })
+            .collect();
+        parts.push(format!("{}.", bits.join(" · ")));
     }
 
-    if let Some(c) = copilot
-        && let CopilotActivity::Reviewed { latest } = &c.activity
-    {
-        let issues = c.threads.unresolved;
-        let suppressed = latest.comments_suppressed;
-        let mut bits: Vec<String> = Vec::new();
-        if issues > 0 {
-            bits.push(crate::text::count(issues as usize, "issue"));
+    parts.push(String::new());
+    for (i, t) in threads.iter().enumerate() {
+        parts.push(format!("{}. {} @ {}", i + 1, t.author, t.location));
+        for line in t.body.lines() {
+            parts.push(format!("   > {line}"));
         }
-        if suppressed > 0 {
-            bits.push(crate::text::count(
-                suppressed as usize,
-                "low-confidence finding",
-            ));
-        }
-        if !bits.is_empty() {
-            parts.push(format!("Copilot: {}.", bits.join(", ")));
-        }
+        parts.push(String::new());
     }
 
     parts.push(
@@ -187,7 +184,22 @@ fn address_threads_description(
             .into(),
     );
 
-    parts.join(" ")
+    parts.join("\n")
+}
+
+/// Group threads by author preserving first-seen order. Linear scan
+/// — sufficient for the realistic case (a handful of authors per
+/// PR) and avoids requiring `Hash`/`Ord` on the author sum type.
+fn count_by_author(threads: &[ReviewThread]) -> Vec<(ThreadAuthor, usize)> {
+    let mut counts: Vec<(ThreadAuthor, usize)> = Vec::new();
+    for t in threads {
+        if let Some((_, c)) = counts.iter_mut().find(|(a, _)| a == &t.author) {
+            *c += 1;
+        } else {
+            counts.push((t.author.clone(), 1));
+        }
+    }
+    counts
 }
 
 #[cfg(test)]
@@ -245,12 +257,37 @@ mod tests {
     }
 
     fn oriented_with(reviews: ReviewSummary) -> OrientedState {
+        oriented_with_threads(reviews, vec![])
+    }
+
+    fn oriented_with_threads(
+        reviews: ReviewSummary,
+        threads: Vec<ReviewThread>,
+    ) -> OrientedState {
         OrientedState {
             ci: clean_ci(),
             state: clean_state(),
             reviews,
             copilot: None,
             cursor: None,
+            threads,
+        }
+    }
+
+    fn live_thread(path: &str, line: u32, body: &str) -> ReviewThread {
+        use crate::orient::thread::{
+            BotName, FilePath, ThreadId, ThreadLocation,
+        };
+        ReviewThread {
+            id: ThreadId::new("t".to_string()),
+            author: ThreadAuthor::Bot(BotName::Copilot),
+            location: ThreadLocation {
+                path: FilePath::new(path),
+                line: Some(line),
+            },
+            body: body.into(),
+            state: ThreadState::Live,
+            created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
         }
     }
 
@@ -261,11 +298,41 @@ mod tests {
 
     #[test]
     fn unresolved_threads_emit_address_threads() {
-        let mut r = clean_reviews();
-        r.threads_unresolved = 3;
-        let cs = candidates(&oriented_with(r));
-        assert!(matches!(cs[0].kind, ActionKind::AddressThreads { count: 3 }));
+        let r = clean_reviews();
+        let threads = vec![
+            live_thread("src/a.rs", 1, "first"),
+            live_thread("src/b.rs", 2, "second"),
+            live_thread("src/c.rs", 3, "third"),
+        ];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        match &cs[0].kind {
+            ActionKind::AddressThreads { threads } => {
+                assert_eq!(threads.len(), 3);
+            }
+            other => panic!("expected AddressThreads, got {other:?}"),
+        }
         assert_eq!(cs[0].automation, Automation::Agent);
+    }
+
+    #[test]
+    fn address_threads_description_inlines_thread_bodies() {
+        let r = clean_reviews();
+        let threads = vec![
+            live_thread("src/foo.rs", 42, "unwrap should be ?"),
+            live_thread("src/bar.rs", 99, "missing error context"),
+        ];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        let desc = &cs[0].description;
+        // Headline + per-author breakdown
+        assert!(desc.contains("Address 2 unresolved review threads."));
+        assert!(desc.contains("Copilot: 2 issues."));
+        // Both witnesses inlined (location + body)
+        assert!(desc.contains("Copilot @ src/foo.rs:42"));
+        assert!(desc.contains("> unwrap should be ?"));
+        assert!(desc.contains("Copilot @ src/bar.rs:99"));
+        assert!(desc.contains("> missing error context"));
+        // Generalization preamble preserved
+        assert!(desc.contains("think deeply about the entire class of issue"));
     }
 
     #[test]
@@ -289,8 +356,8 @@ mod tests {
             .iter()
             .any(|a| matches!(a.kind, ActionKind::RequestApproval)));
 
-        r.threads_unresolved = 1;
-        let cs = candidates(&oriented_with(r));
+        let threads = vec![live_thread("src/a.rs", 1, "x")];
+        let cs = candidates(&oriented_with_threads(r, threads));
         assert!(!cs
             .iter()
             .any(|a| matches!(a.kind, ActionKind::RequestApproval)));
@@ -337,8 +404,11 @@ mod tests {
         // emitting two redundant blockers for the same review state.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
-        r.threads_unresolved = 2;
-        let cs = candidates(&oriented_with(r));
+        let threads = vec![
+            live_thread("src/a.rs", 1, "x"),
+            live_thread("src/b.rs", 2, "y"),
+        ];
+        let cs = candidates(&oriented_with_threads(r, threads));
         assert!(cs
             .iter()
             .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })));

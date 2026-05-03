@@ -14,6 +14,7 @@
 use std::time::Duration;
 
 use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
+use crate::orient::thread::ReviewThread;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
@@ -116,8 +117,15 @@ pub enum ActionKind {
     },
 
     // ── Reviews ──
+    /// Carries the live (non-resolved, non-outdated) review threads
+    /// the actor must address. The full thread bodies travel with
+    /// the action so the actor receives prompt material directly —
+    /// no second `gh api graphql` round-trip to discover what to
+    /// fix. `threads.len()` is the count; cardinality is a derived
+    /// projection, not a stored field. (See feedback memory:
+    /// "witness, not cardinality.")
     AddressThreads {
-        count: u32,
+        threads: Vec<ReviewThread>,
     },
     /// GitHub reports `CHANGES_REQUESTED` but no inline review threads
     /// exist (summary-only change request, or threads resolved without

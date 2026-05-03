@@ -84,8 +84,12 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 fn action_payload_tag(a: &Action) -> String {
     use crate::decide::action::ActionKind;
     match &a.kind {
-        ActionKind::AddressThreads { count }
-        | ActionKind::AddressCopilotSuppressed { count } => count.to_string(),
+        // Use len() so 3→2 progress flips the dedup key (re-post),
+        // matching the prior count-based behavior. Using thread IDs
+        // here would be more precise but unnecessary churn — the
+        // count is what materially changes the rendered comment.
+        ActionKind::AddressThreads { threads } => threads.len().to_string(),
+        ActionKind::AddressCopilotSuppressed { count } => count.to_string(),
         ActionKind::FixCi { check_name } => check_name.to_string(),
         ActionKind::WaitForCi { pending } => join_display(pending),
         ActionKind::TriageWait { blocked_checks } => join_display(blocked_checks),
@@ -302,6 +306,7 @@ mod tests {
             },
             copilot: None,
             cursor: None,
+            threads: vec![],
         }
     }
 
@@ -354,7 +359,7 @@ mod tests {
     fn render_action_blockquotes_multiline_description() {
         let o = empty_oriented();
         let action = Action {
-            kind: ActionKind::AddressThreads { count: 3 },
+            kind: ActionKind::AddressThreads { threads: vec![] },
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,

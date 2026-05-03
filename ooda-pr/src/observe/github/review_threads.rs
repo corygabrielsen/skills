@@ -55,6 +55,7 @@ pub fn fetch_review_threads_page(
         nodes {{
           id
           isResolved
+          isOutdated
           comments(first:100) {{
             pageInfo {{ hasNextPage endCursor }}
             nodes {{ author {{ login }} createdAt body }}
@@ -161,6 +162,16 @@ pub struct ReviewThread {
     #[serde(default)]
     pub id: String,
     pub is_resolved: bool,
+    /// `true` when GitHub has marked the thread outdated because the
+    /// commit it was anchored to is no longer reachable from HEAD
+    /// (rebase or amend shifted the line). The thread stays
+    /// `is_resolved = false` until someone clicks "Resolve" — but
+    /// it is no longer actionable from the actor's perspective, so
+    /// orient excludes it from "unresolved" counts. `#[serde(default)]`
+    /// keeps pre-existing JSON fixtures (which omit the field)
+    /// deserializable.
+    #[serde(default)]
+    pub is_outdated: bool,
     pub comments: ThreadComments,
 }
 

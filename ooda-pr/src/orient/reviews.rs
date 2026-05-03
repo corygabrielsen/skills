@@ -53,11 +53,16 @@ pub fn orient_reviews(
     let pull = &threads.data.repository.pull_request;
 
     let threads_total = pull.review_threads.nodes.len();
+    // Outdated threads (anchor line shifted away by rebase/amend) are
+    // excluded from the actionable count: GitHub auto-collapses them
+    // and the actor cannot meaningfully address them in code. They
+    // remain `is_resolved=false` until someone clicks "Resolve" — that
+    // hygiene is a separate concern from "should the actor act?"
     let threads_unresolved = pull
         .review_threads
         .nodes
         .iter()
-        .filter(|t| !t.is_resolved)
+        .filter(|t| !t.is_resolved && !t.is_outdated)
         .count();
 
     let bot_comments = comments
@@ -215,9 +220,14 @@ mod tests {
     }
 
     fn thread(resolved: bool) -> ReviewThread {
+        thread_full(resolved, false)
+    }
+
+    fn thread_full(resolved: bool, outdated: bool) -> ReviewThread {
         ReviewThread {
             id: String::new(),
             is_resolved: resolved,
+            is_outdated: outdated,
             comments: ThreadComments {
                 page_info: Default::default(),
                 nodes: vec![ThreadComment {
@@ -278,6 +288,22 @@ mod tests {
         let s = orient_reviews(&pr(), &threads(nodes, vec![]), &[], &[]);
         assert_eq!(s.threads_total, 4);
         assert_eq!(s.threads_unresolved, 2);
+    }
+
+    #[test]
+    fn unresolved_thread_count_excludes_outdated() {
+        // 5 open threads: 4 outdated (rebase shifted lines), 1 live.
+        // Mirror of the smoke-test scenario on infrastructure#702.
+        let nodes = vec![
+            thread_full(false, true),  // outdated
+            thread_full(false, true),  // outdated
+            thread_full(false, false), // live
+            thread_full(false, true),  // outdated
+            thread_full(false, true),  // outdated
+        ];
+        let s = orient_reviews(&pr(), &threads(nodes, vec![]), &[], &[]);
+        assert_eq!(s.threads_total, 5);
+        assert_eq!(s.threads_unresolved, 1);
     }
 
     #[test]

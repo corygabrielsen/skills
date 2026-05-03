@@ -88,8 +88,8 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: format!(
-                    "Wait for {} pending check(s)",
-                    ci.required.pending(),
+                    "Wait for {}",
+                    crate::text::count(ci.required.pending(), "pending check"),
                 ),
                 blocker: BlockerKey::tag(format!("ci_pending: {blocker_list}")),
             });
@@ -103,8 +103,8 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: format!(
-                    "{} required check(s) not started: {blocker_list}",
-                    ci.missing(),
+                    "{} not started: {blocker_list}",
+                    crate::text::count(ci.missing(), "required check"),
                 ),
                 blocker: BlockerKey::tag(format!("ci_missing: {blocker_list}")),
             });

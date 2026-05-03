@@ -109,21 +109,21 @@ fn ci_line(o: &OrientedState) -> String {
             .map(|n| n.to_string())
             .collect();
         format!(
-            "❌ CI · {} required check(s) failing: {}",
-            ci.required.fail(),
+            "❌ CI · {} failing: {}",
+            crate::text::count(ci.required.fail(), "required check"),
             names.join(", "),
         )
     } else if ci.required.pending() > 0 {
         format!(
-            "⏳ CI · {} required check(s) pending",
-            ci.required.pending()
+            "⏳ CI · {} pending",
+            crate::text::count(ci.required.pending(), "required check"),
         )
     } else if ci.missing() > 0 {
         let names: Vec<String> =
             ci.missing_names.iter().map(|n| n.to_string()).collect();
         format!(
-            "❓ CI · {} required check(s) not started: {}",
-            ci.missing(),
+            "❓ CI · {} not started: {}",
+            crate::text::count(ci.missing(), "required check"),
             names.join(", "),
         )
     } else {

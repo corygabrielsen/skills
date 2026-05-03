@@ -85,8 +85,10 @@ pub enum HaltReason {
     Decision(DecisionHalt),
     /// Same `(kind, blocker)` action fired twice in a row without
     /// observable state change. Coarse stall detector — the
-    /// iteration cap is the second line of defense.
-    Stalled,
+    /// iteration cap is the second line of defense. Carries the
+    /// repeated action so callers can triage which loop step is
+    /// stuck without re-deriving from logs.
+    Stalled(Action),
     /// Iteration cap hit without halting. Re-run to continue, or
     /// raise `--max-iter`. `last_action` is the most recently
     /// dispatched action, retained for diagnostic logging.
@@ -101,7 +103,7 @@ impl HaltReason {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Decision(halt) => halt.exit_code(),
-            Self::Stalled => 1,
+            Self::Stalled(_) => 1,
             Self::CapReached { .. } => 2,
         }
     }

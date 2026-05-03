@@ -9,13 +9,13 @@ and exit-code taxonomy see `SKILL.md`. For implementation see `src/`.
 ## Top Level
 
 ```
-ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner
+ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ outcome
 
 run_loop : RepoSlug × PullRequestNumber × LoopConfig × OnState
         → Result⟨HaltReason, LoopError⟩
 
-main : Argv → ExitCode
-ExitCode = HaltReason.exit_code() ⊎ {6 (runtime), 64 (usage), 4 (in_progress)}
+main : Argv → Outcome → ExitCode
+ExitCode = Outcome.exit_code()       (1:1 variant → code; see Outcome)
 ```
 
 ### Domain primitives (`ids` module)
@@ -42,15 +42,22 @@ Urgency          := total enum { Critical < BlockingFix < BlockingWait
 
 ### Composition law
 
+Internal taxonomy (decide/runner/loop layer) is unchanged in shape;
+the binary boundary (`Outcome`) re-encodes it as a single 1:1
+variant→exit-code mapping for caller dispatch on `$?` alone.
+
 ```
-Decision::exit_code()  ≡  match { Execute → 4, Halt(h) → h.exit_code() }
+Decision::exit_code()  ≡  match { Execute → 4, Halt(h) → h.exit_code() }    (internal, used by inspect)
 HaltReason::exit_code()≡  match { Decision(h) → h.exit_code(),
-                                  Stalled → 1, CapReached{..} → 2 }
+                                  Stalled(_) → 1, CapReached{..} → 2 }      (internal, used by loop)
 DecisionHalt::exit_code() ≡ match { Success | Terminal → 0,
-                                    HumanNeeded → 3, AgentNeeded → 5 }
+                                    HumanNeeded → 3, AgentNeeded → 5 }       (shared)
+Outcome::exit_code()   ≡  see Outcome section below                          (boundary, 1:1)
 ```
 
-One taxonomy, three layers, single source of truth.
+Internal exit-code methods remain for unit-test ergonomics; the
+binary itself dispatches via `Outcome::exit_code()` after collapsing
+`HaltReason` (loop) or `Decision` (inspect) at the boundary.
 
 ---
 
@@ -338,7 +345,7 @@ LoopError  = Observe(GhError) ⊕ Act(ActError)
 
 HaltReason =                                ⟶ exit_code()
     Decision(DecisionHalt)                  ⟶ delegate
-  ⊕ Stalled                                 ⟶ 1
+  ⊕ Stalled(Action)                         ⟶ 1
   ⊕ CapReached{last_action: Option⟨Action⟩} ⟶ 2
 
 run_loop(slug, pr, cfg, on_state) =
@@ -350,7 +357,7 @@ run_loop(slug, pr, cfg, on_state) =
         on_state(i, oriented, decision)
         case decision of
             Halt(h)    → return Decision(h)
-            Execute(a) → if same_action_repeated(last, a) return Stalled
+            Execute(a) → if same_action_repeated(last, a) return Stalled(a)
                          act(a, slug, pr)?            -- LoopError::Act
                          last := Some(a)
     return CapReached{last_action: last}
@@ -363,6 +370,91 @@ same_action_repeated(prev, cur) =
 The loop is a Kleene iteration of `(observe ∘ orient ∘ decide ∘ act)*`
 until either `decide` halts or stall/cap fires. Wait actions are
 excluded from stall detection — polling is _expected_ to repeat.
+`Stalled(Action)` carries the repeated action so the boundary can
+emit `<ActionKind>:<BlockerKey>` for triage without re-deriving.
+
+---
+
+## Outcome — Binary Boundary
+
+The internal `Decision`/`HaltReason`/`LoopError` split is what
+`run_loop` and `decide` produce. Callers want **one** variant per
+invocation with **one** exit code. `Outcome` is the boundary type.
+
+```
+Outcome =                                              ⟶ exit_code()
+    DoneMerged                                         ⟶ 0
+  ⊕ StuckRepeated(Action)                              ⟶ 1
+  ⊕ StuckCapReached(Option⟨Action⟩)                    ⟶ 2
+  ⊕ HandoffHuman(Action)                               ⟶ 3
+  ⊕ WouldAdvance(Action)                               ⟶ 4    (inspect-only)
+  ⊕ HandoffAgent(Action)                               ⟶ 5
+  ⊕ BinaryError(String)                                ⟶ 6
+  ⊕ Paused                                             ⟶ 7
+  ⊕ DoneClosed                                         ⟶ 8
+  ⊕ UsageError(String)                                 ⟶ 64
+```
+
+**1:1 variant→exit-code.** Each variant has a unique code; `$?`
+alone is sufficient for caller dispatch. Codes 9–63 are reserved
+for future variants; codes ≥64 follow BSD `sysexits` starting at
+`UsageError = 64`.
+
+### Boundary functors
+
+```
+From⟨HaltReason⟩ for Outcome    (loop mode):
+    Decision(Success)                  → Paused
+    Decision(Terminal(Merged))         → DoneMerged
+    Decision(Terminal(Closed))         → DoneClosed
+    Decision(AgentNeeded(a))           → HandoffAgent(a)
+    Decision(HumanNeeded(a))           → HandoffHuman(a)
+    Stalled(a)                         → StuckRepeated(a)
+    CapReached{last_action: opt}       → StuckCapReached(opt)
+
+From⟨Decision⟩ for Outcome      (inspect mode):
+    Execute(a)                         → WouldAdvance(a)        ← single substitution rule
+    Halt(Success)                      → Paused                  ← all halts pass through
+    Halt(Terminal(Merged))             → DoneMerged                via the same DecisionHalt
+    Halt(Terminal(Closed))             → DoneClosed                projection used in loop
+    Halt(AgentNeeded(a))               → HandoffAgent(a)
+    Halt(HumanNeeded(a))               → HandoffHuman(a)
+
+From⟨LoopError⟩ for Outcome     (caught failures):
+    e                                  → BinaryError(flatten_one_line(e.to_string()))
+                                         (newline-strip preserves single-line stderr header)
+```
+
+`UsageError` is constructed directly by `parse_args` (failure path
+returns `Result⟨Args, Outcome⟩` — the boundary always speaks
+Outcome, no exception type).
+
+### Stderr render contract
+
+`render_outcome : &Outcome → write to stderr`. Each variant emits
+exactly one header line; `Handoff*` variants additionally emit a
+prompt block. See `SKILL.md` for the per-variant header format.
+
+```
+header(Outcome) ::=
+    DoneMerged                           "DoneMerged"
+    StuckRepeated(a)                     "StuckRepeated: {a.kind.name()}:{a.blocker}"
+    StuckCapReached(Some(a))             "StuckCapReached: {a.kind.name()}:{a.blocker}"
+    StuckCapReached(None)                "StuckCapReached:"
+    HandoffHuman(a)                      "HandoffHuman: {a.kind.name()}"  + prompt block
+    WouldAdvance(a)                      "WouldAdvance: {a.kind.name()}:{format_automation(a.automation)}"
+    HandoffAgent(a)                      "HandoffAgent: {a.kind.name()}"  + prompt block
+    BinaryError(msg)                     "BinaryError: {msg}"
+    Paused                               "Paused"
+    DoneClosed                           "DoneClosed"
+    UsageError(msg)                      "UsageError: {msg}" + usage text
+
+prompt block ::= "  prompt: {a.description}"      ← 10-byte prefix is contract
+```
+
+`ActionKind::name() : &'static str` returns the bare variant name
+(no payload), so `<ActionKind>` placeholders in the stderr header
+do not leak internal data shapes.
 
 ---
 
@@ -374,7 +466,11 @@ excluded from stall detection — polling is _expected_ to repeat.
 
 [H2] ∀h : HaltReason, ∀d : Decision.
        d.exit_code() = match d { Halt(h) → h.exit_code(); Execute → 4 }
-       Single source of truth for the IPC encoding.
+       Single source of truth for the internal IPC encoding.
+
+[H3] ∀o : Outcome. |{c : ℕ | ∃o', o'.exit_code() = c ∧ same_variant(o, o')}| = 1
+       1:1 variant→exit-code at the binary boundary. $? alone is
+       sufficient for caller dispatch; no two variants share a code.
 
 [O1] OrientedState.copilot = None  ⟺  no copilot ruleset configured
      OrientedState.cursor  = None  ⟺  no cursor activity observed

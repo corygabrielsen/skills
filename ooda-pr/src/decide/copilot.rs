@@ -53,8 +53,8 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
             if stale > 0 || not_at_head {
                 let desc = if stale > 0 {
                     format!(
-                        "Re-request Copilot so it reads {stale} \
-                         post-review reply/replies"
+                        "Re-request Copilot review so it sees {}",
+                        crate::text::count(stale as usize, "new reply"),
                     )
                 } else {
                     "Re-request Copilot review on HEAD to reach platinum".into()

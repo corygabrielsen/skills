@@ -17,57 +17,88 @@ use observe::github::fetch_all;
 use orient::orient;
 use runner::{run_loop, LoopConfig};
 
-fn usage() -> ExitCode {
-    eprintln!(
-        "usage: ooda-pr [--once] [--max-iter N] [--comment] <owner/repo> <pr>\n\
+/// Print usage to stderr and return the documented exit code for
+/// usage errors (64). The exit-code taxonomy is the driver contract
+/// — `64` distinguishes "bad invocation" from `1` (state-machine
+/// stall) so wrappers dispatching on `$?` don't conflate them.
+fn print_usage(out: &mut dyn std::io::Write) {
+    let _ = writeln!(
+        out,
+        "ooda-pr — drive a PR through observe → orient → decide → act until halt.\n\
          \n\
-         Drives a PR through observe → orient → decide → act until halt.\n\
+         Usage:\n  ooda-pr [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr inspect [options] <owner/repo> <pr>   one pass; print decision; exit\n\
          \n\
-         Options:\n  --once          one observe/orient/decide pass; no act, no loop\n  --max-iter N    iteration cap for the loop (default: 50)\n  --comment       post a fitness comment on the PR each iteration (deduped)"
+         Options:\n  --max-iter N   iteration cap (default: 50; ignored by inspect)\n  --comment      post a fitness comment on the PR each iteration (deduped)\n  -h, --help     show this help and exit\n\
+         \n\
+         Exit codes (see SKILL.md for the full taxonomy):\n  0 success    1 stalled    2 cap_reached    3 human_needed\n  4 in_progress (inspect only)    5 agent_needed    6 runtime    64 usage"
     );
+}
+
+fn usage_err() -> ExitCode {
+    print_usage(&mut std::io::stderr());
     ExitCode::from(64)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Default: drive the loop until halt or cap.
+    Loop,
+    /// Single observe/orient/decide pass; no `act`. Used as a probe.
+    Inspect,
+}
+
 struct Args {
+    mode: Mode,
     slug: RepoSlug,
     pr: PullRequestNumber,
-    once: bool,
     max_iter: u32,
     comment: bool,
 }
 
 fn parse_args() -> Result<Args, ExitCode> {
-    let mut once = false;
+    let mut mode = Mode::Loop;
     let mut max_iter: u32 = 50;
     let mut comment = false;
     let mut positional: Vec<String> = Vec::new();
+    let mut saw_subcommand = false;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--once" => once = true,
+            "-h" | "--help" => {
+                print_usage(&mut std::io::stdout());
+                return Err(ExitCode::SUCCESS);
+            }
             "--comment" => comment = true,
             "--max-iter" => {
                 let Some(v) = iter.next() else {
                     eprintln!("--max-iter requires a value");
-                    return Err(usage());
+                    return Err(usage_err());
                 };
                 let Ok(n) = v.parse::<u32>() else {
                     eprintln!("--max-iter: not a number: {v}");
-                    return Err(usage());
+                    return Err(usage_err());
                 };
                 max_iter = n;
             }
+            // Subcommand: only valid as the first non-flag positional.
+            // Once we've seen any positional, "inspect" is just a repo
+            // slug component — though a malformed one. Caller will get
+            // the usage error from RepoSlug::parse below.
+            "inspect" if !saw_subcommand && positional.is_empty() => {
+                mode = Mode::Inspect;
+                saw_subcommand = true;
+            }
             _ if arg.starts_with("--") => {
                 eprintln!("unknown flag: {arg}");
-                return Err(usage());
+                return Err(usage_err());
             }
             _ => positional.push(arg),
         }
     }
 
     if positional.len() != 2 {
-        return Err(usage());
+        return Err(usage_err());
     }
     // Argument parse failures are usage errors (exit 64), not loop
     // stalls (exit 1). Exit-code taxonomy is the documented driver
@@ -82,7 +113,7 @@ fn parse_args() -> Result<Args, ExitCode> {
         ExitCode::from(64)
     })?;
 
-    Ok(Args { slug, pr, once, max_iter, comment })
+    Ok(Args { mode, slug, pr, max_iter, comment })
 }
 
 fn main() -> ExitCode {
@@ -90,12 +121,10 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(code) => return code,
     };
-
-    if args.once {
-        return run_once(&args);
+    match args.mode {
+        Mode::Inspect => run_once(&args),
+        Mode::Loop => run_full(&args),
     }
-
-    run_full(&args)
 }
 
 fn run_once(args: &Args) -> ExitCode {

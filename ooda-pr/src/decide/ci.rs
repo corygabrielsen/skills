@@ -11,8 +11,20 @@
 //! qualify — those have concrete advancement actions in their
 //! own axis candidate generators.
 
+use std::time::Duration;
+
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use crate::ids::{BlockerKey, CheckName};
 use crate::orient::ci::CiSummary;
+
+/// Comma-join a slice of `CheckName` for human-readable rendering.
+fn join_names(names: &[CheckName]) -> String {
+    names
+        .iter()
+        .map(CheckName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 pub fn candidates(ci: &CiSummary) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
@@ -26,11 +38,11 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
             description: format!("Fix failing check: {}", f.name),
-            blocker: format!("ci_fail: {}", f.name),
+            blocker: BlockerKey::tag(format!("ci_fail: {}", f.name)),
         });
     }
 
-    let blocked: Vec<String> = ci
+    let blocked: Vec<CheckName> = ci
         .required
         .pending_names
         .iter()
@@ -55,48 +67,46 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             quoted.join(", ")
         )];
         desc.extend(advisory_lines);
+        let blocker_list = join_names(&blocked);
         out.push(Action {
             kind: ActionKind::TriageWait {
-                blocked_checks: blocked.clone(),
+                blocked_checks: blocked,
             },
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
             description: desc.join("\n"),
-            blocker: format!("ci_triage: {}", blocked.join(", ")),
+            blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
         });
     } else {
         if !ci.required.pending_names.is_empty() {
             let names = ci.required.pending_names.clone();
+            let blocker_list = join_names(&names);
             out.push(Action {
-                kind: ActionKind::WaitForCi {
-                    pending: names.clone(),
-                },
-                automation: Automation::Wait { seconds: 60 },
+                kind: ActionKind::WaitForCi { pending: names },
+                automation: Automation::Wait { interval: Duration::from_secs(60) },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: format!(
                     "Wait for {} pending check(s)",
                     ci.required.pending(),
                 ),
-                blocker: format!("ci_pending: {}", names.join(", ")),
+                blocker: BlockerKey::tag(format!("ci_pending: {blocker_list}")),
             });
         }
         if !ci.missing_names.is_empty() {
             let names = ci.missing_names.clone();
+            let blocker_list = join_names(&names);
             out.push(Action {
-                kind: ActionKind::WaitForCi {
-                    pending: names.clone(),
-                },
-                automation: Automation::Wait { seconds: 60 },
+                kind: ActionKind::WaitForCi { pending: names },
+                automation: Automation::Wait { interval: Duration::from_secs(60) },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: format!(
-                    "{} required check(s) not started: {}",
+                    "{} required check(s) not started: {blocker_list}",
                     ci.missing(),
-                    names.join(", ")
                 ),
-                blocker: format!("ci_missing: {}", names.join(", ")),
+                blocker: BlockerKey::tag(format!("ci_missing: {blocker_list}")),
             });
         }
     }
@@ -120,10 +130,14 @@ mod tests {
 
     fn failed(name: &str) -> FailedCheck {
         FailedCheck {
-            name: name.into(),
+            name: CheckName::parse(name).unwrap(),
             description: String::new(),
             link: String::new(),
         }
+    }
+
+    fn cn(name: &str) -> CheckName {
+        CheckName::parse(name).unwrap()
     }
 
     #[test]
@@ -145,7 +159,7 @@ mod tests {
     #[test]
     fn pending_required_emits_wait_for_ci() {
         let mut ci = empty_ci();
-        ci.required.pending_names = vec!["Build".into(), "Test".into()];
+        ci.required.pending_names = vec![cn("Build"), cn("Test")];
         let cs = candidates(&ci);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::WaitForCi { .. }));
@@ -155,16 +169,16 @@ mod tests {
     #[test]
     fn missing_required_emits_wait_for_ci_with_separate_blocker() {
         let mut ci = empty_ci();
-        ci.missing_names = vec!["Mergeability Check".into()];
+        ci.missing_names = vec![cn("Mergeability Check")];
         let cs = candidates(&ci);
         assert_eq!(cs.len(), 1);
-        assert!(cs[0].blocker.starts_with("ci_missing"));
+        assert!(cs[0].blocker.as_str().starts_with("ci_missing"));
     }
 
     #[test]
     fn advisory_failure_with_blocked_required_triggers_triage() {
         let mut ci = empty_ci();
-        ci.missing_names = vec!["Mergeability Check".into()];
+        ci.missing_names = vec![cn("Mergeability Check")];
         ci.advisory.failed = vec![failed("Lint")];
         let cs = candidates(&ci);
         let kinds: Vec<&ActionKind> = cs.iter().map(|a| &a.kind).collect();
@@ -191,7 +205,7 @@ mod tests {
     fn ci_failure_takes_precedence_over_triage_or_wait() {
         let mut ci = empty_ci();
         ci.required.failed = vec![failed("Lint")];
-        ci.missing_names = vec!["Mergeability Check".into()];
+        ci.missing_names = vec![cn("Mergeability Check")];
         ci.advisory.failed = vec![failed("Style")];
         let cs = candidates(&ci);
         // First action is a fix_ci (failures first); triage may or

@@ -299,24 +299,255 @@ impl fmt::Display for GitHubLogin {
     }
 }
 
-// -- Timestamp -------------------------------------------------------
+// -- BlockerKey ------------------------------------------------------
 
-/// An ISO-8601 timestamp, kept as a string at this layer. Parsing to
-/// a structured time value is orient's job (or deferred until needed).
+/// Stable iteration key for stall detection. Two consecutive
+/// iterations with the same `(ActionKind discriminant, BlockerKey)`
+/// halt the loop with `Stalled`. The key MUST NOT embed varying
+/// counts or progress markers — the comment in `decide/reviews.rs`
+/// (`AddressThreads { count }`) calls this out explicitly: "count
+/// lives in ActionKind, never in the blocker string."
+///
+/// Newtype promotes that invariant from a comment to a type
+/// distinction: a `String` of human-readable text can no longer be
+/// passed where a stall key is expected.
+///
+/// No serde — `BlockerKey` is constructed and consumed entirely
+/// inside the decide/runner layers; nothing serializes it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlockerKey(String);
+
+impl BlockerKey {
+    /// Validating constructor for arbitrary input. Use for any
+    /// value not known at the call site to be non-empty.
+    pub fn parse(s: impl Into<String>) -> Result<Self, IdError> {
+        let s = s.into();
+        if s.is_empty() {
+            return Err(err("blocker key", "empty"));
+        }
+        Ok(Self(s))
+    }
+
+    /// Infallible constructor for internal, known-non-empty
+    /// construction (literal prefixes + typed payloads in the
+    /// decide layer). Panics if the input is empty — that would
+    /// be a programmer error in the caller, not user input. The
+    /// `Self` return signals "construction is intended to succeed"
+    /// to the reader, where `parse(...).expect(...)` would suggest
+    /// a fallible operation.
+    ///
+    /// `pub(crate)` to constrain the panic surface — external
+    /// callers must go through `parse` and handle the `Result`.
+    pub(crate) fn tag(s: impl Into<String>) -> Self {
+        let s = s.into();
+        assert!(!s.is_empty(), "BlockerKey::tag called with empty string");
+        Self(s)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for BlockerKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// -- BranchName ------------------------------------------------------
+
+/// A git branch name. Validated against git's `check_ref_format`
+/// rules: non-empty, no `..`, no leading/trailing `/`, no leading
+/// `-`, no whitespace, no control bytes. Permits the punctuation
+/// branch names actually use (`feature/foo`, `release-1.2`, etc.).
+///
+/// Newtype prevents the cross-domain confusion that's possible
+/// when branch names, ruleset names, team names, and CI check
+/// names all flow through `String`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct Timestamp(String);
+pub struct BranchName(String);
 
-impl Timestamp {
+impl BranchName {
     pub fn parse(s: &str) -> Result<Self, IdError> {
         if s.is_empty() {
-            return Err(err("timestamp", "empty"));
+            return Err(err("branch name", "empty"));
+        }
+        if s.starts_with('-') {
+            return Err(err("branch name", "leading '-'"));
+        }
+        if s.starts_with('/') || s.ends_with('/') {
+            return Err(err("branch name", "leading or trailing '/'"));
+        }
+        if s.contains("..") {
+            return Err(err("branch name", "contains '..'"));
+        }
+        if s.bytes().any(|b| b.is_ascii_whitespace() || b < 0x20) {
+            return Err(err("branch name", "whitespace or control byte"));
         }
         Ok(Self(s.to_owned()))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for BranchName {
+    type Error = IdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::parse(&s)
+    }
+}
+
+impl From<BranchName> for String {
+    fn from(v: BranchName) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for BranchName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// -- TeamName --------------------------------------------------------
+
+/// A GitHub team identifier as returned by GraphQL
+/// `RequestedReviewer { ... on Team { name } }`. Lives in a
+/// different namespace from `GitHubLogin` (a user/bot login):
+/// `Cory` is a login, `backend-team` is a team. Both are
+/// non-empty strings, but they index distinct GitHub primitives.
+///
+/// Newtype prevents the "looks the same, means different things"
+/// confusion that `Vec<String>` had previously.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TeamName(String);
+
+impl TeamName {
+    pub fn parse(s: &str) -> Result<Self, IdError> {
+        if s.is_empty() {
+            return Err(err("team name", "empty"));
+        }
+        Ok(Self(s.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TeamName {
+    type Error = IdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::parse(&s)
+    }
+}
+
+impl From<TeamName> for String {
+    fn from(v: TeamName) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for TeamName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// -- Reviewer --------------------------------------------------------
+
+/// A pending PR reviewer. GitHub allows two distinct kinds: a
+/// concrete user identity ([`GitHubLogin`]) or a team ([`TeamName`]).
+/// Both arms now carry validated newtypes — the sum is symmetric
+/// and structurally distinguishes the two GitHub primitives.
+///
+/// `Display` writes the login or team name verbatim — both forms
+/// are what GitHub's UI shows.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Reviewer {
+    User(GitHubLogin),
+    Team(TeamName),
+}
+
+impl fmt::Display for Reviewer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::User(login) => write!(f, "{login}"),
+            Self::Team(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+// -- CheckName -------------------------------------------------------
+
+/// A GitHub status-check / check-run name (e.g. `Build / test`).
+/// Names may contain spaces, slashes, and unicode — the only
+/// invariant is non-emptiness.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CheckName(String);
+
+impl CheckName {
+    pub fn parse(s: &str) -> Result<Self, IdError> {
+        if s.is_empty() {
+            return Err(err("check name", "empty"));
+        }
+        Ok(Self(s.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CheckName {
+    type Error = IdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::parse(&s)
+    }
+}
+
+impl From<CheckName> for String {
+    fn from(v: CheckName) -> Self {
+        v.0
+    }
+}
+
+impl fmt::Display for CheckName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// -- Timestamp -------------------------------------------------------
+
+/// An RFC-3339 / ISO-8601 timestamp parsed into a structured
+/// `chrono::DateTime<Utc>`. `Ord`/`Eq`/`Hash` operate on the
+/// instant — surface forms (`...Z` vs `...+00:00`) representing the
+/// same instant compare equal. Display normalizes to RFC-3339 with
+/// `+00:00` suffix; nothing downstream depends on byte-identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Timestamp(chrono::DateTime<chrono::Utc>);
+
+impl Timestamp {
+    pub fn parse(s: &str) -> Result<Self, IdError> {
+        if s.is_empty() {
+            return Err(err("timestamp", "empty"));
+        }
+        let at = chrono::DateTime::parse_from_rfc3339(s)
+            .map_err(|e| err("timestamp", format!("parse rfc3339: {e}")))?
+            .with_timezone(&chrono::Utc);
+        Ok(Self(at))
+    }
+
+    pub fn at(self) -> chrono::DateTime<chrono::Utc> {
+        self.0
     }
 }
 
@@ -329,13 +560,13 @@ impl TryFrom<String> for Timestamp {
 
 impl From<Timestamp> for String {
     fn from(v: Timestamp) -> Self {
-        v.0
+        v.0.to_rfc3339()
     }
 }
 
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "{}", self.0.to_rfc3339())
     }
 }
 
@@ -396,12 +627,55 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_rejects_empty() {
-        assert!(Timestamp::parse("").is_err());
+    fn branch_name_validates_git_ref_rules() {
+        assert!(BranchName::parse("").is_err());
+        assert!(BranchName::parse("-leading").is_err());
+        assert!(BranchName::parse("/leading").is_err());
+        assert!(BranchName::parse("trailing/").is_err());
+        assert!(BranchName::parse("with..dots").is_err());
+        assert!(BranchName::parse("with space").is_err());
+        assert_eq!(BranchName::parse("master").unwrap().as_str(), "master");
         assert_eq!(
-            Timestamp::parse("2026-04-23T10:00:00Z").unwrap().as_str(),
-            "2026-04-23T10:00:00Z",
+            BranchName::parse("feature/widget").unwrap().as_str(),
+            "feature/widget",
         );
+        assert_eq!(
+            BranchName::parse("release-1.2").unwrap().as_str(),
+            "release-1.2",
+        );
+    }
+
+    #[test]
+    fn check_name_rejects_empty() {
+        assert!(CheckName::parse("").is_err());
+        let n = CheckName::parse("Build / test").unwrap();
+        assert_eq!(n.as_str(), "Build / test");
+    }
+
+    #[test]
+    fn timestamp_rejects_empty_and_invalid() {
+        assert!(Timestamp::parse("").is_err());
+        assert!(Timestamp::parse("not a timestamp").is_err());
+        let t = Timestamp::parse("2026-04-23T10:00:00Z").unwrap();
+        // Display normalizes the surface form to RFC-3339 with explicit
+        // offset; nothing downstream depends on byte-identity.
+        assert_eq!(t.to_string(), "2026-04-23T10:00:00+00:00");
+        assert_eq!(t.at().to_rfc3339(), "2026-04-23T10:00:00+00:00");
+    }
+
+    #[test]
+    fn timestamp_orders_by_time_not_lexicographic() {
+        // Lexicographic ordering coincides with chronological for
+        // ISO-8601 UTC, but breaks for offset variants. Exercise
+        // both to lock the structural-comparison invariant.
+        let t1 = Timestamp::parse("2026-04-23T10:00:00Z").unwrap();
+        let t2 = Timestamp::parse("2026-04-23T10:00:00+00:00").unwrap();
+        let t3 = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
+        assert!(t1 < t3);
+        // Same instant in different surface forms: equal under Ord
+        // AND under Eq (byte-identity is not preserved).
+        assert_eq!(t1.cmp(&t2), std::cmp::Ordering::Equal);
+        assert_eq!(t1, t2);
     }
 
     #[test]

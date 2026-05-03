@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::ids::RepoSlug;
+use crate::ids::{CheckName, RepoSlug};
 
 use super::gh::{encode_path_segment, gh_json, GhError};
 
@@ -38,7 +38,7 @@ pub struct BranchProtectionRequiredStatusChecks {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BranchProtectionCheck {
-    pub context: String,
+    pub context: CheckName,
     /// Null when the check has no registered GitHub App (e.g. status
     /// posted without app integration).
     pub app_id: Option<u64>,
@@ -57,9 +57,9 @@ mod tests {
         let resp: BranchProtectionRequiredStatusChecks =
             serde_json::from_str(FIXTURE).unwrap();
         assert_eq!(resp.checks.len(), 2);
-        assert_eq!(resp.checks[0].context, "Graphite / mergeability_check");
+        assert_eq!(resp.checks[0].context.as_str(), "Graphite / mergeability_check");
         assert_eq!(resp.checks[0].app_id, Some(158384));
-        assert_eq!(resp.checks[1].context, "Mergeability Check");
+        assert_eq!(resp.checks[1].context.as_str(), "Mergeability Check");
     }
 
     #[test]

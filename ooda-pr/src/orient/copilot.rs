@@ -150,7 +150,7 @@ pub fn orient_copilot(
 
     let timeline = copilot_timeline(events);
     let rounds = correlate_rounds(&timeline, &copilot_reviews);
-    let latest_reviewed_at = rounds.last().and_then(|r| r.reviewed_at.clone());
+    let latest_reviewed_at = rounds.last().and_then(|r| r.reviewed_at);
     let thread_summary = count_bot_threads(threads, latest_reviewed_at.as_ref(), is_copilot);
     let activity = derive_activity(&timeline, &rounds, requested);
     let tier = score_tier(&rounds, &thread_summary, head);
@@ -215,7 +215,7 @@ enum TimelineKind {
 fn copilot_timeline(events: &[IssueEvent]) -> Vec<TimelinePoint> {
     let mut points: Vec<TimelinePoint> = Vec::new();
     for e in events {
-        let Some(at) = e.created_at.clone() else { continue };
+        let Some(at) = e.created_at else { continue };
         match e.event.as_str() {
             "review_requested" => {
                 if let Some(rr) = &e.requested_reviewer
@@ -236,7 +236,7 @@ fn copilot_timeline(events: &[IssueEvent]) -> Vec<TimelinePoint> {
             _ => {}
         }
     }
-    points.sort_by(|a, b| a.at.as_str().cmp(b.at.as_str()));
+    points.sort_by_key(|p| p.at);
     points
 }
 
@@ -266,7 +266,7 @@ fn correlate_rounds(
     reviews: &[&PullRequestReview],
 ) -> Vec<CopilotReviewRound> {
     let mut sorted_reviews: Vec<&PullRequestReview> = reviews.to_vec();
-    sorted_reviews.sort_by(|a, b| review_ts(a).cmp(review_ts(b)));
+    sorted_reviews.sort_by_key(|a| a.submitted_at);
 
     // Round numbers are assigned at the very end after a final sort
     // by `requested_at`. Without this, the open round (anchored on
@@ -279,7 +279,7 @@ fn correlate_rounds(
     let mut review_idx = 0;
 
     let consume_review = |rev: &PullRequestReview, round: &mut CopilotReviewRound| {
-        round.reviewed_at = rev.submitted_at.clone();
+        round.reviewed_at = rev.submitted_at;
         round.commit = Some(rev.commit_id.clone());
         let (visible, suppressed) = parse_copilot_review_body(&rev.body);
         round.comments_visible = visible;
@@ -292,7 +292,7 @@ fn correlate_rounds(
         // the open round (if any and not yet paired) or becomes a
         // synthetic round.
         while let Some(rev) = sorted_reviews.get(review_idx)
-            && review_ts(rev) < point.at.as_str()
+            && rev.submitted_at.as_ref().is_some_and(|t| t < &point.at)
         {
             match (&mut open, paired) {
                 (Some(round), false) => {
@@ -313,7 +313,7 @@ fn correlate_rounds(
                 }
                 open = Some(CopilotReviewRound {
                     round: 0, // assigned in the final sort pass
-                    requested_at: point.at.clone(),
+                    requested_at: point.at,
                     ack_at: None,
                     reviewed_at: None,
                     commit: None,
@@ -326,7 +326,7 @@ fn correlate_rounds(
                 if let Some(round) = open.as_mut()
                     && round.ack_at.is_none()
                 {
-                    round.ack_at = Some(point.at.clone());
+                    round.ack_at = Some(point.at);
                 }
                 // Orphan Acks (auto-review with no Requested event)
                 // don't land here. derive_activity reads them from
@@ -356,7 +356,7 @@ fn correlate_rounds(
     // the relative order of rounds with the same `requested_at`
     // (only happens for synthetic rounds with identical review
     // timestamps — preserve insertion order).
-    rounds.sort_by(|a, b| a.requested_at.as_str().cmp(b.requested_at.as_str()));
+    rounds.sort_by_key(|r| r.requested_at);
     for (i, r) in rounds.iter_mut().enumerate() {
         r.round = i as u32 + 1;
     }
@@ -370,24 +370,16 @@ fn synthetic_round(rev: &PullRequestReview, round_no: u32) -> CopilotReviewRound
     let counts = parse_copilot_review_body(&rev.body);
     let anchor = rev
         .submitted_at
-        .clone()
         .unwrap_or_else(|| Timestamp::parse("1970-01-01T00:00:00Z").unwrap());
     CopilotReviewRound {
         round: round_no,
         requested_at: anchor,
         ack_at: None,
-        reviewed_at: rev.submitted_at.clone(),
+        reviewed_at: rev.submitted_at,
         commit: Some(rev.commit_id.clone()),
         comments_visible: counts.0,
         comments_suppressed: counts.1,
     }
-}
-
-fn review_ts(r: &PullRequestReview) -> &str {
-    r.submitted_at
-        .as_ref()
-        .map(Timestamp::as_str)
-        .unwrap_or("")
 }
 
 // ── Tier scoring ─────────────────────────────────────────────────────
@@ -440,15 +432,15 @@ fn derive_activity(
     let latest_review_ts: Option<&Timestamp> = rounds
         .iter()
         .filter_map(|r| r.reviewed_at.as_ref())
-        .max_by_key(|t| t.as_str());
+        .max();
     let latest_ack: Option<&TimelinePoint> = timeline
         .iter()
         .filter(|p| p.kind == TimelineKind::Ack)
-        .max_by_key(|p| p.at.as_str());
+        .max_by_key(|p| p.at);
     let latest_request: Option<&TimelinePoint> = timeline
         .iter()
         .filter(|p| p.kind == TimelineKind::Requested)
-        .max_by_key(|p| p.at.as_str());
+        .max_by_key(|p| p.at);
 
     // Phase 1: Working signal — an Ack newer than the latest review
     // means Copilot is actively reviewing right now. The guard must
@@ -468,7 +460,7 @@ fn derive_activity(
     // ack case has its Ack already paired (via correlate_rounds),
     // so it's not orphan and Phase 1 doesn't fire — Idle remains.
     let ack_after_review = match (latest_ack, latest_review_ts) {
-        (Some(ack), Some(rev)) => ack.at.as_str() > rev.as_str(),
+        (Some(ack), Some(rev)) => &ack.at > rev,
         (Some(_), None) => true,
         _ => false,
     };
@@ -482,12 +474,12 @@ fn derive_activity(
         && work_genuinely_in_flight
     {
         let req_at = latest_request
-            .filter(|r| r.at.as_str() <= ack.at.as_str())
-            .map(|r| r.at.clone())
-            .unwrap_or_else(|| ack.at.clone());
+            .filter(|r| r.at <= ack.at)
+            .map(|r| r.at)
+            .unwrap_or_else(|| ack.at);
         return CopilotActivity::Working {
             requested_at: req_at,
-            ack_at: ack.at.clone(),
+            ack_at: ack.at,
         };
     }
 
@@ -502,8 +494,8 @@ fn derive_activity(
             // ack) so the loop emits WaitForCopilotAck instead.
             if currently_pending(requested) {
                 let req_at = latest_request
-                    .map(|r| r.at.clone())
-                    .unwrap_or_else(|| latest.requested_at.clone());
+                    .map(|r| r.at)
+                    .unwrap_or_else(|| latest.requested_at);
                 return CopilotActivity::Requested { requested_at: req_at };
             }
             return CopilotActivity::Reviewed {
@@ -520,8 +512,8 @@ fn derive_activity(
             // the current requested_reviewers set.
             if currently_pending(requested) {
                 return CopilotActivity::Working {
-                    requested_at: latest.requested_at.clone(),
-                    ack_at: ack.clone(),
+                    requested_at: latest.requested_at,
+                    ack_at: *ack,
                 };
             }
             return CopilotActivity::Idle;
@@ -530,7 +522,7 @@ fn derive_activity(
         // from "request withdrawn before ack".
         if currently_pending(requested) {
             return CopilotActivity::Requested {
-                requested_at: latest.requested_at.clone(),
+                requested_at: latest.requested_at,
             };
         }
         return CopilotActivity::Idle;
@@ -547,7 +539,7 @@ fn derive_activity(
         // anchor on the requested_at timestamp.
         let requested_at = timeline
             .last()
-            .map(|p| p.at.clone())
+            .map(|p| p.at)
             .unwrap_or_else(|| Timestamp::parse("1970-01-01T00:00:00Z").unwrap());
         return CopilotActivity::Requested { requested_at };
     }
@@ -958,8 +950,8 @@ mod tests {
         // rounds.last() must be the actual latest review for tier
         // scoring. Pre-fix it was the stale t=15 one.
         assert_eq!(
-            r.rounds.last().unwrap().reviewed_at.as_ref().unwrap().as_str(),
-            "2026-04-23T10:10:00Z"
+            r.rounds.last().unwrap().reviewed_at.as_ref().unwrap().to_string(),
+            "2026-04-23T10:10:00+00:00"
         );
     }
 
@@ -986,8 +978,8 @@ mod tests {
             .unwrap();
         assert_eq!(r.rounds.len(), 2);
         assert_eq!(
-            r.rounds.last().unwrap().reviewed_at.as_ref().unwrap().as_str(),
-            "2026-04-23T10:10:00Z"
+            r.rounds.last().unwrap().reviewed_at.as_ref().unwrap().to_string(),
+            "2026-04-23T10:10:00+00:00"
         );
     }
 

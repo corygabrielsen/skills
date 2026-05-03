@@ -5,6 +5,7 @@
 //! Either source alone is incomplete; repos may use one, the other,
 //! or both. The output is the deduped union of context names.
 
+use crate::ids::CheckName;
 use crate::observe::github::branch_protection::BranchProtectionRequiredStatusChecks;
 use crate::observe::github::branch_rules::BranchRule;
 use crate::observe::github::rulesets::RequiredStatusChecksParams;
@@ -29,9 +30,15 @@ use crate::observe::github::rulesets::RequiredStatusChecksParams;
 pub fn required_check_names(
     branch_rules: &[BranchRule],
     protection: Option<&BranchProtectionRequiredStatusChecks>,
-) -> Vec<String> {
+) -> Vec<CheckName> {
     let mut seen = std::collections::HashSet::<String>::new();
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<CheckName> = Vec::new();
+
+    let mut push_unique = |c: CheckName, out: &mut Vec<CheckName>| {
+        if seen.insert(c.as_str().to_owned()) {
+            out.push(c);
+        }
+    };
 
     for rule in branch_rules {
         if rule.rule_type != "required_status_checks" {
@@ -46,17 +53,13 @@ pub fn required_check_names(
             continue;
         };
         for c in parsed.required_status_checks {
-            if seen.insert(c.context.clone()) {
-                out.push(c.context);
-            }
+            push_unique(c.context, &mut out);
         }
     }
 
     if let Some(p) = protection {
         for c in &p.checks {
-            if seen.insert(c.context.clone()) {
-                out.push(c.context.clone());
-            }
+            push_unique(c.context.clone(), &mut out);
         }
     }
 
@@ -101,11 +104,15 @@ mod tests {
             checks: contexts
                 .iter()
                 .map(|c| BranchProtectionCheck {
-                    context: (*c).to_owned(),
+                    context: CheckName::parse(c).unwrap(),
                     app_id: None,
                 })
                 .collect(),
         }
+    }
+
+    fn names(checks: Vec<CheckName>) -> Vec<String> {
+        checks.into_iter().map(|c| c.as_str().to_owned()).collect()
     }
 
     #[test]
@@ -117,7 +124,7 @@ mod tests {
     fn rulesets_only() {
         let rules = vec![rule("required_status_checks", &[("Lint", 1), ("Build", 1)])];
         assert_eq!(
-            required_check_names(&rules, None),
+            names(required_check_names(&rules, None)),
             vec!["Lint", "Build"],
         );
     }
@@ -126,7 +133,7 @@ mod tests {
     fn protection_only() {
         let p = protection(&["Mergeability Check", "Lint"]);
         assert_eq!(
-            required_check_names(&[], Some(&p)),
+            names(required_check_names(&[], Some(&p))),
             vec!["Mergeability Check", "Lint"],
         );
     }
@@ -136,7 +143,7 @@ mod tests {
         let rules = vec![rule("required_status_checks", &[("Lint", 1), ("Build", 1)])];
         let p = protection(&["Lint", "Mergeability Check"]); // Lint dup
         assert_eq!(
-            required_check_names(&rules, Some(&p)),
+            names(required_check_names(&rules, Some(&p))),
             vec!["Lint", "Build", "Mergeability Check"],
         );
     }
@@ -148,7 +155,7 @@ mod tests {
             rule_no_params("update"),
             rule("required_status_checks", &[("Lint", 1)]),
         ];
-        assert_eq!(required_check_names(&rules, None), vec!["Lint"]);
+        assert_eq!(names(required_check_names(&rules, None)), vec!["Lint"]);
     }
 
     #[test]

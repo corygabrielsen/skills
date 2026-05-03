@@ -1,6 +1,9 @@
 //! Copilot candidates: wait when Copilot is mid-cycle, advance
 //! tier when it has reviewed but more is achievable.
 
+use crate::ids::BlockerKey;
+use std::time::Duration;
+
 use crate::orient::copilot::{CopilotActivity, CopilotReport, CopilotTier};
 
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
@@ -15,21 +18,21 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
         CopilotActivity::Requested { .. } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotAck,
-                automation: Automation::Wait { seconds: 15 },
+                automation: Automation::Wait { interval: Duration::from_secs(15) },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: "Waiting for Copilot to start reviewing".into(),
-                blocker: "copilot_not_acked".into(),
+                blocker: BlockerKey::tag("copilot_not_acked"),
             });
         }
         CopilotActivity::Working { .. } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotReview,
-                automation: Automation::Wait { seconds: 60 },
+                automation: Automation::Wait { interval: Duration::from_secs(60) },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: "Waiting for Copilot to finish reviewing".into(),
-                blocker: "copilot_reviewing".into(),
+                blocker: BlockerKey::tag("copilot_reviewing"),
             });
         }
         CopilotActivity::Reviewed { latest } => {
@@ -62,7 +65,7 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Critical,
                     description: desc,
-                    blocker: format!("copilot_tier_{}", report.tier.slug()),
+                    blocker: BlockerKey::tag(format!("copilot_tier_{}", report.tier.slug())),
                 });
             } else if report.tier == CopilotTier::Silver && suppressed > 0 {
                 out.push(Action {
@@ -75,7 +78,7 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                          Investigate and push fixes for any that are real — the \
                          next review may clear them."
                     ),
-                    blocker: "copilot_tier_silver".into(),
+                    blocker: BlockerKey::tag("copilot_tier_silver"),
                 });
             }
         }

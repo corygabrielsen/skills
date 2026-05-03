@@ -75,7 +75,7 @@ pub fn orient_state(
         commits: pr.commits.len(),
         behind: matches!(pr.merge_state_status, MergeStateStatus::Behind),
         merge_state_status: pr.merge_state_status,
-        updated_at: pr.updated_at.clone(),
+        updated_at: pr.updated_at,
         last_commit_at,
     }
 }
@@ -108,7 +108,7 @@ mod tests {
             mergeable: Mergeable::Mergeable,
             merge_state_status: MergeStateStatus::Clean,
             head_ref_oid: GitCommitSha::parse(&"a".repeat(40)).unwrap(),
-            base_ref_name: "master".into(),
+            base_ref_name: crate::ids::BranchName::parse("master").unwrap(),
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             closed_at: None,
             merged_at: None,
@@ -279,7 +279,7 @@ mod tests {
     fn last_commit_at_passes_through() {
         let ts = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
         let pr = pr_view(|_| {});
-        let s = orient_state(&pr, Some(ts.clone()));
+        let s = orient_state(&pr, Some(ts));
         assert_eq!(s.last_commit_at, Some(ts));
     }
 }

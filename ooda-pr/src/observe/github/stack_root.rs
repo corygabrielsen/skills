@@ -16,7 +16,7 @@
 
 use serde::Deserialize;
 
-use crate::ids::RepoSlug;
+use crate::ids::{BranchName, RepoSlug};
 
 use super::gh::{gh_json, GhError};
 
@@ -30,7 +30,7 @@ const ROOT_BRANCHES: &[&str] = &["master", "main"];
 #[derive(Debug, Deserialize)]
 struct StackParent {
     #[serde(rename = "baseRefName")]
-    base_ref_name: String,
+    base_ref_name: BranchName,
 }
 
 /// Walk down the stack from `start_branch` and return the ultimate
@@ -38,13 +38,13 @@ struct StackParent {
 /// `start_branch` unchanged without an API call.
 pub fn resolve_stack_root(
     slug: &RepoSlug,
-    start_branch: &str,
-) -> Result<String, GhError> {
-    if ROOT_BRANCHES.contains(&start_branch) {
-        return Ok(start_branch.to_owned());
+    start_branch: &BranchName,
+) -> Result<BranchName, GhError> {
+    if ROOT_BRANCHES.contains(&start_branch.as_str()) {
+        return Ok(start_branch.clone());
     }
-    let mut current = start_branch.to_owned();
-    let mut visited: Vec<String> = vec![current.clone()];
+    let mut current = start_branch.clone();
+    let mut visited: Vec<BranchName> = vec![current.clone()];
     let slug_s = slug.to_string();
 
     for _ in 0..MAX_DEPTH {
@@ -64,7 +64,7 @@ pub fn resolve_stack_root(
             "-R",
             &slug_s,
             "--head",
-            &current,
+            current.as_str(),
             "--state",
             "open",
             "--json",

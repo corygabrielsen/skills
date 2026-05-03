@@ -4,7 +4,12 @@
 //! Stall detection: if the same (kind, blocker) pair fires twice
 //! in a row, the loop halts Stalled. Coarse — only catches the
 //! one-action-spinning case. The iteration cap is the second line
-//! of defense.
+//! of defense and surfaces as `HaltReason::CapReached`.
+//!
+//! The loop returns `HaltReason` directly — there is no separate
+//! "outcome" type. Cap, stall, success, terminal, and handoff are
+//! all variants of the same partition. Exit-code mapping lives on
+//! `HaltReason::exit_code()`.
 
 use crate::act::{act, ActError};
 use crate::decide::action::{Action, Automation};
@@ -15,16 +20,6 @@ use crate::observe::github::fetch_all;
 use crate::observe::github::gh::GhError;
 use crate::orient::orient;
 use crate::orient::OrientedState;
-
-#[derive(Debug)]
-pub enum LoopOutcome {
-    /// Decide returned a non-terminal halt (Agent/Human).
-    Halted(HaltReason),
-    /// Decide returned a terminal halt (Success / Merged / Closed).
-    Done(HaltReason),
-    /// Iteration cap hit without halting.
-    CapReached { last_action: Option<Action> },
-}
 
 #[derive(Debug)]
 pub enum LoopError {
@@ -64,7 +59,7 @@ pub fn run_loop(
     pr: PullRequestNumber,
     config: LoopConfig,
     mut on_state: impl FnMut(u32, &OrientedState, &Decision),
-) -> Result<LoopOutcome, LoopError> {
+) -> Result<HaltReason, LoopError> {
     let mut last_action: Option<Action> = None;
 
     for iter in 1..=config.max_iterations {
@@ -74,20 +69,14 @@ pub fn run_loop(
         on_state(iter, &oriented, &decision);
 
         match decision {
-            Decision::Halt(HaltReason::Success) => {
-                return Ok(LoopOutcome::Done(HaltReason::Success));
-            }
-            Decision::Halt(reason @ HaltReason::Terminal(_)) => {
-                return Ok(LoopOutcome::Done(reason));
-            }
-            Decision::Halt(reason) => return Ok(LoopOutcome::Halted(reason)),
+            Decision::Halt(halt) => return Ok(HaltReason::Decision(halt)),
             Decision::Execute(action) => {
                 // Stall check BEFORE act so a side-effecting Full
                 // action (e.g. RerequestCopilot) doesn't fire twice
                 // when GitHub's eventual consistency hasn't surfaced
                 // the previous call yet.
                 if same_action_repeated(last_action.as_ref(), &action) {
-                    return Ok(LoopOutcome::Halted(HaltReason::Stalled));
+                    return Ok(HaltReason::Stalled);
                 }
                 act(&action, slug, pr).map_err(LoopError::Act)?;
                 last_action = Some(action);
@@ -95,7 +84,7 @@ pub fn run_loop(
         }
     }
 
-    Ok(LoopOutcome::CapReached { last_action })
+    Ok(HaltReason::CapReached { last_action })
 }
 
 fn same_action_repeated(prev: Option<&Action>, current: &Action) -> bool {

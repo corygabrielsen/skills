@@ -11,11 +11,11 @@ mod orient;
 mod runner;
 
 use decide::decide;
-use decide::decision::{Decision, HaltReason, Terminal};
+use decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
 use ids::{PullRequestNumber, RepoSlug};
 use observe::github::fetch_all;
 use orient::orient;
-use runner::{run_loop, LoopConfig, LoopOutcome};
+use runner::{run_loop, LoopConfig};
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -127,37 +127,10 @@ fn run_once(args: &Args) -> ExitCode {
         let r = comment::post::post_if_changed(&args.slug, args.pr, &rendered);
         log_post_result("comment", true, r);
     }
-    // --once must mirror the documented exit-code contract so that
-    // wrappers using it as a probe see the same Halt class as the
-    // full loop. Pre-fix this always returned SUCCESS, letting
-    // BLOCKED PRs look green to outer drivers.
-    decision_exit_code(&decision)
-}
-
-/// Single source of truth for Decision → ExitCode. Used by both
-/// `--once` and the full loop's halt branch so the exit-code
-/// contract is identical regardless of mode.
-///
-/// `Decision::Execute` maps to exit 4 ("in_progress"): the loop
-/// would auto-run the action, but `--once` does not. From the
-/// probe's perspective the PR has NOT reached the documented
-/// success state — wrappers using `--once` to gate must see a
-/// non-zero exit so a still-advancing PR doesn't look green.
-/// Exit 4 is distinct from 1 (stalled) / 3 (human) / 5 (agent).
-fn decision_exit_code(d: &Decision) -> ExitCode {
-    match d {
-        Decision::Execute(_) => ExitCode::from(4),
-        Decision::Halt(reason) => halt_exit_code(reason),
-    }
-}
-
-fn halt_exit_code(reason: &HaltReason) -> ExitCode {
-    match reason {
-        HaltReason::Success | HaltReason::Terminal(_) => ExitCode::SUCCESS,
-        HaltReason::AgentNeeded(_) => ExitCode::from(5),
-        HaltReason::HumanNeeded(_) => ExitCode::from(3),
-        HaltReason::Stalled => ExitCode::from(1),
-    }
+    // The exit-code mapping lives on `Decision::exit_code` —
+    // single source of truth shared with the full loop, so a probe
+    // and a loop iteration return the same code for the same state.
+    ExitCode::from(decision.exit_code())
 }
 
 fn run_full(args: &Args) -> ExitCode {
@@ -178,29 +151,17 @@ fn run_full(args: &Args) -> ExitCode {
         }
     };
     match run_loop(&args.slug, args.pr, cfg, on_state) {
-        Ok(LoopOutcome::Done(reason)) => {
+        Ok(reason) => {
             print_halt(&reason);
-            ExitCode::SUCCESS
-        }
-        Ok(LoopOutcome::Halted(reason)) => {
-            print_halt(&reason);
-            // Exit code mirrors the halt class so outer drivers can
-            // dispatch without parsing stdout. Single source of
-            // truth: same mapping as --once.
-            halt_exit_code(&reason)
-        }
-        Ok(LoopOutcome::CapReached { last_action }) => {
-            eprintln!(
-                "iteration cap reached; last action: {:?}",
-                last_action.map(|a| a.kind)
-            );
-            ExitCode::from(2)
+            ExitCode::from(reason.exit_code())
         }
         Err(e) => {
             eprintln!("{e}");
-            // Same as --once: gh / transport failure is exit 6, not
-            // 1. Drivers retry/alert on 6; 1 is reserved for true
-            // state-machine stalls.
+            // gh / transport failure is exit 6, distinct from 1
+            // (stalled). Drivers retry/alert on 6; 1 is reserved
+            // for true state-machine stalls. This code does not
+            // belong on `HaltReason` — a transport error is loop
+            // *failure*, not a halt.
             ExitCode::from(6)
         }
     }
@@ -230,23 +191,35 @@ fn print_decision(d: &Decision) {
             println!("  blocker:     {}", action.blocker);
             println!("  description: {}", action.description);
         }
-        Decision::Halt(reason) => print_halt(reason),
+        Decision::Halt(halt) => print_decision_halt(halt),
+    }
+}
+
+fn print_decision_halt(halt: &DecisionHalt) {
+    match halt {
+        DecisionHalt::Success => println!("Halt: Success — no advancing actions"),
+        DecisionHalt::Terminal(Terminal::Merged) => println!("Halt: PR merged"),
+        DecisionHalt::Terminal(Terminal::Closed) => println!("Halt: PR closed"),
+        DecisionHalt::AgentNeeded(action) => {
+            println!("Halt: AgentNeeded — {:?}", action.kind);
+            println!("  description: {}", action.description);
+        }
+        DecisionHalt::HumanNeeded(action) => {
+            println!("Halt: HumanNeeded — {:?}", action.kind);
+            println!("  description: {}", action.description);
+        }
     }
 }
 
 fn print_halt(reason: &HaltReason) {
     match reason {
-        HaltReason::Success => println!("Halt: Success — no advancing actions"),
-        HaltReason::Terminal(Terminal::Merged) => println!("Halt: PR merged"),
-        HaltReason::Terminal(Terminal::Closed) => println!("Halt: PR closed"),
-        HaltReason::AgentNeeded(action) => {
-            println!("Halt: AgentNeeded — {:?}", action.kind);
-            println!("  description: {}", action.description);
-        }
-        HaltReason::HumanNeeded(action) => {
-            println!("Halt: HumanNeeded — {:?}", action.kind);
-            println!("  description: {}", action.description);
-        }
+        HaltReason::Decision(halt) => print_decision_halt(halt),
         HaltReason::Stalled => println!("Halt: Stalled"),
+        HaltReason::CapReached { last_action } => {
+            println!(
+                "Halt: CapReached — last action: {:?}",
+                last_action.as_ref().map(|a| &a.kind),
+            );
+        }
     }
 }

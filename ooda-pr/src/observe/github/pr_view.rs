@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Deserializer};
 
-use crate::ids::{GitCommitSha, GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
+use crate::ids::{BranchName, GitCommitSha, GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{gh_json, GhError};
 
@@ -40,7 +40,7 @@ pub struct PullRequestView {
     pub mergeable: Mergeable,
     pub merge_state_status: MergeStateStatus,
     pub head_ref_oid: GitCommitSha,
-    pub base_ref_name: String,
+    pub base_ref_name: BranchName,
     pub updated_at: Timestamp,
     pub closed_at: Option<Timestamp>,
     pub merged_at: Option<Timestamp>,
@@ -165,7 +165,7 @@ mod tests {
         assert!(!view.is_draft);
         assert_eq!(view.mergeable, Mergeable::Unknown);
         assert_eq!(view.merge_state_status, MergeStateStatus::Unknown);
-        assert_eq!(view.base_ref_name, "master");
+        assert_eq!(view.base_ref_name.as_str(), "master");
         assert_eq!(view.review_decision, Some(ReviewDecision::Approved));
         assert!(view.merged_at.is_some());
         assert!(view.closed_at.is_some());

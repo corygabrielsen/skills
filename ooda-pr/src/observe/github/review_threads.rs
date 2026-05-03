@@ -9,7 +9,7 @@
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
-use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
+use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, TeamName, Timestamp};
 
 use super::gh::{gh_json, GhError};
 
@@ -210,7 +210,7 @@ pub struct ReviewRequestNode {
 pub enum RequestedReviewer {
     User { login: GitHubLogin },
     Bot { login: GitHubLogin },
-    Team { name: String },
+    Team { name: TeamName },
     Mannequin { login: GitHubLogin },
 }
 
@@ -382,7 +382,7 @@ mod tests {
         ));
         assert!(matches!(
             &nodes[2].requested_reviewer,
-            Some(RequestedReviewer::Team { name }) if name == "backend"
+            Some(RequestedReviewer::Team { name }) if name.as_str() == "backend"
         ));
         assert!(matches!(
             &nodes[3].requested_reviewer,

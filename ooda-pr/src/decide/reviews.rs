@@ -1,12 +1,24 @@
 //! Review candidates: address threads, wait on pending reviewers,
 //! request approval.
 
+use crate::ids::BlockerKey;
+use std::time::Duration;
+
 use crate::observe::github::pr_view::ReviewDecision;
 use crate::orient::copilot::{CopilotActivity, CopilotReport};
 use crate::orient::cursor::CursorReport;
 use crate::orient::OrientedState;
 
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+
+/// Comma-join a slice of any `Display` for human-readable rendering.
+fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(T::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     let reviews = &oriented.reviews;
@@ -30,30 +42,26 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             ),
             // Stable key — count lives in ActionKind, never in the
             // blocker string, so 3→2 progress doesn't mask as stall.
-            blocker: "unresolved_threads".into(),
+            blocker: BlockerKey::tag("unresolved_threads"),
         });
     }
 
     if !reviews.pending_reviews.bots.is_empty() {
+        let names = join_display(&reviews.pending_reviews.bots);
         out.push(Action {
             kind: ActionKind::WaitForBotReview {
                 reviewers: reviews.pending_reviews.bots.clone(),
             },
-            automation: Automation::Wait { seconds: 60 },
+            automation: Automation::Wait { interval: Duration::from_secs(60) },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            description: format!(
-                "Wait for bot review from {}",
-                reviews.pending_reviews.bots.join(", ")
-            ),
-            blocker: format!(
-                "pending_bot_review: {}",
-                reviews.pending_reviews.bots.join(", ")
-            ),
+            description: format!("Wait for bot review from {names}"),
+            blocker: BlockerKey::tag(format!("pending_bot_review: {names}")),
         });
     }
 
     if !reviews.pending_reviews.humans.is_empty() {
+        let names = join_display(&reviews.pending_reviews.humans);
         out.push(Action {
             kind: ActionKind::WaitForHumanReview {
                 reviewers: reviews.pending_reviews.humans.clone(),
@@ -61,14 +69,8 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            description: format!(
-                "Waiting on human review from {}",
-                reviews.pending_reviews.humans.join(", ")
-            ),
-            blocker: format!(
-                "pending_human_review: {}",
-                reviews.pending_reviews.humans.join(", ")
-            ),
+            description: format!("Waiting on human review from {names}"),
+            blocker: BlockerKey::tag(format!("pending_human_review: {names}")),
         });
     }
 
@@ -88,7 +90,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
             description: "Request or self-approve".into(),
-            blocker: "not_approved".into(),
+            blocker: BlockerKey::tag("not_approved"),
         });
     }
 
@@ -117,7 +119,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
             description: address_change_request_description(),
-            blocker: "changes_requested_summary".into(),
+            blocker: BlockerKey::tag("changes_requested_summary"),
         });
     }
 
@@ -186,7 +188,7 @@ fn address_threads_description(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::Timestamp;
+    use crate::ids::{GitHubLogin, Reviewer, Timestamp};
     use crate::observe::github::pr_view::Mergeable;
     use crate::orient::ci::{CheckBucket, CiSummary};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
@@ -264,7 +266,7 @@ mod tests {
     #[test]
     fn pending_humans_marked_human_automation() {
         let mut r = clean_reviews();
-        r.pending_reviews.humans = vec!["alice".into()];
+        r.pending_reviews.humans = vec![Reviewer::User(GitHubLogin::parse("alice").unwrap())];
         let cs = candidates(&oriented_with(r));
         let h = cs
             .iter()
@@ -320,7 +322,7 @@ mod tests {
             .unwrap();
         assert_eq!(action.automation, Automation::Agent);
         assert_eq!(action.target_effect, TargetEffect::Blocks);
-        assert_eq!(action.blocker, "changes_requested_summary");
+        assert_eq!(action.blocker.as_str(), "changes_requested_summary");
     }
 
     #[test]
@@ -360,7 +362,7 @@ mod tests {
         r.decision = Some(ReviewDecision::ChangesRequested);
         let mut o = oriented_with(r);
         o.ci.required.failed = vec![crate::orient::ci::FailedCheck {
-            name: "Lint".into(),
+            name: crate::ids::CheckName::parse("Lint").unwrap(),
             description: String::new(),
             link: String::new(),
         }];
@@ -379,7 +381,7 @@ mod tests {
         // covers it.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
-        r.pending_reviews.humans = vec!["alice".into()];
+        r.pending_reviews.humans = vec![Reviewer::User(GitHubLogin::parse("alice").unwrap())];
         let cs = candidates(&oriented_with(r));
         assert!(
             !cs.iter()

@@ -19,7 +19,7 @@ use crate::observe::github::pr_view::PrState;
 use crate::orient::OrientedState;
 
 use action::{Action, Automation, TargetEffect};
-use decision::{Decision, HaltReason, Terminal};
+use decision::{Decision, DecisionHalt, Terminal};
 
 // `Urgency` is referenced only by tests in this module; suppress the
 // unused-import lint by keeping the use behind cfg(test).
@@ -41,14 +41,14 @@ use action::Urgency;
 /// Empty candidate set → Halt(Success).
 pub fn decide(oriented: &OrientedState, lifecycle: PrState) -> Decision {
     match lifecycle {
-        PrState::Merged => return Decision::Halt(HaltReason::Terminal(Terminal::Merged)),
-        PrState::Closed => return Decision::Halt(HaltReason::Terminal(Terminal::Closed)),
+        PrState::Merged => return Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)),
+        PrState::Closed => return Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)),
         PrState::Open => {}
     }
 
     let candidates = candidates(oriented);
     let Some(top) = candidates.into_iter().next() else {
-        return Decision::Halt(HaltReason::Success);
+        return Decision::Halt(DecisionHalt::Success);
     };
 
     classify(top)
@@ -57,8 +57,8 @@ pub fn decide(oriented: &OrientedState, lifecycle: PrState) -> Decision {
 fn classify(action: Action) -> Decision {
     match action.automation {
         Automation::Full | Automation::Wait { .. } => Decision::Execute(action),
-        Automation::Agent => Decision::Halt(HaltReason::AgentNeeded(action)),
-        Automation::Human => Decision::Halt(HaltReason::HumanNeeded(action)),
+        Automation::Agent => Decision::Halt(DecisionHalt::AgentNeeded(action)),
+        Automation::Human => Decision::Halt(DecisionHalt::HumanNeeded(action)),
     }
 }
 
@@ -132,6 +132,7 @@ fn candidates(oriented: &OrientedState) -> Vec<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::BlockerKey;
     use action::{ActionKind, TargetEffect};
 
     fn act(name: &str, urgency: Urgency) -> Action {
@@ -141,7 +142,7 @@ mod tests {
             target_effect: TargetEffect::Blocks,
             urgency,
             description: name.into(),
-            blocker: name.into(),
+            blocker: BlockerKey::tag(name),
         }
     }
 

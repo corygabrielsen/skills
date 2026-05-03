@@ -48,26 +48,36 @@ binary path can serve a stale build silently after source edits.
 Stdout/stderr carry human-readable diagnostics. **The exit code is
 the decision** — dispatch on `$?`, do not parse stdout.
 
-| Exit | Class          | What it means                                                                                                                                                                                                                                    | What you do next                                                                                                            |
-| ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| 0    | `success`      | PR reached its target. Stderr distinguishes the sub-case: `Halt: PR merged` / `Halt: PR closed` / `Halt: Success — no advancing actions`.                                                                                                        | Stop driving. (For non-terminal sub-cases, the caller decides whether to re-run later.)                                     |
-| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row (`kind` = action variant like `AddressThreads`; `blocker` = stable string identifying the underlying issue). State isn't advancing.                                                           | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
-| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                                                                                                                                                               | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
-| 3    | `human_needed` | A human must act (approve, push, …).                                                                                                                                                                                                             | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |
-| 4    | `in_progress`  | **`inspect` only.** Decide returned an `Execute` (any automation: `Full`, `Agent`, `Wait`, or `Human`) — the loop would run/dispatch/wait, but the probe halts before acting. `Halt` decisions return their normal class (0/3/5) in inspect too. | Re-invoke without `inspect` to actually drive it.                                                                           |
-| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                                                                                                                                                                  | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after.                                      |
-| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                                                                                                                                                               | Distinct from `stalled`. Retry, or alert on persistent failure.                                                             |
-| 64   | `usage`        | Bad arguments.                                                                                                                                                                                                                                   | Fix the invocation. `--help` shows the usage.                                                                               |
+| Exit | Class          | What it means                                                                                                                                                                                                                                                                           | What you do next                                                                                                            |
+| ---- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 0    | `success`      | PR reached its target. Stderr distinguishes the sub-case: `Halt: PR merged` / `Halt: PR closed` / `Halt: Success — no advancing actions`.                                                                                                                                               | Stop driving. (For non-terminal sub-cases, the caller decides whether to re-run later.)                                     |
+| 1    | `stalled`      | Same non-`Wait` `(kind, blocker)` action fired twice in a row (`kind` = action variant like `AddressThreads`; `blocker` = stable string identifying the underlying issue). `Wait`-automation actions are exempt; see Loop semantics. State isn't advancing.                             | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
+| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                                                                                                                                                                                                      | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
+| 3    | `human_needed` | A human must act (approve, push, …).                                                                                                                                                                                                                                                    | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |
+| 4    | `in_progress`  | **`inspect` only.** Decide returned an `Execute` action with `Full` or `Wait` automation — the loop would auto-run or sleep+poll, but the probe halts before acting. `Agent` and `Human` automations always halt with their respective classes (5/3) in both modes; see Loop semantics. | Re-invoke without `inspect` to actually drive it.                                                                           |
+| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                                                                                                                                                                                                         | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after.                                      |
+| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                                                                                                                                                                                                      | Distinct from `stalled`. Retry, or alert on persistent failure.                                                             |
+| 64   | `usage`        | Bad arguments.                                                                                                                                                                                                                                                                          | Fix the invocation. `--help` shows the usage.                                                                               |
 
-The action description on `agent_needed` / `human_needed` halts is
-prompt material — surface it verbatim to the caller. Do not
-paraphrase. Stderr format (literal — preserve the two-space indent
-when grepping):
+The first stderr line is the halt header. The format depends on
+the halt class:
+
+| Halt class                | Header format                          |
+| ------------------------- | -------------------------------------- |
+| `Halt(Success)`           | `Halt: Success — no advancing actions` |
+| `Halt(Terminal(Merged))`  | `Halt: PR merged`                      |
+| `Halt(Terminal(Closed))`  | `Halt: PR closed`                      |
+| `Halt(AgentNeeded(kind))` | `Halt: AgentNeeded — <Kind>`           |
+| `Halt(HumanNeeded(kind))` | `Halt: HumanNeeded — <Kind>`           |
+
+For `agent_needed` / `human_needed` halts the action description
+is prompt material — surface it verbatim to the caller, do not
+paraphrase. It follows the header on indented lines (literal —
+preserve the two-space indent when grepping):
 
 ```
-Halt: <Class> — <Kind>
-  description: <text on this line, possibly continuing on indented
-    lines until a non-indented line or EOF>
+Halt: AgentNeeded — Rebase
+  description: Rebase onto the latest base branch
 ```
 
 ## When to use which mode
@@ -83,24 +93,39 @@ Halt: <Class> — <Kind>
 
 ## Loop semantics
 
-The loop runs `(observe ; orient ; decide ; act)*` until one of:
+The loop runs `(observe ; orient ; decide ; act)*`. Each
+iteration, `decide` returns either an `Execute(action)` or a
+`Halt`. The action's `automation` field determines which it is
+and what `act` does:
 
-- `decide` returns a halt — `success` (terminal merge / close folds
-  in here), `agent_needed`, or `human_needed`
-- The same `(kind, blocker)` action fires twice in a row
-  (`stalled` — exit 1)
+| Automation | Decision wrapping       | Loop behavior                                        |
+| ---------- | ----------------------- | ---------------------------------------------------- |
+| `Full`     | `Execute(action)`       | `act` runs the action directly; loop continues       |
+| `Wait`     | `Execute(action)`       | `act` sleeps the action's interval; loop re-observes |
+| `Agent`    | `Halt(AgentNeeded(..))` | Loop exits with `agent_needed` (5)                   |
+| `Human`    | `Halt(HumanNeeded(..))` | Loop exits with `human_needed` (3)                   |
+
+The `Halt` variants `Success` (no advancing actions, including
+PR open with nothing to do) and `Terminal(Merged | Closed)` exit
+with `success` (0) directly from `decide`, without an action.
+
+The loop terminates on:
+
+- A `Halt` decision (`success`, `agent_needed`, or `human_needed`)
+- The same non-`Wait` `(kind, blocker)` action fires twice in a
+  row (`stalled` — exit 1). `Wait`-automation actions
+  (e.g. `WaitForCi`, `WaitForBotReview`) are exempt: poll-and-
+  repeat is their job.
 - Iteration cap hit (`cap_reached` — exit 2)
-
-An action's _automation_ is one of `Full`, `Agent`, `Wait`, or
-`Human` — printed alongside its kind in iteration logs.
-`Wait`-automation actions (e.g. `WaitForCi`, `WaitForBotReview`)
-poll external state: the loop sleeps the action's interval, then
-re-observes. They do not trip the stall detector. The loop exits
-only when the awaited state changes (decide returns a non-`Wait`
-halt) or the iteration cap is hit.
+- A `gh` subprocess or transport error (`runtime` — exit 6).
+  Distinct from a halt: the loop _failed_ rather than _completed_.
 
 ## Build
 
 Manual build: `cd ~/.claude/skills/ooda-pr && cargo build --release`.
 
-For the type-level specification see `~/.claude/skills/ooda-pr/README.md`.
+For deeper semantics — the type-level algebra (`Decision`,
+`Action`, `Automation`, the orient axes, named invariants
+[H1]–[T1]) — see `~/.claude/skills/ooda-pr/README.md`. The
+caller does not need to consult it for normal use; this SKILL is
+self-sufficient.

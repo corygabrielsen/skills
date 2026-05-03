@@ -37,32 +37,38 @@ it. Always invoke `run`, not the built binary at
 `~/.claude/skills/ooda-pr/target/release/ooda-pr` directly — the
 binary path can serve a stale build silently after source edits.
 
-| Flag           | Meaning                                                                                                                                                         |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-iter N` | Iteration cap. Default 50. Ignored by `inspect`.                                                                                                                |
-| `--comment`    | Post a fitness comment to the PR each iteration. Deduped per-PR via FNV-1a hash on the rendered body, persisted via GitHub comment history (survives restarts). |
-| `-h`, `--help` | Print usage to stdout, exit 0.                                                                                                                                  |
+| Flag           | Meaning                                                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--max-iter N` | Iteration cap. Default 50. Ignored by `inspect`.                                                                                                                                                                                                             |
+| `--comment`    | Post a fitness comment to the PR each iteration. Deduped per-PR via local FNV-1a hash file at `/tmp/ooda-pr-<owner>-<repo>-<pr>.hash`; identical-body re-posts are suppressed for as long as `/tmp` survives (typically across the session, lost on reboot). |
+| `-h`, `--help` | Print usage to stdout, exit 0.                                                                                                                                                                                                                               |
 
 ## What you get back
 
 Stdout/stderr carry human-readable diagnostics. **The exit code is
 the decision** — dispatch on `$?`, do not parse stdout.
 
-| Exit | Class          | What it means                                                                                                                                                                                                      | What you do next                                                                                                            |
-| ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| 0    | `success`      | PR reached its target. Either no advancing actions (PR open, just paused), or terminal (merged / closed). Discriminate via stderr: `Halt: PR merged` / `Halt: PR closed` / `Halt: Success — no advancing actions`. | Stop driving. If terminal, done. If non-terminal, re-run later when state may have changed.                                 |
-| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row (`kind` = action variant like `AddressThreads`; `blocker` = stable string identifying the underlying issue). State isn't advancing.                             | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
-| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                                                                                                                                 | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
-| 3    | `human_needed` | A human must act (approve, push, …).                                                                                                                                                                               | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |
-| 4    | `in_progress`  | **`inspect` only.** Top decision is an executable action; the loop would auto-run it but the probe did not.                                                                                                        | Re-invoke without `inspect` to actually drive it.                                                                           |
-| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                                                                                                                                    | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after.                                      |
-| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                                                                                                                                 | Distinct from `stalled`. Retry, or alert on persistent failure.                                                             |
-| 64   | `usage`        | Bad arguments.                                                                                                                                                                                                     | Fix the invocation. `--help` shows the usage.                                                                               |
+| Exit | Class          | What it means                                                                                                                                                                                                                                    | What you do next                                                                                                            |
+| ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| 0    | `success`      | PR reached its target. Stderr distinguishes the sub-case: `Halt: PR merged` / `Halt: PR closed` / `Halt: Success — no advancing actions`.                                                                                                        | Stop driving. (For non-terminal sub-cases, the caller decides whether to re-run later.)                                     |
+| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row (`kind` = action variant like `AddressThreads`; `blocker` = stable string identifying the underlying issue). State isn't advancing.                                                           | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
+| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                                                                                                                                                               | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
+| 3    | `human_needed` | A human must act (approve, push, …).                                                                                                                                                                                                             | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |
+| 4    | `in_progress`  | **`inspect` only.** Decide returned an `Execute` (any automation: `Full`, `Agent`, `Wait`, or `Human`) — the loop would run/dispatch/wait, but the probe halts before acting. `Halt` decisions return their normal class (0/3/5) in inspect too. | Re-invoke without `inspect` to actually drive it.                                                                           |
+| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                                                                                                                                                                  | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after.                                      |
+| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                                                                                                                                                               | Distinct from `stalled`. Retry, or alert on persistent failure.                                                             |
+| 64   | `usage`        | Bad arguments.                                                                                                                                                                                                                                   | Fix the invocation. `--help` shows the usage.                                                                               |
 
 The action description on `agent_needed` / `human_needed` halts is
 prompt material — surface it verbatim to the caller. Do not
-paraphrase. On stderr it is the indented line(s) under the
-`Halt: <Class> — <Kind>` header, prefixed ` description:`.
+paraphrase. Stderr format (literal — preserve the two-space indent
+when grepping):
+
+```
+Halt: <Class> — <Kind>
+  description: <text on this line, possibly continuing on indented
+    lines until a non-indented line or EOF>
+```
 
 ## When to use which mode
 
@@ -81,18 +87,20 @@ The loop runs `(observe ; orient ; decide ; act)*` until one of:
 
 - `decide` returns a halt — `success` (terminal merge / close folds
   in here), `agent_needed`, or `human_needed`
-- The same `(kind, blocker)` action fires twice without observable
-  state change (`stalled` — exit 1)
+- The same `(kind, blocker)` action fires twice in a row
+  (`stalled` — exit 1)
 - Iteration cap hit (`cap_reached` — exit 2)
 
 An action's _automation_ is one of `Full`, `Agent`, `Wait`, or
 `Human` — printed alongside its kind in iteration logs.
 `Wait`-automation actions (e.g. `WaitForCi`, `WaitForBotReview`)
-are **expected** to repeat — they poll external state — and do
-not trip the stall detector.
+poll external state: the loop sleeps the action's interval, then
+re-observes. They do not trip the stall detector. The loop exits
+only when the awaited state changes (decide returns a non-`Wait`
+halt) or the iteration cap is hit.
 
 ## Build
 
 Manual build: `cd ~/.claude/skills/ooda-pr && cargo build --release`.
 
-For the type-level specification see `README.md`.
+For the type-level specification see `~/.claude/skills/ooda-pr/README.md`.

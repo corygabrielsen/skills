@@ -60,12 +60,11 @@ the decision** — dispatch on `$?`, do not parse stdout.
 | 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                                                                                                                                                                                                                               | Distinct from `stalled`. Retry, or alert on persistent failure.                                                                                                               |
 | 64   | `usage`        | Bad arguments.                                                                                                                                                                                                                                                                                                   | Fix the invocation. `--help` shows the usage.                                                                                                                                 |
 
-The first stderr line is the halt header. The format depends on
-the halt class:
+The first stderr line is a header. The format depends on the
+decision. `<ActionKind>` below means `action.kind` rendered as its
+variant name (e.g. `Rebase`, `AddressThreads`).
 
-`<ActionKind>` below means `action.kind` rendered as its variant name (e.g. `Rebase`, `AddressThreads`).
-
-| Halt class                  | Exit | Header format                                                    |
+| Decision                    | Exit | Header format                                                    |
 | --------------------------- | ---- | ---------------------------------------------------------------- |
 | `Halt(Success)`             | 0    | `Halt: Success — no advancing actions`                           |
 | `Halt(Terminal(Merged))`    | 0    | `Halt: PR merged`                                                |
@@ -74,16 +73,31 @@ the halt class:
 | `Halt(HumanNeeded(action))` | 3    | `Halt: HumanNeeded — <ActionKind>`                               |
 | Loop-level `Stalled`        | 1    | `Halt: Stalled`                                                  |
 | Loop-level `CapReached`     | 2    | `Halt: CapReached — last action: Some(<ActionKind>)` (or `None`) |
+| `Execute(action)` (inspect) | 4    | `Execute: <ActionKind> (<Automation>)`                           |
 
-For `agent_needed` / `human_needed` halts the action description
-is prompt material — surface it verbatim to the caller, do not
-paraphrase. It follows the header as one or more two-space-indented
-lines, the first prefixed `description:`. The block ends at the
-next non-indented line or EOF. Preserve the indent when grepping.
+For `agent_needed` / `human_needed` halts (and the inspect-only
+`in_progress` Execute), the action description is prompt material
+— surface it verbatim to the caller, do not paraphrase. It
+follows the header on a line prefixed `  description:` (two-space
+indent). The description string may contain embedded newlines,
+which print as-is and are NOT re-indented; the block runs from
+`  description:` to EOF.
 
 ```
 Halt: AgentNeeded — Rebase
   description: Rebase onto the latest base branch
+```
+
+Multi-line example (newlines in the description are part of the
+prompt material):
+
+```
+Halt: AgentNeeded — AddressThreads
+  description: Address 2 unresolved review threads.
+Copilot: 2 issues.
+
+1. Copilot @ src/foo.rs:42
+   > <body>
 ```
 
 ## When to use which mode

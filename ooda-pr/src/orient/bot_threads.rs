@@ -86,6 +86,8 @@ mod tests {
             id: String::new(),
             is_resolved: resolved,
             is_outdated: outdated,
+            path: String::new(),
+            line: None,
             comments: ThreadComments {
                 page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {

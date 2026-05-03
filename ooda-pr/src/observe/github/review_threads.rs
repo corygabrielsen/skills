@@ -56,6 +56,8 @@ pub fn fetch_review_threads_page(
           id
           isResolved
           isOutdated
+          path
+          line
           comments(first:100) {{
             pageInfo {{ hasNextPage endCursor }}
             nodes {{ author {{ login }} createdAt body }}
@@ -172,6 +174,14 @@ pub struct ReviewThread {
     /// deserializable.
     #[serde(default)]
     pub is_outdated: bool,
+    /// Repo-relative file path the thread is anchored to.
+    /// `#[serde(default)]` because pre-witness JSON fixtures omit it.
+    #[serde(default)]
+    pub path: String,
+    /// Anchored line number in the *current* file at HEAD. `None` when
+    /// the thread is outdated (anchor line shifted away).
+    #[serde(default)]
+    pub line: Option<u32>,
     pub comments: ThreadComments,
 }
 

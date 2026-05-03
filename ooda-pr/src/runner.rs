@@ -76,7 +76,7 @@ pub fn run_loop(
                 // when GitHub's eventual consistency hasn't surfaced
                 // the previous call yet.
                 if same_action_repeated(last_action.as_ref(), &action) {
-                    return Ok(HaltReason::Stalled);
+                    return Ok(HaltReason::Stalled(action));
                 }
                 act(&action, slug, pr).map_err(LoopError::Act)?;
                 last_action = Some(action);

@@ -100,6 +100,41 @@ pub enum TargetEffect {
     Neutral,
 }
 
+impl ActionKind {
+    /// The variant name only — the leading `Identifier` of the
+    /// `Debug` form, with any payload (`{ ... }` or `(...)`)
+    /// stripped. Used for the `<ActionKind>` placeholder in the
+    /// SKILL.md stderr contract: caller-stable identity, no
+    /// payload noise (which would expose internal data shapes
+    /// and break the single-line invariant).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::FixCi { .. } => "FixCi",
+            Self::WaitForCi { .. } => "WaitForCi",
+            Self::TriageWait { .. } => "TriageWait",
+            Self::AddressThreads { .. } => "AddressThreads",
+            Self::AddressChangeRequest => "AddressChangeRequest",
+            Self::RequestApproval => "RequestApproval",
+            Self::Rebase => "Rebase",
+            Self::MarkReady => "MarkReady",
+            Self::RemoveWipLabel => "RemoveWipLabel",
+            Self::ShortenTitle { .. } => "ShortenTitle",
+            Self::WaitForMergeability => "WaitForMergeability",
+            Self::ResolveMergePolicy => "ResolveMergePolicy",
+            Self::AddContentLabel => "AddContentLabel",
+            Self::AddAssignee => "AddAssignee",
+            Self::AddDescription => "AddDescription",
+            Self::RerequestCopilot => "RerequestCopilot",
+            Self::WaitForCopilotAck => "WaitForCopilotAck",
+            Self::WaitForCopilotReview => "WaitForCopilotReview",
+            Self::AddressCopilotSuppressed { .. } => "AddressCopilotSuppressed",
+            Self::WaitForCursorReview => "WaitForCursorReview",
+            Self::WaitForBotReview { .. } => "WaitForBotReview",
+            Self::WaitForHumanReview { .. } => "WaitForHumanReview",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionKind {
     // ── CI ──

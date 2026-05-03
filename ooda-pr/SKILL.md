@@ -18,7 +18,8 @@ args:
 
 Drives one PR to its terminal state. **Run it as the only command
 in its Bash call** — any of `&&`, `||`, `|`, `;`, `&` corrupts the
-exit code, breaking the dispatch contract.
+exit code, breaking the dispatch contract. To capture stderr,
+redirect (`2>file`); never pipe.
 
 ## How to call
 
@@ -44,27 +45,27 @@ binary path can serve a stale build silently after source edits.
 Stdout/stderr carry human-readable diagnostics. **The exit code is
 the decision** — dispatch on `$?`, do not parse stdout.
 
-| Exit | Class          | What it means                                                                                               | What you do next                                                                                                             |
-| ---- | -------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| 0    | `success`      | PR reached its target. Either no advancing actions, or terminal (merged / closed).                          | Done. Move on.                                                                                                               |
-| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row. State isn't advancing.                                  | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                 |
-| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                          | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller-tracked) ⇒ treat as stalled. |
-| 3    | `human_needed` | A human must act (approve, push, …).                                                                        | Surface the description on stderr to the human verbatim. Re-run later.                                                       |
-| 4    | `in_progress`  | **`inspect` only.** Top decision is an executable action; the loop would auto-run it but the probe did not. | Re-invoke without `inspect` to actually drive it.                                                                            |
-| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                             | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after.                                       |
-| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                          | Distinct from `stalled`. Retry, or alert on persistent failure.                                                              |
-| 64   | `usage`        | Bad arguments.                                                                                              | Fix the invocation. `--help` shows the usage.                                                                                |
+| Exit | Class          | What it means                                                                                               | What you do next                                                                                                            |
+| ---- | -------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 0    | `success`      | PR reached its target. Either no advancing actions, or terminal (merged / closed).                          | Done. Move on.                                                                                                              |
+| 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row. State isn't advancing.                                  | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
+| 2    | `cap_reached`  | Iteration cap hit without halting.                                                                          | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
+| 3    | `human_needed` | A human must act (approve, push, …).                                                                        | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |
+| 4    | `in_progress`  | **`inspect` only.** Top decision is an executable action; the loop would auto-run it but the probe did not. | Re-invoke without `inspect` to actually drive it.                                                                           |
+| 5    | `agent_needed` | An agent must act (address threads, fix CI, …).                                                             | Run an agent with the description on stderr as the prompt. Re-invoke `/ooda-pr` after.                                      |
+| 6    | `runtime`      | `gh` subprocess or transport failure (auth, network, missing CLI).                                          | Distinct from `stalled`. Retry, or alert on persistent failure.                                                             |
+| 64   | `usage`        | Bad arguments.                                                                                              | Fix the invocation. `--help` shows the usage.                                                                               |
 
 The action description on `agent_needed` / `human_needed` halts is
-prompt material — surface it verbatim to the resolver. Do not
+prompt material — surface it verbatim to the caller. Do not
 paraphrase. On stderr it is the indented line(s) under the
 `Halt: <Class> — <Kind>` header, prefixed ` description:`.
 
 ## When to use which mode
 
 - **Default (loop)** — what you normally want. Drives until halt.
-  Halts include success and external handoffs (agent / human),
-  which the outer driver re-invokes after resolving.
+  Halts include `success` and external handoffs (`agent_needed` /
+  `human_needed`), which the caller re-invokes after resolving.
 - **`inspect`** — diagnostic. One pass. Use to ask "what would
   ooda-pr do right now?" without side effects. Same exit-code
   taxonomy as the loop, plus `in_progress` (4) for executable
@@ -73,23 +74,16 @@ paraphrase. On stderr it is the indented line(s) under the
 
 ## Loop semantics
 
-The loop runs `(observe ∘ orient ∘ decide ∘ act)*` until one of:
+The loop runs `(observe ; orient ; decide ; act)*` until one of:
 
-- `decide` returns a halt (success / terminal / agent / human)
+- `decide` returns a halt — `success` (terminal merge / close folds
+  in here), `agent_needed`, or `human_needed`
 - The same `(kind, blocker)` action fires twice without observable
-  state change (stall — exit 1)
-- Iteration cap hit (exit 2)
+  state change (`stalled` — exit 1)
+- Iteration cap hit (`cap_reached` — exit 2)
 
 `Wait` actions are **expected** to repeat (polling external state)
 and do not trip the stall detector.
-
-## Per-bot reports
-
-Copilot and Cursor each have their own typed report. Internal
-state (Rust enum sketch, not stdout): a configured-but-dormant bot
-(`Some(report, Idle)`) does not produce `agent_needed` — distinct
-from missing config (`None`), which doesn't enter the action set
-at all.
 
 ## Build
 

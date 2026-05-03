@@ -371,6 +371,7 @@ mod tests {
         ReviewThread {
             id: String::new(),
             is_resolved: resolved,
+            is_outdated: false,
             comments: ThreadComments {
                 page_info: Default::default(),
                 nodes: vec![ThreadComment {

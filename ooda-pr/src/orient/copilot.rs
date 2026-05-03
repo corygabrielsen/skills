@@ -1090,6 +1090,7 @@ mod tests {
                             nodes: vec![ReviewThread {
                                 id: String::new(),
                                 is_resolved: false,
+                                is_outdated: false,
                                 comments: ThreadComments {
                                     page_info: PageInfo::default(),
                                     nodes: vec![ThreadComment {

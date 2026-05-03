@@ -202,6 +202,7 @@ mod tests {
                 total: 1,
                 resolved: 0,
                 unresolved: 1,
+                outdated: 0,
                 stale: 0,
             },
             true,

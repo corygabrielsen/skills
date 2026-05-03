@@ -1,0 +1,82 @@
+[
+    {
+        "id": 4027827966,
+        "node_id": "PRR_kwDOL5BE3M7wE8b-",
+        "user": {
+            "login": "copilot-pull-request-reviewer[bot]",
+            "id": 175728472,
+            "node_id": "BOT_kgDOCnlnWA",
+            "avatar_url": "https://avatars.githubusercontent.com/in/946600?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D",
+            "html_url": "https://github.com/apps/copilot-pull-request-reviewer",
+            "followers_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/followers",
+            "following_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/following{/other_user}",
+            "gists_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/subscriptions",
+            "organizations_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/orgs",
+            "repos_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/repos",
+            "events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/copilot-pull-request-reviewer%5Bbot%5D/received_events",
+            "type": "Bot",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "## Pull request overview\n\nFixes two correctness issues in the consensus and workflow runner-selection logic that could otherwise cause false quorum decisions or cross-architecture disagreement on deterministic runner selection.\n\n**Changes:**\n- Update runner selection hash input to encode `step_index` as fixed-width `u64` LE bytes (instead of architecture-dependent `usize` bytes).\n- Fix `has_consensus_with` in Boolean/Ternary threshold consensus to avoid double-counting when the queried attestation is already present.\n- Add regression tests for both behaviors.\n\n### Reviewed changes\n\nCopilot reviewed 4 out of 4 changed files in this pull request and generated 3 comments.\n\n| File | Description |\n| ---- | ----------- |\n| `src/lib/consensus/src/impls/ternary.rs` | Adjusts `has_consensus_with` logic and adds a regression test for duplicate-attestation handling. |\n| `src/lib/consensus/src/impls/boolean.rs` | Adjusts `has_consensus_with` logic and adds a regression test for duplicate-attestation handling. |\n| `src/core/consensus/src/v1/state/state_004_awaiting_step_run_attestations.rs` | Switches step index hashing to `(usize as u64).to_le_bytes()` for deterministic runner selection. |\n| `src/core/consensus/src/v1/state/state_001_awaiting_trigger.rs` | Switches step index hashing to `(usize as u64).to_le_bytes()` and adds a test intended to document the encoding contract. |\n\n\n\n\n\n---\n\n\ud83d\udca1 <a href=\"/acme/protocol/new/master?filename=.github/instructions/*.instructions.md\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Add Copilot custom instructions</a> for smarter, more guided reviews. <a href=\"https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Learn how to get started</a>.",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/acme/protocol/pull/1563#pullrequestreview-4027827966",
+        "pull_request_url": "https://api.github.com/repos/acme/protocol/pulls/1563",
+        "author_association": "NONE",
+        "_links": {
+            "html": {
+                "href": "https://github.com/acme/protocol/pull/1563#pullrequestreview-4027827966"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/acme/protocol/pulls/1563"
+            }
+        },
+        "submitted_at": "2026-03-30T03:35:22Z",
+        "commit_id": "29d50e492e7920f2fdced9f4124406528c4bcce0"
+    },
+    {
+        "id": 4028469213,
+        "node_id": "PRR_kwDOL5BE3M7wHY_d",
+        "user": {
+            "login": "audieleon",
+            "id": 2258619,
+            "node_id": "MDQ6VXNlcjIyNTg2MTk=",
+            "avatar_url": "https://avatars.githubusercontent.com/u/2258619?u=a29a56c18daf8921a46b3c109f1297524587f60e&v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/audieleon",
+            "html_url": "https://github.com/audieleon",
+            "followers_url": "https://api.github.com/users/audieleon/followers",
+            "following_url": "https://api.github.com/users/audieleon/following{/other_user}",
+            "gists_url": "https://api.github.com/users/audieleon/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/audieleon/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/audieleon/subscriptions",
+            "organizations_url": "https://api.github.com/users/audieleon/orgs",
+            "repos_url": "https://api.github.com/users/audieleon/repos",
+            "events_url": "https://api.github.com/users/audieleon/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/audieleon/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "Reviewed \u2014 correct fix, well-tested. See #1566 review for full stack assessment.",
+        "state": "APPROVED",
+        "html_url": "https://github.com/acme/protocol/pull/1563#pullrequestreview-4028469213",
+        "pull_request_url": "https://api.github.com/repos/acme/protocol/pulls/1563",
+        "author_association": "MEMBER",
+        "_links": {
+            "html": {
+                "href": "https://github.com/acme/protocol/pull/1563#pullrequestreview-4028469213"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/acme/protocol/pulls/1563"
+            }
+        },
+        "submitted_at": "2026-03-30T07:04:23Z",
+        "commit_id": "01845f2415c87c611417a3500ddfb9facd01fb42"
+    }
+]

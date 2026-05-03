@@ -1,0 +1,24 @@
+[
+    {
+        "type": "commit_message_pattern",
+        "parameters": {
+            "operator": "regex",
+            "pattern": "\\A[^\\n]* \\(#\\d+\\)(?:\\n[\\s\\S]*)?\\z",
+            "negate": false,
+            "name": "Require every commit\u2019s summary line to end with a GitHub PR reference in the format (#NNN) (any number of digits), while allowing an optional body on subsequent lines."
+        },
+        "ruleset_source_type": "Repository",
+        "ruleset_source": "acme/protocol",
+        "ruleset_id": 7429113
+    },
+    {
+        "type": "copilot_code_review",
+        "parameters": {
+            "review_on_push": false,
+            "review_draft_pull_requests": false
+        },
+        "ruleset_source_type": "Repository",
+        "ruleset_source": "acme/protocol",
+        "ruleset_id": 12592595
+    }
+]

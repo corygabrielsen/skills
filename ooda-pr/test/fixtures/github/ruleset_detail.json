@@ -1,0 +1,53 @@
+{
+    "id": 12663934,
+    "name": "Ban bare branch prefix names",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "acme/protocol",
+    "enforcement": "active",
+    "conditions": {
+        "ref_name": {
+            "exclude": [],
+            "include": [
+                "refs/heads/build",
+                "refs/heads/chore",
+                "refs/heads/ci",
+                "refs/heads/debug",
+                "refs/heads/docs",
+                "refs/heads/experiment",
+                "refs/heads/feat",
+                "refs/heads/feature",
+                "refs/heads/fix",
+                "refs/heads/hotfix",
+                "refs/heads/perf",
+                "refs/heads/refactor",
+                "refs/heads/release",
+                "refs/heads/revert",
+                "refs/heads/spike",
+                "refs/heads/style",
+                "refs/heads/test"
+            ]
+        }
+    },
+    "rules": [
+        {
+            "type": "creation"
+        },
+        {
+            "type": "update"
+        }
+    ],
+    "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgDBPH4",
+    "created_at": "2026-02-10T15:34:33.739-08:00",
+    "updated_at": "2026-02-10T15:49:36.439-08:00",
+    "bypass_actors": [],
+    "current_user_can_bypass": "never",
+    "_links": {
+        "self": {
+            "href": "https://api.github.com/repos/acme/protocol/rulesets/12663934"
+        },
+        "html": {
+            "href": "https://github.com/acme/protocol/rules/12663934"
+        }
+    }
+}

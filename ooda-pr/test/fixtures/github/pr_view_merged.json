@@ -1,0 +1,55 @@
+{
+    "assignees": [
+        {
+            "id": "MDQ6VXNlcjM1MTgwMzc=",
+            "login": "corygabrielsen",
+            "name": "Cory Gabrielsen (cory.eth)"
+        }
+    ],
+    "baseRefName": "master",
+    "body": "## Summary\n\n- Fix `step_index.to_le_bytes()` using architecture-dependent `usize` instead of fixed-width `u64` in runner selection hash computation (states 001, 004)\n- Fix `has_consensus_with` double-counting existing attestations in `TernaryThresholdConsensus` and `BooleanThresholdConsensus`\n\nBoth are correctness bugs in the generic consensus library that could cause nodes to disagree on runner selection or reach false quorum.\n\n## Test plan\n\n- [x] `step_index_hash_uses_fixed_width_u64` \u2014 documents the u64 encoding contract\n- [x] `has_consensus_with_does_not_double_count_existing` \u2014 for both Boolean and Ternary impls\n- [x] All 164 consensus lib tests pass\n- [x] `make format lint` clean",
+    "closedAt": "2026-03-30T16:17:24Z",
+    "commits": [
+        {
+            "authoredDate": "2026-03-30T16:12:14Z",
+            "authors": [
+                {
+                    "email": "cory@w3.io",
+                    "id": "MDQ6VXNlcjM1MTgwMzc=",
+                    "login": "corygabrielsen",
+                    "name": "corygabrielsen"
+                }
+            ],
+            "committedDate": "2026-03-30T16:12:14Z",
+            "messageBody": "## Summary\n\n- Fix `step_index.to_le_bytes()` using architecture-dependent `usize` instead of fixed-width `u64` in runner selection hash computation (states 001, 004)\n- Fix `has_consensus_with` double-counting existing attestations in `TernaryThresholdConsensus` and `BooleanThresholdConsensus`\n\nBoth are correctness bugs in the generic consensus library that could cause nodes to disagree on runner selection or reach false quorum.\n\n## Test plan\n\n- [x] `step_index_hash_uses_fixed_width_u64` \u2014 documents the u64 encoding contract\n- [x] `has_consensus_with_does_not_double_count_existing` \u2014 for both Boolean and Ternary impls\n- [x] All 164 consensus lib tests pass\n- [x] `make format lint` clean",
+            "messageHeadline": "Fix usize hashing in runner selection (#1563)",
+            "oid": "01845f2415c87c611417a3500ddfb9facd01fb42"
+        }
+    ],
+    "headRefOid": "01845f2415c87c611417a3500ddfb9facd01fb42",
+    "isDraft": false,
+    "labels": [
+        {
+            "id": "LA_kwDOL5BE3M8AAAABnNaD8Q",
+            "name": "bug",
+            "description": "Something isn't working",
+            "color": "d73a4a"
+        },
+        {
+            "id": "LA_kwDOL5BE3M8AAAACNFw33Q",
+            "name": "rust",
+            "description": "Pull requests that update rust code",
+            "color": "000000"
+        }
+    ],
+    "mergeStateStatus": "UNKNOWN",
+    "mergeable": "UNKNOWN",
+    "mergedAt": "2026-03-30T16:17:24Z",
+    "number": 1563,
+    "reviewDecision": "APPROVED",
+    "reviewRequests": [],
+    "state": "MERGED",
+    "title": "Fix usize hashing in runner selection",
+    "updatedAt": "2026-03-30T16:17:25Z",
+    "url": "https://github.com/acme/protocol/pull/1563"
+}

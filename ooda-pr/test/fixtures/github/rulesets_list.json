@@ -1,0 +1,135 @@
+[
+    {
+        "id": 12663934,
+        "name": "Ban bare branch prefix names",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "active",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgDBPH4",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/12663934"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/12663934"
+            }
+        },
+        "created_at": "2026-02-10T15:34:33.739-08:00",
+        "updated_at": "2026-02-10T15:49:36.439-08:00"
+    },
+    {
+        "id": 12663914,
+        "name": "Ban exact 'devnet' branch name",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "active",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgDBPGo",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/12663914"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/12663914"
+            }
+        },
+        "created_at": "2026-02-10T15:32:43.143-08:00",
+        "updated_at": "2026-02-10T15:32:43.171-08:00"
+    },
+    {
+        "id": 7429113,
+        "name": "Commit Subject Line Has PR Reference",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "active",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgBxW_k",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/7429113"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/7429113"
+            }
+        },
+        "created_at": "2025-08-15T00:41:35.247-07:00",
+        "updated_at": "2025-08-19T23:56:20.747-07:00"
+    },
+    {
+        "id": 7429159,
+        "name": "Commit Subject Line \u2264 42 Chars To Allow For PR Reference Postfix",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "evaluate",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgBxXCc",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/7429159"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/7429159"
+            }
+        },
+        "created_at": "2025-08-15T00:45:21.245-07:00",
+        "updated_at": "2025-08-15T01:17:57.756-07:00"
+    },
+    {
+        "id": 7063067,
+        "name": "Commit Subject Line \u2264 50 Chars",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "active",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgBrxhs",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/7063067"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/7063067"
+            }
+        },
+        "created_at": "2025-07-30T07:16:03.059-07:00",
+        "updated_at": "2026-03-13T15:13:09.075-07:00"
+    },
+    {
+        "id": 12592595,
+        "name": "Copilot review for all branches",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "active",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgDAJdM",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/12592595"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/12592595"
+            }
+        },
+        "created_at": "2026-02-08T22:14:06.447-08:00",
+        "updated_at": "2026-02-11T13:36:19.916-08:00"
+    },
+    {
+        "id": 7342577,
+        "name": "Web Deploy Protection",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "acme/protocol",
+        "enforcement": "disabled",
+        "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgBwCfE",
+        "_links": {
+            "self": {
+                "href": "https://api.github.com/repos/acme/protocol/rulesets/7342577"
+            },
+            "html": {
+                "href": "https://github.com/acme/protocol/rules/7342577"
+            }
+        },
+        "created_at": "2025-08-12T00:29:54.966-07:00",
+        "updated_at": "2025-08-12T00:43:22.653-07:00"
+    }
+]

@@ -16,10 +16,11 @@ args:
 
 # /ooda-pr
 
-Drives one PR to its terminal state. **Run it as the only command
-in its Bash call** — any of `&&`, `||`, `|`, `;`, `&` corrupts the
-exit code, breaking the dispatch contract. To capture stderr,
-redirect (`2>file`); never pipe.
+Drives one PR to its terminal state. **Do not chain it inside a
+single Bash tool call** — any of `&&`, `||`, `|`, `;`, `&` corrupts
+the exit code, breaking the dispatch contract. (Separate Bash calls
+in the same turn are fine.) To capture stderr, redirect (`2>file`);
+never pipe.
 
 ## How to call
 
@@ -47,7 +48,7 @@ the decision** — dispatch on `$?`, do not parse stdout.
 
 | Exit | Class          | What it means                                                                                               | What you do next                                                                                                            |
 | ---- | -------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 0    | `success`      | PR reached its target. Either no advancing actions, or terminal (merged / closed).                          | Done. Move on.                                                                                                              |
+| 0    | `success`      | PR reached its target. Either no advancing actions (PR open, just paused), or terminal (merged / closed).   | Stop driving. If terminal, done. If non-terminal, re-run later when state may have changed.                                 |
 | 1    | `stalled`      | Same `(kind, blocker)` action fired twice in a row. State isn't advancing.                                  | Do not auto-retry. Read stderr for the repeating action; fix the underlying blocker or escalate to the user.                |
 | 2    | `cap_reached`  | Iteration cap hit without halting.                                                                          | Re-run to continue, or raise `--max-iter`. Two consecutive `cap_reached` on the same PR (caller tracks) ⇒ treat as stalled. |
 | 3    | `human_needed` | A human must act (approve, push, …).                                                                        | Surface the description on stderr to the caller verbatim. Re-run later.                                                     |

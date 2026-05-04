@@ -37,6 +37,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/meta`                                | Signal that a remark is about the conversation, not in it         |
 | `/mission-control`                     | Coordinate multi-step work with task graphs                       |
 | `/next`                                | Present 2-4 actionable next steps                                 |
+| `/ooda-codex-review`                   | OODA loop driving `codex review` to fixed point across the ladder |
 | `/pr-fitness`                          | Live PR merge readiness assessment with structured action plan    |
 | `/oneshot`                             | Execute a task to completion in one pass, no stopping early       |
 | `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR            |

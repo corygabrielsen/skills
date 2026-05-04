@@ -455,7 +455,7 @@ fn apply_side_effect(
                 from.as_str(),
                 to.as_str()
             )),
-            Ok(None) => log_idle(format!("at ceiling ({}); no advance", from.as_str())),
+            Ok(None) => log_idle(format!("at ladder edge ({}); no advance", from.as_str())),
             Err(e) => Outcome::BinaryError(format!("recorder advance: {e}")),
         },
         SideEffect::DropLevel => match recorder.drop_level() {
@@ -510,7 +510,7 @@ fn apply_mark_retro_clean(
             to.as_str()
         )),
         Ok(None) => log_idle(format!(
-            "retrospective clean at {}; ladder ceiling reached, no advance",
+            "retrospective clean at {}; ladder edge xhigh reached, no advance",
             current.as_str()
         )),
         Err(e) => Outcome::BinaryError(format!("recorder advance: {e}")),
@@ -549,13 +549,13 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: ReasoningLevel) -
     }
     match recorder.drop_level() {
         Ok(Some(to)) => log_idle(format!(
-            "address passed at {} ({} issue(s)); dropped to {}",
+            "address passed at {} ({} review(s) with issues); dropped to {}",
             current.as_str(),
             issue_count,
             to.as_str()
         )),
         Ok(None) => log_idle(format!(
-            "address passed at floor {} ({} issue(s)); no drop",
+            "address passed at floor {} ({} review(s) with issues); no drop",
             current.as_str(),
             issue_count
         )),

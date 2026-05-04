@@ -2,10 +2,10 @@
 //!
 //! Zero domain knowledge. The fitness command is everything after `--`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::r#loop::{converge, ConvergeOpts};
+use crate::r#loop::{ConvergeOpts, converge};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_MAX_ITER: u32 = 20;
@@ -110,7 +110,9 @@ fn parse_args() -> ParsedArgs {
             }
             "--hook" => {
                 i += 1;
-                let val = args.get(i).unwrap_or_else(|| die("--hook requires a value"));
+                let val = args
+                    .get(i)
+                    .unwrap_or_else(|| die("--hook requires a value"));
                 hook_cmd = Some(val.clone());
             }
             _ if arg.starts_with("--max-iter=") => {

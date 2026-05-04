@@ -28,7 +28,11 @@ impl Hook {
 
     /// Send an iteration event. Non-blocking, best-effort.
     pub fn send_iteration(&mut self, iter: u32, report: &FitnessReport, action: &Action) {
-        let event = HookEvent::Iteration { iter, report, action };
+        let event = HookEvent::Iteration {
+            iter,
+            report,
+            action,
+        };
         self.send(&event);
     }
 
@@ -39,11 +43,11 @@ impl Hook {
     }
 
     fn send(&mut self, event: &HookEvent) {
-        if let Some(stdin) = self.child.stdin.as_mut() {
-            if let Ok(line) = serde_json::to_string(event) {
-                let _ = writeln!(stdin, "{line}");
-                let _ = stdin.flush();
-            }
+        if let Some(stdin) = self.child.stdin.as_mut()
+            && let Ok(line) = serde_json::to_string(event)
+        {
+            let _ = writeln!(stdin, "{line}");
+            let _ = stdin.flush();
         }
     }
 

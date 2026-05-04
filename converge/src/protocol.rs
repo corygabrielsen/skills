@@ -146,7 +146,10 @@ mod tests {
         assert_eq!(report.actions[0].kind, "rebase");
         assert_eq!(report.actions[0].automation, Automation::Full);
         assert_eq!(report.actions[0].target_effect, TargetEffect::Advances);
-        assert_eq!(report.actions[0].execute.as_ref().unwrap(), &["git", "rebase", "origin/master"]);
+        assert_eq!(
+            report.actions[0].execute.as_ref().unwrap(),
+            &["git", "rebase", "origin/master"]
+        );
         assert_eq!(report.status.as_deref(), Some("in_progress"));
         assert_eq!(report.score_display.as_deref(), Some("75%"));
         assert_eq!(report.target_display.as_deref(), Some("100%"));
@@ -156,7 +159,10 @@ mod tests {
         assert_eq!(report.axes.as_ref().unwrap().len(), 1);
         assert_eq!(report.axes.as_ref().unwrap()[0].name, "ci");
         assert!(report.snapshot.is_some());
-        assert_eq!(report.notes.as_ref().unwrap(), &["CI passed", "Reviews pending"]);
+        assert_eq!(
+            report.notes.as_ref().unwrap(),
+            &["CI passed", "Reviews pending"]
+        );
         assert_eq!(report.blockers.as_ref().unwrap(), &["needs-review"]);
         let split = report.blocker_split.as_ref().unwrap();
         assert_eq!(split.agent, vec!["lint-fix"]);

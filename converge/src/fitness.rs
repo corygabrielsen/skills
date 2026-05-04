@@ -35,19 +35,15 @@ impl std::fmt::Display for FitnessError {
 }
 
 fn classify_stderr(stderr: &str) -> FitnessError {
-    if stderr.contains("rate limit") || stderr.contains("secondary rate limit") {
-        FitnessError::Transient(stderr.to_string())
-    } else if stderr.contains("ECONNRESET")
+    let is_transient = stderr.contains("rate limit")
+        || stderr.contains("secondary rate limit")
+        || stderr.contains("ECONNRESET")
         || stderr.contains("ETIMEDOUT")
         || stderr.contains("ENOTFOUND")
-        || stderr.contains("EAI_AGAIN")
-    {
+        || stderr.contains("EAI_AGAIN");
+
+    if is_transient {
         FitnessError::Transient(stderr.to_string())
-    } else if stderr.contains("Bad credentials")
-        || stderr.contains("authentication required")
-        || stderr.contains("not authenticated")
-    {
-        FitnessError::Permanent(stderr.to_string())
     } else {
         FitnessError::Permanent(stderr.to_string())
     }
@@ -55,13 +51,10 @@ fn classify_stderr(stderr: &str) -> FitnessError {
 
 /// Invoke the fitness skill with retry/backoff. Returns the parsed report
 /// or a classified error. `cancelled` is checked between attempts.
-pub fn invoke(
-    argv: &[String],
-    cancelled: &AtomicBool,
-) -> Result<FitnessReport, FitnessError> {
-    let (cmd, args) = argv.split_first().ok_or_else(|| {
-        FitnessError::Permanent("empty fitness argv".to_string())
-    })?;
+pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, FitnessError> {
+    let (cmd, args) = argv
+        .split_first()
+        .ok_or_else(|| FitnessError::Permanent("empty fitness argv".to_string()))?;
 
     let mut last_stderr = String::new();
 
@@ -94,9 +87,7 @@ pub fn invoke(
 
         if output.status.success() {
             let report: FitnessReport = serde_json::from_slice(&output.stdout)
-                .map_err(|e| {
-                    FitnessError::Permanent(format!("JSON parse failed: {e}"))
-                })?;
+                .map_err(|e| FitnessError::Permanent(format!("JSON parse failed: {e}")))?;
             return Ok(report);
         }
 

@@ -140,6 +140,14 @@ fn invalid_ceiling_value_is_usage_error() {
     assert!(stderr.contains("--ceiling"));
 }
 
+#[test]
+fn fresh_with_side_effect_is_usage_error() {
+    let (code, _, stderr) = run(&["--uncommitted", "--fresh", "--mark-retro-clean"]);
+    assert_eq!(code, 64);
+    assert!(stderr.contains("--fresh"));
+    assert!(stderr.contains("side-effect"));
+}
+
 // ----- end-to-end smoke ------------------------------------------------
 
 #[test]
@@ -414,10 +422,7 @@ fn mark_address_failed_emits_handoff_human() {
         "test_signup_flow failed: expected 200, got 500",
     ]);
     assert_eq!(code, 3, "expected HandoffHuman"); // HandoffHuman = 3
-    assert_eq!(
-        first_line(&stderr),
-        "HandoffHuman: RequestCriteriaRefinement"
-    );
+    assert_eq!(first_line(&stderr), "HandoffHuman: TestsFailedTriage");
     assert!(
         stderr.contains("test_signup_flow failed"),
         "stderr: {stderr}"

@@ -9,14 +9,19 @@ and exit-code taxonomy see `SKILL.md`. For implementation see `src/`.
 ## Top Level
 
 ```
-ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ outcome
+ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder ⊕ outcome
 
-run_loop : RepoSlug × PullRequestNumber × LoopConfig × OnState
+run_loop : RepoSlug × PullRequestNumber × LoopConfig × Recorder × OnState
         → Result⟨HaltReason, LoopError⟩
 
 main : Argv → Outcome → ExitCode
 ExitCode = Outcome.exit_code()       (1:1 variant → code; see Outcome)
 ```
+
+`recorder` is the always-on local memory harness. It is keyed by
+forge + repo + PR, writes under the configured state root, appends
+causality events, stores compressed full artifacts, and materializes
+latest-first agent entrypoints.
 
 ### Domain primitives (`ids` module)
 
@@ -49,7 +54,7 @@ variant→exit-code mapping for caller dispatch on `$?` alone.
 ```
 Decision::exit_code()  ≡  match { Execute → 4, Halt(h) → h.exit_code() }    (internal, used by inspect)
 HaltReason::exit_code()≡  match { Decision(h) → h.exit_code(),
-                                  Stalled(_) → 1, CapReached{..} → 2 }      (internal, used by loop)
+                                  Stalled(_) → 1, CapReached(_) → 2 }      (internal, used by loop)
 DecisionHalt::exit_code() ≡ match { Success | Terminal → 0,
                                     HumanNeeded → 3, AgentNeeded → 5 }       (shared)
 Outcome::exit_code()   ≡  see Outcome section below                          (boundary, 1:1)
@@ -346,10 +351,11 @@ LoopError  = Observe(GhError) ⊕ Act(ActError)
 HaltReason =                                ⟶ exit_code()
     Decision(DecisionHalt)                  ⟶ delegate
   ⊕ Stalled(Action)                         ⟶ 1
-  ⊕ CapReached{last_action: Option⟨Action⟩} ⟶ 2
+  ⊕ CapReached(Action)                      ⟶ 2
 
 run_loop(slug, pr, cfg, on_state) =
-    last := None
+    last_non_wait := None       -- feeds the stall comparator
+    last_attempted := None      -- feeds CapReached's diagnostic
     for i in 1..=cfg.max_iterations:
         obs      := fetch_all(slug, pr)?              -- LoopError::Observe
         oriented := orient(obs, None)
@@ -357,13 +363,14 @@ run_loop(slug, pr, cfg, on_state) =
         on_state(i, oriented, decision)
         case decision of
             Halt(h)    → return Decision(h)
-            Execute(a) → if same_action_repeated(last, a) return Stalled(a)
+            Execute(a) → if same_action_repeated(last_non_wait, a) return Stalled(a)
                          act(a, slug, pr)?            -- LoopError::Act
-                         last := Some(a)
-    return CapReached{last_action: last}
+                         last_attempted := Some(a)
+                         if a.automation ≠ Wait :  last_non_wait := Some(a)
+    return CapReached(last_attempted.unwrap())     -- always Some when --max-iter ≥ 1
 
 same_action_repeated(prev, cur) =
-    cur.automation ≠ Wait ∧
+    -- prev is structurally non-Wait; no current=Wait gate needed.
     prev.exists(p ⟹ p.kind = cur.kind ∧ p.blocker = cur.blocker)
 ```
 
@@ -385,7 +392,7 @@ invocation with **one** exit code. `Outcome` is the boundary type.
 Outcome =                                              ⟶ exit_code()
     DoneMerged                                         ⟶ 0
   ⊕ StuckRepeated(Action)                              ⟶ 1
-  ⊕ StuckCapReached(Option⟨Action⟩)                    ⟶ 2
+  ⊕ StuckCapReached(Action)                            ⟶ 2
   ⊕ HandoffHuman(Action)                               ⟶ 3
   ⊕ WouldAdvance(Action)                               ⟶ 4    (inspect-only)
   ⊕ HandoffAgent(Action)                               ⟶ 5
@@ -410,7 +417,7 @@ From⟨HaltReason⟩ for Outcome    (loop mode):
     Decision(AgentNeeded(a))           → HandoffAgent(a)
     Decision(HumanNeeded(a))           → HandoffHuman(a)
     Stalled(a)                         → StuckRepeated(a)
-    CapReached{last_action: opt}       → StuckCapReached(opt)
+    CapReached(action)                 → StuckCapReached(action)
 
 From⟨Decision⟩ for Outcome      (inspect mode):
     Execute(a)                         → WouldAdvance(a)        ← single substitution rule
@@ -439,8 +446,7 @@ prompt block. See `SKILL.md` for the per-variant header format.
 header(Outcome) ::=
     DoneMerged                           "DoneMerged"
     StuckRepeated(a)                     "StuckRepeated: {a.kind.name()}:{a.blocker}"
-    StuckCapReached(Some(a))             "StuckCapReached: {a.kind.name()}:{a.blocker}"
-    StuckCapReached(None)                "StuckCapReached:"
+    StuckCapReached(a)                   "StuckCapReached: {a.kind.name()}:{a.blocker}"
     HandoffHuman(a)                      "HandoffHuman: {a.kind.name()}"  + prompt block
     WouldAdvance(a)                      "WouldAdvance: {a.kind.name()}:{format_automation(a.automation)}"
     HandoffAgent(a)                      "HandoffAgent: {a.kind.name()}"  + prompt block
@@ -486,8 +492,10 @@ do not leak internal data shapes.
 [A1] act receives only Action where automation ∈ {Full, Wait}
        decide already routed Agent/Human through Halt.
 
-[R1] runner.same_action_repeated returns false when current.automation = Wait
-       Polling is expected to repeat; stall detection ignores it.
+[R1] runner records only non-Wait actions in `last_non_wait`.
+       Polling (Wait) is expected to repeat; stall detection sees
+       only non-Wait actions, so `Run(A), Wait, Run(A)` correctly
+       trips Stalled(A) — the intervening Wait is invisible.
 
 [T1] ∀t1, t2 : Timestamp. t1 = t2  ⟺  t1.at() = t2.at()
        Timestamp Eq is on instant, not on bytes — surface forms collapse.

@@ -35,6 +35,24 @@ repos:
         types: [markdown]
         exclude: CLAUDE\.md$
 
+      - id: rust-format
+        name: Rust format (cargo fmt --check)
+        entry: scripts/check-rust-crates.sh fmt
+        language: script
+        files: ^.+/(Cargo\.toml|Cargo\.lock|src/.*\.rs|tests/.*\.rs)$
+
+      - id: rust-clippy
+        name: Rust lint (cargo clippy)
+        entry: scripts/check-rust-crates.sh clippy
+        language: script
+        files: ^.+/(Cargo\.toml|Cargo\.lock|src/.*\.rs|tests/.*\.rs)$
+
+      - id: rust-tests
+        name: Rust tests (cargo test)
+        entry: scripts/check-rust-crates.sh test
+        language: script
+        files: ^.+/(Cargo\.toml|Cargo\.lock|src/.*\.rs|tests/.*\.rs)$
+
       - id: validate-commit-message
         name: Validate commit message (50/72 rule)
         entry: scripts/validate-commit-message.sh

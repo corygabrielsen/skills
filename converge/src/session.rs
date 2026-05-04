@@ -43,7 +43,11 @@ impl Session {
 
         let history = load_history(&dir);
 
-        Ok(Self { dir, history, lock_path })
+        Ok(Self {
+            dir,
+            history,
+            lock_path,
+        })
     }
 
     pub fn append_history(&mut self, entry: IterLog) -> Result<(), String> {
@@ -55,8 +59,7 @@ impl Session {
             .map_err(|e| format!("cannot open history: {e}"))?;
         let line = serde_json::to_string(&entry)
             .map_err(|e| format!("cannot serialize history entry: {e}"))?;
-        writeln!(file, "{line}")
-            .map_err(|e| format!("cannot write history: {e}"))?;
+        writeln!(file, "{line}").map_err(|e| format!("cannot write history: {e}"))?;
         self.history.push(entry);
         Ok(())
     }
@@ -92,8 +95,7 @@ fn load_history(dir: &Path) -> Vec<IterLog> {
 }
 
 fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("cannot serialize: {e}"))?;
+    let json = serde_json::to_string_pretty(value).map_err(|e| format!("cannot serialize: {e}"))?;
     fs::write(path, format!("{json}\n"))
         .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
@@ -116,13 +118,32 @@ fn epoch_to_iso(secs: u64) -> String {
     // Compute year/month/day from days since epoch (1970-01-01).
     let mut y = 1970i64;
     loop {
-        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if days < dy { break; }
+        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if days < dy {
+            break;
+        }
         days -= dy;
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 0usize;
     while mo < 11 && days >= mdays[mo] {
         days -= mdays[mo];

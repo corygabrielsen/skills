@@ -6,8 +6,9 @@
 
 use crate::decide::action::{Action, Automation, TargetEffect};
 use crate::decide::decision::{Decision, DecisionHalt, Terminal};
-use crate::orient::copilot::CopilotActivity;
 use crate::orient::OrientedState;
+use crate::orient::copilot::CopilotActivity;
+use serde::Serialize;
 
 /// Lookup by tier slug (`bronze`/`silver`/`gold`/`platinum`).
 /// Both `CopilotTier` and `CursorTier` produce the same slugs.
@@ -21,6 +22,7 @@ fn tier_emoji(slug: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Rendered {
     pub body: String,
     /// Stable key for dedup. Identical decisions on identical state
@@ -123,8 +125,7 @@ fn ci_line(o: &OrientedState) -> String {
             crate::text::count(ci.required.pending(), "required check"),
         )
     } else if ci.missing() > 0 {
-        let names: Vec<String> =
-            ci.missing_names.iter().map(|n| n.to_string()).collect();
+        let names: Vec<String> = ci.missing_names.iter().map(|n| n.to_string()).collect();
         format!(
             "❓ CI · {} not started: {}",
             crate::text::count(ci.missing(), "required check"),
@@ -202,18 +203,10 @@ fn decision_block(d: &Decision) -> String {
         Decision::Halt(DecisionHalt::Success) => {
             "**Halt:** Success — no advancing actions remain.".into()
         }
-        Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)) => {
-            "**Halt:** PR merged.".into()
-        }
-        Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)) => {
-            "**Halt:** PR closed.".into()
-        }
-        Decision::Halt(DecisionHalt::AgentNeeded(action)) => {
-            action_block("Agent needed", action)
-        }
-        Decision::Halt(DecisionHalt::HumanNeeded(action)) => {
-            action_block("Human needed", action)
-        }
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)) => "**Halt:** PR merged.".into(),
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)) => "**Halt:** PR closed.".into(),
+        Decision::Halt(DecisionHalt::AgentNeeded(action)) => action_block("Agent needed", action),
+        Decision::Halt(DecisionHalt::HumanNeeded(action)) => action_block("Human needed", action),
     }
 }
 
@@ -289,8 +282,7 @@ mod tests {
                 merge_when_ready: false,
                 commits: 1,
                 behind: false,
-                merge_state_status:
-                    crate::observe::github::pr_view::MergeStateStatus::Clean,
+                merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
                 updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
                 last_commit_at: None,
             },

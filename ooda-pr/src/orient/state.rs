@@ -5,6 +5,7 @@
 
 use crate::ids::Timestamp;
 use crate::observe::github::pr_view::{MergeStateStatus, Mergeable, PullRequestView};
+use serde::Serialize;
 
 const TITLE_MAX_LEN: usize = 50;
 /// The label string both orient (detects) and act (removes) must
@@ -13,7 +14,7 @@ pub const WIP_LABEL: &str = "work in progress";
 const MERGE_WHEN_READY_LABEL: &str = "merge-when-ready";
 const CONTENT_LABELS: &[&str] = &["bug", "enhancement"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PullRequestState {
     pub conflict: Mergeable,
     pub draft: bool,
@@ -47,10 +48,7 @@ pub struct PullRequestState {
 /// `last_commit_at` comes from a separate observation source (git
 /// log on HEAD); the caller supplies it. Passed in rather than derived
 /// here because it crosses an observation boundary.
-pub fn orient_state(
-    pr: &PullRequestView,
-    last_commit_at: Option<Timestamp>,
-) -> PullRequestState {
+pub fn orient_state(pr: &PullRequestView, last_commit_at: Option<Timestamp>) -> PullRequestState {
     let body = pr.body.as_deref().unwrap_or_default();
     let label_names: Vec<&str> = pr.labels.iter().map(|l| l.name.as_str()).collect();
 
@@ -193,9 +191,7 @@ mod tests {
     #[test]
     fn detects_summary_and_test_plan_headings_case_insensitive() {
         let pr = pr_view(|p| {
-            p.body = Some(
-                "## summary\nstuff\n\n## TEST PLAN\n- check it\n".into(),
-            );
+            p.body = Some("## summary\nstuff\n\n## TEST PLAN\n- check it\n".into());
         });
         let s = orient_state(&pr, None);
         assert!(s.summary);

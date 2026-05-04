@@ -6,11 +6,11 @@
 //! produced it. Rule parameters are polymorphic — see
 //! [`crate::observe::github::rulesets`] for typed parameter structs.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::RepoSlug;
 
-use super::gh::{encode_path_segment, gh_json_paginate, GhError};
+use super::gh::{GhError, encode_path_segment, gh_json_paginate};
 
 /// Fetch all active rules (across all rulesets) that target a
 /// specific branch via `GET /repos/{o}/{r}/rules/branches/{branch}`.
@@ -24,10 +24,7 @@ use super::gh::{encode_path_segment, gh_json_paginate, GhError};
 /// from the decision model and a still-blocked PR to look clean.
 /// Class invariant: every list endpoint that may exceed one page
 /// uses `gh_json_paginate`.
-pub fn fetch_branch_rules(
-    slug: &RepoSlug,
-    branch: &str,
-) -> Result<Vec<BranchRule>, GhError> {
+pub fn fetch_branch_rules(slug: &RepoSlug, branch: &str) -> Result<Vec<BranchRule>, GhError> {
     let path = format!(
         "repos/{slug}/rules/branches/{}?per_page=100",
         encode_path_segment(branch)
@@ -35,7 +32,7 @@ pub fn fetch_branch_rules(
     gh_json_paginate(&["api", "--paginate", &path])
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BranchRule {
     #[serde(rename = "type")]
     pub rule_type: String,
@@ -50,8 +47,7 @@ pub struct BranchRule {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/branch_rules_master.json");
+    const FIXTURE: &str = include_str!("../../../test/fixtures/github/branch_rules_master.json");
 
     #[test]
     fn deserializes_fixture() {

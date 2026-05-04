@@ -9,12 +9,11 @@
 use crate::ids::{GitCommitSha, GitHubLogin, Reviewer, Timestamp};
 use crate::observe::github::comments::IssueComment;
 use crate::observe::github::pr_view::{PullRequestView, ReviewDecision};
-use crate::observe::github::review_threads::{
-    RequestedReviewer, ReviewThreadsResponse,
-};
+use crate::observe::github::review_threads::{RequestedReviewer, ReviewThreadsResponse};
 use crate::observe::github::reviews::{PullRequestReview, ReviewState};
+use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewSummary {
     /// `None` means "no review policy on this branch" — distinct from
     /// `Some(ReviewRequired)` which means policy exists and is unmet.
@@ -29,7 +28,7 @@ pub struct ReviewSummary {
     pub bot_reviews: Vec<BotReview>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct PendingReviews {
     /// Bots always have logins (GraphQL Bot or User-with-`[bot]`-suffix).
     pub bots: Vec<GitHubLogin>,
@@ -37,7 +36,7 @@ pub struct PendingReviews {
     pub humans: Vec<Reviewer>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BotReview {
     pub user: GitHubLogin,
     pub state: ReviewState,
@@ -65,18 +64,17 @@ pub fn orient_reviews(
         .filter(|t| !t.is_resolved && !t.is_outdated)
         .count();
 
-    let bot_comments = comments
-        .iter()
-        .filter(|c| c.user.login.is_bot())
-        .count();
+    let bot_comments = comments.iter().filter(|c| c.user.login.is_bot()).count();
 
     let head = &pr.head_ref_oid;
-    let (approvals_on_head, approvals_stale) =
-        partition_approvals(reviews, head);
+    let (approvals_on_head, approvals_stale) = partition_approvals(reviews, head);
 
-    let pending_reviews = pending_split(pull.review_requests.nodes.iter().filter_map(
-        |n| n.requested_reviewer.as_ref(),
-    ));
+    let pending_reviews = pending_split(
+        pull.review_requests
+            .nodes
+            .iter()
+            .filter_map(|n| n.requested_reviewer.as_ref()),
+    );
 
     let bot_reviews = reviews
         .iter()
@@ -102,10 +100,7 @@ pub fn orient_reviews(
     }
 }
 
-fn partition_approvals(
-    reviews: &[PullRequestReview],
-    head: &GitCommitSha,
-) -> (usize, usize) {
+fn partition_approvals(reviews: &[PullRequestReview], head: &GitCommitSha) -> (usize, usize) {
     let mut on_head = 0;
     let mut stale = 0;
     for r in reviews {
@@ -130,9 +125,7 @@ fn partition_approvals(
 /// A `[bot]`-suffixed `User` login also counts as a bot so that
 /// reviewers added before GraphQL knew about the Bot type still
 /// classify correctly.
-fn pending_split<'a>(
-    reviewers: impl Iterator<Item = &'a RequestedReviewer>,
-) -> PendingReviews {
+fn pending_split<'a>(reviewers: impl Iterator<Item = &'a RequestedReviewer>) -> PendingReviews {
     let mut out = PendingReviews::default();
     for r in reviewers {
         match r {
@@ -160,14 +153,11 @@ mod tests {
     use super::*;
     use crate::ids::PullRequestNumber;
     use crate::observe::github::comments::{CommentUser, IssueComment};
-    use crate::observe::github::pr_view::{
-        MergeStateStatus, Mergeable, PrState, PullRequestView,
-    };
+    use crate::observe::github::pr_view::{MergeStateStatus, Mergeable, PrState, PullRequestView};
     use crate::observe::github::review_threads::{
-        CommentAuthor, PageInfo, RequestedReviewer, ReviewRequestNode,
-        ReviewRequestsPage, ReviewThread, ReviewThreadsData, ReviewThreadsPage,
-        ReviewThreadsPr, ReviewThreadsRepo, ReviewThreadsResponse, ThreadComment,
-        ThreadComments,
+        CommentAuthor, PageInfo, RequestedReviewer, ReviewRequestNode, ReviewRequestsPage,
+        ReviewThread, ReviewThreadsData, ReviewThreadsPage, ReviewThreadsPr, ReviewThreadsRepo,
+        ReviewThreadsResponse, ThreadComment, ThreadComments,
     };
     use crate::observe::github::reviews::{PullRequestReview, ReviewUser};
 
@@ -354,11 +344,19 @@ mod tests {
             }),
         ];
         let s = orient_reviews(&pr(), &threads(vec![], nodes), &[], &[]);
-        let bot_strs: Vec<String> =
-            s.pending_reviews.bots.iter().map(|l| l.to_string()).collect();
+        let bot_strs: Vec<String> = s
+            .pending_reviews
+            .bots
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
         assert_eq!(bot_strs, vec!["dependabot[bot]", "copilot[bot]"]);
-        let human_strs: Vec<String> =
-            s.pending_reviews.humans.iter().map(|r| r.to_string()).collect();
+        let human_strs: Vec<String> = s
+            .pending_reviews
+            .humans
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
         assert_eq!(human_strs, vec!["alice", "backend", "ghost"]);
     }
 

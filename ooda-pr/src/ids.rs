@@ -314,7 +314,7 @@ impl fmt::Display for GitHubLogin {
 ///
 /// No serde — `BlockerKey` is constructed and consumed entirely
 /// inside the decide/runner layers; nothing serializes it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct BlockerKey(String);
 
 impl BlockerKey {
@@ -468,7 +468,7 @@ impl fmt::Display for TeamName {
 ///
 /// `Display` writes the login or team name verbatim — both forms
 /// are what GitHub's UI shows.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum Reviewer {
     User(GitHubLogin),
     Team(TeamName),

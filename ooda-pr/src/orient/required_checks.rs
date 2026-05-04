@@ -47,8 +47,7 @@ pub fn required_check_names(
         let Some(params) = rule.parameters.clone() else {
             continue;
         };
-        let Ok(parsed): Result<RequiredStatusChecksParams, _> =
-            serde_json::from_value(params)
+        let Ok(parsed): Result<RequiredStatusChecksParams, _> = serde_json::from_value(params)
         else {
             continue;
         };

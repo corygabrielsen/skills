@@ -5,11 +5,11 @@
 //! `type`, etc.) and additional team fields; we model only what
 //! downstream stages use.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug};
 
-use super::gh::{gh_json, GhError};
+use super::gh::{GhError, gh_json};
 
 /// Fetch currently-pending reviewer requests for a PR.
 pub fn fetch_requested_reviewers(
@@ -20,7 +20,7 @@ pub fn fetch_requested_reviewers(
     gh_json(&["api", &path])
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct RequestedReviewers {
     #[serde(default)]
     pub users: Vec<RequestedUser>,
@@ -28,7 +28,7 @@ pub struct RequestedReviewers {
     pub teams: Vec<RequestedTeam>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RequestedUser {
     pub login: GitHubLogin,
     /// `User`, `Bot`, `Organization`, or `Mannequin`.
@@ -36,7 +36,7 @@ pub struct RequestedUser {
     pub user_type: UserType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum UserType {
     User,
     Bot,
@@ -44,7 +44,7 @@ pub enum UserType {
     Mannequin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RequestedTeam {
     pub slug: String,
 }
@@ -53,8 +53,7 @@ pub struct RequestedTeam {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/requested_reviewers.json");
+    const FIXTURE: &str = include_str!("../../../test/fixtures/github/requested_reviewers.json");
 
     #[test]
     fn deserializes_empty_fixture() {

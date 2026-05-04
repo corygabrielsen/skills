@@ -4,11 +4,11 @@
 //! request. Extra fields in the JSON are ignored; we model only what
 //! later stages (orient/decide) consume.
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ids::{BranchName, GitCommitSha, GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
-use super::gh::{gh_json, GhError};
+use super::gh::{GhError, gh_json};
 
 /// Fields passed via `--json` to `gh pr view`. Must stay aligned with
 /// the `PullRequestView` struct below.
@@ -17,18 +17,13 @@ const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
      labels,assignees,reviewRequests,reviewDecision,commits";
 
 /// Fetch PR metadata via `gh pr view`.
-pub fn fetch_pr_view(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-) -> Result<PullRequestView, GhError> {
+pub fn fetch_pr_view(slug: &RepoSlug, pr: PullRequestNumber) -> Result<PullRequestView, GhError> {
     let slug_s = slug.to_string();
     let pr_s = pr.to_string();
-    gh_json(&[
-        "pr", "view", &pr_s, "-R", &slug_s, "--json", PR_FIELDS,
-    ])
+    gh_json(&["pr", "view", &pr_s, "-R", &slug_s, "--json", PR_FIELDS])
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestView {
     pub title: String,
@@ -56,7 +51,7 @@ pub struct PullRequestView {
     pub commits: Vec<Commit>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PrState {
     Open,
@@ -68,7 +63,7 @@ pub enum PrState {
 // `MERGEABLE`; mirroring that preserves 1:1 alignment with the
 // source API at the cost of `Mergeable::Mergeable` tripping clippy.
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Mergeable {
     Mergeable,
@@ -83,7 +78,7 @@ pub enum Mergeable {
 /// AND our `#[serde(other)]` catchall — any future status variant
 /// GitHub adds routes here too rather than aborting deserialization.
 /// Same pattern as `CheckState::Unknown`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum MergeStateStatus {
     Behind,
@@ -97,7 +92,7 @@ pub enum MergeStateStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ReviewDecision {
     Approved,
     ReviewRequired,
@@ -125,18 +120,18 @@ where
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Label {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Assignee {
     pub login: GitHubLogin,
 }
 
 /// Either a user (has `login`) or a team (has `name`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewRequest {
     #[serde(default)]
     pub login: Option<GitHubLogin>,
@@ -144,7 +139,7 @@ pub struct ReviewRequest {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Commit {
     pub oid: GitCommitSha,
 }
@@ -153,8 +148,7 @@ pub struct Commit {
 mod tests {
     use super::*;
 
-    const MERGED_FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/pr_view_merged.json");
+    const MERGED_FIXTURE: &str = include_str!("../../../test/fixtures/github/pr_view_merged.json");
 
     #[test]
     fn deserializes_merged_pr_fixture() {

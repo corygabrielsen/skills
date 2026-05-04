@@ -8,11 +8,11 @@
 //! events leave them null. Extra REST fields (id, node_id, url, …)
 //! are ignored.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
-use super::gh::{gh_json_paginate, GhError};
+use super::gh::{GhError, gh_json_paginate};
 
 /// Fetch PR timeline events. `gh api --paginate` emits one JSON
 /// array per page; `gh_json_paginate` concatenates them.
@@ -24,7 +24,7 @@ pub fn fetch_issue_events(
     gh_json_paginate(&["api", &path, "--paginate"])
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IssueEvent {
     pub event: String,
     pub actor: Option<Actor>,
@@ -36,17 +36,17 @@ pub struct IssueEvent {
     pub requested_team: Option<TeamRef>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Actor {
     pub login: GitHubLogin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct UserRef {
     pub login: GitHubLogin,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TeamRef {
     pub slug: String,
 }
@@ -55,8 +55,7 @@ pub struct TeamRef {
 mod tests {
     use super::*;
 
-    const EVENTS_FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/issue_events.json");
+    const EVENTS_FIXTURE: &str = include_str!("../../../test/fixtures/github/issue_events.json");
 
     #[test]
     fn deserializes_full_fixture() {
@@ -75,7 +74,10 @@ mod tests {
             .iter()
             .find(|e| e.event == "review_requested" && e.requested_team.is_some())
             .expect("fixture has a team-requested review");
-        assert_eq!(team_req.requested_team.as_ref().unwrap().slug, "review-team");
+        assert_eq!(
+            team_req.requested_team.as_ref().unwrap().slug,
+            "review-team"
+        );
         assert!(team_req.requested_reviewer.is_none());
     }
 

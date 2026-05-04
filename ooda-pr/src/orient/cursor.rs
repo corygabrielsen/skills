@@ -16,8 +16,9 @@ use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::checks::{CheckState, PullRequestCheck};
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
+use serde::Serialize;
 
-use super::bot_threads::{count_bot_threads, BotThreadSummary};
+use super::bot_threads::{BotThreadSummary, count_bot_threads};
 
 // ── Identity ─────────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ pub fn is_cursor(login: &str) -> bool {
 
 // ── Public types ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CursorReport {
     pub activity: CursorActivity,
     /// All Cursor review rounds, oldest first.
@@ -42,7 +43,7 @@ pub struct CursorReport {
     pub fresh: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CursorActivity {
     Idle,
     Reviewing,
@@ -50,7 +51,7 @@ pub enum CursorActivity {
     Clean,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CursorReviewRound {
     /// 1-indexed within this PR's Cursor review history.
     pub round: u32,
@@ -59,7 +60,7 @@ pub struct CursorReviewRound {
     pub findings_count: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct CursorSeverityBreakdown {
     pub high: u32,
     pub medium: u32,
@@ -87,7 +88,7 @@ impl CursorSeverityBreakdown {
 
 /// Same tier lattice as Copilot — kept as a separate type to prevent
 /// accidental cross-bot comparison without explicit choice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CursorTier {
     Bronze,
     Silver,
@@ -126,8 +127,7 @@ pub fn orient_cursor(
     }
 
     let latest_reviewed_at = rounds.last().map(|r| r.reviewed_at);
-    let thread_summary =
-        count_bot_threads(threads, latest_reviewed_at.as_ref(), is_cursor);
+    let thread_summary = count_bot_threads(threads, latest_reviewed_at.as_ref(), is_cursor);
     let severity = count_severity(threads);
     let activity = derive_activity(&rounds, check);
     let tier = score_tier(&rounds, &thread_summary, check);
@@ -224,7 +224,9 @@ fn count_severity(threads: &ReviewThreadsResponse) -> CursorSeverityBreakdown {
         let Some(first) = t.comments.nodes.first() else {
             continue;
         };
-        let Some(author) = &first.author else { continue };
+        let Some(author) = &first.author else {
+            continue;
+        };
         if !is_cursor(author.login.as_str()) {
             continue;
         }
@@ -257,9 +259,7 @@ fn score_tier(
         Some(CheckState::Success) => CursorTier::Platinum,
         // `Pending` joins Queued/InProgress as in-flight — Bugbot
         // hasn't completed yet, mirror the activity classification.
-        Some(CheckState::Queued)
-        | Some(CheckState::InProgress)
-        | Some(CheckState::Pending) => {
+        Some(CheckState::Queued) | Some(CheckState::InProgress) | Some(CheckState::Pending) => {
             if rounds.is_empty() {
                 CursorTier::Bronze
             } else {
@@ -425,7 +425,12 @@ mod tests {
 
     #[test]
     fn returns_some_when_check_exists_even_without_rounds() {
-        let r = orient_cursor(&[], &empty_threads(), &[cursor_check(CheckState::Queued)], &head());
+        let r = orient_cursor(
+            &[],
+            &empty_threads(),
+            &[cursor_check(CheckState::Queued)],
+            &head(),
+        );
         assert!(r.is_some());
     }
 
@@ -558,13 +563,8 @@ mod tests {
             cursor_thread(false, "**Low Severity** thing"),
             cursor_thread(true, "**High Severity** but resolved"), // excluded
         ]);
-        let r = orient_cursor(
-            &[],
-            &threads,
-            &[cursor_check(CheckState::Success)],
-            &head(),
-        )
-        .unwrap();
+        let r =
+            orient_cursor(&[], &threads, &[cursor_check(CheckState::Success)], &head()).unwrap();
         assert_eq!(r.severity.high, 1);
         assert_eq!(r.severity.medium, 2);
         assert_eq!(r.severity.low, 1);
@@ -573,13 +573,8 @@ mod tests {
     #[test]
     fn severity_skips_threads_without_severity_tag() {
         let threads = threads_with(vec![cursor_thread(false, "no tag here")]);
-        let r = orient_cursor(
-            &[],
-            &threads,
-            &[cursor_check(CheckState::Success)],
-            &head(),
-        )
-        .unwrap();
+        let r =
+            orient_cursor(&[], &threads, &[cursor_check(CheckState::Success)], &head()).unwrap();
         assert_eq!(r.severity.high, 0);
         assert_eq!(r.severity.medium, 0);
         assert_eq!(r.severity.low, 0);

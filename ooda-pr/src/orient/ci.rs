@@ -10,8 +10,9 @@ use std::collections::HashMap;
 
 use crate::ids::{CheckName, Timestamp};
 use crate::observe::github::checks::{CheckState, PullRequestCheck};
+use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CiSummary {
     /// Required-check counts (gating merge).
     pub required: CheckBucket,
@@ -32,7 +33,7 @@ impl CiSummary {
 /// Counts + names + failed-detail tuples for one bucket of checks
 /// (required *or* advisory). Same shape on both sides so callers can
 /// reason uniformly.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct CheckBucket {
     pub pass: usize,
     pub failed: Vec<FailedCheck>,
@@ -54,7 +55,7 @@ impl CheckBucket {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FailedCheck {
     pub name: CheckName,
     pub description: String,
@@ -73,10 +74,8 @@ pub fn orient_ci(checks: &[PullRequestCheck], required_names: &[CheckName]) -> C
     // the caller's order. Graphite mergeability is treated as any
     // other required check — stack-blocked PRs surface it as
     // pending/failing CI rather than being silently dropped.
-    let required_set: std::collections::HashSet<&str> = required_names
-        .iter()
-        .map(CheckName::as_str)
-        .collect();
+    let required_set: std::collections::HashSet<&str> =
+        required_names.iter().map(CheckName::as_str).collect();
 
     let observed: HashMap<&str, &PullRequestCheck> =
         checks.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -200,7 +199,10 @@ mod tests {
         assert_eq!(s.required.pass, 3);
         assert_eq!(s.required.fail(), 0);
         assert_eq!(s.required.pending(), 0);
-        assert_eq!(s.completed_at.as_ref().unwrap().to_string(), "2026-04-23T03:00:00+00:00");
+        assert_eq!(
+            s.completed_at.as_ref().unwrap().to_string(),
+            "2026-04-23T03:00:00+00:00"
+        );
     }
 
     #[test]
@@ -281,16 +283,26 @@ mod tests {
         ];
         let req = vec![cn("Lint")];
         let s = orient_ci(&checks, &req);
-        assert_eq!(s.completed_at.as_ref().unwrap().to_string(), "2026-04-23T05:00:00+00:00");
+        assert_eq!(
+            s.completed_at.as_ref().unwrap().to_string(),
+            "2026-04-23T05:00:00+00:00"
+        );
     }
 
     #[test]
     fn missing_check_does_not_advance_completed_at() {
-        let checks = vec![check("Lint", CheckState::Success, Some("2026-04-23T01:00:00Z"))];
+        let checks = vec![check(
+            "Lint",
+            CheckState::Success,
+            Some("2026-04-23T01:00:00Z"),
+        )];
         let req = vec![cn("Lint"), cn("Build")];
         let s = orient_ci(&checks, &req);
         assert_eq!(s.missing(), 1);
-        assert_eq!(s.completed_at.as_ref().unwrap().to_string(), "2026-04-23T01:00:00+00:00");
+        assert_eq!(
+            s.completed_at.as_ref().unwrap().to_string(),
+            "2026-04-23T01:00:00+00:00"
+        );
     }
 
     #[test]
@@ -303,6 +315,9 @@ mod tests {
         let s = orient_ci(&checks, &req);
         assert_eq!(s.required.pending(), 1);
         assert_eq!(s.required.pass, 1);
-        assert_eq!(s.completed_at.as_ref().unwrap().to_string(), "2026-04-23T01:00:00+00:00");
+        assert_eq!(
+            s.completed_at.as_ref().unwrap().to_string(),
+            "2026-04-23T01:00:00+00:00"
+        );
     }
 }

@@ -5,11 +5,11 @@
 //! from rulesets). Returns `404` when no classic protection is
 //! configured; callers handle that at the observer layer.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{CheckName, RepoSlug};
 
-use super::gh::{encode_path_segment, gh_json, GhError};
+use super::gh::{GhError, encode_path_segment, gh_json};
 
 /// Fetch legacy branch-protection required status checks. Returns
 /// `Ok(None)` when the endpoint returns 404 (no classic protection
@@ -30,13 +30,13 @@ pub fn fetch_branch_protection_required_checks(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BranchProtectionRequiredStatusChecks {
     #[serde(default)]
     pub checks: Vec<BranchProtectionCheck>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BranchProtectionCheck {
     pub context: CheckName,
     /// Null when the check has no registered GitHub App (e.g. status
@@ -48,16 +48,17 @@ pub struct BranchProtectionCheck {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = include_str!(
-        "../../../test/fixtures/github/branch_protection_required_checks.json"
-    );
+    const FIXTURE: &str =
+        include_str!("../../../test/fixtures/github/branch_protection_required_checks.json");
 
     #[test]
     fn deserializes_fixture() {
-        let resp: BranchProtectionRequiredStatusChecks =
-            serde_json::from_str(FIXTURE).unwrap();
+        let resp: BranchProtectionRequiredStatusChecks = serde_json::from_str(FIXTURE).unwrap();
         assert_eq!(resp.checks.len(), 2);
-        assert_eq!(resp.checks[0].context.as_str(), "Graphite / mergeability_check");
+        assert_eq!(
+            resp.checks[0].context.as_str(),
+            "Graphite / mergeability_check"
+        );
         assert_eq!(resp.checks[0].app_id, Some(158384));
         assert_eq!(resp.checks[1].context.as_str(), "Mergeability Check");
     }
@@ -65,16 +66,14 @@ mod tests {
     #[test]
     fn null_app_id_tolerated() {
         let json = r#"{"checks":[{"context":"Custom Status","app_id":null}]}"#;
-        let resp: BranchProtectionRequiredStatusChecks =
-            serde_json::from_str(json).unwrap();
+        let resp: BranchProtectionRequiredStatusChecks = serde_json::from_str(json).unwrap();
         assert_eq!(resp.checks[0].app_id, None);
     }
 
     #[test]
     fn missing_checks_field_defaults_to_empty() {
         let json = r#"{"url":"https://x"}"#;
-        let resp: BranchProtectionRequiredStatusChecks =
-            serde_json::from_str(json).unwrap();
+        let resp: BranchProtectionRequiredStatusChecks = serde_json::from_str(json).unwrap();
         assert!(resp.checks.is_empty());
     }
 }

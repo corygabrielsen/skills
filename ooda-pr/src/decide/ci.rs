@@ -50,18 +50,14 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
         .cloned()
         .collect();
 
-    if ci.required.fail() == 0
-        && !blocked.is_empty()
-        && !ci.advisory.failed.is_empty()
-    {
+    if ci.required.fail() == 0 && !blocked.is_empty() && !ci.advisory.failed.is_empty() {
         let advisory_lines: Vec<String> = ci
             .advisory
             .failed
             .iter()
             .map(|f| format!("- Advisory \"{}\" failed", f.name))
             .collect();
-        let quoted: Vec<String> =
-            blocked.iter().map(|n| format!("\"{n}\"")).collect();
+        let quoted: Vec<String> = blocked.iter().map(|n| format!("\"{n}\"")).collect();
         let mut desc = vec![format!(
             "CI waiting on {}. Concurrent state:",
             quoted.join(", ")
@@ -84,7 +80,9 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             let blocker_list = join_names(&names);
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
-                automation: Automation::Wait { interval: Duration::from_secs(60) },
+                automation: Automation::Wait {
+                    interval: Duration::from_secs(60),
+                },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: format!(
@@ -99,7 +97,9 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             let blocker_list = join_names(&names);
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
-                automation: Automation::Wait { interval: Duration::from_secs(60) },
+                automation: Automation::Wait {
+                    interval: Duration::from_secs(60),
+                },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: format!(
@@ -182,13 +182,17 @@ mod tests {
         ci.advisory.failed = vec![failed("Lint")];
         let cs = candidates(&ci);
         let kinds: Vec<&ActionKind> = cs.iter().map(|a| &a.kind).collect();
-        assert!(kinds
-            .iter()
-            .any(|k| matches!(k, ActionKind::TriageWait { .. })));
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, ActionKind::TriageWait { .. }))
+        );
         // wait_for_ci suppressed when triage fires.
-        assert!(!kinds
-            .iter()
-            .any(|k| matches!(k, ActionKind::WaitForCi { .. })));
+        assert!(
+            !kinds
+                .iter()
+                .any(|k| matches!(k, ActionKind::WaitForCi { .. }))
+        );
     }
 
     #[test]
@@ -196,9 +200,10 @@ mod tests {
         let mut ci = empty_ci();
         ci.advisory.failed = vec![failed("Lint")];
         let cs = candidates(&ci);
-        assert!(!cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::TriageWait { .. })));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::TriageWait { .. }))
+        );
     }
 
     #[test]

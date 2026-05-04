@@ -18,20 +18,23 @@
 use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
 use crate::runner::LoopError;
+use serde::Serialize;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum Outcome {
     /// PR merged. Terminal success.
     DoneMerged,
     /// Same `(kind, blocker)` action repeated on consecutive
     /// non-`Wait` iterations. Carries the repeated action.
     StuckRepeated(Action),
-    /// Iteration cap hit. Carries the last attempted action when
-    /// any action ran; `None` when the cap tripped before `act`
-    /// (e.g. `--max-iter 1` with the candidate being an agent
-    /// handoff that goes through the halt path — though that case
-    /// would surface as `HandoffAgent` first).
-    StuckCapReached(Option<Action>),
+    /// Iteration cap hit. Carries the last attempted action
+    /// (Wait or non-Wait) — the natural triage anchor
+    /// (`<ActionKind>:<BlockerKey>` shows what was running when
+    /// the cap fired). The runner constructs this only when the
+    /// cap fires after at least one Execute, which is guaranteed
+    /// by `--max-iter ≥ 1` parser validation plus the loop's
+    /// halt-on-any-Decision::Halt early return.
+    StuckCapReached(Action),
     /// Decide selected an action requiring a human. Carries the
     /// action; `act` did not run.
     HandoffHuman(Action),
@@ -81,7 +84,7 @@ impl From<HaltReason> for Outcome {
         match reason {
             HaltReason::Decision(halt) => decision_halt_to_outcome(halt),
             HaltReason::Stalled(action) => Self::StuckRepeated(action),
-            HaltReason::CapReached { last_action } => Self::StuckCapReached(last_action),
+            HaltReason::CapReached(action) => Self::StuckCapReached(action),
         }
     }
 }
@@ -153,8 +156,7 @@ mod tests {
     fn exit_codes_match_spec() {
         assert_eq!(Outcome::DoneMerged.exit_code(), 0);
         assert_eq!(Outcome::StuckRepeated(dummy_action()).exit_code(), 1);
-        assert_eq!(Outcome::StuckCapReached(None).exit_code(), 2);
-        assert_eq!(Outcome::StuckCapReached(Some(dummy_action())).exit_code(), 2);
+        assert_eq!(Outcome::StuckCapReached(dummy_action()).exit_code(), 2);
         assert_eq!(Outcome::HandoffHuman(dummy_action()).exit_code(), 3);
         assert_eq!(Outcome::WouldAdvance(dummy_action()).exit_code(), 4);
         assert_eq!(Outcome::HandoffAgent(dummy_action()).exit_code(), 5);
@@ -167,11 +169,15 @@ mod tests {
     #[test]
     fn halt_reason_maps_terminals_to_done_variants() {
         assert!(matches!(
-            Outcome::from(HaltReason::Decision(DecisionHalt::Terminal(Terminal::Merged))),
+            Outcome::from(HaltReason::Decision(DecisionHalt::Terminal(
+                Terminal::Merged
+            ))),
             Outcome::DoneMerged
         ));
         assert!(matches!(
-            Outcome::from(HaltReason::Decision(DecisionHalt::Terminal(Terminal::Closed))),
+            Outcome::from(HaltReason::Decision(DecisionHalt::Terminal(
+                Terminal::Closed
+            ))),
             Outcome::DoneClosed
         ));
     }
@@ -187,11 +193,15 @@ mod tests {
     #[test]
     fn halt_reason_maps_handoffs() {
         assert!(matches!(
-            Outcome::from(HaltReason::Decision(DecisionHalt::AgentNeeded(dummy_action()))),
+            Outcome::from(HaltReason::Decision(DecisionHalt::AgentNeeded(
+                dummy_action()
+            ))),
             Outcome::HandoffAgent(_)
         ));
         assert!(matches!(
-            Outcome::from(HaltReason::Decision(DecisionHalt::HumanNeeded(dummy_action()))),
+            Outcome::from(HaltReason::Decision(DecisionHalt::HumanNeeded(
+                dummy_action()
+            ))),
             Outcome::HandoffHuman(_)
         ));
     }
@@ -203,14 +213,8 @@ mod tests {
             Outcome::StuckRepeated(_)
         ));
         assert!(matches!(
-            Outcome::from(HaltReason::CapReached { last_action: None }),
-            Outcome::StuckCapReached(None)
-        ));
-        assert!(matches!(
-            Outcome::from(HaltReason::CapReached {
-                last_action: Some(dummy_action())
-            }),
-            Outcome::StuckCapReached(Some(_))
+            Outcome::from(HaltReason::CapReached(dummy_action())),
+            Outcome::StuckCapReached(_)
         ));
     }
 

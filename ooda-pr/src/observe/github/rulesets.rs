@@ -9,11 +9,11 @@
 //! (`CopilotCodeReviewParams`, `RequiredStatusChecksParams`) deserialize
 //! opt-in from the `parameters` field when callers need them.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{CheckName, RepoSlug};
 
-use super::gh::{gh_json, gh_json_paginate, GhError};
+use super::gh::{GhError, gh_json, gh_json_paginate};
 
 /// Fetch every ruleset summary for a repo. Uses `--paginate` with
 /// `per_page=100`. Repos with >100 rulesets would otherwise drop
@@ -38,12 +38,12 @@ pub fn fetch_ruleset(slug: &RepoSlug, id: u64) -> Result<Ruleset, GhError> {
 
 /// Entry from the list endpoint. The list response is trimmed; the
 /// full shape is fetched per-id via `Ruleset`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RulesetSummary {
     pub id: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Ruleset {
     pub id: u64,
     pub name: String,
@@ -59,14 +59,14 @@ pub struct Ruleset {
 /// `ref_name` is modeled; other condition kinds (repository
 /// property, etc.) are silently ignored — repos that depend on
 /// them appear unconditionally matched.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct RulesetConditions {
     #[serde(default)]
     pub ref_name: Option<RefNameCondition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct RefNameCondition {
     /// Patterns: `~ALL` (every branch), `~DEFAULT_BRANCH`
     /// (repo default), exact `refs/heads/<name>`, or
@@ -95,10 +95,7 @@ pub struct RefNameCondition {
 ///   - `refs/heads/<exact>` exact match.
 ///   - `refs/heads/<glob>` with `*` wildcards (fnmatch-style,
 ///     no character classes).
-pub fn ruleset_matches_branch(
-    conditions: Option<&RulesetConditions>,
-    branch: &str,
-) -> bool {
+pub fn ruleset_matches_branch(conditions: Option<&RulesetConditions>, branch: &str) -> bool {
     let Some(c) = conditions else { return true };
     let Some(rn) = &c.ref_name else { return true };
     let qualified = format!("refs/heads/{branch}");
@@ -155,7 +152,7 @@ fn glob_matches(pat: &str, s: &str) -> bool {
     true
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RulesetEnforcement {
     Active,
@@ -166,7 +163,7 @@ pub enum RulesetEnforcement {
 /// A single rule inside a ruleset. `parameters` is raw JSON — opt into
 /// a typed view via `serde_json::from_value(rule.parameters.clone())`
 /// using one of the typed `*Params` structs below.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RulesetRule {
     #[serde(rename = "type")]
     pub rule_type: String,
@@ -175,19 +172,19 @@ pub struct RulesetRule {
 }
 
 /// Shape of `parameters` when `rule_type == "copilot_code_review"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CopilotCodeReviewParams {
     pub review_on_push: bool,
     pub review_draft_pull_requests: bool,
 }
 
 /// Shape of `parameters` when `rule_type == "required_status_checks"`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RequiredStatusChecksParams {
     pub required_status_checks: Vec<RequiredStatusCheck>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RequiredStatusCheck {
     pub context: CheckName,
     /// Null when the required check is not pinned to a GitHub App
@@ -200,10 +197,8 @@ pub struct RequiredStatusCheck {
 mod tests {
     use super::*;
 
-    const LIST_FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/rulesets_list.json");
-    const DETAIL_FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/ruleset_detail.json");
+    const LIST_FIXTURE: &str = include_str!("../../../test/fixtures/github/rulesets_list.json");
+    const DETAIL_FIXTURE: &str = include_str!("../../../test/fixtures/github/ruleset_detail.json");
     const DETAIL_WITH_COPILOT: &str =
         include_str!("../../../test/fixtures/github/ruleset_with_copilot.json");
 
@@ -260,9 +255,7 @@ mod tests {
             ("disabled", RulesetEnforcement::Disabled),
             ("evaluate", RulesetEnforcement::Evaluate),
         ] {
-            let json = format!(
-                r#"{{"id":1,"name":"r","enforcement":"{s}","rules":[]}}"#,
-            );
+            let json = format!(r#"{{"id":1,"name":"r","enforcement":"{s}","rules":[]}}"#,);
             let r: Ruleset = serde_json::from_str(&json).unwrap();
             assert_eq!(r.enforcement, expected);
         }

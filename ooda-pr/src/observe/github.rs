@@ -17,31 +17,32 @@ pub mod stack_root;
 use std::thread;
 
 use crate::ids::{PullRequestNumber, RepoSlug};
+use serde::Serialize;
 
 use branch_protection::{
-    fetch_branch_protection_required_checks, BranchProtectionRequiredStatusChecks,
+    BranchProtectionRequiredStatusChecks, fetch_branch_protection_required_checks,
 };
-use branch_rules::{fetch_branch_rules, BranchRule};
-use checks::{fetch_pr_checks, PullRequestCheck};
-use comments::{fetch_issue_comments, IssueComment};
+use branch_rules::{BranchRule, fetch_branch_rules};
+use checks::{PullRequestCheck, fetch_pr_checks};
+use comments::{IssueComment, fetch_issue_comments};
 use copilot_config::fetch_copilot_config;
 use gh::GhError;
-use stack_root::resolve_stack_root;
-use issue_events::{fetch_issue_events, IssueEvent};
-use pr_view::{fetch_pr_view, PrState, PullRequestView};
-use requested_reviewers::{fetch_requested_reviewers, RequestedReviewers};
+use issue_events::{IssueEvent, fetch_issue_events};
+use pr_view::{PrState, PullRequestView, fetch_pr_view};
+use requested_reviewers::{RequestedReviewers, fetch_requested_reviewers};
 use review_threads::{
-    empty_review_threads_response, fetch_all_review_threads, ReviewThreadsResponse,
+    ReviewThreadsResponse, empty_review_threads_response, fetch_all_review_threads,
 };
-use reviews::{fetch_pr_reviews, PullRequestReview};
+use reviews::{PullRequestReview, fetch_pr_reviews};
 use rulesets::CopilotCodeReviewParams;
+use stack_root::resolve_stack_root;
 
 /// Full PR-scoped observation bundle from GitHub. Produced by
 /// [`fetch_all`]; consumed by the orient stage.
 ///
 /// `review_threads_page` holds *all* threads — `fetch_all_review_threads`
 /// loops the GraphQL cursor until the last page.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GitHubObservations {
     pub pr_view: PullRequestView,
     pub checks: Vec<PullRequestCheck>,
@@ -76,10 +77,7 @@ pub struct GitHubObservations {
 ///      instead of decide()'s documented `Halt::Terminal`.
 ///   3. Parallel aux fetch — the remaining nine calls fan out
 ///      concurrently. Fail-fast on the first error.
-pub fn fetch_all(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-) -> Result<GitHubObservations, GhError> {
+pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<GitHubObservations, GhError> {
     let pr_view = fetch_pr_view(slug, pr)?;
     if matches!(pr_view.state, PrState::Merged | PrState::Closed) {
         return Ok(terminal_observations(pr_view));

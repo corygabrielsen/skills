@@ -5,7 +5,7 @@
 use crate::ids::BlockerKey;
 use std::time::Duration;
 
-use crate::observe::github::pr_view::{Mergeable, MergeStateStatus};
+use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
 use crate::orient::state::PullRequestState;
 
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
@@ -47,10 +47,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: format!(
-                "Shorten title ({} chars, max 50)",
-                state.title_len
-            ),
+            description: format!("Shorten title ({} chars, max 50)", state.title_len),
             blocker: BlockerKey::tag("title_too_long"),
         });
     }
@@ -60,7 +57,9 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
     if state.conflict == Mergeable::Unknown {
         out.push(Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait { interval: Duration::from_secs(30) },
+            automation: Automation::Wait {
+                interval: Duration::from_secs(30),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "GitHub is still computing mergeability — wait and re-observe".into(),
@@ -121,7 +120,9 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
         }],
         MergeStateStatus::HasHooks => vec![Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait { interval: Duration::from_secs(30) },
+            automation: Automation::Wait {
+                interval: Duration::from_secs(30),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "Commit hooks are still running — wait and re-observe".into(),
@@ -129,7 +130,9 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
         }],
         MergeStateStatus::Unknown => vec![Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait { interval: Duration::from_secs(30) },
+            automation: Automation::Wait {
+                interval: Duration::from_secs(30),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "GitHub is still computing merge state — wait and re-observe".into(),

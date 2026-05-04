@@ -5,8 +5,8 @@ use crate::ids::BlockerKey;
 use std::time::Duration;
 
 use crate::observe::github::pr_view::ReviewDecision;
-use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 use crate::orient::OrientedState;
+use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
 use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
 
@@ -34,7 +34,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     if !live_threads.is_empty() {
         let description = address_threads_description(&live_threads);
         out.push(Action {
-            kind: ActionKind::AddressThreads { threads: live_threads },
+            kind: ActionKind::AddressThreads {
+                threads: live_threads,
+            },
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
@@ -52,7 +54,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             kind: ActionKind::WaitForBotReview {
                 reviewers: reviews.pending_reviews.bots.clone(),
             },
-            automation: Automation::Wait { interval: Duration::from_secs(60) },
+            automation: Automation::Wait {
+                interval: Duration::from_secs(60),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: format!("Wait for bot review from {names}"),
@@ -111,10 +115,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     // the urgency sort and the loop hands work back to the agent
     // even though the right next action is to wait for the
     // re-review.
-    let changes_requested =
-        matches!(reviews.decision, Some(ReviewDecision::ChangesRequested));
-    let no_pending_re_review = reviews.pending_reviews.bots.is_empty()
-        && reviews.pending_reviews.humans.is_empty();
+    let changes_requested = matches!(reviews.decision, Some(ReviewDecision::ChangesRequested));
+    let no_pending_re_review =
+        reviews.pending_reviews.bots.is_empty() && reviews.pending_reviews.humans.is_empty();
     if changes_requested && threads_clean && no_pending_re_review {
         out.push(Action {
             kind: ActionKind::AddressChangeRequest,
@@ -160,9 +163,7 @@ fn address_threads_description(threads: &[ReviewThread]) -> String {
     if !by_author.is_empty() {
         let bits: Vec<String> = by_author
             .iter()
-            .map(|(author, count)| {
-                format!("{}: {}", author, crate::text::count(*count, "issue"))
-            })
+            .map(|(author, count)| format!("{}: {}", author, crate::text::count(*count, "issue")))
             .collect();
         parts.push(format!("{}.", bits.join(" · ")));
     }
@@ -249,8 +250,7 @@ mod tests {
             merge_when_ready: false,
             commits: 1,
             behind: false,
-            merge_state_status:
-                crate::observe::github::pr_view::MergeStateStatus::Clean,
+            merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             last_commit_at: None,
         }
@@ -260,10 +260,7 @@ mod tests {
         oriented_with_threads(reviews, vec![])
     }
 
-    fn oriented_with_threads(
-        reviews: ReviewSummary,
-        threads: Vec<ReviewThread>,
-    ) -> OrientedState {
+    fn oriented_with_threads(reviews: ReviewSummary, threads: Vec<ReviewThread>) -> OrientedState {
         OrientedState {
             ci: clean_ci(),
             state: clean_state(),
@@ -275,9 +272,7 @@ mod tests {
     }
 
     fn live_thread(path: &str, line: u32, body: &str) -> ReviewThread {
-        use crate::orient::thread::{
-            BotName, FilePath, ThreadId, ThreadLocation,
-        };
+        use crate::orient::thread::{BotName, FilePath, ThreadId, ThreadLocation};
         ReviewThread {
             id: ThreadId::new("t".to_string()),
             author: ThreadAuthor::Bot(BotName::Copilot),
@@ -352,15 +347,17 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ReviewRequired);
         let cs = candidates(&oriented_with(r.clone()));
-        assert!(cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::RequestApproval)));
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::RequestApproval))
+        );
 
         let threads = vec![live_thread("src/a.rs", 1, "x")];
         let cs = candidates(&oriented_with_threads(r, threads));
-        assert!(!cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::RequestApproval)));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::RequestApproval))
+        );
     }
 
     #[test]
@@ -368,9 +365,10 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = None;
         let cs = candidates(&oriented_with(r));
-        assert!(!cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::RequestApproval)));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::RequestApproval))
+        );
     }
 
     #[test]
@@ -409,9 +407,10 @@ mod tests {
             live_thread("src/b.rs", 2, "y"),
         ];
         let cs = candidates(&oriented_with_threads(r, threads));
-        assert!(cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })));
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+        );
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest)),
@@ -424,9 +423,10 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::Approved);
         let cs = candidates(&oriented_with(r));
-        assert!(!cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest)));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
+        );
     }
 
     #[test]
@@ -442,9 +442,10 @@ mod tests {
             link: String::new(),
         }];
         let cs = candidates(&o);
-        assert!(cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest)));
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
+        );
     }
 
     #[test]
@@ -464,8 +465,9 @@ mod tests {
             "AddressChangeRequest must not fire when a re-review is pending, got {cs:?}"
         );
         // The wait still fires.
-        assert!(cs
-            .iter()
-            .any(|a| matches!(a.kind, ActionKind::WaitForHumanReview { .. })));
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::WaitForHumanReview { .. }))
+        );
     }
 }

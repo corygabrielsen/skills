@@ -8,10 +8,10 @@
 //! candidate requires an external resolver (Agent / Human).
 
 pub mod action;
-pub mod decision;
 mod ci;
 mod copilot;
 mod cursor;
+pub mod decision;
 mod reviews;
 mod state;
 
@@ -40,13 +40,16 @@ use action::Urgency;
 ///
 /// Empty candidate set → Halt(Success).
 pub fn decide(oriented: &OrientedState, lifecycle: PrState) -> Decision {
+    decide_from_candidates(candidates(oriented), lifecycle)
+}
+
+pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState) -> Decision {
     match lifecycle {
         PrState::Merged => return Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)),
         PrState::Closed => return Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)),
         PrState::Open => {}
     }
 
-    let candidates = candidates(oriented);
     let Some(top) = candidates.into_iter().next() else {
         return Decision::Halt(DecisionHalt::Success);
     };
@@ -79,7 +82,7 @@ fn classify(action: Action) -> Decision {
 ///    Stable sort preserves axis order within each priority
 ///    bucket, so within "all Agent actions" the existing axis
 ///    rationale (state-before-ci-before-reviews) still applies.
-fn candidates(oriented: &OrientedState) -> Vec<Action> {
+pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     // Mechanical state blockers (rebase, mark_ready, remove_wip,
     // shorten_title) come before CI: a draft PR's required checks

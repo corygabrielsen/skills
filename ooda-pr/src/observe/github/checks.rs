@@ -4,11 +4,11 @@
 //! into a single flat array. Each entry is one check with its latest
 //! state and a link to the run detail page.
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ids::{CheckName, PullRequestNumber, RepoSlug, Timestamp};
 
-use super::gh::{gh_json_lenient, GhError};
+use super::gh::{GhError, gh_json_lenient};
 
 const CHECK_FIELDS: &str = "name,state,description,link,completedAt";
 
@@ -28,7 +28,7 @@ pub fn fetch_pr_checks(
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestCheck {
     pub name: CheckName,
@@ -51,7 +51,7 @@ pub struct PullRequestCheck {
 /// Cancelled, TimedOut, ActionRequired, Stale, Pending all show up
 /// in real PRs. An unknown variant we haven't seen yet routes to
 /// `Unknown` so observe doesn't abort on a future addition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CheckState {
     Success,
@@ -88,8 +88,7 @@ where
 mod tests {
     use super::*;
 
-    const CHECKS_FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/pr_checks.json");
+    const CHECKS_FIXTURE: &str = include_str!("../../../test/fixtures/github/pr_checks.json");
 
     #[test]
     fn deserializes_full_fixture() {
@@ -104,8 +103,14 @@ mod tests {
     #[test]
     fn state_counts_match_fixture() {
         let checks: Vec<PullRequestCheck> = serde_json::from_str(CHECKS_FIXTURE).unwrap();
-        let n_success = checks.iter().filter(|c| c.state == CheckState::Success).count();
-        let n_skipped = checks.iter().filter(|c| c.state == CheckState::Skipped).count();
+        let n_success = checks
+            .iter()
+            .filter(|c| c.state == CheckState::Success)
+            .count();
+        let n_skipped = checks
+            .iter()
+            .filter(|c| c.state == CheckState::Skipped)
+            .count();
         // This was a fully merged PR with no failures/in-progress.
         assert_eq!(n_success + n_skipped, checks.len());
         assert_eq!(
@@ -164,19 +169,30 @@ mod tests {
     fn unknown_state_routes_to_unknown_variant() {
         // Forward-compatible: a future GitHub state we haven't
         // modeled yet shouldn't abort the whole observe phase.
-        let json = r#"[{"name":"x","state":"MYSTERY","description":"","link":"","completedAt":""}]"#;
+        let json =
+            r#"[{"name":"x","state":"MYSTERY","description":"","link":"","completedAt":""}]"#;
         let checks: Vec<PullRequestCheck> = serde_json::from_str(json).unwrap();
         assert_eq!(checks[0].state, CheckState::Unknown);
     }
 
     #[test]
     fn cancelled_and_timed_out_states_parse() {
-        for s in ["CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "PENDING"] {
+        for s in [
+            "CANCELLED",
+            "TIMED_OUT",
+            "ACTION_REQUIRED",
+            "STALE",
+            "PENDING",
+        ] {
             let json = format!(
                 r#"[{{"name":"x","state":"{s}","description":"","link":"","completedAt":""}}]"#,
             );
             let checks: Vec<PullRequestCheck> = serde_json::from_str(&json).unwrap();
-            assert_ne!(checks[0].state, CheckState::Unknown, "{s} should parse to a typed variant");
+            assert_ne!(
+                checks[0].state,
+                CheckState::Unknown,
+                "{s} should parse to a typed variant"
+            );
         }
     }
 }

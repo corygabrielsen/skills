@@ -23,9 +23,10 @@
 //! taxonomy and its IPC encoding share one source of truth.
 
 use super::action::Action;
+use serde::Serialize;
 
 /// What the loop should do next. Returned by [`super::decide`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Decision {
     /// Dispatch this action and re-iterate. Decide picked this from
     /// the candidate set; runtime semantics depend on `automation`.
@@ -50,7 +51,7 @@ impl Decision {
 
 /// Why `decide()` returned a halt. Pure function of orient output;
 /// no loop-level state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum DecisionHalt {
     /// No actions to dispatch, no blockers — PR has reached its
     /// target state.
@@ -74,11 +75,25 @@ impl DecisionHalt {
             Self::AgentNeeded(_) => 5,
         }
     }
+
+    /// Stable, finite, single-token rendering for the per-iteration
+    /// halt log line (`[iter N] halt: <name>`). Distinct from
+    /// `Debug` (which would dump full Action payloads and break
+    /// the one-line-per-iteration diagnostic invariant).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Success => "Success",
+            Self::Terminal(Terminal::Merged) => "Terminal(Merged)",
+            Self::Terminal(Terminal::Closed) => "Terminal(Closed)",
+            Self::AgentNeeded(_) => "AgentNeeded",
+            Self::HumanNeeded(_) => "HumanNeeded",
+        }
+    }
 }
 
 /// Why `run_loop` stopped. Superset of [`DecisionHalt`] with the
 /// two loop-level halt classes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum HaltReason {
     /// `decide()` produced a halt this iteration. Carries the
     /// underlying decide-level reason.
@@ -90,9 +105,14 @@ pub enum HaltReason {
     /// stuck without re-deriving from logs.
     Stalled(Action),
     /// Iteration cap hit without halting. Re-run to continue, or
-    /// raise `--max-iter`. `last_action` is the most recently
-    /// dispatched action, retained for diagnostic logging.
-    CapReached { last_action: Option<Action> },
+    /// raise `--max-iter`. Carries the last attempted action
+    /// (Wait or non-Wait) — `runner` records every Execute's
+    /// action as the diagnostic anchor; the cap can fire after a
+    /// trailing Wait iteration. The Option arm of the prior shape
+    /// was structurally unreachable when `--max-iter ≥ 1`
+    /// (parser-validated) and at least one Execute fired;
+    /// `runner` constructs this with a required Action.
+    CapReached(Action),
 }
 
 impl HaltReason {
@@ -104,12 +124,12 @@ impl HaltReason {
         match self {
             Self::Decision(halt) => halt.exit_code(),
             Self::Stalled(_) => 1,
-            Self::CapReached { .. } => 2,
+            Self::CapReached(_) => 2,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Terminal {
     Merged,
     Closed,

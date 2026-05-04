@@ -14,10 +14,11 @@ pub mod thread;
 
 use crate::ids::Timestamp;
 use crate::observe::github::GitHubObservations;
+use serde::Serialize;
 
 use ci::CiSummary;
-use copilot::{orient_copilot, CopilotRepoConfig, CopilotReport};
-use cursor::{orient_cursor, CursorReport};
+use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
+use cursor::{CursorReport, orient_cursor};
 use reviews::ReviewSummary;
 use state::PullRequestState;
 use thread::ReviewThread;
@@ -38,7 +39,7 @@ use thread::ReviewThread;
 /// (`Some(report)` with `activity = Idle`). The old combined-score
 /// approach conflated these and produced false halts; the
 /// per-axis `Option` makes the distinction unrepresentable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct OrientedState {
     pub ci: CiSummary,
     pub state: PullRequestState,
@@ -65,14 +66,9 @@ pub struct OrientedState {
 ///
 /// `last_commit_at` comes from outside the GitHub fetch bundle
 /// (typically `git log` on HEAD); pass `None` if unavailable.
-pub fn orient(
-    obs: &GitHubObservations,
-    last_commit_at: Option<Timestamp>,
-) -> OrientedState {
-    let required = required_checks::required_check_names(
-        &obs.branch_rules,
-        obs.branch_protection.as_ref(),
-    );
+pub fn orient(obs: &GitHubObservations, last_commit_at: Option<Timestamp>) -> OrientedState {
+    let required =
+        required_checks::required_check_names(&obs.branch_rules, obs.branch_protection.as_ref());
     let ci = ci::orient_ci(&obs.checks, &required);
     let pr_state = state::orient_state(&obs.pr_view, last_commit_at);
     let reviews = reviews::orient_reviews(
@@ -81,16 +77,19 @@ pub fn orient(
         &obs.issue_comments,
         &obs.reviews,
     );
-    let copilot = obs.copilot_config.map(CopilotRepoConfig::from).and_then(|cfg| {
-        orient_copilot(
-            cfg,
-            &obs.issue_events,
-            &obs.reviews,
-            &obs.review_threads_page,
-            &obs.requested_reviewers,
-            &obs.pr_view.head_ref_oid,
-        )
-    });
+    let copilot = obs
+        .copilot_config
+        .map(CopilotRepoConfig::from)
+        .and_then(|cfg| {
+            orient_copilot(
+                cfg,
+                &obs.issue_events,
+                &obs.reviews,
+                &obs.review_threads_page,
+                &obs.requested_reviewers,
+                &obs.pr_view.head_ref_oid,
+            )
+        });
     let cursor = orient_cursor(
         &obs.reviews,
         &obs.review_threads_page,

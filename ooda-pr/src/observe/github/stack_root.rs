@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 use crate::ids::{BranchName, RepoSlug};
 
-use super::gh::{gh_json, GhError};
+use super::gh::{GhError, gh_json};
 
 const MAX_DEPTH: usize = 16;
 

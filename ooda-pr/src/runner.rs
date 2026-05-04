@@ -11,15 +11,17 @@
 //! all variants of the same partition. Exit-code mapping lives on
 //! `HaltReason::exit_code()`.
 
-use crate::act::{act, ActError};
+use crate::act::{ActError, act};
 use crate::decide::action::{Action, Automation};
 use crate::decide::decision::{Decision, HaltReason};
-use crate::decide::decide;
+use crate::decide::{candidates, decide_from_candidates};
 use crate::ids::{PullRequestNumber, RepoSlug};
+use crate::observe::github::GitHubObservations;
 use crate::observe::github::fetch_all;
 use crate::observe::github::gh::GhError;
-use crate::orient::orient;
 use crate::orient::OrientedState;
+use crate::orient::orient;
+use crate::recorder::Recorder;
 
 #[derive(Debug)]
 pub enum LoopError {
@@ -51,22 +53,47 @@ impl Default for LoopConfig {
 /// Drive a PR until a halt fires or the iteration cap trips.
 ///
 /// `on_state` is called once per iteration after decide and before
-/// act, with the iteration index, oriented state, and the chosen
-/// decision. Halt decisions also fire it before returning. Use it
-/// to render iteration logs, post comments, etc.
+/// act, with the iteration index, raw observation bundle, oriented
+/// state, full candidate set, and chosen decision. Halt decisions
+/// also fire it before returning. Use it to render iteration logs,
+/// post comments, and record the run bundle.
 pub fn run_loop(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     config: LoopConfig,
-    mut on_state: impl FnMut(u32, &OrientedState, &Decision),
+    recorder: &Recorder,
+    mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<HaltReason, LoopError> {
-    let mut last_action: Option<Action> = None;
+    // Two trackers, two purposes:
+    //   * `last_non_wait`: feeds the stall comparator. Polling
+    //     (Wait) is expected to repeat — only same-(kind, blocker)
+    //     non-Wait actions firing twice in a row trip Stalled.
+    //     Storing only non-Wait actions makes "Wait is invisible
+    //     to stall detection" structural rather than checked at
+    //     comparison time.
+    //   * `last_attempted`: feeds CapReached's diagnostic payload.
+    //     Includes Wait actions — "we ran out of cap while waiting
+    //     for CI" is a useful triage signal.
+    let mut last_non_wait: Option<Action> = None;
+    let mut last_attempted: Option<Action> = None;
 
     for iter in 1..=config.max_iterations {
-        let obs = fetch_all(slug, pr).map_err(LoopError::Observe)?;
+        recorder.set_iteration(Some(iter));
+        recorder.record_observe_start(iter);
+        let obs = match fetch_all(slug, pr) {
+            Ok(obs) => {
+                recorder.record_observe_end(iter, Ok(()));
+                obs
+            }
+            Err(e) => {
+                recorder.record_observe_end(iter, Err(e.to_string()));
+                return Err(LoopError::Observe(e));
+            }
+        };
         let oriented = orient(&obs, None);
-        let decision = decide(&oriented, obs.pr_view.state);
-        on_state(iter, &oriented, &decision);
+        let candidates = candidates(&oriented);
+        let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
+        on_state(iter, &obs, &oriented, &candidates, &decision);
 
         match decision {
             Decision::Halt(halt) => return Ok(HaltReason::Decision(halt)),
@@ -75,26 +102,47 @@ pub fn run_loop(
                 // action (e.g. RerequestCopilot) doesn't fire twice
                 // when GitHub's eventual consistency hasn't surfaced
                 // the previous call yet.
-                if same_action_repeated(last_action.as_ref(), &action) {
+                if same_action_repeated(last_non_wait.as_ref(), &action) {
                     return Ok(HaltReason::Stalled(action));
                 }
-                act(&action, slug, pr).map_err(LoopError::Act)?;
-                last_action = Some(action);
+                let is_wait = matches!(action.automation, Automation::Wait { .. });
+                recorder.record_action_start(iter, &action);
+                if is_wait {
+                    recorder.record_wait_start(iter, &action);
+                }
+                let act_result = act(&action, slug, pr);
+                if is_wait && act_result.is_ok() {
+                    recorder.record_wait_end(iter, &action);
+                }
+                recorder.record_action_end(
+                    iter,
+                    &action,
+                    act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
+                );
+                act_result.map_err(LoopError::Act)?;
+                last_attempted = Some(action.clone());
+                if !is_wait {
+                    last_non_wait = Some(action);
+                }
             }
         }
     }
 
-    Ok(HaltReason::CapReached { last_action })
+    // CapReached fires only when the for-loop completes without
+    // an early return, which requires every iteration to have run
+    // an Execute (Halt returns early; Stalled returns early; Act
+    // failure returns early). With --max-iter ≥ 1 (parser-validated),
+    // at least one Execute fired and `last_attempted` is Some(_).
+    Ok(HaltReason::CapReached(last_attempted.expect(
+        "CapReached requires --max-iter ≥ 1 and one Execute iteration",
+    )))
 }
 
 fn same_action_repeated(prev: Option<&Action>, current: &Action) -> bool {
-    // Wait actions are *expected* to repeat — they're polling
-    // external state. CI / bot / human reviews can take many
-    // poll cycles. Only treat non-Wait actions as stall-eligible:
-    // a Full or Agent action that fires twice means our act
-    // didn't change observable state.
-    if matches!(current.automation, Automation::Wait { .. }) {
-        return false;
-    }
+    // `prev` is structurally non-Wait (runner skips Wait actions
+    // when assigning last_action). So we compare directly without
+    // a current=Wait gate. A Wait current vs non-Wait prev cannot
+    // satisfy kind equality (kinds are partitioned by automation
+    // intent), so the comparison naturally returns false.
     prev.is_some_and(|p| p.kind == current.kind && p.blocker == current.blocker)
 }

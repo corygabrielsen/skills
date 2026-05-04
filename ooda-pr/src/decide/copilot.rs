@@ -18,7 +18,9 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
         CopilotActivity::Requested { .. } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotAck,
-                automation: Automation::Wait { interval: Duration::from_secs(15) },
+                automation: Automation::Wait {
+                    interval: Duration::from_secs(15),
+                },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: "Waiting for Copilot to start reviewing".into(),
@@ -28,7 +30,9 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
         CopilotActivity::Working { .. } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotReview,
-                automation: Automation::Wait { interval: Duration::from_secs(60) },
+                automation: Automation::Wait {
+                    interval: Duration::from_secs(60),
+                },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
                 description: "Waiting for Copilot to finish reviewing".into(),
@@ -114,7 +118,12 @@ mod tests {
         }
     }
 
-    fn report(activity: CopilotActivity, tier: CopilotTier, threads: BotThreadSummary, fresh: bool) -> CopilotReport {
+    fn report(
+        activity: CopilotActivity,
+        tier: CopilotTier,
+        threads: BotThreadSummary,
+        fresh: bool,
+    ) -> CopilotReport {
         CopilotReport {
             config: enabled(),
             activity,
@@ -154,7 +163,9 @@ mod tests {
     #[test]
     fn platinum_at_head_yields_no_candidates() {
         let r = report(
-            CopilotActivity::Reviewed { latest: round_at_head() },
+            CopilotActivity::Reviewed {
+                latest: round_at_head(),
+            },
             CopilotTier::Platinum,
             BotThreadSummary::default(),
             true,
@@ -165,7 +176,9 @@ mod tests {
     #[test]
     fn gold_not_fresh_emits_rerequest() {
         let r = report(
-            CopilotActivity::Reviewed { latest: round_at_head() },
+            CopilotActivity::Reviewed {
+                latest: round_at_head(),
+            },
             CopilotTier::Gold,
             BotThreadSummary::default(),
             false, // not at HEAD
@@ -196,7 +209,9 @@ mod tests {
     #[test]
     fn unresolved_threads_block_tier_advancement_at_copilot_layer() {
         let r = report(
-            CopilotActivity::Reviewed { latest: round_at_head() },
+            CopilotActivity::Reviewed {
+                latest: round_at_head(),
+            },
             CopilotTier::Bronze,
             BotThreadSummary {
                 total: 1,

@@ -37,6 +37,9 @@ mod tests {
 
     #[test]
     fn noun_phrase() {
-        assert_eq!(count(2, "low-confidence finding"), "2 low-confidence findings");
+        assert_eq!(
+            count(2, "low-confidence finding"),
+            "2 low-confidence findings"
+        );
     }
 }

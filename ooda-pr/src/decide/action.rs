@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
 use crate::orient::thread::ReviewThread;
+use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Action {
     pub kind: ActionKind,
     pub automation: Automation,
@@ -46,7 +47,7 @@ pub struct Action {
 /// "active fix beats passive handoff" rule directly in the enum
 /// rather than a comparator tuple — adding a new urgency tier is a
 /// single enum addition, no comparator change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Urgency {
     /// Full-automation actions. The loop runs them without halting,
     /// so they MUST preempt any blocking handoff — picking a Full
@@ -75,7 +76,7 @@ pub enum Urgency {
 
 /// What dispatches the action. `Wait` carries the poll cadence so
 /// "Wait without a sleep duration" is unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Automation {
     /// We have the exact command and run it directly.
     Full,
@@ -90,7 +91,7 @@ pub enum Automation {
 }
 
 /// What dispatching this action would do to the blocker state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TargetEffect {
     /// Action is the path past a current blocker.
     Blocks,
@@ -135,7 +136,7 @@ impl ActionKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ActionKind {
     // ── CI ──
     FixCi {

@@ -12,10 +12,11 @@ use crate::ids::{GitHubLogin, Timestamp};
 use crate::observe::github::review_threads::ReviewThread as WireThread;
 use crate::orient::copilot::is_copilot;
 use crate::orient::cursor::is_cursor;
+use serde::Serialize;
 
 /// GraphQL global node id for a review thread. Opaque string used
 /// for paginating comments and (eventually) for stable stall keys.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct ThreadId(String);
 
 impl ThreadId {
@@ -35,7 +36,7 @@ impl std::fmt::Display for ThreadId {
 
 /// Repo-relative file path. Forward slashes, no leading slash —
 /// the canonical form GitHub returns and `git ls-files` produces.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FilePath(String);
 
 impl FilePath {
@@ -55,7 +56,7 @@ impl std::fmt::Display for FilePath {
 
 /// Where a thread is anchored at HEAD. `line` is `None` for
 /// outdated threads (anchor line shifted away by rebase/amend).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ThreadLocation {
     pub path: FilePath,
     pub line: Option<u32>,
@@ -73,7 +74,7 @@ impl std::fmt::Display for ThreadLocation {
 /// Recognized review bots. `Other` carries the raw login for any
 /// bot we don't have a typed variant for — preserves authorship
 /// without forcing a code change for every new bot vendor.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum BotName {
     Copilot,
     Cursor,
@@ -92,7 +93,7 @@ impl std::fmt::Display for BotName {
 
 /// Author of a review thread, by the *first* (originating) comment.
 /// Replies do not change authorship for routing/grouping purposes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum ThreadAuthor {
     Bot(BotName),
     Human(GitHubLogin),
@@ -109,7 +110,7 @@ impl std::fmt::Display for ThreadAuthor {
 
 /// Lifecycle state of a thread, partitioning the `(is_resolved, is_outdated)`
 /// space — exactly one variant matches any wire-level pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ThreadState {
     /// `!is_resolved && !is_outdated` — actor can address.
     Live,
@@ -122,7 +123,7 @@ pub enum ThreadState {
 /// Domain-level review thread carrying everything decide and the
 /// description renderer need: identity, author, location, body, and
 /// lifecycle state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewThread {
     pub id: ThreadId,
     pub author: ThreadAuthor,
@@ -232,15 +233,9 @@ mod tests {
 
     #[test]
     fn outdated_thread_projects_to_outdated_state() {
-        let t = ReviewThread::from_wire(&wire(
-            false,
-            true,
-            "src/foo.rs",
-            None,
-            "alice",
-            "needs fix",
-        ))
-        .unwrap();
+        let t =
+            ReviewThread::from_wire(&wire(false, true, "src/foo.rs", None, "alice", "needs fix"))
+                .unwrap();
         assert_eq!(t.state, ThreadState::Outdated);
         assert_eq!(t.location.line, None);
     }
@@ -309,15 +304,8 @@ mod tests {
 
     #[test]
     fn classifies_human() {
-        let t = ReviewThread::from_wire(&wire(
-            false,
-            false,
-            "src/foo.rs",
-            Some(1),
-            "alice",
-            "x",
-        ))
-        .unwrap();
+        let t = ReviewThread::from_wire(&wire(false, false, "src/foo.rs", Some(1), "alice", "x"))
+            .unwrap();
         match t.author {
             ThreadAuthor::Human(l) => assert_eq!(l.as_str(), "alice"),
             other => panic!("expected Human, got {other:?}"),

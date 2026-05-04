@@ -5,11 +5,11 @@
 //! downstream stages use; the REST response includes body, URLs,
 //! timestamps, and reactions we do not need yet.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug};
 
-use super::gh::{gh_json_paginate, GhError};
+use super::gh::{GhError, gh_json_paginate};
 
 /// Per-page projection — `gh api --paginate --jq` runs this filter
 /// against each page, emitting one JSON array per page.
@@ -30,13 +30,13 @@ pub fn fetch_issue_comments(
     gh_json_paginate(&["api", &path, "--paginate", "--jq", COMMENT_JQ])
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct IssueComment {
     pub id: u64,
     pub user: CommentUser,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommentUser {
     pub login: GitHubLogin,
 }
@@ -45,8 +45,7 @@ pub struct CommentUser {
 mod tests {
     use super::*;
 
-    const FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/issue_comments.json");
+    const FIXTURE: &str = include_str!("../../../test/fixtures/github/issue_comments.json");
 
     #[test]
     fn deserializes_full_fixture() {

@@ -3,8 +3,9 @@
 
 use crate::ids::Timestamp;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
+use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct BotThreadSummary {
     pub total: u32,
     pub resolved: u32,
@@ -43,7 +44,9 @@ where
         let Some(first) = t.comments.nodes.first() else {
             continue;
         };
-        let Some(author) = &first.author else { continue };
+        let Some(author) = &first.author else {
+            continue;
+        };
         if !is_bot(author.login.as_str()) {
             continue;
         }

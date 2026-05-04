@@ -7,11 +7,11 @@
 //! type layer's.
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, TeamName, Timestamp};
 
-use super::gh::{gh_json, GhError};
+use super::gh::{GhError, gh_json};
 
 /// Run a GraphQL query body via `gh api graphql`. `body` is the
 /// raw GraphQL string (no `query=` prefix); this helper builds the
@@ -104,40 +104,40 @@ fn fetch_thread_comments_page(
     gh_graphql(&body)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct ThreadCommentsPageResponse {
     data: ThreadCommentsPageData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct ThreadCommentsPageData {
     node: ThreadCommentsPageNode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct ThreadCommentsPageNode {
     comments: ThreadComments,
 }
 
 // -- top-level wrapping -----------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewThreadsResponse {
     pub data: ReviewThreadsData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewThreadsData {
     pub repository: ReviewThreadsRepo,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewThreadsRepo {
     pub pull_request: ReviewThreadsPr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewThreadsPr {
     pub review_threads: ReviewThreadsPage,
@@ -146,14 +146,14 @@ pub struct ReviewThreadsPr {
 
 // -- reviewThreads ----------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewThreadsPage {
     pub page_info: PageInfo,
     pub nodes: Vec<ReviewThread>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewThread {
     /// GraphQL global node id. Used by
@@ -185,7 +185,7 @@ pub struct ReviewThread {
     pub comments: ThreadComments,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComments {
     /// `#[serde(default)]` so test fixtures and inline JSON without
@@ -195,7 +195,7 @@ pub struct ThreadComments {
     pub nodes: Vec<ThreadComment>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComment {
     /// Null if the commenter's account has been deleted.
@@ -204,19 +204,19 @@ pub struct ThreadComment {
     pub body: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommentAuthor {
     pub login: GitHubLogin,
 }
 
 // -- reviewRequests ---------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewRequestsPage {
     pub nodes: Vec<ReviewRequestNode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewRequestNode {
     /// Null when the requested reviewer has been removed or the actor
@@ -226,7 +226,7 @@ pub struct ReviewRequestNode {
 
 /// Tagged by GraphQL `__typename`. Users/Bots/Mannequins carry a
 /// login; Teams carry a name.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "__typename")]
 pub enum RequestedReviewer {
     User { login: GitHubLogin },
@@ -237,7 +237,7 @@ pub enum RequestedReviewer {
 
 // -- shared -----------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PageInfo {
     pub has_next_page: bool,
@@ -426,7 +426,9 @@ mod tests {
             }}}
         }"#;
         let resp: ReviewThreadsResponse = serde_json::from_str(json).unwrap();
-        let c = &resp.data.repository.pull_request.review_threads.nodes[0].comments.nodes[0];
+        let c = &resp.data.repository.pull_request.review_threads.nodes[0]
+            .comments
+            .nodes[0];
         assert!(c.author.is_none());
         assert_eq!(c.body, "deleted account");
     }

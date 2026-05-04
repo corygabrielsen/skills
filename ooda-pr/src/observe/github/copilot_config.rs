@@ -11,8 +11,8 @@ use crate::ids::RepoSlug;
 
 use super::gh::GhError;
 use super::rulesets::{
-    fetch_ruleset, fetch_ruleset_list, ruleset_matches_branch,
-    CopilotCodeReviewParams, RulesetEnforcement,
+    CopilotCodeReviewParams, RulesetEnforcement, fetch_ruleset, fetch_ruleset_list,
+    ruleset_matches_branch,
 };
 
 /// Returns:

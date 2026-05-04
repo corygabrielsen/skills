@@ -19,8 +19,9 @@ use crate::observe::github::requested_reviewers::RequestedReviewers;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
 use crate::observe::github::rulesets::CopilotCodeReviewParams;
+use serde::Serialize;
 
-use super::bot_threads::{count_bot_threads, BotThreadSummary};
+use super::bot_threads::{BotThreadSummary, count_bot_threads};
 
 // ── Identity ─────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ pub fn is_copilot(login: &str) -> bool {
 
 // ── Public types ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CopilotReport {
     pub config: CopilotRepoConfig,
     pub activity: CopilotActivity,
@@ -57,7 +58,7 @@ pub struct CopilotReport {
     pub fresh: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CopilotRepoConfig {
     pub enabled: bool,
     pub review_on_push: bool,
@@ -74,7 +75,7 @@ impl From<CopilotCodeReviewParams> for CopilotRepoConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CopilotActivity {
     Idle,
     Requested {
@@ -89,7 +90,7 @@ pub enum CopilotActivity {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CopilotReviewRound {
     /// 1-indexed within this PR's Copilot review history.
     pub round: u32,
@@ -103,7 +104,7 @@ pub struct CopilotReviewRound {
     pub comments_suppressed: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CopilotTier {
     Bronze,
     Silver,
@@ -145,7 +146,11 @@ pub fn orient_copilot(
 
     let copilot_reviews: Vec<&PullRequestReview> = reviews
         .iter()
-        .filter(|r| r.user.as_ref().is_some_and(|u| is_copilot(u.login.as_str())))
+        .filter(|r| {
+            r.user
+                .as_ref()
+                .is_some_and(|u| is_copilot(u.login.as_str()))
+        })
         .collect();
 
     let timeline = copilot_timeline(events);
@@ -180,12 +185,8 @@ pub(crate) fn parse_copilot_review_body(body: &str) -> (u32, u32) {
     } else {
         find_count(body, "generated ", " comment").unwrap_or(0)
     };
-    let suppressed = find_count(
-        body,
-        "Comments suppressed due to low confidence (",
-        ")",
-    )
-    .unwrap_or(0);
+    let suppressed =
+        find_count(body, "Comments suppressed due to low confidence (", ")").unwrap_or(0);
     (visible, suppressed)
 }
 
@@ -429,10 +430,8 @@ fn derive_activity(
     rounds: &[CopilotReviewRound],
     requested: &RequestedReviewers,
 ) -> CopilotActivity {
-    let latest_review_ts: Option<&Timestamp> = rounds
-        .iter()
-        .filter_map(|r| r.reviewed_at.as_ref())
-        .max();
+    let latest_review_ts: Option<&Timestamp> =
+        rounds.iter().filter_map(|r| r.reviewed_at.as_ref()).max();
     let latest_ack: Option<&TimelinePoint> = timeline
         .iter()
         .filter(|p| p.kind == TimelineKind::Ack)
@@ -464,11 +463,9 @@ fn derive_activity(
         (Some(_), None) => true,
         _ => false,
     };
-    let latest_ack_is_orphan = latest_ack.is_some_and(|ack| {
-        !rounds.iter().any(|r| r.ack_at.as_ref() == Some(&ack.at))
-    });
-    let work_genuinely_in_flight =
-        currently_pending(requested) || latest_ack_is_orphan;
+    let latest_ack_is_orphan =
+        latest_ack.is_some_and(|ack| !rounds.iter().any(|r| r.ack_at.as_ref() == Some(&ack.at)));
+    let work_genuinely_in_flight = currently_pending(requested) || latest_ack_is_orphan;
     if let Some(ack) = latest_ack
         && ack_after_review
         && work_genuinely_in_flight
@@ -496,7 +493,9 @@ fn derive_activity(
                 let req_at = latest_request
                     .map(|r| r.at)
                     .unwrap_or_else(|| latest.requested_at);
-                return CopilotActivity::Requested { requested_at: req_at };
+                return CopilotActivity::Requested {
+                    requested_at: req_at,
+                };
             }
             return CopilotActivity::Reviewed {
                 latest: latest.clone(),
@@ -701,8 +700,15 @@ mod tests {
 
     #[test]
     fn idle_when_no_rounds_and_no_pending() {
-        let r = orient_copilot(enabled(), &[], &[], &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &[],
+            &[],
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.activity, CopilotActivity::Idle);
         assert_eq!(r.tier, CopilotTier::Bronze);
         assert!(!r.fresh);
@@ -718,8 +724,7 @@ mod tests {
             teams: vec![],
         };
         let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(matches!(r.activity, CopilotActivity::Requested { .. }));
     }
 
@@ -738,8 +743,7 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(matches!(r.activity, CopilotActivity::Working { .. }));
         assert_eq!(r.rounds.len(), 1);
         assert!(r.rounds[0].ack_at.is_some());
@@ -767,8 +771,15 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
         )];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Working { .. }),
             "review_on_push ack after prior round must be Working, got {:?}",
@@ -790,8 +801,7 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot(enabled(), &[], &[], &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r = orient_copilot(enabled(), &[], &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Requested { .. }),
             "pending reviewer with no events must be Requested, got {:?}",
@@ -808,8 +818,15 @@ mod tests {
         // this, rounds is empty and currently_pending is false → Idle,
         // and decide() halts Success while Copilot is still reviewing.
         let events = vec![ack_event("2026-04-23T10:00:00Z")];
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Working { .. }),
             "auto-review ack without request must be Working, got {:?}",
@@ -842,8 +859,8 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r =
+            orient_copilot(enabled(), &events, &revs, &empty_threads(), &reqs, &head()).unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Requested { .. }),
             "Reviewed + currently_pending must be Requested (re-request just fired), got {:?}",
@@ -863,8 +880,15 @@ mod tests {
             req_event("2026-04-23T10:00:00Z", "Copilot"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.activity, CopilotActivity::Idle);
         // The round itself is still preserved — observation shows
         // the work happened, even though the request was withdrawn.
@@ -883,8 +907,15 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
         )];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert!(matches!(r.activity, CopilotActivity::Reviewed { .. }));
         assert_eq!(r.rounds.len(), 1);
         assert_eq!(r.rounds[0].commit.as_ref().unwrap().as_str(), HEAD_SHA);
@@ -902,8 +933,15 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
         )];
-        let r = orient_copilot(enabled(), &[], &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &[],
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Reviewed { .. }),
             "review with no preceding request must produce a round, got {:?}",
@@ -927,19 +965,22 @@ mod tests {
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![
-            copilot_review(
-                HEAD_SHA,
-                "2026-04-23T10:05:00Z",
-                "generated 1 comment.",
-            ),
+            copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "generated 1 comment."),
             copilot_review(
                 HEAD_SHA,
                 "2026-04-23T10:10:00Z",
                 "generated no new comments.",
             ),
         ];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.rounds.len(), 2, "got rounds: {:?}", r.rounds);
         // Paired round first (ack present).
         assert!(r.rounds[0].ack_at.is_some());
@@ -950,7 +991,13 @@ mod tests {
         // rounds.last() must be the actual latest review for tier
         // scoring. Pre-fix it was the stale t=15 one.
         assert_eq!(
-            r.rounds.last().unwrap().reviewed_at.as_ref().unwrap().to_string(),
+            r.rounds
+                .last()
+                .unwrap()
+                .reviewed_at
+                .as_ref()
+                .unwrap()
+                .to_string(),
             "2026-04-23T10:10:00+00:00"
         );
     }
@@ -963,22 +1010,27 @@ mod tests {
         // drain catches it.
         let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
         let revs = vec![
-            copilot_review(
-                HEAD_SHA,
-                "2026-04-23T10:05:00Z",
-                "generated 0 comments.",
-            ),
-            copilot_review(
-                HEAD_SHA,
-                "2026-04-23T10:10:00Z",
-                "generated 0 comments.",
-            ),
+            copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "generated 0 comments."),
+            copilot_review(HEAD_SHA, "2026-04-23T10:10:00Z", "generated 0 comments."),
         ];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.rounds.len(), 2);
         assert_eq!(
-            r.rounds.last().unwrap().reviewed_at.as_ref().unwrap().to_string(),
+            r.rounds
+                .last()
+                .unwrap()
+                .reviewed_at
+                .as_ref()
+                .unwrap()
+                .to_string(),
             "2026-04-23T10:10:00+00:00"
         );
     }
@@ -1006,8 +1058,8 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r =
+            orient_copilot(enabled(), &events, &revs, &empty_threads(), &reqs, &head()).unwrap();
         assert_eq!(r.rounds.len(), 2);
         assert!(r.rounds[0].reviewed_at.is_some());
         assert!(r.rounds[0].ack_at.is_none());
@@ -1028,8 +1080,15 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated no new comments.",
         )];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.tier, CopilotTier::Platinum);
         assert!(r.fresh);
     }
@@ -1045,8 +1104,15 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated no new comments.",
         )];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.tier, CopilotTier::Gold);
         assert!(!r.fresh);
     }
@@ -1062,8 +1128,15 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 2 comments. Comments suppressed due to low confidence (3)",
         )];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.tier, CopilotTier::Silver);
     }
 
@@ -1113,8 +1186,8 @@ mod tests {
                 },
             },
         };
-        let r = orient_copilot(enabled(), &events, &revs, &threads, &empty_reqs(), &head())
-            .unwrap();
+        let r =
+            orient_copilot(enabled(), &events, &revs, &threads, &empty_reqs(), &head()).unwrap();
         assert_eq!(r.tier, CopilotTier::Bronze);
         assert_eq!(r.threads.unresolved, 1);
     }
@@ -1131,10 +1204,21 @@ mod tests {
         ];
         let revs = vec![
             copilot_review(OLD_SHA, "2026-04-23T10:05:00Z", "generated 1 comment."),
-            copilot_review(HEAD_SHA, "2026-04-23T11:05:00Z", "generated no new comments."),
+            copilot_review(
+                HEAD_SHA,
+                "2026-04-23T11:05:00Z",
+                "generated no new comments.",
+            ),
         ];
-        let r = orient_copilot(enabled(), &events, &revs, &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.rounds.len(), 2);
         assert_eq!(r.rounds[0].round, 1);
         assert_eq!(r.rounds[0].comments_visible, 1);
@@ -1145,8 +1229,15 @@ mod tests {
     #[test]
     fn non_copilot_review_requests_ignored_by_timeline() {
         let events = vec![req_event("2026-04-23T10:00:00Z", "alice")];
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &empty_reqs(), &head())
-            .unwrap();
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
         assert!(r.rounds.is_empty());
         assert_eq!(r.activity, CopilotActivity::Idle);
     }

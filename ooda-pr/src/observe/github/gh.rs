@@ -8,6 +8,8 @@ use std::process::Command;
 
 use serde::de::DeserializeOwned;
 
+use crate::recorder;
+
 #[derive(Debug)]
 pub enum GhError {
     /// Could not spawn `gh` (missing binary, permission denied, …).
@@ -17,10 +19,7 @@ pub enum GhError {
     /// is its own variant rather than a generic non-zero exit.
     NotFound,
     /// `gh` exited with a non-zero status for any other reason.
-    NonZero {
-        code: Option<i32>,
-        stderr: String,
-    },
+    NonZero { code: Option<i32>, stderr: String },
     /// `gh` output was not valid JSON matching the expected shape.
     Parse(serde_json::Error),
 }
@@ -31,9 +30,7 @@ impl std::fmt::Display for GhError {
             Self::Spawn(e) => write!(f, "failed to spawn `gh`: {e}"),
             Self::NotFound => write!(f, "`gh`: not found (HTTP 404)"),
             Self::NonZero { code, stderr } => {
-                let code = code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "?".into());
+                let code = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                 write!(f, "`gh` exited {code}: {}", stderr.trim())
             }
             Self::Parse(e) => write!(f, "failed to parse `gh` output: {e}"),
@@ -89,8 +86,7 @@ pub fn encode_path_segment(s: &str) -> String {
 pub fn gh_json_paginate<T: DeserializeOwned>(args: &[&str]) -> Result<Vec<T>, GhError> {
     let output = run_raw(args)?;
     let mut out: Vec<T> = Vec::new();
-    let stream = serde_json::Deserializer::from_slice(&output.stdout)
-        .into_iter::<Vec<T>>();
+    let stream = serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Vec<T>>();
     for page in stream {
         out.extend(page.map_err(GhError::Parse)?);
     }
@@ -115,10 +111,21 @@ pub fn gh_json_lenient<T: DeserializeOwned>(
     args: &[&str],
     empty_default: Option<(T, &str)>,
 ) -> Result<T, GhError> {
-    let output = Command::new("gh")
-        .args(args)
-        .output()
-        .map_err(GhError::Spawn)?;
+    let guard = recorder::tool_call_started("gh", args);
+    let output = match Command::new("gh").args(args).output() {
+        Ok(output) => {
+            if let Some(guard) = guard {
+                guard.finish_output(&output);
+            }
+            output
+        }
+        Err(e) => {
+            if let Some(guard) = guard {
+                guard.finish_spawn_error(&e);
+            }
+            return Err(GhError::Spawn(e));
+        }
+    };
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     if let Some((default, empty_marker)) = empty_default
@@ -154,10 +161,21 @@ pub fn gh_run(args: &[&str]) -> Result<(), GhError> {
 }
 
 fn run_raw(args: &[&str]) -> Result<std::process::Output, GhError> {
-    let output = Command::new("gh")
-        .args(args)
-        .output()
-        .map_err(GhError::Spawn)?;
+    let guard = recorder::tool_call_started("gh", args);
+    let output = match Command::new("gh").args(args).output() {
+        Ok(output) => {
+            if let Some(guard) = guard {
+                guard.finish_output(&output);
+            }
+            output
+        }
+        Err(e) => {
+            if let Some(guard) = guard {
+                guard.finish_spawn_error(&e);
+            }
+            return Err(GhError::Spawn(e));
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -185,7 +203,10 @@ mod tests {
         };
         let s = err.to_string();
         assert!(s.contains("2"), "display should include exit code: {s}");
-        assert!(s.contains("bad credentials"), "display should include stderr: {s}");
+        assert!(
+            s.contains("bad credentials"),
+            "display should include stderr: {s}"
+        );
     }
 
     #[test]

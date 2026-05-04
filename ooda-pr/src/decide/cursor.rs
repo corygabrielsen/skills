@@ -17,7 +17,9 @@ pub fn candidates(report: &CursorReport) -> Vec<Action> {
     if matches!(report.activity, CursorActivity::Reviewing) {
         out.push(Action {
             kind: ActionKind::WaitForCursorReview,
-            automation: Automation::Wait { interval: Duration::from_secs(60) },
+            automation: Automation::Wait {
+                interval: Duration::from_secs(60),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
             description: "Waiting for Cursor Bugbot to finish reviewing".into(),
@@ -33,8 +35,7 @@ mod tests {
     use crate::ids::{GitCommitSha, Timestamp};
     use crate::orient::bot_threads::BotThreadSummary;
     use crate::orient::cursor::{
-        CursorActivity, CursorReport, CursorReviewRound, CursorSeverityBreakdown,
-        CursorTier,
+        CursorActivity, CursorReport, CursorReviewRound, CursorSeverityBreakdown, CursorTier,
     };
 
     fn round() -> CursorReviewRound {

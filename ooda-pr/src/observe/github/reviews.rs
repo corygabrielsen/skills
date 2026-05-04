@@ -5,11 +5,11 @@
 //! stages consume; REST returns far more (avatar URLs, `_links`, etc.)
 //! which serde silently ignores.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitCommitSha, GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
-use super::gh::{gh_json_paginate, GhError};
+use super::gh::{GhError, gh_json_paginate};
 
 /// Fetch all reviews on a PR. `gh api --paginate` emits one JSON
 /// array per page; `gh_json_paginate` concatenates them.
@@ -21,7 +21,7 @@ pub fn fetch_pr_reviews(
     gh_json_paginate(&["api", &path, "--paginate"])
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PullRequestReview {
     /// Null when the review's author has been deleted. Optional
     /// so observe doesn't abort on historical reviews — same
@@ -38,12 +38,12 @@ pub struct PullRequestReview {
     pub body: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ReviewUser {
     pub login: GitHubLogin,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReviewState {
     Approved,
@@ -57,8 +57,7 @@ pub enum ReviewState {
 mod tests {
     use super::*;
 
-    const REVIEWS_FIXTURE: &str =
-        include_str!("../../../test/fixtures/github/pr_reviews.json");
+    const REVIEWS_FIXTURE: &str = include_str!("../../../test/fixtures/github/pr_reviews.json");
 
     #[test]
     fn deserializes_full_fixture() {

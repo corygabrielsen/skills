@@ -273,6 +273,18 @@ fn parse_args() -> Result<Args, Outcome> {
         )));
     }
 
+    // --fresh + a side-effect has no defined semantics: starting a
+    // new run and immediately mutating its empty manifest produces
+    // a meaningless state (e.g. --mark-address-passed records issue
+    // count 0; --mark-retro-clean records Clean against a level
+    // with no review history). Reject the combination at parse
+    // time to keep the surface honest.
+    if fresh && side_effect.is_some() {
+        return Err(usage(
+            "--fresh cannot be combined with a side-effect flag (--mark-* / --advance-level / --drop-level / --restart-from-floor): the side-effect would mutate a brand-new manifest with no review history",
+        ));
+    }
+
     Ok(Args {
         target,
         level,
@@ -568,7 +580,7 @@ fn count_current_batch_issues(recorder: &Recorder, level: ReasoningLevel) -> u32
 
 fn mk_handoff_human_test_failed(level: ReasoningLevel, details: String) -> Outcome {
     let action = Action {
-        kind: ActionKind::RequestCriteriaRefinement,
+        kind: ActionKind::TestsFailedTriage,
         automation: Automation::Human,
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,

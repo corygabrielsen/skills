@@ -198,9 +198,17 @@ pub enum ActionKind {
     /// equivalent). Full automation.
     RunTests,
 
-    /// Halt for human input on ambiguous `--criteria` or
-    /// post-address test-failure triage. Human automation.
+    /// Halt for human input on ambiguous `--criteria`. Human
+    /// automation. Reserved; not currently emitted by any code
+    /// path. (Kept for symmetry with the planned `--criteria`
+    /// disambiguation flow.)
     RequestCriteriaRefinement,
+
+    /// Halt for human triage after the orchestrator reports tests
+    /// failed (`--mark-address-failed`). The action's description
+    /// embeds the orchestrator-supplied failure details. Human
+    /// automation.
+    TestsFailedTriage,
 }
 
 impl ActionKind {
@@ -221,6 +229,7 @@ impl ActionKind {
             Self::RestartFromFloor { .. } => "RestartFromFloor",
             Self::RunTests => "RunTests",
             Self::RequestCriteriaRefinement => "RequestCriteriaRefinement",
+            Self::TestsFailedTriage => "TestsFailedTriage",
         }
     }
 }

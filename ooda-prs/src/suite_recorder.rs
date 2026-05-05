@@ -17,7 +17,7 @@
 //!   trace.md        -- human-readable summary table
 //! ```
 //!
-//! `<suite-id>` shares the same `<utc>-<nanos>-pid<pid>` shape as
+//! `<suite-id>` shares the same `<utc>-<nanos>-p<pid>` shape as
 //! per-PR `<run-id>`. Two simultaneous suite invocations against
 //! overlapping PRs each get a distinct `<suite-id>`; the per-PR
 //! `runs/<run-id>/` namespacing prevents ledger-level collisions.

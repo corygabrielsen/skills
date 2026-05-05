@@ -23,6 +23,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/brainstorm`                          | Generate N diverse solutions, forced breadth over intuition       |
 | `/cd`                                  | Change working directory                                          |
 | `/checkpoint`                          | Swarm-safe git checkpoint workflow                                |
+| `/converge`                            | Generic OODA loop with target/stall/cap/handoff halt conditions   |
 | `/debrief`                             | Reconstruct context after returning to a conversation             |
 | `/decompose-branch`                    | Reorganize a messy branch into focused, atomic commits            |
 | `/decompose-pr`                        | Break down a complex PR into focused, atomic commits              |
@@ -38,6 +39,7 @@ pre-commit install --hook-type pre-commit --hook-type commit-msg
 | `/mission-control`                     | Coordinate multi-step work with task graphs                       |
 | `/next`                                | Present 2-4 actionable next steps                                 |
 | `/ooda-codex-review`                   | OODA loop driving `codex review` to fixed point across the ladder |
+| `/ooda-pr`                             | OODA step function for a PR; 1:1 variant→exit-code boundary       |
 | `/pr-fitness`                          | Live PR merge readiness assessment with structured action plan    |
 | `/oneshot`                             | Execute a task to completion in one pass, no stopping early       |
 | `/orthogonalize-pr`                    | Separate orthogonal change sets within a decomposed PR            |

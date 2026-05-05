@@ -1,0 +1,61 @@
+{
+    "data": {
+        "repository": {
+            "pullRequest": {
+                "reviewThreads": {
+                    "pageInfo": {
+                        "hasNextPage": false,
+                        "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0wMy0zMFQwMzozNToyMVrOd5Oj7A=="
+                    },
+                    "nodes": [
+                        {
+                            "isResolved": true,
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "author": {
+                                            "login": "copilot-pull-request-reviewer"
+                                        },
+                                        "createdAt": "2026-03-30T03:35:21Z",
+                                        "body": "`has_consensus_with` clones the entire `HashSet` and re-counts confirmed attestations, which adds an extra O(n) allocation/copy on every call. This can be implemented without cloning by checking whether `self.attestations.contains(attestation)` and only incrementing `confirmed_count()` when the attestation is both confirmed and not already present.\n```suggestion\n        // Start from the current confirmed count and account for the effect of this attestation\n        let current_confirmed = self.confirmed_count();\n\n        // Only an additional, non-duplicate confirmed attestation can increase the count\n        let additional = if !self.attestations.contains(attestation)\n            && matches!(\n                (self.verdict_extractor)(attestation),\n                AttestationResult::Confirmed\n            ) {\n            1\n        } else {\n            0\n        };\n\n        current_confirmed + additional >= self.confirmed_threshold\n```"
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "isResolved": true,
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "author": {
+                                            "login": "copilot-pull-request-reviewer"
+                                        },
+                                        "createdAt": "2026-03-30T03:35:21Z",
+                                        "body": "`has_consensus_with` currently clones the full `attestations` set and re-counts positives, adding avoidable O(n) allocation/copy per call. Consider using `self.attestations.contains(attestation)` to avoid double-counting without cloning: compute `positive_count()` once and only add 1 when the attestation is positive and not already present.\n```suggestion\n        // Start from the current number of positive attestations.\n        let mut positive = self.positive_count();\n\n        // Only consider the hypothetical attestation if it is not already present.\n        if !self.attestations.contains(attestation) && (self.positive_predicate)(attestation) {\n            positive += 1;\n        }\n```"
+                                    }
+                                ]
+                            }
+                        },
+                        {
+                            "isResolved": true,
+                            "comments": {
+                                "nodes": [
+                                    {
+                                        "author": {
+                                            "login": "copilot-pull-request-reviewer"
+                                        },
+                                        "createdAt": "2026-03-30T03:35:21Z",
+                                        "body": "This test doesn't assert anything about the production runner-selection hash computation: it only checks that `u64::to_le_bytes()` is 8 bytes and that hashing the same bytes twice is deterministic (which is always true). To make this catch regressions, consider asserting an expected SHA256 output for a fixed `(workflow_name, trigger_hash, job_id, step_index)` tuple, or (at minimum) on 32-bit targets compare the u64-based hash to a usize-based hash and assert they differ."
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                "reviewRequests": {
+                    "nodes": []
+                }
+            }
+        }
+    }
+}

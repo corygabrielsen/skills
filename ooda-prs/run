@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Thin wrapper for `/ooda-prs`. Installs from a fresh checkout
+# without requiring the user to know about `cargo build --release`
+# first — `target/` is gitignored, so SKILL.md cannot point at the
+# release binary directly.
+#
+# Builds (or no-ops if already up-to-date — cargo's incremental
+# compile handles that) and execs the binary. Cargo's progress
+# output goes to stderr so it doesn't pollute the binary's stdout
+# channel (which the harness exit code interprets per SKILL.md's
+# halt taxonomy).
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+(cd "$DIR" && cargo build --release --quiet) >&2
+exec "$DIR/target/release/ooda-prs" "$@"

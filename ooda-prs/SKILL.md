@@ -7,9 +7,9 @@ args:
   - name: inspect
     description: Optional subcommand. Must appear before the first positional token; flags may interleave freely. Runs one observe/orient/decide pass per PR; no act, no loop.
   - name: --max-iter N
-    description: Per-PR loop iteration cap. Default 50; must be ≥1. Inspect mode runs exactly one pass per PR.
+    description: Per-PR loop iteration cap. Default 50; must be ≥1 (rejected with UsageError otherwise, even in inspect mode where the cap value is unused).
   - name: --concurrency K
-    description: Maximum simultaneously-active PRs (workers). Default = |suite| (no cap). Must be ≥1.
+    description: Maximum simultaneously-active PRs (workers). Parser default is None; None resolves to the suite size at the spawn loop (no cap). Must be ≥1; the unspecified-default case serializes as `null` in `manifest.json`.
   - name: --status-comment
     description: Post a status comment to each PR every iteration. Per-PR deduped via the always-on state root.
   - name: --state-root PATH
@@ -23,22 +23,24 @@ args:
 # /ooda-prs
 
 Drives **N PRs concurrently** through observe → orient → decide →
-act until each halts. `/ooda-prs` is a fork of `/ooda-pr`; the
-per-PR pipeline is bit-equivalent (DRY-shared code is intentionally
-absent — the fork is independent). Each invocation returns one
-`MultiOutcome`; the caller dispatches on the aggregate exit code,
-parses the per-PR JSONL records on stdout, and surfaces stderr to
-humans for triage.
+act until each halts. `/ooda-prs` is a fork of `/ooda-pr` and
+duplicates the per-PR pipeline source code module-by-module; the
+**recorder** module diverges (per-PR thread-local instead of
+process-global) so concurrent worker threads do not alias their
+tool-call sinks. The on-disk schema and decide/act semantics are
+unchanged. Each invocation returns one `MultiOutcome`; the caller
+dispatches on the aggregate exit code, parses the per-PR JSONL
+records on stdout, and surfaces stderr to humans for triage.
 
 ## Names
 
-| Name        | Refers to                                                                                                                                                                                                                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/ooda-prs` | The skill (this document).                                                                                                                                                                                                                                                                                                      |
-| `ooda-prs`  | The compiled Rust binary at `target/release/ooda-prs`, sibling to this `SKILL.md` in the source tree.                                                                                                                                                                                                                           |
-| `run`       | The wrapper script at `~/.claude/skills/ooda-prs/run`. Inside a `(cd … && cargo build --release --quiet) >&2` subshell it builds the binary (cargo no-ops when already up-to-date), then `exec`s the absolute binary path with the user's cwd unchanged — required so cwd-slug inference (`gh repo view`) sees the user's repo. |
-| Suite       | The non-empty, distinct `Vec⟨(RepoSlug, PullRequestNumber)⟩` parsed from the suite grammar (duplicates are rejected as `UsageError`, not silently de-duplicated). Drives `run_loop` per pair in loop mode; drives `run_inspect` per pair in inspect mode.                                                                       |
-| `/ooda-pr`  | The single-PR sibling skill, installed at `~/.claude/skills/ooda-pr/`. The fork shares the on-disk state schema (state-root chain, per-PR layout) but does not depend on `/ooda-pr` being installed at runtime — the per-PR pipeline is a complete duplicate inside `/ooda-prs`.                                                |
+| Name        | Refers to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/ooda-prs` | The skill (this document).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `ooda-prs`  | The compiled Rust binary at `target/release/ooda-prs`, sibling to this `SKILL.md` in the source tree.                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `run`       | The wrapper script at `~/.claude/skills/ooda-prs/run`. Inside a `(cd … && cargo build --release --quiet) >&2` subshell it builds the binary (cargo no-ops when already up-to-date), then `exec`s the absolute binary path with the user's cwd unchanged — required so cwd-slug inference (`gh repo view`) sees the user's repo.                                                                                                                                                                                                      |
+| Suite       | The non-empty, distinct `Vec⟨(RepoSlug, PullRequestNumber)⟩` parsed from the suite grammar (duplicates are rejected as `UsageError`, not silently de-duplicated). Drives `run_loop` per pair in loop mode; drives `run_inspect` per pair in inspect mode.                                                                                                                                                                                                                                                                            |
+| `/ooda-pr`  | The single-PR sibling skill, installed at `~/.claude/skills/ooda-pr/`. The fork shares the on-disk **state schema** (state-root chain, per-PR ledger layout) but does not depend on `/ooda-pr` being installed at runtime — the per-PR pipeline (observe / orient / decide / act / runner) is a code-level duplicate inside `/ooda-prs/src/`. The `recorder` module differs between the two: `/ooda-prs` uses a `thread_local!` recorder cell so per-PR threads do not alias their tool-call sinks. The on-disk format is unchanged. |
 
 Always invoke `run`; never the binary directly.
 
@@ -74,15 +76,25 @@ esac
 ## Suite grammar
 
 ```
-<argv>           ::= <flag-or-inspect>* <group> ( ',' <group> )* <flag>*
-<flag-or-inspect>::= <flag> | 'inspect'
-<group>          ::= <flag>* <slug-or-pr> ( <flag>* <pr> )* <flag>*
-<slug-or-pr>     ::= <slug> | <pr>            (must be <slug> if any '/' is in token)
-<slug>           ::= /[^/[:space:]]+\/[^/[:space:]]+/
-<pr>             ::= /[1-9][0-9]*/
-<flag>           ::= '--max-iter' INT | '--concurrency' INT | '--state-root' PATH
-                  | '--trace' PATH | '--status-comment' | '-h' | '--help'
+<argv>      ::= <flag>* [ 'inspect' <flag>* ] <group> ( ',' <group> )* <flag>*
+<group>     ::= <slug-or-pr> <pr>*
+<slug-or-pr>::= <slug> | <pr>
+                  -- a token containing '/' MUST satisfy <slug>'s shape
+                     (exactly one '/', no whitespace); otherwise the
+                     token is parsed as <pr>.
+<slug>      ::= [^/ \t]+ '/' [^/ \t]+        -- exactly two non-empty,
+                                                no-slash, no-whitespace
+                                                components
+<pr>        ::= [1-9][0-9]*                  -- positive integer
+<flag>      ::= '--max-iter' INT | '--concurrency' INT | '--state-root' PATH
+              | '--trace' PATH | '--status-comment' | '-h' | '--help'
 ```
+
+Each `<flag>` may appear at most once (a repeat is a `UsageError`,
+except `-h` / `--help` which short-circuits before the repeat
+check). The `inspect` keyword may appear at most once and only
+**before** the first positional token; a second `inspect` falls
+through to the positional vector and fails as a non-numeric `<pr>`.
 
 The grammar reflects the parser's left-to-right scan: any token
 that begins with `--` (or is `-h`) is consumed as a flag together
@@ -102,8 +114,8 @@ adjacent tokens, all of which the split treats uniformly.
   token causes the PR parse to fail (`UsageError`).
 - A group with **no explicit slug** inherits the prior group's
   slug. The very first group, if it has no explicit slug, falls
-  back to inferring the cwd's repository via `gh repo view --json
-nameWithOwner`.
+  back to inferring the cwd's repository via
+  `gh repo view --json nameWithOwner --jq .nameWithOwner`.
 - Cwd inference failure (no `gh`, not a github repo, malformed
   output) is a `UsageError` with the diagnostic.
 
@@ -112,14 +124,18 @@ pairs as `UsageError("duplicate PR: <slug>#<pr>")` — duplicates are
 **not** silently de-duplicated. Comma-separated groups must be
 non-empty (lone `,,` rejects).
 
-| Input                                        | Parsed suite                                                |
-| -------------------------------------------- | ----------------------------------------------------------- |
-| `ooda-prs 42 45`                             | `[(cwd, 42), (cwd, 45)]`                                    |
-| `ooda-prs 765 777 983`                       | `[(cwd, 765), (cwd, 777), (cwd, 983)]`                      |
-| `ooda-prs acme/widget 42, acme/infra 100`    | `[(acme/widget, 42), (acme/infra, 100)]`                    |
-| `ooda-prs acme/widget 42 43, acme/infra 100` | `[(acme/widget, 42), (acme/widget, 43), (acme/infra, 100)]` |
-| `ooda-prs acme/widget 42, 43`                | `[(acme/widget, 42), (acme/widget, 43)]` (slug inheritance) |
-| `ooda-prs 42, acme/infra 100`                | `[(cwd, 42), (acme/infra, 100)]`                            |
+The table below shows just the **suite** portion of the argv for
+brevity. Always invoke the wrapper at `~/.claude/skills/ooda-prs/run`
+in real use (see "Calling discipline" above).
+
+| Suite portion of argv               | Parsed suite                                                |
+| ----------------------------------- | ----------------------------------------------------------- |
+| `42 45`                             | `[(cwd, 42), (cwd, 45)]`                                    |
+| `765 777 983`                       | `[(cwd, 765), (cwd, 777), (cwd, 983)]`                      |
+| `acme/widget 42, acme/infra 100`    | `[(acme/widget, 42), (acme/infra, 100)]`                    |
+| `acme/widget 42 43, acme/infra 100` | `[(acme/widget, 42), (acme/widget, 43), (acme/infra, 100)]` |
+| `acme/widget 42, 43`                | `[(acme/widget, 42), (acme/widget, 43)]` (slug inheritance) |
+| `42, acme/infra 100`                | `[(cwd, 42), (acme/infra, 100)]`                            |
 
 ## How to call
 
@@ -128,14 +144,14 @@ non-empty (lone `,,` rejects).
 ~/.claude/skills/ooda-prs/run inspect [options] <suite>    # one pass per PR
 ```
 
-| Flag                | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-iter N`      | **Per-PR** iteration cap. Default 50. Must be ≥ 1. Inspect mode runs once per PR (cap unused, but `--max-iter 0` still rejects).                                                                                                                                                                                                                                                                                                                                                                                       |
-| `--concurrency K`   | Maximum simultaneously-active PRs (workers). Default is the suite size (no cap). Must be ≥ 1; `K = 0` is rejected at the parser. `K > suite size` is silently clamped to the suite size. With `K < suite size`, `K` worker threads pull PRs from an atomic counter — a worker may handle multiple PRs sequentially while another is on its first PR.                                                                                                                                                                   |
-| `--status-comment`  | Post status comments to each PR every iteration. Per-PR dedup at `<state-root>/github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`.                                                                                                                                                                                                                                                                                                                                                                          |
-| `--state-root PATH` | Override the always-on state root. Default-resolution chain: `$OODA_PR_STATE_HOME` → `$XDG_STATE_HOME/ooda-pr` → `$HOME/.local/state/ooda-pr` → `$TMPDIR/ooda-pr` (i.e. `std::env::temp_dir().join("ooda-pr")`). Every step ends in `…/ooda-pr` — the slug is the **state-schema** name, deliberately shared with `/ooda-pr` so per-PR ledgers coexist across both skills. There is no `OODA_PRS_STATE_HOME`; the `OODA_PR_` prefix is the canonical env var.                                                          |
-| `--trace PATH`      | Also append the compact trace to PATH. Each PR's `Recorder` opens its own file handle on PATH and appends; under `--concurrency > 1` writes from different PRs are not slug-prefixed and the per-line atomicity that stderr enjoys is **not** guaranteed across distinct file handles, so concurrent appends to one trace file may interleave mid-line on some filesystems. Prefer the per-PR `runs/<run-id>/trace.md` files (one file per PR per run, always written, no cross-PR interleaving) for live attribution. |
-| `-h`, `--help`      | Print usage to stdout, exit 0. Pre-scan short-circuits all other validation including flag-repetition checks (`--help --help` exits 0).                                                                                                                                                                                                                                                                                                                                                                                |
+| Flag                | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--max-iter N`      | **Per-PR** iteration cap. Default 50. Must be ≥ 1. Inspect mode runs once per PR (cap unused, but `--max-iter 0` still rejects).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `--concurrency K`   | Maximum simultaneously-active PRs (workers). Default is the suite size (no cap). Must be ≥ 1; `K = 0` is rejected at the parser. `K > suite size` is silently clamped to the suite size. With `K < suite size`, `K` worker threads pull PRs from an atomic counter — a worker may handle multiple PRs sequentially while another is on its first PR.                                                                                                                                                                                                                                                                                                  |
+| `--status-comment`  | Post status comments to each PR every iteration. Per-PR dedup at `<state-root>/github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `--state-root PATH` | Override the always-on state root. Default-resolution chain: (1) `--state-root PATH` if given, else (2) `$OODA_PR_STATE_HOME`, else (3) `$XDG_STATE_HOME/ooda-pr`, else (4) `$HOME/.local/state/ooda-pr`, else (5) `std::env::temp_dir().join("ooda-pr")` (i.e. `/tmp/ooda-pr` on Linux when `$TMPDIR` is unset). Steps (1) and (2) are used **verbatim** — no `ooda-pr` slug is appended. Steps (3)–(5) append `ooda-pr` because the slug is part of the **state-schema name**, deliberately shared with `/ooda-pr` so per-PR ledgers coexist across both skills. There is no `OODA_PRS_STATE_HOME`; the `OODA_PR_` prefix is the canonical env var. |
+| `--trace PATH`      | Also append the compact trace to PATH. Each PR's `Recorder` opens its own file handle on PATH and appends. Under `--concurrency > 1`, writes from different PRs are not slug-prefixed; per-write atomicity holds only for `write()` syscalls ≤ `PIPE_BUF` on POSIX append-mode regular files (Rust's `writeln!` may issue multiple syscalls for long lines), so concurrent multi-PR writes can interleave mid-line. Prefer the per-PR `runs/<run-id>/trace.md` files (one file per PR per run, always written, no cross-PR interleaving) for live attribution.                                                                                        |
+| `-h`, `--help`      | Print usage to stdout, exit 0. Pre-scan short-circuits all other validation including flag-repetition checks (`--help --help` exits 0).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 **Repeating a flag** (`--max-iter`, `--concurrency`,
 `--status-comment`, `--state-root`, `--trace`) is a `UsageError`,
@@ -154,19 +170,29 @@ memory.
 
 ```text
 <root>/github.com/<owner>/<repo>/prs/<pr>/
-  latest/        index.md, state.json, decision.json, outcome.json,
-                 blockers.md, next.md
+  latest/        index.md, state.json (copy of latest oriented.json),
+                 decision.json, blockers.md, next.md
                  (action.json present when the latest decision carries
-                  an Action; absent for halt-without-action cases —
-                  Success / Terminal — which call remove_latest)
+                  an Action; absent on Success / Terminal halts which
+                  call remove_latest. outcome.json is written only by
+                  record_outcome at the very end of an invocation, so
+                  it can be stale or missing if a run aborted before
+                  that point.)
   ledger.md      cross-run; one bullet line per event:
-                   `- <rfc3339-ts> <run-id> <summary>`
+                   - <rfc3339-ts> `<run-id>` <summary>
+                 (the run-id is wrapped in literal backticks; the
+                  hyphen and spacing above are exact)
   ledger.jsonl   cross-run; one JSON object per event:
-                   `{schema_version, timestamp, run_id, kind, summary}`
+                   {schema_version, timestamp, run_id, kind, summary}
                  (jsonl carries `kind` and `schema_version`; md is a
                   visualization that drops them — not the same fields)
   events.jsonl   all events, all runs (single file appended-to)
-  status-comment/dedup.json
+  status-comment/
+    dedup.json                                             # always-present
+                                                           # dedup hash
+    rendered.json (per render)                             # written by
+    result.json   (per render)                             # record_status_*
+                                                           # via blob refs
   blobs/sha256/<aa>/<bb>/<hash>.zst                        # zstd-compressed,
                                                            # content-addressed
   runs/<run-id>/
@@ -176,9 +202,14 @@ memory.
                   the cross-run events.jsonl above)
     iterations/<NNNN>/
       event-range.json
-      state.json, decision.json, action.json (when present)
+      normalized.json     # raw observe bundle for this iteration
+      oriented.json       # OrientedState
+      candidates.json     # ranked candidate Vec<Action>
+      decision.json       # the chosen Decision
+      action.json         # present iff Decision carries an Action
+      act-result.json     # present after act() returns
       tool-calls/<call-id>/                                # nested under
-        stdout.bin, stderr.bin, record.json                # the iteration,
+        stdout.bin, stderr.bin, record.json                # this iteration,
                                                            # not at run_root
 ```
 
@@ -189,13 +220,28 @@ memory.
   manifest.json    -- schema_version, suite_id, started_at, forge,
                       mode, max_iter, status_comment, concurrency,
                       cwd, argv, suite (Vec⟨{slug, pr}⟩)
+                      Field encodings:
+                        forge          : "github.com" (the only currently
+                                          supported forge)
+                        mode           : "loop" | "inspect" (lowercase
+                                          serde rename_all="snake_case")
+                        concurrency    : integer ≥ 1, OR `null` when
+                                          --concurrency was not given
+                                          (the spawn loop resolves null
+                                          to the suite size at runtime)
+                        status_comment : boolean
   pointers.json    -- schema_version, suite_id,
                       prs : Vec⟨{slug, pr, run_id}⟩
+                      Rewritten in full each time a worker calls
+                      register_pr (atomic-replace through the
+                      Arc⟨Mutex⟨Inner⟩⟩); not append-only.
   outcome.json     -- schema_version, suite_id, finished_at,
                       exit_code, multi_outcome
-  trace.md         -- human-readable header (written at open) +
-                      per-PR results table (appended at finalize) +
-                      aggregate exit line
+  trace.md         -- header block (written at open) + Suite: <list>
+                      line + a "## Per-PR results" markdown table
+                      (appended at finalize, after all workers join)
+                      + a final "Aggregate exit: **<code>**" line
+                      with started_at and finished_at timestamps.
 ```
 
 `<suite-id>` shares the same `<utc>-<nanos>-p<pid>` shape as per-PR
@@ -241,16 +287,16 @@ channels).
 
 `MultiOutcome::exit_code()` is a **priority projection**:
 
-| Condition                                         | `$?` |
-| :------------------------------------------------ | :--: |
-| `MultiOutcome::UsageError`                        |  64  |
-| any `ProcessOutcome` carries `BinaryError(_)`     |  6   |
-| else any carries `HandoffAgent(_)`                |  5   |
-| else any carries `HandoffHuman(_)`                |  3   |
-| else any carries `StuckCapReached(_)`             |  2   |
-| else any carries `StuckRepeated(_)`               |  1   |
-| else any carries `WouldAdvance(_)` (inspect-only) |  4   |
-| else (all `DoneMerged` / `DoneClosed` / `Paused`) |  0   |
+| Condition                                          | `$?` | Mode reachability   |
+| :------------------------------------------------- | :--: | :------------------ |
+| `MultiOutcome::UsageError`                         |  64  | both (parser-level) |
+| any `ProcessOutcome` carries `BinaryError(_)`      |  6   | both                |
+| else any carries `HandoffAgent(_)`                 |  5   | both                |
+| else any carries `HandoffHuman(_)`                 |  3   | both                |
+| else any carries `StuckCapReached(_)`              |  2   | loop only           |
+| else any carries `StuckRepeated(_)`                |  1   | loop only           |
+| else any carries `WouldAdvance(_)`                 |  4   | inspect only        |
+| else every PR ∈ `{DoneMerged, DoneClosed, Paused}` |  0   | both                |
 
 **Priority order** (highest first): `UsageError > BinaryError >
 HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated >
@@ -281,9 +327,15 @@ After all PRs halt, one record per PR is emitted to stdout in
 **Loop-mode example** (no `inspect` subcommand; only halt-state
 outcomes appear):
 
+Records below are **schematic** — `prompt` strings are abbreviated;
+the live binary emits the full `Action.description` text verbatim
+(for `AddressThreads` this includes an author breakdown like
+`Copilot: 2 issues.`, the numbered thread list with bodies, and the
+trailing class-of-issue meta-instruction).
+
 ```jsonl
 {"slug":"acme/widget","pr":1,"outcome":"DoneMerged","exit":0}
-{"slug":"acme/widget","pr":2,"outcome":"HandoffAgent","exit":5,"action":"AddressThreads","blocker":"unresolved_threads","prompt":"Address 2 unresolved review threads.\n\n1. Copilot @ src/foo.rs:42\n   > <body>"}
+{"slug":"acme/widget","pr":2,"outcome":"HandoffAgent","exit":5,"action":"AddressThreads","blocker":"unresolved_threads","prompt":"Address 2 unresolved review threads.\nCopilot: 2 issues.\n\n1. Copilot @ src/foo.rs:42\n   > body line 1\n\n…"}
 {"slug":"acme/infra","pr":100,"outcome":"HandoffHuman","exit":3,"action":"RequestApproval","blocker":"not_approved","prompt":"Request or self-approve"}
 ```
 
@@ -346,11 +398,15 @@ lines at all; only an optional one-shot `stack: <base> → <root>`
 diagnostic and the variant block reach stderr.
 
 **Concurrent interleaving.** Lines from different PRs are NOT
-slug-prefixed. The OS preserves per-line atomicity for stderr
-writes (one full `eprintln!` per write), so individual lines stay
-intact, but with `--concurrency > 1` you cannot tell from stderr
-alone which PR emitted which line. For attributable per-PR audit
-use one of:
+slug-prefixed. Rust's stderr lock serializes individual `eprintln!`
+calls within a single process (the runtime acquires it per `print*!`
+invocation), so short lines from concurrent workers do not splice
+mid-character — but `eprintln!` may still issue multiple syscalls
+for very long lines, and the lock is per-call, not per-line, so
+fine-grained interleave between adjacent lines is possible. With
+`--concurrency > 1` you in any case cannot tell from stderr alone
+which PR emitted which line. For attributable per-PR audit use one
+of:
 
 - The per-PR `runs/<run-id>/trace.md` (always written, **live**:
   appended as iterations happen — the only PR-attributed source of
@@ -441,7 +497,12 @@ Internal invariants of the design:
 ```
 [P1] ∀ PR (slug, pr) ∈ suite, the trajectory of run_loop(slug, pr, …)
      inside ooda-prs is observationally indistinguishable from
-     ooda-pr on the same (slug, pr). (Per-PR semantic preservation.)
+     ooda-pr on the same (slug, pr) **on the per-PR audit channels**
+     (per-PR Recorder events, per-PR `runs/<run-id>/trace.md`, the
+     PR's own JSONL record). The shared stderr stream is NOT a
+     per-PR audit channel under `--concurrency > 1`: lines from
+     sibling PRs interleave there without slug prefixes. Per-PR
+     semantic preservation holds at the recorder boundary.
 
 [P2] ∀ distinct PR_i, PR_j ∈ suite, the action stream of PR_i is
      causally independent of PR_j's. (No shared mutable state.)

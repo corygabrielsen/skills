@@ -99,13 +99,16 @@ before invoking the wrapper.
 
 ## Suite grammar
 
-The grammar is **token-scan-based**: any argv token whose first
-character is `-` is consumed as a flag (or as `-h`/`--help`) at
-the position where it appears; everything else accumulates into
-a positional vector that the parser then splits on `,`. Flags
-may therefore interleave anywhere — before the first group,
-between groups, between PR tokens within a group, or trailing —
-without changing the parsed suite.
+The grammar is **token-scan-based**: any argv token that begins
+with `--` (or is exactly `-h`) is consumed as a flag at the
+position where it appears; an unrecognized `--<name>` is rejected
+as `UsageError`; any other token accumulates into a positional
+vector that the parser then splits on `,`. (Single-dash tokens
+other than `-h` — e.g. `-x`, `-1` — are NOT recognized as flags;
+they fall through to positional and fail later as malformed PR
+numbers.) Recognized flags may interleave anywhere — before the
+first group, between groups, between PR tokens within a group, or
+trailing — without changing the parsed suite.
 
 The compact production below uses set notation rather than
 sequence notation (Kleene-star over alternation) to capture this:
@@ -129,11 +132,22 @@ sequence notation (Kleene-star over alternation) to capture this:
                      '/' (validated by `Owner::parse` / `Repo::parse`).
                      Whitespace exclusion comes from the upstream
                      whitespace tokenization, not the slug parser itself.
-<pr>        ::= [1-9][0-9]*                 -- positive integer
+<pr>        ::= [0-9]+                      -- parsed as u64, then
+                                               rejected if value = 0
+                                               (PullRequestNumber::new
+                                               requires > 0). Leading
+                                               zeros are accepted at
+                                               the parser ("07" → 7).
 <flag>      ::= '--max-iter' POS_INT | '--concurrency' POS_INT
               | '--state-root' PATH | '--trace' PATH
               | '--status-comment' | '-h' | '--help'
-POS_INT     ::= [1-9][0-9]*                 -- u32, must be ≥ 1
+POS_INT     ::= [0-9]+                      -- parsed as u32, then
+                                               rejected if value = 0
+                                               (must be ≥ 1). Leading
+                                               zeros and a leading `-`
+                                               sign are detected and
+                                               rejected with distinct
+                                               diagnostic messages.
 PATH        ::= any string                  -- path on the host filesystem
 ```
 
@@ -331,23 +345,26 @@ memory.
                       complete in-memory `Vec<PrPointer>`.
   outcome.json     -- schema_version, suite_id, finished_at,
                       exit_code, multi_outcome
-  trace.md         -- Written at open (header block):
-                        ===== ooda-prs <rfc3339-ts> suite_id=<id>
-                          state_root=<path> mode=<loop|inspect>
-                          max_iter=<n> status_comment=<bool>
-                          concurrency=<n|"unbounded"> =====
-                        Suite: <slug>#<pr>, <slug>#<pr>, …
-                      Note: in this header, an unspecified
-                      --concurrency renders as the literal string
-                      "unbounded", DIVERGING from manifest.json
-                      where the same case serializes as JSON `null`.
-                      Appended at finalize (after all workers join):
-                        a "## Per-PR results" markdown table with
-                          columns | slug | pr | run_id | outcome | exit |
-                          (one row per PR for Bundle outcomes;
-                           a single placeholder row for UsageError);
-                        a final "Aggregate exit: **<code>** (started_at=…,
-                          finished_at=…)" line with rfc3339 timestamps.
+  trace.md         -- Written at open: a SINGLE-line banner
+                        `===== ooda-prs <rfc3339-ts> suite_id=<id> state_root=<path> mode=<loop|inspect> max_iter=<n> status_comment=<bool> concurrency=<n|"unbounded"> =====`
+                        followed by a blank line, then a single line
+                        `Suite: <slug>#<pr>, <slug>#<pr>, …`.
+                      In the banner, an unspecified --concurrency
+                      renders as the literal string "unbounded",
+                      DIVERGING from manifest.json where the same
+                      case serializes as JSON `null`.
+                      Appended at finalize (after all workers join,
+                      only when SuiteRecorder was opened — i.e.
+                      parser succeeded): a `## Per-PR results`
+                      markdown table with columns
+                      `| slug | pr | run_id | outcome | exit |`
+                      (one row per PR), then a final
+                      `Aggregate exit: **<code>** (started_at=…,
+                      finished_at=…)` line with rfc3339 timestamps.
+                      (The UsageError code path inside
+                      write_trace_summary is structurally unreachable
+                      because SuiteRecorder is never opened on parse
+                      failure.)
 ```
 
 `<suite-id>` and per-PR `<run-id>` share one format string,
@@ -355,11 +372,17 @@ memory.
 `20260505T120000Z-000000000-p1234`): basic-ISO 8601 UTC (no
 hyphens or colons), the wall-clock subsecond nanosecond field
 (`Utc::now().timestamp_subsec_nanos()`, 9-digit zero-padded — NOT
-a process-local counter, so two same-process opens within a single
-nanosecond can theoretically collide; in practice they don't
-because `Recorder::open` is sequential within a single thread and
-nanosecond resolution exceeds wall-clock advancement), and the
-process pid prefixed with `p`. Two simultaneous invocations from
+a process-local counter; uniqueness across rapid opens depends on
+clock resolution), and the process pid prefixed with `p`. Inside
+a single suite invocation, `Recorder::open` is called concurrently
+from K worker threads; collisions on `<run-id>` would require two
+threads to obtain the **same** `Utc::now()` instant in the same
+process, which is rare on modern systems with high clock resolution
+but not formally prevented. Distinct `(slug, pr)` pairs (enforced
+by the parser) live under disjoint `<root>/.../prs/<pr>/runs/`
+directories, so even a `<run-id>` collision across two threads
+would not collide in path because the parent path differs. Two
+simultaneous invocations from
 distinct processes against overlapping PRs each get a distinct
 `<suite-id>` and distinct per-PR `<run-id>`s.
 

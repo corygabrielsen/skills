@@ -62,9 +62,9 @@ struct Args {
     status_comment: bool,
     state_root: Option<PathBuf>,
     trace: Option<PathBuf>,
-    /// Optional cap on concurrent in-flight PRs. `None` means no cap
-    /// (= |suite|). Wired into the suite spawn loop in a later stage;
-    /// currently parsed but not yet enforced.
+    /// Optional cap on concurrent in-flight PRs. `None` resolves
+    /// to `|suite|` at the spawn loop (no cap). Enforced by
+    /// `suite::drive_suite` via an `AtomicUsize` work index.
     concurrency: Option<u32>,
 }
 

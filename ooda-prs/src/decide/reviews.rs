@@ -24,18 +24,18 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     let ci = &oriented.ci;
     let mut out: Vec<Action> = Vec::new();
 
-    let live_threads: Vec<ReviewThread> = oriented
+    let unresolved_threads: Vec<ReviewThread> = oriented
         .threads
         .iter()
-        .filter(|t| t.state == ThreadState::Live)
+        .filter(|t| t.state != ThreadState::Resolved)
         .cloned()
         .collect();
 
-    if !live_threads.is_empty() {
-        let description = address_threads_description(&live_threads);
+    if !unresolved_threads.is_empty() {
+        let description = address_threads_description(&unresolved_threads);
         out.push(Action {
             kind: ActionKind::AddressThreads {
-                threads: live_threads,
+                threads: unresolved_threads,
             },
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
@@ -43,7 +43,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             description,
             // Stable key — the action carries the witness; the
             // blocker remains a fixed tag so 3→2 progress doesn't
-            // mask as stall.
+            // mask as stall. Live and Outdated threads share this
+            // tag because both require per-thread agent judgment;
+            // the per-thread state is carried through in the prompt.
             blocker: BlockerKey::tag("unresolved_threads"),
         });
     }
@@ -86,10 +88,15 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     // payload) would otherwise mis-route through this branch.
     let needs_approval = matches!(reviews.decision, Some(ReviewDecision::ReviewRequired));
     let ci_clean = ci.required.fail() == 0 && ci.required.pending() == 0;
+    // Symmetric with the AddressThreads filter: a thread that is
+    // Outdated but not Resolved still requires per-thread agent
+    // judgment (anchor moved, but the logical feedback may still
+    // apply), so RequestApproval / AddressChangeRequest must wait
+    // until every thread has reached the Resolved state.
     let threads_clean = !oriented
         .threads
         .iter()
-        .any(|t| t.state == ThreadState::Live);
+        .any(|t| t.state != ThreadState::Resolved);
     if needs_approval && ci_clean && threads_clean {
         out.push(Action {
             kind: ActionKind::RequestApproval,
@@ -146,18 +153,42 @@ fn address_change_request_description() -> String {
 /// Build the address_threads prompt with the threads themselves
 /// inlined as witnesses. Structure:
 ///
-/// 1. Headline count
-/// 2. Per-author breakdown
-/// 3. Numbered threads with location and full body
-/// 4. The generalization directive
+/// 1. Headline count, with a Live/Outdated breakdown when the set
+///    is mixed.
+/// 2. Per-author breakdown.
+/// 3. Numbered threads with location, optional `[outdated]` tag,
+///    `thread_id` (for the resolve mutation), and full body.
+/// 4. The generalization directive (class-of-issue) plus the
+///    verify-then-act-or-resolve directive for outdated threads.
 ///
 /// The actor receives the prompt material directly — no second
 /// `gh api graphql` round-trip required to discover what to fix.
 fn address_threads_description(threads: &[ReviewThread]) -> String {
-    let mut parts: Vec<String> = vec![format!(
-        "Address {}.",
-        crate::text::count(threads.len(), "unresolved review thread"),
-    )];
+    let outdated_count = threads
+        .iter()
+        .filter(|t| t.state == ThreadState::Outdated)
+        .count();
+    let live_count = threads.len() - outdated_count;
+
+    let headline = if outdated_count > 0 && live_count > 0 {
+        format!(
+            "Address {} ({} live, {} outdated).",
+            crate::text::count(threads.len(), "unresolved review thread"),
+            live_count,
+            outdated_count,
+        )
+    } else if outdated_count > 0 {
+        format!(
+            "Address {} (all outdated; anchors moved since the comments were authored).",
+            crate::text::count(threads.len(), "unresolved review thread"),
+        )
+    } else {
+        format!(
+            "Address {}.",
+            crate::text::count(threads.len(), "unresolved review thread"),
+        )
+    };
+    let mut parts: Vec<String> = vec![headline];
 
     let by_author = count_by_author(threads);
     if !by_author.is_empty() {
@@ -170,7 +201,21 @@ fn address_threads_description(threads: &[ReviewThread]) -> String {
 
     parts.push(String::new());
     for (i, t) in threads.iter().enumerate() {
-        parts.push(format!("{}. {} @ {}", i + 1, t.author, t.location));
+        let tag = match t.state {
+            ThreadState::Outdated => "    [outdated]",
+            // Live and Resolved both render without a tag; Resolved
+            // is structurally excluded by the caller's filter, so
+            // only Live reaches this arm.
+            _ => "",
+        };
+        parts.push(format!(
+            "{}. {} @ {}{}    thread_id: {}",
+            i + 1,
+            t.author,
+            t.location,
+            tag,
+            t.id,
+        ));
         for line in t.body.lines() {
             parts.push(format!("   > {line}"));
         }
@@ -182,6 +227,41 @@ fn address_threads_description(threads: &[ReviewThread]) -> String {
          general, and solve the general form of the issue across all relevant \
          code. This ensures the entire category of each issue is solved in \
          general."
+            .into(),
+    );
+
+    if outdated_count > 0 {
+        parts.push(String::new());
+        parts.push(
+            "For threads marked [outdated]: GitHub's `isOutdated` flag is \
+             positional, not content-relevance — the diff hunk that anchored \
+             the thread has moved (typically due to a refactor or rebase), \
+             so the comment no longer renders inline, but the logical \
+             feedback may still apply to the current code. For each outdated \
+             thread, locate the current code that the comment is about (often \
+             near the original `path:line` after a small refactor; sometimes \
+             elsewhere) and decide whether the feedback still applies. If it \
+             does, address it as you would a live thread. If it does not, \
+             resolve the thread with a brief reply explaining why."
+                .into(),
+        );
+    }
+
+    parts.push(String::new());
+    parts.push(
+        "After addressing (or judging not-applicable) each thread, mark it \
+         resolved on GitHub:"
+            .into(),
+    );
+    parts.push(
+        "  gh api graphql -f query='mutation { resolveReviewThread(input: \
+         { threadId: \"<thread_id>\" }) { thread { id } } }'"
+            .into(),
+    );
+    parts.push(
+        "(Substitute the per-thread `thread_id` shown in each entry above. \
+         The mutation is idempotent — already-resolved threads succeed as a \
+         no-op.)"
             .into(),
     );
 
@@ -271,19 +351,37 @@ mod tests {
         }
     }
 
-    fn live_thread(path: &str, line: u32, body: &str) -> ReviewThread {
+    fn thread_in_state(
+        path: &str,
+        line: u32,
+        body: &str,
+        state: ThreadState,
+        id: &str,
+    ) -> ReviewThread {
         use crate::orient::thread::{BotName, FilePath, ThreadId, ThreadLocation};
         ReviewThread {
-            id: ThreadId::new("t".to_string()),
+            id: ThreadId::new(id.to_string()),
             author: ThreadAuthor::Bot(BotName::Copilot),
             location: ThreadLocation {
                 path: FilePath::new(path),
                 line: Some(line),
             },
             body: body.into(),
-            state: ThreadState::Live,
+            state,
             created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
         }
+    }
+
+    fn live_thread(path: &str, line: u32, body: &str) -> ReviewThread {
+        thread_in_state(path, line, body, ThreadState::Live, "t")
+    }
+
+    fn outdated_thread(path: &str, line: u32, body: &str, id: &str) -> ReviewThread {
+        thread_in_state(path, line, body, ThreadState::Outdated, id)
+    }
+
+    fn resolved_thread(path: &str, line: u32, body: &str, id: &str) -> ReviewThread {
+        thread_in_state(path, line, body, ThreadState::Resolved, id)
     }
 
     #[test]
@@ -331,6 +429,84 @@ mod tests {
     }
 
     #[test]
+    fn outdated_unresolved_threads_emit_address_threads() {
+        // Bug fix: GitHub's isOutdated is positional, not
+        // content-relevance. Outdated unresolved threads still need
+        // per-thread agent judgment and must reach AddressThreads.
+        let r = clean_reviews();
+        let threads = vec![outdated_thread(
+            "src/foo.rs",
+            42,
+            "still wrong even after move",
+            "T_outdated",
+        )];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads must fire on outdated unresolved threads");
+        assert_eq!(action.automation, Automation::Agent);
+    }
+
+    #[test]
+    fn mixed_live_and_outdated_threads_share_one_action() {
+        let r = clean_reviews();
+        let threads = vec![
+            live_thread("src/a.rs", 1, "live concern"),
+            outdated_thread("src/b.rs", 2, "outdated concern", "T_outdated"),
+        ];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads must fire");
+        match &action.kind {
+            ActionKind::AddressThreads { threads } => assert_eq!(threads.len(), 2),
+            _ => unreachable!(),
+        }
+        // Headline carries the live/outdated breakdown.
+        assert!(action.description.contains("(1 live, 1 outdated)"));
+        // Outdated entry tagged; live entry not.
+        assert!(action.description.contains("[outdated]"));
+        // thread_id surfaced for the resolve mutation.
+        assert!(action.description.contains("T_outdated"));
+        // Verify-then-act-or-resolve clause appears for outdated.
+        assert!(action.description.contains("isOutdated` flag is"));
+        // Resolve mutation template appears unconditionally (any
+        // unresolved set ends with the resolve instruction).
+        assert!(action.description.contains("resolveReviewThread"));
+    }
+
+    #[test]
+    fn all_outdated_set_uses_all_outdated_headline() {
+        let r = clean_reviews();
+        let threads = vec![
+            outdated_thread("src/a.rs", 1, "first", "T_a"),
+            outdated_thread("src/b.rs", 2, "second", "T_b"),
+        ];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        let desc = &cs[0].description;
+        assert!(desc.contains("Address 2 unresolved review threads (all outdated"));
+        // Live/outdated breakdown only appears when mixed.
+        assert!(!desc.contains("0 live"));
+    }
+
+    #[test]
+    fn resolved_threads_excluded_from_action() {
+        let r = clean_reviews();
+        let threads = vec![
+            resolved_thread("src/a.rs", 1, "already done", "T_a"),
+            resolved_thread("src/b.rs", 2, "also done", "T_b"),
+        ];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
+            "All-Resolved set must not emit AddressThreads"
+        );
+    }
+
+    #[test]
     fn pending_humans_marked_human_automation() {
         let mut r = clean_reviews();
         r.pending_reviews.humans = vec![Reviewer::User(GitHubLogin::parse("alice").unwrap())];
@@ -356,6 +532,43 @@ mod tests {
         let cs = candidates(&oriented_with_threads(r, threads));
         assert!(
             !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::RequestApproval))
+        );
+    }
+
+    #[test]
+    fn approval_blocked_by_outdated_unresolved_threads() {
+        // Symmetric with the AddressThreads filter: outdated-but-
+        // not-resolved threads still need agent judgment, so
+        // RequestApproval must wait until the entire set is
+        // Resolved.
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ReviewRequired);
+        let threads = vec![outdated_thread("src/a.rs", 1, "x", "T_o")];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::RequestApproval)),
+            "RequestApproval must not fire while outdated unresolved threads remain"
+        );
+        // AddressThreads fires instead.
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+        );
+    }
+
+    #[test]
+    fn approval_fires_when_all_threads_resolved() {
+        // The symmetric gate also admits the all-Resolved case:
+        // every thread is closed, AddressThreads is silent,
+        // RequestApproval can fire.
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ReviewRequired);
+        let threads = vec![resolved_thread("src/a.rs", 1, "done", "T_r")];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        assert!(
+            cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::RequestApproval))
         );
     }

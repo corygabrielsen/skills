@@ -44,6 +44,10 @@ Every identifier is a validated newtype.
 | `GitCommitSha` | 40 lowercase hex                                                           |
 | `BlockerKey`   | non-empty string; stable iteration key for stall detection                 |
 
+`Pr(u64)` is user-facing recorder identity, not a direct codex
+target. Loop mode resolves the PR base branch with `gh pr view` and
+spawns codex with `--base <baseRefName>`.
+
 ## O = observe
 
 ```
@@ -66,7 +70,10 @@ VerdictClass  = Clean | HasIssues
 Pure read of the run dir. `verdict::extract_verdict` is the
 awk-equivalent (last `^codex$` marker wins; non-empty body required
 for completion). `batch::scan_batch` walks `<batch_dir>/{level}-*.log`
-and produces the `BatchState`.
+plus matching `.exit` files and produces the `BatchState`.
+Nonzero child exits and zero exits without a non-empty verdict block
+return an IO error so the runner emits `BinaryError` instead of
+waiting forever.
 
 ## O = orient
 
@@ -144,15 +151,17 @@ act : Action × ActContext → Result⟨(), ActError⟩
 
 ActContext = { batch_dir, target, repo_root, codex_bin }
 
-ActError = UnsupportedAutomation | NotImplemented
+ActError = UnsupportedAutomation | UnsupportedTarget | NotImplemented
          | Spawn { slot: u32, source: io::Error }
 ```
 
 `Wait` sleeps the configured interval. `Full` dispatches by
 ActionKind:
 
-- `RunReviews` → spawn `n` subprocesses, stdout/stderr piped to
-  `<batch_dir>/<level>-<slot>.log`, then return immediately
+- `RunReviews` → synchronously create `<batch_dir>/<level>-<slot>.log`,
+  spawn `n` wrapper subprocesses, redirect child stdout/stderr to
+  the log, write `<level>-<slot>.exit` on child completion, then
+  return immediately
 - (other Full kinds: NotImplemented; the ladder transitions
   happen via `--mark-*` invocations that call the recorder
   directly, not via decide-emitted actions)
@@ -203,6 +212,7 @@ Layout (one tree per `(repo, target)`):
     manifest.json
     levels/level-<L>/batch-<n>/
       <L>-<slot>.log
+      <L>-<slot>.exit
 ```
 
 Resume rules — all must hold:
@@ -214,21 +224,23 @@ Resume rules — all must hold:
 - `manifest.start_level == cfg.start_level`
 
 Mutations (`advance_level`, `drop_level`, `restart_from_floor`,
-`record_outcome`) write the manifest immediately. Level transitions
-reset `batch_number` to 1; `record_outcome` appends to
-`level_history` without touching `current_level`.
+`start_next_batch_at_current_level`, `record_outcome`) write the
+manifest immediately. Level transitions select the next unused
+`batch_number` for the destination level; same-level rebatching
+selects the next unused batch at the current level. `record_outcome`
+appends to `level_history` without touching `current_level`.
 
 The orchestrator-facing CLI exposes these through `--mark-*`
 subcommands. Each one combines a `record_outcome` call with the
 appropriate level transition and returns a documented Outcome:
 
-| Flag                                 | Records                               | Transition           | Outcome             |
-| ------------------------------------ | ------------------------------------- | -------------------- | ------------------- |
-| `--mark-retro-clean` (at ceiling)    | `Clean(level)`                        | none                 | `DoneFixedPoint`    |
-| `--mark-retro-clean` (below ceiling) | `Clean(level)`                        | `advance_level`      | `Idle`              |
-| `--mark-retro-changes REASON`        | `RetrospectiveChanges(level, reason)` | `restart_from_floor` | `Idle`              |
-| `--mark-address-passed`              | `Addressed(level, issue_count)`       | `drop_level` (clamp) | `Idle`              |
-| `--mark-address-failed DETAILS`      | (none)                                | none                 | `HandoffHuman(...)` |
+| Flag                                 | Records                               | Transition                          | Outcome             |
+| ------------------------------------ | ------------------------------------- | ----------------------------------- | ------------------- |
+| `--mark-retro-clean` (at ceiling)    | `Clean(level)`                        | none                                | `DoneFixedPoint`    |
+| `--mark-retro-clean` (below ceiling) | `Clean(level)`                        | `advance_level`                     | `Idle`              |
+| `--mark-retro-changes REASON`        | `RetrospectiveChanges(level, reason)` | `restart_from_floor`                | `Idle`              |
+| `--mark-address-passed`              | `Addressed(level, issue_count)`       | `drop_level` or next batch at floor | `Idle`              |
+| `--mark-address-failed DETAILS`      | (none)                                | none                                | `HandoffHuman(...)` |
 
 ## outcome
 
@@ -258,6 +270,8 @@ The exit-code mapping is the binary's contract. Callers dispatch on
 - All filesystem operations scoped to `state_root`. No global state.
 - Subprocess spawn lives in `act`, not `observe`. Observe is
   read-only filesystem.
+- `--pr` is resolved to a base branch; branch checkout remains the
+  caller's responsibility.
 - Identifiers are newtypes — no raw `String`s cross module
   boundaries.
 - `cargo fmt` and `cargo clippy --all-targets -- -D warnings`

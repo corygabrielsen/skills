@@ -17,8 +17,8 @@
 //!   - `AdvanceLevel` / `DropLevel` / `RestartFromFloor` — pure
 //!     state transitions on the reasoning ladder.
 //!   - `RunTests` — Full procedural test invocation.
-//!   - `RequestCriteriaRefinement` — Human halt for ambiguous
-//!     `--criteria`.
+//!   - `RequestCriteriaRefinement` — reserved human halt for any
+//!     future review-criteria flow.
 
 use std::time::Duration;
 
@@ -198,10 +198,9 @@ pub enum ActionKind {
     /// equivalent). Full automation.
     RunTests,
 
-    /// Halt for human input on ambiguous `--criteria`. Human
+    /// Halt for human input on ambiguous review criteria. Human
     /// automation. Reserved; not currently emitted by any code
-    /// path. (Kept for symmetry with the planned `--criteria`
-    /// disambiguation flow.)
+    /// path.
     RequestCriteriaRefinement,
 
     /// Halt for human triage after the orchestrator reports tests

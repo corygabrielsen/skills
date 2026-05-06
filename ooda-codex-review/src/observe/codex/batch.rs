@@ -9,6 +9,10 @@
 //!   {level}-2.log
 //!   ...
 //!   {level}-n.log
+//!   {level}-1.exit
+//!   {level}-2.exit
+//!   ...
+//!   {level}-n.exit
 //! ```
 //!
 //! A log file is "completed" once it contains a `codex` marker
@@ -17,9 +21,10 @@
 //! the body lands within seconds of the marker, but observing
 //! mid-stream once burned us with empty-verdict false-cleans.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -85,30 +90,72 @@ pub fn scan_batch(
         Err(e) => return Err(e),
     };
 
-    let mut log_paths: Vec<_> = read_dir
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .map(|n| n.starts_with(&prefix) && n.ends_with(".log"))
-                .unwrap_or(false)
-        })
-        .map(|e| e.path())
-        .collect();
-    log_paths.sort();
+    let mut log_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
+    let mut exit_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
 
-    if log_paths.is_empty() {
+    for entry in read_dir.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(slot) = parse_slot(&name, &prefix, ".log") {
+            log_paths.insert(slot, path);
+        } else if let Some(slot) = parse_slot(&name, &prefix, ".exit") {
+            exit_paths.insert(slot, path);
+        }
+    }
+
+    if log_paths.is_empty() && exit_paths.is_empty() {
         return Ok(BatchState::NotStarted);
+    }
+    if log_paths.is_empty() {
+        return Err(io::Error::other(format!(
+            "codex review wrote exit status without a log in {}; cannot classify batch",
+            batch_dir.display()
+        )));
+    }
+    if let Some(slot) = exit_paths
+        .keys()
+        .find(|slot| !log_paths.contains_key(slot))
+        .copied()
+    {
+        return Err(io::Error::other(format!(
+            "codex review slot {slot} wrote exit status without a matching log in {}; cannot classify batch",
+            batch_dir.display()
+        )));
     }
 
     let mut verdicts = Vec::with_capacity(log_paths.len());
-    for (idx, p) in log_paths.iter().enumerate() {
+    for (&slot, p) in log_paths.iter() {
         let body_text = fs::read_to_string(p)?;
-        if let Some(verdict_body) =
-            verdict::extract_verdict(&body_text).filter(|b| !b.trim().is_empty())
-        {
+        let extracted = verdict::extract_verdict(&body_text);
+        if let Some(exit_path) = exit_paths.get(&slot) {
+            let code = read_exit_status(exit_path)?;
+            if code != 0 {
+                return Err(io::Error::other(format!(
+                    "codex review slot {slot} exited {code}; see {}",
+                    p.display()
+                )));
+            }
+            match extracted.as_ref() {
+                None => {
+                    return Err(io::Error::other(format!(
+                        "codex review slot {slot} exited 0 without a verdict marker; see {}",
+                        p.display()
+                    )));
+                }
+                Some(body) if body.trim().is_empty() => {
+                    return Err(io::Error::other(format!(
+                        "codex review slot {slot} exited 0 without a verdict body; see {}",
+                        p.display()
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some(verdict_body) = extracted.filter(|b| !b.trim().is_empty()) {
             verdicts.push(VerdictRecord {
-                slot: (idx + 1) as u32,
+                slot,
                 class: verdict::classify(&verdict_body),
                 body: verdict_body,
             });
@@ -122,6 +169,24 @@ pub fn scan_batch(
     } else {
         Ok(BatchState::Running { total, completed })
     }
+}
+
+fn parse_slot(name: &str, prefix: &str, suffix: &str) -> Option<u32> {
+    let raw = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    if raw.is_empty() || raw.starts_with('0') {
+        return None;
+    }
+    raw.parse::<u32>().ok().filter(|slot| *slot > 0)
+}
+
+fn read_exit_status(path: &Path) -> io::Result<i32> {
+    let raw = fs::read_to_string(path)?;
+    raw.trim().parse::<i32>().map_err(|e| {
+        io::Error::other(format!(
+            "invalid codex review exit status in {}: {e}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -223,6 +288,72 @@ mod tests {
                 assert_eq!(verdicts[2].slot, 3);
                 assert_eq!(verdicts[2].class, VerdictClass::Clean);
             }
+            other => panic!("expected Complete, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonzero_exit_status_is_binary_error_instead_of_running_forever() {
+        let dir = temp_batch_dir("nonzero-exit");
+        fs::write(dir.join("low-1.log"), "error: unexpected argument '--pr'\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "2\n").unwrap();
+
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("slot 1 exited 2"), "msg: {msg}");
+        assert!(msg.contains("low-1.log"), "msg: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_exit_without_verdict_marker_is_binary_error() {
+        let dir = temp_batch_dir("zero-no-marker");
+        fs::write(dir.join("low-1.log"), "thinking\nfinished without marker\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
+
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exited 0 without a verdict marker"),
+            "msg: {msg}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_exit_with_empty_verdict_body_is_binary_error() {
+        let dir = temp_batch_dir("zero-empty-body");
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
+
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("without a verdict body"), "msg: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orphan_exit_status_is_binary_error() {
+        let dir = temp_batch_dir("orphan-exit");
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-2.exit"), "0\n").unwrap();
+
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("slot 2"), "msg: {msg}");
+        assert!(msg.contains("without a matching log"), "msg: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_slots_keep_filename_slot_numbers() {
+        let dir = temp_batch_dir("filename-slots");
+        fs::write(dir.join("low-2.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+
+        let s = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap();
+        match s {
+            BatchState::Complete { verdicts } => assert_eq!(verdicts[0].slot, 2),
             other => panic!("expected Complete, got {other:?}"),
         }
         let _ = fs::remove_dir_all(&dir);

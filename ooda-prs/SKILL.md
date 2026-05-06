@@ -87,15 +87,21 @@ case $? in
 esac
 ```
 
-The `*)` default arm catches **non-Outcome** exit codes that the
-`run` wrapper itself can produce. Cargo build failures inside the
+The `*)` default arm catches non-Outcome exit codes the `run`
+wrapper itself can produce. Cargo build failures inside the
 wrapper's subshell propagate through `set -euo pipefail` with
-cargo's own exit code (commonly `101` for compile errors, `1` for
-many cargo-cli failures). Cargo's `1` aliases `Outcome::StuckRepeated`'s
-exit code numerically — without a `*)` arm guarding for that
-collision, a build failure would silently dispatch as a stall.
-Keep the `*)` arm, or check `[[ -x ~/.claude/skills/ooda-prs/target/release/ooda-prs ]]`
-before invoking the wrapper.
+cargo's own exit code — commonly `101` for compile errors (caught
+by `*)`) and `1` for many cargo-cli failures.
+
+**Cargo's exit `1` numerically aliases `Outcome::StuckRepeated`'s
+exit code 1**, and shell `case` matches arms top-to-bottom — so
+the `1|2|6)` arm above matches a cargo-1 failure first; the `*)`
+arm cannot guard against that specific collision. The only
+reliable guard is to verify the binary exists before invoking the
+wrapper, e.g. `[[ -x ~/.claude/skills/ooda-prs/target/release/ooda-prs ]]`,
+or check the wrapper's exit code separately from the dispatch
+table. The `*)` arm catches `101` and other non-Outcome codes
+(`128 + signal`, etc.) but not the `1` alias.
 
 ## Suite grammar
 
@@ -141,13 +147,18 @@ sequence notation (Kleene-star over alternation) to capture this:
 <flag>      ::= '--max-iter' POS_INT | '--concurrency' POS_INT
               | '--state-root' PATH | '--trace' PATH
               | '--status-comment' | '-h' | '--help'
-POS_INT     ::= [0-9]+                      -- parsed as u32, then
+POS_INT     ::= [0-9]+                      -- parsed as u32 via
+                                               `v.parse::<u32>()`, then
                                                rejected if value = 0
-                                               (must be ≥ 1). Leading
-                                               zeros and a leading `-`
-                                               sign are detected and
-                                               rejected with distinct
-                                               diagnostic messages.
+                                               (must be ≥ 1). A leading
+                                               `-` sign is detected
+                                               (via `starts_with('-')`)
+                                               and rejected with a
+                                               distinct "got negative
+                                               value" diagnostic. Leading
+                                               zeros are accepted at
+                                               the parser ("07" → 7),
+                                               same as `<pr>`.
 PATH        ::= any string                  -- path on the host filesystem
 ```
 
@@ -254,10 +265,12 @@ memory.
 ```text
 <root>/github.com/<owner>/<repo>/prs/<pr>/
   latest/        index.md, state.json (copy of latest oriented.json),
-                 decision.json, blockers.md, next.md
-                 (action.json present when the latest decision carries
-                  an Action; absent on Success / Terminal halts which
-                  call remove_latest. outcome.json is written only by
+                 decision.json, blockers.md, next.md, action.json
+                 (conditional), outcome.json (conditional)
+                 (action.json is present when the latest decision
+                  carries an Action; absent on Success / Terminal
+                  halts which call remove_latest. outcome.json is
+                  written only by
                   record_outcome at the very end of an invocation, so
                   it can be stale or missing if a run aborted before
                   that point.)
@@ -285,6 +298,10 @@ memory.
                                                            # content-addressed
   runs/<run-id>/
     manifest.json                                          # one per run
+    outcome.json  the final per-PR Outcome serialized as JSON,
+                  written by record_outcome at run end (the same
+                  blob is also copied to ../../latest/outcome.json
+                  for the always-on entrypoint)
     trace.md      human-readable run header + per-iter lines
                   (header line is `===== ooda-pr <ts> repo=…` —
                    the literal `ooda-pr` is the per-PR Recorder's
@@ -346,7 +363,11 @@ memory.
   outcome.json     -- schema_version, suite_id, finished_at,
                       exit_code, multi_outcome
   trace.md         -- Written at open: a SINGLE-line banner
-                        `===== ooda-prs <rfc3339-ts> suite_id=<id> state_root=<path> mode=<loop|inspect> max_iter=<n> status_comment=<bool> concurrency=<n|"unbounded"> =====`
+                        `===== ooda-prs <rfc3339-ts> suite_id=<id> state_root=<path> mode=<loop|inspect> max_iter=<n> status_comment=<bool> concurrency=<n_or_unbounded> =====`
+                        (where `<n_or_unbounded>` is the literal
+                        decimal `<n>` when `--concurrency` was given,
+                        or the bare token `unbounded` (no quotes)
+                        when it was not)
                         followed by a blank line, then a single line
                         `Suite: <slug>#<pr>, <slug>#<pr>, …`.
                       In the banner, an unspecified --concurrency
@@ -618,8 +639,11 @@ your harness's own actions.
 
 ```
 # Loop mode — drive the suite to a halt, dispatch when needed,
-# re-invoke until $? = 0.
+# re-invoke until $? = 0. The `[[ -x … ]]` precheck is the only
+# reliable guard against cargo-1 failures aliasing Outcome::StuckRepeated.
 loop:
+  [[ -x ~/.claude/skills/ooda-prs/target/release/ooda-prs ]] || \
+    { wrapper_build_failed; break; }
   ~/.claude/skills/ooda-prs/run <suite> > prs.jsonl
   case $? in
     0)  break ;;                                          # all converged
@@ -631,6 +655,7 @@ loop:
     2)  jq . prs.jsonl >&2; raise_max_iter_or_escalate ;; # cap reached
     6)  jq . prs.jsonl >&2; triage_binary_error ;;        # observe/act error
     64) fix_invocation; break ;;                          # parser error — fatal
+    *)  unknown_exit "$?"; break ;;                       # 101 / 128+sig / etc.
   esac
 ```
 
@@ -710,11 +735,18 @@ Internal invariants of the design:
 [P3] ooda-prs terminates in bounded wall time: each per-PR run
      (run_loop or run_inspect) is bounded by --max-iter × max
      per-iteration cost, and `thread::scope` joins all workers
-     before main returns. Total wall time ≤ ⌈|suite| / K⌉ ×
-     max-per-PR-runtime when workers serialize PRs (the K=1 limit
-     is plain serial; K=|suite| is full parallel, ≤ max-per-PR-
-     runtime). No per-PR thread can prevent another from making
-     progress.
+     before main returns. With **rolling concurrency** (atomic-
+     counter work index — see `suite::drive_suite`), workers pull
+     PRs as soon as they finish, so a fast PR frees its worker for
+     the next pending PR rather than waiting for a batch to
+     complete. The wall-time bound therefore depends on the
+     specific runtime distribution: at K = |suite| every PR runs
+     concurrently and total wall time ≤ max-per-PR-runtime; at
+     K = 1 plain serial, total wall time ≤ Σ per-PR-runtimes; for
+     intermediate K and homogeneous runtimes, ≤ ⌈|suite|/K⌉ × max-
+     per-PR-runtime; for heterogeneous runtimes the rolling
+     scheduler beats this batched bound. No per-PR thread can
+     prevent another from making progress.
 
 [P4] MultiOutcome::exit_code is total. (See `multi_outcome.rs`.)
 

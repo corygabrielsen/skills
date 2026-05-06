@@ -61,6 +61,7 @@ pub fn classify(verdict: &str) -> VerdictClass {
         normalized,
         "no issues found" | "no issues" | "looks good" | "no actionable findings"
     ) || normalized.contains("no actionable issues")
+        || normalized.contains("no actionable correctness issues")
         || normalized.contains("no actionable findings")
         || normalized.contains("did not find any")
         || normalized.contains("didn't find any")
@@ -163,6 +164,10 @@ mod tests {
         );
         assert_eq!(
             classify("I did not identify any correctness issues."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("No actionable correctness issues were found in the diff."),
             VerdictClass::Clean
         );
     }

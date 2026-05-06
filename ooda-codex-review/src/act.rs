@@ -1,8 +1,9 @@
 //! act — execute Full and Wait actions.
 //!
 //! Phase 5b wires the `RunReviews` arm: spawn `n` parallel
-//! `codex review` subprocesses with stdout/stderr piped to
-//! `<batch_dir>/<level>-<slot>.log`. Other Full kinds
+//! `codex review` subprocesses with stdout/stderr redirected to
+//! `<batch_dir>/<level>-<slot>.log` and exit status written to
+//! `<batch_dir>/<level>-<slot>.exit`. Other Full kinds
 //! (AdvanceLevel/DropLevel/RestartFromFloor/RunTests) return
 //! `NotImplemented` until Phase 6b/8 wires the recorder. Wait
 //! sleeps the configured interval. Agent/Human never reach act
@@ -13,6 +14,7 @@
 //! where to cd before spawn). The runner threads one through
 //! per invocation.
 
+use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -36,15 +38,15 @@ pub struct ActContext {
     /// Path to the `codex` binary. Defaults to `"codex"` (PATH
     /// lookup); tests inject a fake binary path.
     pub codex_bin: PathBuf,
-    /// Optional review criteria — a free-form prompt passed to
-    /// `codex review` as a positional argument after the mode
-    /// flag. When `None`, codex uses its default criteria.
-    pub criteria: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum ActError {
     UnsupportedAutomation,
+    /// A target reached act that the current `codex review` CLI
+    /// cannot execute directly. Callers should resolve user-facing
+    /// sugar like `--pr` before constructing `ActContext`.
+    UnsupportedTarget(String),
     NotImplemented,
     /// Spawning a `codex review` subprocess failed (binary not
     /// found, log file open failed, etc.). Carries which slot
@@ -62,6 +64,7 @@ impl std::fmt::Display for ActError {
                 f,
                 "act received an Agent/Human action — decide must halt those"
             ),
+            Self::UnsupportedTarget(msg) => write!(f, "unsupported codex review target: {msg}"),
             Self::NotImplemented => write!(f, "act handler not yet implemented"),
             Self::Spawn { slot, source } => {
                 write!(f, "spawn slot {slot}: {source}")
@@ -104,7 +107,8 @@ fn dispatch_full(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
 }
 
 /// Spawn `n` `codex review` subprocesses. Returns immediately
-/// after spawn — observe/await polls log files for completion.
+/// after spawn — observe/await polls log and exit files for
+/// completion.
 ///
 /// Failures: if any spawn fails, the function returns the first
 /// error. Already-spawned children are *not* killed — they'll
@@ -114,23 +118,40 @@ fn spawn_codex_reviews(level: ReasoningLevel, n: u32, ctx: &ActContext) -> Resul
     std::fs::create_dir_all(&ctx.batch_dir)
         .map_err(|source| ActError::Spawn { slot: 0, source })?;
 
+    if should_preflight_path(&ctx.codex_bin) && !ctx.codex_bin.exists() {
+        return Err(ActError::Spawn {
+            slot: 0,
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} does not exist", ctx.codex_bin.display()),
+            ),
+        });
+    }
+
+    let codex_args = build_codex_args(level, &ctx.target)?;
+
     for slot in 1..=n {
         let log_path = ctx.batch_dir.join(format!("{}-{slot}.log", level.as_str()));
-        let log = OpenOptions::new()
+        let exit_path = ctx
+            .batch_dir
+            .join(format!("{}-{slot}.exit", level.as_str()));
+        OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .open(&log_path)
             .map_err(|source| ActError::Spawn { slot, source })?;
-        let log_err = log
-            .try_clone()
-            .map_err(|source| ActError::Spawn { slot, source })?;
+        if let Err(source) = std::fs::remove_file(&exit_path)
+            && source.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(ActError::Spawn { slot, source });
+        }
 
         let mut cmd =
-            build_codex_command(&ctx.codex_bin, level, &ctx.target, ctx.criteria.as_deref());
+            build_logged_codex_command(&ctx.codex_bin, &codex_args, &log_path, &exit_path);
         cmd.current_dir(&ctx.repo_root)
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(log_err))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .stdin(Stdio::null());
         cmd.spawn()
             .map_err(|source| ActError::Spawn { slot, source })?;
@@ -138,40 +159,73 @@ fn spawn_codex_reviews(level: ReasoningLevel, n: u32, ctx: &ActContext) -> Resul
     Ok(())
 }
 
-/// Build the `codex review` command for the given target and
-/// reasoning level. Pure — no I/O. Public for unit tests.
-///
-/// `criteria` is an optional free-form prompt that codex review
-/// accepts as a positional argument after the mode flag (e.g.
-/// `codex review --uncommitted "check for SQL injection" -c ...`).
+/// Build the `codex review` argv for the given target and reasoning
+/// level. Pure — no I/O. Public for unit tests.
+pub fn build_codex_args(
+    level: ReasoningLevel,
+    target: &ReviewTarget,
+) -> Result<Vec<OsString>, ActError> {
+    let mut args = vec![OsString::from("review")];
+    match target {
+        ReviewTarget::Uncommitted => {
+            args.push(OsString::from("--uncommitted"));
+        }
+        ReviewTarget::Base(branch) => {
+            args.push(OsString::from("--base"));
+            args.push(OsString::from(branch.as_str()));
+        }
+        ReviewTarget::Commit(sha) => {
+            args.push(OsString::from("--commit"));
+            args.push(OsString::from(sha.as_str()));
+        }
+        ReviewTarget::Pr(num) => {
+            return Err(ActError::UnsupportedTarget(format!(
+                "--pr {num} must be resolved to its base branch before spawning codex"
+            )));
+        }
+    }
+    args.push(OsString::from("-c"));
+    args.push(OsString::from(format!(
+        "model_reasoning_effort=\"{}\"",
+        level.as_str()
+    )));
+    Ok(args)
+}
+
+/// Build the direct `codex review` command for unit tests and
+/// diagnostics. Runtime spawning uses [`build_logged_codex_command`]
+/// so observe can see child exit status after this process returns.
 pub fn build_codex_command(
     codex_bin: &std::path::Path,
     level: ReasoningLevel,
     target: &ReviewTarget,
-    criteria: Option<&str>,
-) -> Command {
+) -> Result<Command, ActError> {
     let mut cmd = Command::new(codex_bin);
-    cmd.arg("review");
-    match target {
-        ReviewTarget::Uncommitted => {
-            cmd.arg("--uncommitted");
-        }
-        ReviewTarget::Base(branch) => {
-            cmd.arg("--base").arg(branch.as_str());
-        }
-        ReviewTarget::Commit(sha) => {
-            cmd.arg("--commit").arg(sha.as_str());
-        }
-        ReviewTarget::Pr(num) => {
-            cmd.arg("--pr").arg(num.to_string());
-        }
-    }
-    if let Some(c) = criteria {
-        cmd.arg(c);
-    }
+    cmd.args(build_codex_args(level, target)?);
+    Ok(cmd)
+}
+
+fn build_logged_codex_command(
+    codex_bin: &std::path::Path,
+    codex_args: &[OsString],
+    log_path: &std::path::Path,
+    exit_path: &std::path::Path,
+) -> Command {
+    let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
-        .arg(format!("model_reasoning_effort=\"{}\"", level.as_str()));
+        .arg(
+            r#""$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH"; exit "$code""#,
+        )
+        .arg("ooda-codex-review-child")
+        .arg(codex_bin)
+        .args(codex_args)
+        .env("OODA_LOG_PATH", log_path)
+        .env("OODA_EXIT_PATH", exit_path);
     cmd
+}
+
+fn should_preflight_path(path: &std::path::Path) -> bool {
+    path.is_absolute() || path.components().count() > 1
 }
 
 #[cfg(test)]
@@ -190,8 +244,8 @@ mod tests {
             std::path::Path::new("/fake/codex"),
             ReasoningLevel::Low,
             &ReviewTarget::Uncommitted,
-            None,
-        );
+        )
+        .unwrap();
         assert_eq!(cmd.get_program(), OsStr::new("/fake/codex"));
     }
 
@@ -201,8 +255,8 @@ mod tests {
             std::path::Path::new("codex"),
             ReasoningLevel::Low,
             &ReviewTarget::Uncommitted,
-            None,
-        );
+        )
+        .unwrap();
         let expected: Vec<&OsStr> = vec![
             OsStr::new("review"),
             OsStr::new("--uncommitted"),
@@ -219,8 +273,8 @@ mod tests {
             std::path::Path::new("codex"),
             ReasoningLevel::High,
             &ReviewTarget::Base(branch),
-            None,
-        );
+        )
+        .unwrap();
         let expected: Vec<&OsStr> = vec![
             OsStr::new("review"),
             OsStr::new("--base"),
@@ -238,8 +292,8 @@ mod tests {
             std::path::Path::new("codex"),
             ReasoningLevel::Medium,
             &ReviewTarget::Commit(sha),
-            None,
-        );
+        )
+        .unwrap();
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -252,60 +306,14 @@ mod tests {
     }
 
     #[test]
-    fn build_command_pr_number() {
-        let cmd = build_codex_command(
+    fn build_command_rejects_unresolved_pr_target() {
+        let err = build_codex_command(
             std::path::Path::new("codex"),
             ReasoningLevel::Xhigh,
             &ReviewTarget::Pr(42),
-            None,
-        );
-        let expected: Vec<&OsStr> = vec![
-            OsStr::new("review"),
-            OsStr::new("--pr"),
-            OsStr::new("42"),
-            OsStr::new("-c"),
-            OsStr::new("model_reasoning_effort=\"xhigh\""),
-        ];
-        assert_eq!(args_of(&cmd), expected);
-    }
-
-    #[test]
-    fn build_command_with_criteria_inserts_after_mode() {
-        // codex review --uncommitted "check for SQL injection" -c ...
-        let cmd = build_codex_command(
-            std::path::Path::new("codex"),
-            ReasoningLevel::High,
-            &ReviewTarget::Uncommitted,
-            Some("check for SQL injection"),
-        );
-        let expected: Vec<&OsStr> = vec![
-            OsStr::new("review"),
-            OsStr::new("--uncommitted"),
-            OsStr::new("check for SQL injection"),
-            OsStr::new("-c"),
-            OsStr::new("model_reasoning_effort=\"high\""),
-        ];
-        assert_eq!(args_of(&cmd), expected);
-    }
-
-    #[test]
-    fn build_command_with_criteria_after_base_branch() {
-        let branch = BranchName::parse("master").unwrap();
-        let cmd = build_codex_command(
-            std::path::Path::new("codex"),
-            ReasoningLevel::Low,
-            &ReviewTarget::Base(branch),
-            Some("focus on auth"),
-        );
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args[0], "review");
-        assert_eq!(args[1], "--base");
-        assert_eq!(args[2], "master");
-        assert_eq!(args[3], "focus on auth");
-        assert_eq!(args[4], "-c");
+        )
+        .unwrap_err();
+        assert!(matches!(err, ActError::UnsupportedTarget(_)));
     }
 
     #[test]
@@ -325,7 +333,6 @@ mod tests {
             target: ReviewTarget::Uncommitted,
             repo_root: PathBuf::from("/tmp/nope"),
             codex_bin: PathBuf::from("codex"),
-            criteria: None,
         };
         assert!(matches!(
             act(&action, &ctx),
@@ -349,7 +356,6 @@ mod tests {
             target: ReviewTarget::Uncommitted,
             repo_root: std::env::current_dir().unwrap(),
             codex_bin: PathBuf::from("/bin/true"),
-            criteria: None,
         };
         let action = Action {
             kind: ActionKind::RunReviews {
@@ -370,6 +376,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(dir.join("low-1.log").exists(), "log 1 not created");
         assert!(dir.join("low-2.log").exists(), "log 2 not created");
+        assert!(dir.join("low-1.exit").exists(), "exit 1 not created");
+        assert!(dir.join("low-2.exit").exists(), "exit 2 not created");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

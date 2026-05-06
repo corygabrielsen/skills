@@ -39,7 +39,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Mode (exactly one required):\n  --uncommitted       review working-tree changes vs HEAD\n  --base BRANCH       review current branch vs BRANCH\n  --commit SHA        review a specific commit (40-hex SHA)\n  --pr NUM            review a specific PR's changes\n\
          \n\
-         Options:\n  --level LVL                  reasoning level (= floor): low|medium|high|xhigh (default low)\n  --ceiling LVL                top of the ladder; all-clean here halts DoneFixedPoint (default xhigh, must be >= --level)\n  -n N                         parallel review count (default 3, must be ≥ 1)\n  --max-iter N                 loop iteration cap (default 50, must be ≥ 1)\n  --state-root PATH            directory for batch logs (default $TMPDIR/ooda-codex-review)\n  --codex-bin PATH             path to the `codex` binary (default `codex`)\n  --criteria STRING            free-form prompt passed to `codex review` (positional after the mode flag)\n  --fresh                      ignore the latest pointer; start a new run\n  -h, --help                   show this help and exit\n\
+         Options:\n  --level LVL                  reasoning level (= floor): low|medium|high|xhigh (default low)\n  --ceiling LVL                top of the ladder; all-clean here halts DoneFixedPoint (default xhigh, must be >= --level)\n  -n N                         parallel review count (default 3, must be ≥ 1)\n  --max-iter N                 loop iteration cap (default 50, must be ≥ 1)\n  --state-root PATH            directory for batch logs (default $TMPDIR/ooda-codex-review)\n  --codex-bin PATH             path to the `codex` binary (default `codex`)\n  --criteria STRING            unsupported with current `codex review` target modes; always UsageError\n  --fresh                      ignore the latest pointer; start a new run\n  -h, --help                   show this help and exit\n\
          \n\
          Side-effect flags (skip the loop, mutate the recorder, exit immediately. Mutually exclusive):\n  --advance-level              climb one rung (Idle at ceiling)\n  --drop-level                 drop one rung, clamp at floor (Idle at floor)\n  --restart-from-floor         reset current_level to floor\n  --mark-retro-clean           record Clean outcome; advance, or DoneFixedPoint at ceiling\n  --mark-retro-changes REASON  record RetrospectiveChanges outcome; restart from floor\n  --mark-address-passed        record Addressed outcome; drop one rung\n  --mark-address-failed DETAILS  emit HandoffHuman with DETAILS as prompt\n\
          \n\
@@ -57,7 +57,6 @@ struct Args {
     max_iter: u32,
     state_root: PathBuf,
     codex_bin: PathBuf,
-    criteria: Option<String>,
     fresh: bool,
     /// Side-effect requested by the orchestrator. `None` means
     /// "run the OODA loop". `Some(_)` short-circuits the loop and
@@ -160,7 +159,6 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut max_iter: u32 = 50;
     let mut state_root: Option<PathBuf> = None;
     let mut codex_bin: PathBuf = PathBuf::from("codex");
-    let mut criteria: Option<String> = None;
     let mut fresh = false;
     let mut side_effect: Option<SideEffect> = None;
 
@@ -234,8 +232,10 @@ fn parse_args() -> Result<Args, Outcome> {
                 codex_bin = PathBuf::from(v);
             }
             "--criteria" => {
-                let v = next_value(&mut iter, "--criteria")?;
-                criteria = Some(v);
+                let _ = next_value(&mut iter, "--criteria")?;
+                return Err(usage(
+                    "--criteria is not supported by the current `codex review` CLI when a target mode is used; omit it and use codex's built-in review criteria",
+                ));
             }
             "--fresh" => {
                 fresh = true;
@@ -293,7 +293,6 @@ fn parse_args() -> Result<Args, Outcome> {
         max_iter,
         state_root: state_root.unwrap_or_else(default_state_root),
         codex_bin,
-        criteria,
         fresh,
         side_effect,
     })
@@ -317,6 +316,44 @@ fn discover_repo_root() -> Result<PathBuf, String> {
         return Err("`git rev-parse --show-toplevel` returned empty".into());
     }
     Ok(PathBuf::from(s))
+}
+
+fn resolve_codex_target(target: &ReviewTarget, repo_root: &Path) -> Result<ReviewTarget, String> {
+    match target {
+        ReviewTarget::Pr(num) => resolve_pr_base(*num, repo_root).map(ReviewTarget::Base),
+        other => Ok(other.clone()),
+    }
+}
+
+fn resolve_pr_base(num: u64, repo_root: &Path) -> Result<BranchName, String> {
+    let num_s = num.to_string();
+    let out = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &num_s,
+            "--json",
+            "baseRefName",
+            "--jq",
+            ".baseRefName",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| format!("resolve --pr {num} base branch: spawn `gh pr view`: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "resolve --pr {num} base branch: `gh pr view` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if branch.is_empty() {
+        return Err(format!(
+            "resolve --pr {num} base branch: `gh pr view` returned an empty baseRefName"
+        ));
+    }
+    BranchName::parse(&branch)
+        .map_err(|e| format!("resolve --pr {num} base branch `{branch}`: {e}"))
 }
 
 fn compute_repo_id(repo_root: &Path) -> Result<RepoId, String> {
@@ -369,6 +406,15 @@ fn run_session(args: Args) -> Outcome {
         Err(e) => return Outcome::BinaryError(format!("compute repo id: {e}")),
     };
 
+    let codex_target = if args.side_effect.is_none() {
+        match resolve_codex_target(&args.target, &repo_root) {
+            Ok(target) => Some(target),
+            Err(e) => return Outcome::BinaryError(e),
+        }
+    } else {
+        None
+    };
+
     let (mut recorder, _open_mode) = match Recorder::open(RecorderConfig {
         state_root: args.state_root.clone(),
         repo_id: repo_id.clone(),
@@ -391,10 +437,9 @@ fn run_session(args: Args) -> Outcome {
 
     let ctx = ActContext {
         batch_dir: batch_dir.clone(),
-        target: args.target.clone(),
+        target: codex_target.expect("loop mode resolves codex target"),
         repo_root,
         codex_bin: args.codex_bin.clone(),
-        criteria: args.criteria.clone(),
     };
 
     let level = current_level;
@@ -554,11 +599,15 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: ReasoningLevel) -
             issue_count,
             to.as_str()
         )),
-        Ok(None) => log_idle(format!(
-            "address passed at floor {} ({} review(s) with issues); no drop",
-            current.as_str(),
-            issue_count
-        )),
+        Ok(None) => match recorder.start_next_batch_at_current_level() {
+            Ok(batch) => log_idle(format!(
+                "address passed at floor {} ({} review(s) with issues); no drop; advanced to batch {}",
+                current.as_str(),
+                issue_count,
+                batch
+            )),
+            Err(e) => Outcome::BinaryError(format!("recorder next-batch: {e}")),
+        },
         Err(e) => Outcome::BinaryError(format!("recorder drop: {e}")),
     }
 }

@@ -112,9 +112,9 @@ pub struct RunManifest {
     pub start_level: ReasoningLevel,
     pub current_level: ReasoningLevel,
     pub batch_size: u32,
-    /// Batch counter at `current_level`. Resets to 1 whenever
-    /// `current_level` changes. Increments when an explicit
-    /// re-batch at the same level is requested (rare).
+    /// Batch counter at `current_level`. Level transitions select
+    /// the next unused batch number for the destination level, so
+    /// revisiting a level never rereads stale logs.
     pub batch_number: u32,
     /// Append-only ladder history: every per-level outcome the
     /// recorder has been told about, in chronological order.
@@ -244,9 +244,7 @@ impl Recorder {
     /// `<target_root>/runs/<run-id>/levels/level-<L>/batch-<n>/`
     /// where `<L>` is `current_level` (the live ladder rung).
     pub fn batch_dir(&self) -> PathBuf {
-        self.current_run_dir
-            .join("levels")
-            .join(format!("level-{}", self.manifest.current_level.as_str()))
+        self.level_dir(self.manifest.current_level)
             .join(format!("batch-{}", self.manifest.batch_number))
     }
 
@@ -256,21 +254,22 @@ impl Recorder {
         self.write_manifest()
     }
 
-    /// Climb one rung. No-op + returns `None` at ceiling. Resets
-    /// `batch_number` to 1 and persists.
+    /// Climb one rung. No-op + returns `None` at ceiling. Selects
+    /// the next unused batch number at the destination level and
+    /// persists.
     pub fn advance_level(&mut self) -> Result<Option<ReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.higher() else {
             return Ok(None);
         };
         self.manifest.current_level = next;
-        self.manifest.batch_number = 1;
+        self.manifest.batch_number = self.next_batch_number_for(next)?;
         self.write_manifest()?;
         Ok(Some(next))
     }
 
     /// Drop one rung, clamped at `start_level` (the floor). No-op +
-    /// returns `None` when already at floor. Resets `batch_number`
-    /// to 1 and persists.
+    /// returns `None` when already at floor. Selects the next unused
+    /// batch number at the destination level and persists.
     pub fn drop_level(&mut self) -> Result<Option<ReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.lower() else {
             return Ok(None);
@@ -280,7 +279,7 @@ impl Recorder {
             return Ok(None);
         }
         self.manifest.current_level = next;
-        self.manifest.batch_number = 1;
+        self.manifest.batch_number = self.next_batch_number_for(next)?;
         self.write_manifest()?;
         Ok(Some(next))
     }
@@ -290,9 +289,20 @@ impl Recorder {
     /// changes that invalidate prior per-level fixed points.
     pub fn restart_from_floor(&mut self) -> Result<ReasoningLevel, RecorderError> {
         self.manifest.current_level = self.manifest.start_level;
-        self.manifest.batch_number = 1;
+        self.manifest.batch_number = self.next_batch_number_for(self.manifest.start_level)?;
         self.write_manifest()?;
         Ok(self.manifest.start_level)
+    }
+
+    /// Keep the current level but move the cursor to a fresh batch.
+    /// Used after a floor-clamped address pass: there is no lower
+    /// level to drop to, but the just-addressed batch must not be
+    /// observed again.
+    pub fn start_next_batch_at_current_level(&mut self) -> Result<u32, RecorderError> {
+        let next = self.next_batch_number_for(self.manifest.current_level)?;
+        self.manifest.batch_number = next;
+        self.write_manifest()?;
+        Ok(next)
     }
 
     pub fn target_root(&self) -> &Path {
@@ -321,6 +331,37 @@ impl Recorder {
         let path = self.target_root.join("latest");
         fs::write(&path, &self.manifest.run_id)?;
         Ok(())
+    }
+
+    fn level_dir(&self, level: ReasoningLevel) -> PathBuf {
+        self.current_run_dir
+            .join("levels")
+            .join(format!("level-{}", level.as_str()))
+    }
+
+    fn next_batch_number_for(&self, level: ReasoningLevel) -> Result<u32, RecorderError> {
+        let level_dir = self.level_dir(level);
+        let read_dir = match fs::read_dir(&level_dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(1),
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut max_seen = 0;
+        for entry in read_dir {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(raw) = name.strip_prefix("batch-") else {
+                continue;
+            };
+            let Ok(n) = raw.parse::<u32>() else {
+                continue;
+            };
+            max_seen = max_seen.max(n);
+        }
+        Ok(max_seen.saturating_add(1).max(1))
     }
 }
 
@@ -727,6 +768,55 @@ mod tests {
             bd.ends_with(&expected_suffix),
             "batch_dir = {bd:?}, expected suffix {expected_suffix}"
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn revisiting_a_level_uses_next_unused_batch_number() {
+        let root = temp_state_root("batch-dir-revisit");
+        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+
+        rec.advance_level().unwrap(); // medium, batch 1
+        fs::create_dir_all(rec.batch_dir()).unwrap();
+        rec.advance_level().unwrap(); // high
+        rec.drop_level().unwrap(); // medium again
+
+        assert_eq!(rec.manifest().current_level, ReasoningLevel::Medium);
+        assert_eq!(rec.manifest().batch_number, 2);
+        let expected_suffix = format!("runs/{}/levels/level-medium/batch-2", rec.manifest().run_id);
+        assert!(rec.batch_dir().ends_with(&expected_suffix));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restart_from_floor_uses_next_unused_floor_batch() {
+        let root = temp_state_root("restart-next-batch");
+        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+
+        fs::create_dir_all(rec.batch_dir()).unwrap(); // low/batch-1 exists
+        rec.advance_level().unwrap(); // medium
+        rec.advance_level().unwrap(); // high
+        rec.restart_from_floor().unwrap();
+
+        assert_eq!(rec.manifest().current_level, ReasoningLevel::Low);
+        assert_eq!(rec.manifest().batch_number, 2);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn can_start_next_batch_without_changing_level() {
+        let root = temp_state_root("same-level-next-batch");
+        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+
+        fs::create_dir_all(rec.batch_dir()).unwrap(); // low/batch-1 exists
+        let next = rec.start_next_batch_at_current_level().unwrap();
+
+        assert_eq!(next, 2);
+        assert_eq!(rec.manifest().current_level, ReasoningLevel::Low);
+        assert_eq!(rec.manifest().batch_number, 2);
 
         let _ = fs::remove_dir_all(&root);
     }

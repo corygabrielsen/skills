@@ -262,7 +262,9 @@ pub enum ReviewMode {
     Base,
     /// `codex review --commit <sha>` — a specific commit.
     Commit,
-    /// `codex review --pr <num>` — a specific PR's changes.
+    /// User-facing `--pr <num>` sugar. The CLI resolves the PR's
+    /// base branch with `gh pr view`; `codex review` itself is
+    /// invoked with `--base <baseRefName>`.
     Pr,
 }
 

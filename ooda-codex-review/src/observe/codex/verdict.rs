@@ -54,10 +54,34 @@ pub fn classify(verdict: &str) -> VerdictClass {
     }
     let normalized = body.to_ascii_lowercase();
     let normalized = normalized.trim_end_matches('.').trim();
-    match normalized {
-        "no issues found" | "no issues" | "looks good" => VerdictClass::Clean,
-        _ => VerdictClass::HasIssues,
+    if has_issue_markers(normalized) {
+        return VerdictClass::HasIssues;
     }
+    if matches!(
+        normalized,
+        "no issues found" | "no issues" | "looks good" | "no actionable findings"
+    ) || normalized.contains("no actionable issues")
+        || normalized.contains("no actionable findings")
+        || normalized.contains("did not find any")
+        || normalized.contains("didn't find any")
+        || normalized.contains("did not identify any")
+        || normalized.contains("no discrete regression")
+        || normalized.contains("no discrete correctness issues")
+    {
+        VerdictClass::Clean
+    } else {
+        VerdictClass::HasIssues
+    }
+}
+
+fn has_issue_markers(normalized: &str) -> bool {
+    normalized.contains("review comment:")
+        || normalized.contains("full review comments:")
+        || normalized.contains("\n- [p")
+        || normalized.starts_with("- [p")
+        || normalized.contains("\n[p")
+        || normalized.starts_with("[p")
+        || normalized.contains(" but ")
 }
 
 #[cfg(test)]
@@ -124,6 +148,30 @@ mod tests {
     fn classify_long_body_with_clean_phrase_is_has_issues() {
         let body = "Earlier passes returned no issues found, but this iteration\n\
                     src/foo.rs:42 — null deref possible\n";
+        assert_eq!(classify(body), VerdictClass::HasIssues);
+    }
+
+    #[test]
+    fn classify_common_long_clean_phrasings_are_clean() {
+        assert_eq!(
+            classify("I did not find any discrete regressions in this change."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("No actionable findings. The patch looks consistent."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("I did not identify any correctness issues."),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_phrase_with_review_markers_is_has_issues() {
+        let body = "I did not find any broad architectural concern.\n\
+                    Full review comments:\n\
+                    - [P2] Keep the retry timeout bounded";
         assert_eq!(classify(body), VerdictClass::HasIssues);
     }
 }

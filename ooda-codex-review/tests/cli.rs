@@ -148,6 +148,14 @@ fn fresh_with_side_effect_is_usage_error() {
     assert!(stderr.contains("side-effect"));
 }
 
+#[test]
+fn criteria_is_usage_error_until_codex_cli_supports_target_prompts() {
+    let (code, _, stderr) = run(&["--uncommitted", "--criteria", "check auth"]);
+    assert_eq!(code, 64);
+    assert!(stderr.contains("--criteria"));
+    assert!(stderr.contains("not supported"));
+}
+
 // ----- end-to-end smoke ------------------------------------------------
 
 #[test]
@@ -323,6 +331,125 @@ fn end_to_end_with_fake_codex_clean_at_ceiling_halts_done_fixed_point() {
     let _ = std::fs::remove_dir_all(&state_root);
 }
 
+#[test]
+#[cfg(unix)]
+fn pr_mode_resolves_base_branch_before_spawning_codex() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state_root = std::env::temp_dir().join(format!(
+        "ooda-codex-review-e2e-pr-resolve-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&state_root);
+    std::fs::create_dir_all(&state_root).unwrap();
+
+    let fake_gh = state_root.join("gh");
+    std::fs::write(
+        &fake_gh,
+        b"#!/bin/sh\n\
+          if [ \"$1 $2 $3\" != \"pr view 42\" ]; then exit 9; fi\n\
+          printf 'main\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let fake_codex = state_root.join("fake-codex-pr.sh");
+    std::fs::write(
+        &fake_codex,
+        b"#!/bin/sh\n\
+          saw_base=0\n\
+          saw_pr=0\n\
+          prev=''\n\
+          for arg in \"$@\"; do\n\
+            if [ \"$arg\" = '--pr' ]; then saw_pr=1; fi\n\
+            if [ \"$prev\" = '--base' ] && [ \"$arg\" = 'main' ]; then saw_base=1; fi\n\
+            prev=\"$arg\"\n\
+          done\n\
+          if [ \"$saw_pr\" = 1 ] || [ \"$saw_base\" = 0 ]; then\n\
+            printf 'bad argv: %s\\n' \"$*\" >&2\n\
+            exit 12\n\
+          fi\n\
+          printf 'thinking\\n  reasoning...\\ncodex\\nNo issues found\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!("{}:{old_path}", state_root.display());
+    let mut cmd = Command::new(BIN);
+    cmd.env("PATH", path);
+    cmd.env("OODA_AWAIT_SECS", "1");
+    cmd.args([
+        "--pr",
+        "42",
+        "--level",
+        "xhigh",
+        "--ceiling",
+        "xhigh",
+        "-n",
+        "1",
+        "--codex-bin",
+        fake_codex.to_str().unwrap(),
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--max-iter",
+        "10",
+    ]);
+    let out = cmd.output().expect("spawn");
+    let code = out.status.code().expect("no exit code");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+
+    assert_eq!(code, 0, "expected DoneFixedPoint (0); stderr={stderr}");
+    assert_eq!(first_line(&stderr), "DoneFixedPoint");
+
+    let _ = std::fs::remove_dir_all(&state_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn codex_usage_error_exit_file_surfaces_as_binary_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state_root = std::env::temp_dir().join(format!(
+        "ooda-codex-review-e2e-codex-exit-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&state_root);
+    std::fs::create_dir_all(&state_root).unwrap();
+
+    let fake_codex = state_root.join("fake-codex-exit.sh");
+    std::fs::write(
+        &fake_codex,
+        b"#!/bin/sh\n\
+          printf 'error: unexpected argument --pr\\n' >&2\n\
+          exit 2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut cmd = Command::new(BIN);
+    cmd.env("OODA_AWAIT_SECS", "1");
+    cmd.args([
+        "--uncommitted",
+        "-n",
+        "1",
+        "--codex-bin",
+        fake_codex.to_str().unwrap(),
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--max-iter",
+        "10",
+    ]);
+    let out = cmd.output().expect("spawn");
+    let code = out.status.code().expect("no exit code");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+
+    assert_eq!(code, 6, "expected BinaryError (6); stderr={stderr}");
+    assert!(stderr.contains("slot 1 exited 2"), "stderr: {stderr}");
+
+    let _ = std::fs::remove_dir_all(&state_root);
+}
+
 // ----- --mark-* side effects -------------------------------------------
 
 fn fresh_state_root(label: &str) -> std::path::PathBuf {
@@ -427,6 +554,52 @@ fn mark_address_failed_emits_handoff_human() {
         stderr.contains("test_signup_flow failed"),
         "stderr: {stderr}"
     );
+
+    let _ = std::fs::remove_dir_all(&state_root);
+}
+
+#[test]
+#[cfg(unix)]
+fn mark_address_passed_at_floor_moves_to_next_batch() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let state_root = fresh_state_root("mark-address-floor-next-batch");
+    std::fs::create_dir_all(&state_root).unwrap();
+
+    let fake_codex = state_root.join("fake-codex-issue.sh");
+    std::fs::write(
+        &fake_codex,
+        b"#!/bin/sh\n\
+          printf 'thinking\\n  reasoning...\\ncodex\\n\
+Review comment: src/foo.rs:42\\nRegression detected.\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut seed = Command::new(BIN);
+    seed.env("OODA_AWAIT_SECS", "1");
+    seed.args([
+        "--uncommitted",
+        "-n",
+        "1",
+        "--codex-bin",
+        fake_codex.to_str().unwrap(),
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--max-iter",
+        "10",
+    ]);
+    let seed_out = seed.output().expect("spawn");
+    assert_eq!(seed_out.status.code().unwrap(), 5);
+
+    let (code, stdout, stderr) = run(&[
+        "--uncommitted",
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--mark-address-passed",
+    ]);
+    assert_eq!(code, 7, "stderr={stderr}");
+    assert!(stdout.contains("advanced to batch 2"), "stdout: {stdout:?}");
 
     let _ = std::fs::remove_dir_all(&state_root);
 }

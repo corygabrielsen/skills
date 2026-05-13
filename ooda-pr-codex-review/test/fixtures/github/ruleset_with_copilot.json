@@ -1,0 +1,39 @@
+{
+    "id": 12592595,
+    "name": "Copilot review for all branches",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "acme/protocol",
+    "enforcement": "active",
+    "conditions": {
+        "ref_name": {
+            "exclude": [],
+            "include": [
+                "~DEFAULT_BRANCH",
+                "~ALL"
+            ]
+        }
+    },
+    "rules": [
+        {
+            "type": "copilot_code_review",
+            "parameters": {
+                "review_on_push": false,
+                "review_draft_pull_requests": false
+            }
+        }
+    ],
+    "node_id": "RRS_lACqUmVwb3NpdG9yec4vkETczgDAJdM",
+    "created_at": "2026-02-08T22:14:06.447-08:00",
+    "updated_at": "2026-02-11T13:36:19.916-08:00",
+    "bypass_actors": [],
+    "current_user_can_bypass": "never",
+    "_links": {
+        "self": {
+            "href": "https://api.github.com/repos/acme/protocol/rulesets/12592595"
+        },
+        "html": {
+            "href": "https://github.com/acme/protocol/rules/12592595"
+        }
+    }
+}

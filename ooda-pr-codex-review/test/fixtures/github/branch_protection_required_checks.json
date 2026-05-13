@@ -1,0 +1,19 @@
+{
+    "url": "https://api.github.com/repos/acme/protocol/branches/master/protection/required_status_checks",
+    "strict": true,
+    "contexts": [
+        "Graphite / mergeability_check",
+        "Mergeability Check"
+    ],
+    "contexts_url": "https://api.github.com/repos/acme/protocol/branches/master/protection/required_status_checks/contexts",
+    "checks": [
+        {
+            "context": "Graphite / mergeability_check",
+            "app_id": 158384
+        },
+        {
+            "context": "Mergeability Check",
+            "app_id": 15368
+        }
+    ]
+}

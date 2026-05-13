@@ -75,6 +75,55 @@ always written under the state root.
 **Separate Bash tool calls in the same agent turn are fine** —
 each Bash call is an independent shell with its own `$?`.
 
+## Driving discipline
+
+Loop mode is meant to run to a halt. The only correct stopping
+points are the halt-class exit codes: `0` (`DoneMerged`), `1`
+(`StuckRepeated`), `2` (`StuckCapReached`), `3` (`HandoffHuman`),
+`5` (`HandoffAgent`), `6` (`BinaryError`), `7` (`Paused`), `8`
+(`DoneClosed`). Stopping anywhere else — including after exit `4`
+(`WouldAdvance`) — is premature.
+
+**Anti-patterns that stop the loop early.** These are common
+agent mistakes; the binary is not at fault.
+
+- **Probing repeatedly with `inspect`.** Inspect is a one-shot
+  snapshot. After the first inspect (or as the very first call
+  on an unfamiliar PR), drop `inspect` and re-invoke as the
+  loop. Re-`inspect`-ing in place of running the loop is the
+  most common way agents stall a PR.
+- **Treating `WouldAdvance` as a halt.** Exit 4 is **inspect-only**.
+  The action shown is what the loop _would_ do; re-invoke without
+  `inspect` to actually do it. Do not report `WouldAdvance` to the
+  user and stop.
+- **Re-`inspect`-ing after a `Handoff*` action completes.** The
+  action's effect needs to land in fresh observation, which the
+  _next loop iteration_ will do — not the next inspect. After a
+  Handoff returns and you complete the requested action, re-invoke
+  in **loop mode** (no `inspect`).
+- **Shrinking `--max-iter` as a "safety" cap.** The default (50)
+  exists because `Wait` iterations (15s/30s/60s) are how the loop
+  polls slow external systems (CI runs, bot reviews, scheduled
+  jobs). Capping at 3, 5, or 10 routinely converts a normal wait
+  into a spurious `StuckCapReached` (exit 2). Use the default
+  unless you have a specific reason; if exit 2 fires from a
+  wait-heavy run, re-invoke with a higher cap, not a lower one.
+- **Inferring "stuck" from long wait runs.** A run that spends
+  minutes in `Wait(1m)` polling for a CI check or a bot review is
+  working correctly. The wait is the action. Let it finish.
+
+**After a `Handoff*` (exit 3 or 5).** Perform the requested action,
+then re-invoke `/ooda-pr` in **loop mode** (no `inspect`). The
+loop's first iteration re-observes the now-modified state and
+either selects the next action or halts.
+
+**Time budget.** ooda-pr is iteration-bounded, not wall-clock-bounded.
+A loop run can legitimately take 30+ minutes if external systems
+are slow. Plan for that; don't artificially cut it short. If you
+genuinely need a wall-clock deadline, impose it externally — but
+expect that doing so will produce spurious `StuckCapReached`
+results, not faster convergence.
+
 ## How to call
 
 ```bash
@@ -307,7 +356,7 @@ always carries an `Action` and always emits the
 |  1   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`              | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
 |  2   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`            | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
 |  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by prompt block) | Surface the prompt verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                                                                                                              |
-|  4   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`               | **Inspect-only.** Re-invoke without `inspect` to drive the action. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes).                                                                                                                                                                                    |
+|  4   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`               | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
 |  5   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by prompt block) | Dispatch an agent with the prompt as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                                                                                       |
 |  6   | `BinaryError(msg)`        | `BinaryError: <msg>`                                    | Caught external failure (gh subprocess, network, IO). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                                                              |
 |  7   | `Paused`                  | `Paused`                                                | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |

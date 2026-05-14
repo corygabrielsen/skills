@@ -89,8 +89,12 @@ pub fn orient(
 ) -> OrientedState {
     let required =
         required_checks::required_check_names(&obs.branch_rules, obs.branch_protection.as_ref());
-    let ci = ci::orient_ci(&obs.checks, &required);
-    let pr_state = state::orient_state(&obs.pr_view, last_commit_at);
+    let pr_state = state::orient_state(&obs.pr_view, last_commit_at, &obs.stack_root_branch);
+    // The Graphite mergeability check pends indefinitely on a PR
+    // stacked under an open parent; treat it as advisory rather than
+    // a required wait for those PRs so the loop halts `Paused` once
+    // other work clears instead of cycling `WaitForCi` to the cap.
+    let ci = ci::orient_ci(&obs.checks, &required, pr_state.has_open_parent_pr);
     let reviews = reviews::orient_reviews(
         &obs.pr_view,
         &obs.review_threads_page,

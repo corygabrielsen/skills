@@ -71,7 +71,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: "Rebase to resolve merge conflicts".into(),
+            description: rebase_description("Rebase to resolve merge conflicts", state),
             blocker: BlockerKey::tag("merge_conflict"),
         });
     } else if state.behind {
@@ -80,12 +80,28 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: "Rebase onto the latest base branch".into(),
+            description: rebase_description("Rebase onto the latest base branch", state),
             blocker: BlockerKey::tag("behind_base"),
         });
     }
 
     out
+}
+
+/// Append a stack-aware rebase hint when the PR sits on top of an
+/// open parent. A naive `git rebase <trunk>` would orphan stacked
+/// branches; `gt restack` walks the chain and rebases every branch.
+fn rebase_description(base: &str, state: &PullRequestState) -> String {
+    if state.has_open_parent_pr {
+        format!(
+            "{base}. This PR is stacked under an unmerged parent PR — \
+             use `gt sync && gt restack` rather than a direct `git rebase` \
+             so the parent branch is rebased first and child branches \
+             follow."
+        )
+    } else {
+        base.to_string()
+    }
 }
 
 /// Fallback merge-state blocker for when GitHub reports a non-clean
@@ -221,6 +237,7 @@ mod tests {
             merge_when_ready: false,
             commits: 1,
             behind: false,
+            has_open_parent_pr: false,
             merge_state_status: MergeStateStatus::Clean,
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             last_commit_at: None,

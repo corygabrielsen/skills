@@ -27,7 +27,7 @@
 //! manifest, or `cfg.fresh = true`, a new run is created. The
 //! returned [`OpenMode`] reports which path was taken.
 
-use std::fs;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -152,6 +152,11 @@ pub struct Recorder {
     target_root: PathBuf,
     current_run_dir: PathBuf,
     manifest: RunManifest,
+    /// Advisory exclusive lock on `<target_root>/.lock` held for the
+    /// lifetime of this recorder. Released automatically on drop
+    /// (including SIGKILL — kernel releases on FD close), so stale
+    /// lock files from crashed processes never block subsequent runs.
+    _lock: File,
 }
 
 /// Outcome of `Recorder::open`'s resume probe. Surfaces *why* a
@@ -192,6 +197,27 @@ impl Recorder {
         let target_root = compute_target_root(&cfg.state_root, &cfg.repo_id, &cfg.target);
         fs::create_dir_all(&target_root)?;
 
+        // Acquire an advisory exclusive lock on the target dir so a
+        // second concurrent invocation against the same (repo,
+        // target) fails loudly instead of corrupting the manifest.
+        // The lock file lives under target_root and is held for the
+        // lifetime of the Recorder.
+        let lock_path = target_root.join(".lock");
+        let lock = File::options()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        if let Err(e) = lock.try_lock() {
+            return Err(RecorderError::Io(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "another invocation holds the state-dir lock at {} ({e}); concurrent ooda-codex-review runs against the same (repo, target) are not supported — wait for the prior run to exit, or use --state-root to isolate",
+                    lock_path.display()
+                ),
+            )));
+        }
+
         if !cfg.fresh
             && let Some((run_dir, manifest, mode)) = try_resume(&target_root, &cfg)?
         {
@@ -200,6 +226,7 @@ impl Recorder {
                 target_root,
                 current_run_dir: run_dir,
                 manifest,
+                _lock: lock,
             };
             return Ok((recorder, mode));
         }
@@ -234,6 +261,7 @@ impl Recorder {
             target_root,
             current_run_dir,
             manifest,
+            _lock: lock,
         };
         recorder.write_manifest()?;
         recorder.write_latest_pointer()?;
@@ -553,6 +581,9 @@ mod tests {
         let (first, m1) = Recorder::open(dummy_cfg(root.clone())).unwrap();
         let first_id = first.manifest().run_id.clone();
         assert_eq!(m1, OpenMode::Fresh(FreshReason::NoLatestPointer));
+        // Drop the first recorder to release its state-dir lock before
+        // re-opening — production callers always exit between invocations.
+        drop(first);
 
         // Bump the clock so a fresh run would produce a different
         // run-id; resume must ignore the clock.
@@ -574,6 +605,7 @@ mod tests {
         let root = temp_state_root("resume-fresh-forced");
         let (first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
         let first_id = first.manifest().run_id.clone();
+        drop(first);
 
         let mut cfg = dummy_cfg(root.clone());
         cfg.fresh = true;
@@ -592,7 +624,8 @@ mod tests {
     #[test]
     fn level_mismatch_forces_fresh_run() {
         let root = temp_state_root("resume-level-mismatch");
-        let (_first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        drop(first);
 
         let mut cfg = dummy_cfg(root.clone());
         cfg.start_level = ReasoningLevel::High;
@@ -604,6 +637,27 @@ mod tests {
         let (rec, mode) = Recorder::open(cfg).unwrap();
         assert_eq!(mode, OpenMode::Fresh(FreshReason::LevelMismatch));
         assert_eq!(rec.manifest().start_level, ReasoningLevel::High);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A second open while a first recorder is still alive must fail
+    /// loudly — concurrent writes to the same manifest would corrupt
+    /// it. Dropping the first releases the lock and the second open
+    /// then succeeds normally.
+    #[test]
+    fn second_open_blocks_while_first_recorder_alive() {
+        let root = temp_state_root("lock-blocks-concurrent");
+        let (first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let blocked = Recorder::open(dummy_cfg(root.clone()));
+        assert!(
+            matches!(blocked, Err(RecorderError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock),
+            "expected WouldBlock from concurrent open, got {blocked:?}"
+        );
+        drop(first);
+        let (resumed, mode) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        assert_eq!(mode, OpenMode::Resumed);
+        assert!(resumed.current_run_dir().is_dir());
 
         let _ = fs::remove_dir_all(&root);
     }

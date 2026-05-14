@@ -3,7 +3,7 @@
 //! Pure projection over a single observation source (`PullRequestView`)
 //! — no joins, no cross-references. The simplest axis possible.
 
-use crate::ids::Timestamp;
+use crate::ids::{BranchName, Timestamp};
 use crate::observe::github::pr_view::{MergeStateStatus, Mergeable, PullRequestView};
 use serde::Serialize;
 
@@ -32,6 +32,17 @@ pub struct PullRequestState {
     /// `true` when the base branch has advanced past the merge base
     /// (i.e. PR needs rebasing for stack hygiene).
     pub behind: bool,
+    /// `true` when this PR's `base_ref_name` is itself the head of
+    /// another open PR — i.e. this PR is stacked on top of an
+    /// unmerged parent. Computed by comparing the PR's immediate base
+    /// against the walked stack root: when they differ, at least one
+    /// open PR sits between this PR and the protected trunk.
+    ///
+    /// Drives decisions that depend on stack topology rather than
+    /// just merge state: Graphite's `mergeability_check` will not
+    /// pass for a stacked-top PR until the parent merges, and a
+    /// generic `git rebase` would orphan stacked branches.
+    pub has_open_parent_pr: bool,
     /// Full merge state from GitHub. Preserved (not collapsed to
     /// `behind`) so decide can surface unmodeled merge blockers
     /// like deployment protection or custom rulesets — without
@@ -48,7 +59,17 @@ pub struct PullRequestState {
 /// `last_commit_at` comes from a separate observation source (git
 /// log on HEAD); the caller supplies it. Passed in rather than derived
 /// here because it crosses an observation boundary.
-pub fn orient_state(pr: &PullRequestView, last_commit_at: Option<Timestamp>) -> PullRequestState {
+///
+/// `stack_root` is the protected base resolved by walking the
+/// open-PR head→base chain (see `observe::github::stack_root`).
+/// When `pr.base_ref_name != stack_root`, this PR is stacked on top
+/// of another open PR — the parent must merge before this PR's
+/// Graphite mergeability check can pass.
+pub fn orient_state(
+    pr: &PullRequestView,
+    last_commit_at: Option<Timestamp>,
+    stack_root: &BranchName,
+) -> PullRequestState {
     let body = pr.body.as_deref().unwrap_or_default();
     let label_names: Vec<&str> = pr.labels.iter().map(|l| l.name.as_str()).collect();
 
@@ -72,6 +93,7 @@ pub fn orient_state(pr: &PullRequestView, last_commit_at: Option<Timestamp>) -> 
         merge_when_ready: label_names.contains(&MERGE_WHEN_READY_LABEL),
         commits: pr.commits.len(),
         behind: matches!(pr.merge_state_status, MergeStateStatus::Behind),
+        has_open_parent_pr: &pr.base_ref_name != stack_root,
         merge_state_status: pr.merge_state_status,
         updated_at: pr.updated_at,
         last_commit_at,
@@ -129,7 +151,7 @@ mod tests {
     #[test]
     fn defaults_for_minimal_open_pr() {
         let pr = pr_view(|_| {});
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.conflict, Mergeable::Mergeable);
         assert!(!s.draft);
         assert!(!s.wip);
@@ -149,7 +171,7 @@ mod tests {
     fn title_len_includes_phantom_pr_suffix() {
         // "fix thing" = 9, " (#123)" = 7 → 16
         let pr = pr_view(|p| p.title = "fix thing".into());
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.title_len, 16);
         assert!(s.title_ok);
     }
@@ -159,7 +181,7 @@ mod tests {
         // Need title_len > 50. Suffix " (#123)" is 7 chars, so a
         // 44-char title gives total 51.
         let pr = pr_view(|p| p.title = "a".repeat(44));
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.title_len, 51);
         assert!(!s.title_ok);
     }
@@ -167,7 +189,7 @@ mod tests {
     #[test]
     fn title_at_exactly_50_passes() {
         let pr = pr_view(|p| p.title = "a".repeat(43));
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.title_len, 50);
         assert!(s.title_ok);
     }
@@ -175,7 +197,7 @@ mod tests {
     #[test]
     fn empty_body_marks_body_false_and_no_sections() {
         let pr = pr_view(|p| p.body = Some(String::new()));
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.body);
         assert!(!s.summary);
         assert!(!s.test_plan);
@@ -184,7 +206,7 @@ mod tests {
     #[test]
     fn null_body_treated_as_empty() {
         let pr = pr_view(|p| p.body = None);
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.body);
     }
 
@@ -193,7 +215,7 @@ mod tests {
         let pr = pr_view(|p| {
             p.body = Some("## summary\nstuff\n\n## TEST PLAN\n- check it\n".into());
         });
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.summary);
         assert!(s.test_plan);
     }
@@ -204,21 +226,21 @@ mod tests {
         let pr = pr_view(|p| {
             p.body = Some("intro about ## summary in prose".into());
         });
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.summary);
     }
 
     #[test]
     fn wip_label_detected_exact_match() {
         let pr = pr_view(|p| p.labels.push(label("work in progress")));
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.wip);
     }
 
     #[test]
     fn merge_when_ready_label_detected() {
         let pr = pr_view(|p| p.labels.push(label("merge-when-ready")));
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.merge_when_ready);
     }
 
@@ -226,23 +248,23 @@ mod tests {
     fn content_label_recognizes_bug_or_enhancement() {
         for ct in ["bug", "enhancement"] {
             let pr = pr_view(|p| p.labels.push(label(ct)));
-            let s = orient_state(&pr, None);
+            let s = orient_state(&pr, None, &pr.base_ref_name);
             assert!(s.content_label, "expected content_label for {ct}");
         }
         // A non-content label doesn't count.
         let pr = pr_view(|p| p.labels.push(label("documentation")));
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.content_label);
     }
 
     #[test]
     fn behind_only_when_merge_state_status_is_behind() {
         let pr = pr_view(|p| p.merge_state_status = MergeStateStatus::Behind);
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.behind);
 
         let pr = pr_view(|p| p.merge_state_status = MergeStateStatus::Blocked);
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.behind);
     }
 
@@ -265,7 +287,7 @@ mod tests {
                 },
             ];
         });
-        let s = orient_state(&pr, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.assignees, 1);
         assert_eq!(s.reviewers, 1);
         assert_eq!(s.commits, 2);
@@ -275,7 +297,7 @@ mod tests {
     fn last_commit_at_passes_through() {
         let ts = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
         let pr = pr_view(|_| {});
-        let s = orient_state(&pr, Some(ts));
+        let s = orient_state(&pr, Some(ts), &pr.base_ref_name);
         assert_eq!(s.last_commit_at, Some(ts));
     }
 }

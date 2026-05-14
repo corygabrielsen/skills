@@ -62,20 +62,36 @@ pub struct FailedCheck {
     pub link: String,
 }
 
+/// Graphite's check name. Filtered from the required set when the PR
+/// is stacked on top of an unmerged parent (the check stays pending
+/// until the parent merges, so waiting on it is futile).
+const GRAPHITE_MERGEABILITY_CHECK: &str = "Graphite / mergeability_check";
+
 /// Orient observed checks against the required-name set.
 ///
 /// `required_names` is the union of branch-rules required-status-checks
 /// and legacy branch-protection contexts (assembled by the caller).
-/// Graphite's mergeability check is filtered from both sides — it's
-/// not a CI signal.
-pub fn orient_ci(checks: &[PullRequestCheck], required_names: &[CheckName]) -> CiSummary {
+///
+/// `has_open_parent_pr` filters `Graphite / mergeability_check` from
+/// the required set: Graphite leaves that check pending on every
+/// stacked-top PR until the parent merges, so treating it as required
+/// would cycle `WaitForCi` to the iteration cap on every otherwise-
+/// clean stacked PR. The check still surfaces in `advisory` (visible
+/// in the snapshot), it just stops gating progress. Bottom-of-stack
+/// PRs (or non-stacked PRs) keep the check as required.
+pub fn orient_ci(
+    checks: &[PullRequestCheck],
+    required_names: &[CheckName],
+    has_open_parent_pr: bool,
+) -> CiSummary {
     // HashSet for O(1) advisory partitioning; order-bearing iteration
     // walks the input slice so pending_names / missing_names preserve
-    // the caller's order. Graphite mergeability is treated as any
-    // other required check — stack-blocked PRs surface it as
-    // pending/failing CI rather than being silently dropped.
-    let required_set: std::collections::HashSet<&str> =
-        required_names.iter().map(CheckName::as_str).collect();
+    // the caller's order.
+    let required_set: std::collections::HashSet<&str> = required_names
+        .iter()
+        .filter(|n| !(has_open_parent_pr && n.as_str() == GRAPHITE_MERGEABILITY_CHECK))
+        .map(CheckName::as_str)
+        .collect();
 
     let observed: HashMap<&str, &PullRequestCheck> =
         checks.iter().map(|c| (c.name.as_str(), c)).collect();
@@ -85,6 +101,9 @@ pub fn orient_ci(checks: &[PullRequestCheck], required_names: &[CheckName]) -> C
     let mut completed_at: Option<Timestamp> = None;
 
     for name in required_names {
+        if !required_set.contains(name.as_str()) {
+            continue;
+        }
         match observed.get(name.as_str()) {
             None => missing_names.push(name.clone()),
             Some(obs) => {
@@ -177,7 +196,7 @@ mod tests {
 
     #[test]
     fn empty_inputs_yield_empty_summary() {
-        let s = orient_ci(&[], &[]);
+        let s = orient_ci(&[], &[], false);
         assert_eq!(s.required.pass, 0);
         assert_eq!(s.required.fail(), 0);
         assert_eq!(s.required.pending(), 0);
@@ -195,7 +214,7 @@ mod tests {
             check("c", CheckState::Neutral, Some("2026-04-23T03:00:00Z")),
         ];
         let req = vec![cn("a"), cn("b"), cn("c")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.pass, 3);
         assert_eq!(s.required.fail(), 0);
         assert_eq!(s.required.pending(), 0);
@@ -209,7 +228,7 @@ mod tests {
     fn failure_populates_failed_details_with_link_and_description() {
         let checks = vec![failed("Lint", "1 error", "https://example/lint")];
         let req = vec![cn("Lint")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.fail(), 1);
         assert_eq!(s.required.failed[0].name.as_str(), "Lint");
         assert_eq!(s.required.failed[0].description, "1 error");
@@ -231,7 +250,7 @@ mod tests {
             check("Test", CheckState::Queued, None),
         ];
         let req = vec![cn("Build"), cn("Test")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.pending(), 2);
         assert_eq!(names(&s.required.pending_names), vec!["Build", "Test"]);
     }
@@ -240,7 +259,7 @@ mod tests {
     fn required_but_absent_check_is_missing_not_pending() {
         let checks = vec![check("Build", CheckState::Success, None)];
         let req = vec![cn("Build"), cn("Mergeability Check")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.pass, 1);
         assert_eq!(s.required.pending(), 0);
         assert_eq!(s.missing(), 1);
@@ -254,24 +273,45 @@ mod tests {
             check("Cursor Bugbot", CheckState::Failure, None),
         ];
         let req = vec![cn("Lint")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.pass, 1);
         assert_eq!(s.advisory.fail(), 1);
         assert_eq!(s.advisory.failed[0].name.as_str(), "Cursor Bugbot");
     }
 
     #[test]
-    fn graphite_mergeability_treated_as_normal_required_check() {
-        // Stack-blocked PRs surface this check as pending/failure
-        // — orient must NOT silently filter it, or Halt::Success
-        // can fire on a non-mergeable stacked PR.
+    fn graphite_mergeability_required_when_not_stacked() {
+        // For a non-stacked PR (or bottom-of-stack), Graphite's
+        // mergeability check is a normal required check and must
+        // be counted toward `required.total()`.
         let checks = vec![
             check("Graphite / mergeability_check", CheckState::Success, None),
             check("Lint", CheckState::Success, None),
         ];
         let req = vec![cn("Graphite / mergeability_check"), cn("Lint")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.total(), 2);
+    }
+
+    #[test]
+    fn graphite_mergeability_filtered_when_stacked() {
+        // For a PR stacked under an unmerged parent, Graphite leaves
+        // its mergeability_check pending indefinitely. Filtering it
+        // out of the required set (without dropping it from the
+        // overall view) prevents `WaitForCi` from cycling to the
+        // iteration cap on every otherwise-clean stacked PR.
+        let checks = vec![
+            check("Graphite / mergeability_check", CheckState::Pending, None),
+            check("Lint", CheckState::Success, None),
+        ];
+        let req = vec![cn("Graphite / mergeability_check"), cn("Lint")];
+        let s = orient_ci(&checks, &req, true);
+        // Only `Lint` remains in the required set; `Graphite /
+        // mergeability_check` reappears in advisory for visibility.
+        assert_eq!(s.required.total(), 1);
+        assert_eq!(s.required.pass, 1);
+        assert_eq!(s.required.pending(), 0);
+        assert!(names(&s.advisory.pending_names).contains(&"Graphite / mergeability_check"));
     }
 
     #[test]
@@ -282,7 +322,7 @@ mod tests {
             check("Adv", CheckState::Success, Some("2026-04-23T05:00:00Z")),
         ];
         let req = vec![cn("Lint")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(
             s.completed_at.as_ref().unwrap().to_string(),
             "2026-04-23T05:00:00+00:00"
@@ -297,7 +337,7 @@ mod tests {
             Some("2026-04-23T01:00:00Z"),
         )];
         let req = vec![cn("Lint"), cn("Build")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.missing(), 1);
         assert_eq!(
             s.completed_at.as_ref().unwrap().to_string(),
@@ -312,7 +352,7 @@ mod tests {
             check("Lint", CheckState::Success, Some("2026-04-23T01:00:00Z")),
         ];
         let req = vec![cn("Build"), cn("Lint")];
-        let s = orient_ci(&checks, &req);
+        let s = orient_ci(&checks, &req, false);
         assert_eq!(s.required.pending(), 1);
         assert_eq!(s.required.pass, 1);
         assert_eq!(

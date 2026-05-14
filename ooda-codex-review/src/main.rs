@@ -372,10 +372,17 @@ fn compute_repo_id(repo_root: &Path) -> Result<RepoId, String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let suffix = match url {
-        Some(u) => sha256_prefix(&u, 12),
-        None => "noremote".to_string(),
+    // Include the canonical worktree path in the hash so parallel
+    // worktrees of the same repo (multi-clone polyrepo workflows,
+    // `git worktree add`) get distinct repo_ids automatically.
+    // Same-worktree sequential invocations still resume because
+    // `git rev-parse --show-toplevel` is symlink-resolved and stable.
+    let toplevel = repo_root.display().to_string();
+    let key = match url {
+        Some(u) => format!("{u}@{toplevel}"),
+        None => format!("noremote@{toplevel}"),
     };
+    let suffix = sha256_prefix(&key, 12);
     RepoId::parse(format!("{basename}-{suffix}")).map_err(|e| e.to_string())
 }
 
@@ -724,5 +731,25 @@ mod tests {
         let p = sha256_prefix("hello", 12);
         assert_eq!(p.len(), 12);
         assert!(p.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    /// Two worktrees of the same remote (but different toplevel paths)
+    /// must hash to distinct `repo_id`s so their state dirs are
+    /// isolated. The test exercises the hash-input construction
+    /// (without invoking git) since `compute_repo_id` shells out for
+    /// the remote URL. We reproduce the same key shape inline.
+    #[test]
+    fn worktree_path_disambiguates_repo_id_hash() {
+        let url = "git@github.com:w3-io/protocol.git";
+        let key_perf2 = format!("{url}@/home/cory/code/w3io/perf2/protocol");
+        let key_b = format!("{url}@/home/cory/code/w3io/b/protocol");
+        let h_perf2 = sha256_prefix(&key_perf2, 12);
+        let h_b = sha256_prefix(&key_b, 12);
+        assert_ne!(
+            h_perf2, h_b,
+            "different worktree paths must hash differently"
+        );
+        // Same key reproduces the same hash (resume invariant).
+        assert_eq!(h_perf2, sha256_prefix(&key_perf2, 12));
     }
 }

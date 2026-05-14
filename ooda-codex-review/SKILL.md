@@ -413,8 +413,17 @@ on byte-level interleaving.
   child writes a matching `.exit` file. Nonzero exit statuses and
   zero exits without a non-empty `^codex$` verdict block surface as
   `BinaryError` instead of polling forever.
-- `<repo-id>` = `<repo-basename>-<sha256(remote-url)[..12]>` (or
-  `<repo-basename>-noremote` when no remote is configured).
+- `<repo-id>` = `<repo-basename>-<sha256(remote-url@worktree-toplevel)[..12]>`
+  (or `<repo-basename>-<sha256(noremote@worktree-toplevel)[..12]>` when
+  no remote is configured). Including the canonical worktree path in
+  the hash means parallel worktrees of the same repo (multi-clone
+  polyrepo workflows, `git worktree add`) get distinct state dirs
+  automatically — no `--state-root` needed. Same-worktree sequential
+  invocations still resume because `git rev-parse --show-toplevel` is
+  symlink-resolved and stable. Concurrent invocations against the
+  same `<target-key>` are blocked by an advisory `flock` on
+  `<target-root>/.lock` — the second open returns `BinaryError`
+  rather than corrupting the manifest.
 - `<target-key>` = `uncommitted` | `base/<branch>` | `commit/<sha>` |
   `pr/<num>`. Branch names containing `/` (e.g. `feature/x`) are
   written verbatim — the recorder relies on the filesystem to

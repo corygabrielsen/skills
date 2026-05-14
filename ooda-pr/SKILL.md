@@ -111,6 +111,31 @@ agent mistakes; the binary is not at fault.
 - **Inferring "stuck" from long wait runs.** A run that spends
   minutes in `Wait(1m)` polling for a CI check or a bot review is
   working correctly. The wait is the action. Let it finish.
+- **Surfacing to the user mid-loop after a `Handoff*`.** When you
+  complete a Handoff action, the next tool call MUST be either
+  another `~/.claude/skills/ooda-pr/run …` invocation (re-enter
+  the loop) or an explicit user-directed action that genuinely
+  requires user input. Do NOT summarize the situation, offer
+  options, or ask whether to continue. The user invoked
+  `/ooda-pr` _because_ they don't want to make those
+  decisions per-round. Editorializing about "diminishing
+  returns" or "marginal value" is an anti-pattern — those
+  judgments are encoded in the halt-class exit codes, not in
+  agent vibes.
+- **Treating your own context budget as a halt signal.** The
+  harness handles compaction; trust it. The agent should never
+  stop the loop because _it_ is worried about its own context
+  — that's confusing the agent's resource constraints with
+  the user's intent. If context is genuinely tight, finish the
+  in-flight Handoff action, re-invoke, and let the natural
+  halt code (or compaction itself) be the pause point.
+- **Reading "each round still finds something" as
+  divergence.** Convergence under loop mode is
+  bugs-fixed-per-round, not findings-per-round. A loop that
+  finds and addresses 6 → 5 → 4 → 3 → 2 → 1 → halt is
+  converging exactly as intended. Don't bail because the bot
+  reviewer keeps surfacing new threads — that's the loop
+  _working_.
 
 **After a `Handoff*` (exit 3 or 5).** Perform the requested action,
 then re-invoke `/ooda-pr` in **loop mode** (no `inspect`). The

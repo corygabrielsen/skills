@@ -330,6 +330,7 @@ mod tests {
             merge_when_ready: false,
             commits: 1,
             behind: false,
+            has_open_parent_pr: false,
             merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             last_commit_at: None,

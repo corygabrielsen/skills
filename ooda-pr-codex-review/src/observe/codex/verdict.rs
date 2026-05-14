@@ -53,8 +53,17 @@ pub fn classify(verdict: &str) -> VerdictClass {
         || normalized.contains("did not find any")
         || normalized.contains("didn't find any")
         || normalized.contains("did not identify any")
+        || normalized.contains("did not find actionable")
+        || normalized.contains("did not find correctness")
         || normalized.contains("no discrete regression")
         || normalized.contains("no discrete correctness issues")
+        || normalized.contains("without introducing regressions")
+        || normalized.contains("without introducing an obvious")
+        || normalized.contains("without introducing an evident")
+        || normalized.contains("without introducing any evident")
+        || normalized.contains("without introducing observable")
+        || normalized.contains("without introducing observable breakage")
+        || normalized.contains("without introducing observable regressions")
     {
         VerdictClass::Clean
     } else {
@@ -103,6 +112,66 @@ mod tests {
     fn classify_explicit_no_issues_phrasings_are_clean() {
         assert_eq!(classify("No issues found"), VerdictClass::Clean);
         assert_eq!(classify("Looks good."), VerdictClass::Clean);
+    }
+
+    #[test]
+    fn classify_clean_observable_regression_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "The changes add the required CloudWatch Logs permission and safely improve SSM output visibility without introducing observable breakage. Type checking and tests pass."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the required CloudWatch Logs describe permission and safely surface SSM output without introducing observable regressions. Lint and tests pass for the modified repository."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the missing CloudWatch Logs permission and safely surface SSM output without introducing observable correctness regressions. Type checking passed for the GitHub scripts, and I did not find actionable bugs in the diff."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_evident_regression_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "The changes add the missing CloudWatch Logs permission and make SSM output handling safer and more observable without introducing regressions in the reviewed paths. TypeScript checking for the GitHub scripts passes."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the required CloudWatch Logs permission and make SSM/CloudWatch output safer and more useful without introducing an evident functional regression. Type checking, formatting, and diff checks pass for the touched files."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the needed CloudWatch Logs permission and safely surface fallback SSM output without introducing any evident correctness, security, or maintainability regressions. TypeScript compilation for the GitHub scripts succeeds."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The diff adds the missing CloudWatch Logs permission and safely falls back to terminal SSM output without introducing an obvious correctness or integration regression."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_did_not_find_issue_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "The changes are narrowly scoped to adding the required CloudWatch Logs permission and safely surfacing fallback SSM output. I did not find correctness, security, or operational issues introduced by the patch."
+            ),
+            VerdictClass::Clean
+        );
     }
 
     #[test]

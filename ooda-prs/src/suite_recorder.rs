@@ -53,7 +53,7 @@ const SCHEMA_VERSION: u32 = 1;
 pub struct SuiteRecorderConfig {
     pub suite: Vec<(RepoSlug, PullRequestNumber)>,
     pub mode: RunMode,
-    pub max_iter: u32,
+    pub max_iter: std::num::NonZeroU32,
     pub status_comment: bool,
     pub state_root: Option<PathBuf>,
     pub concurrency: Option<u32>,
@@ -87,7 +87,7 @@ struct Manifest<'a> {
     started_at: DateTime<Utc>,
     forge: &'a str,
     mode: RunMode,
-    max_iter: u32,
+    max_iter: std::num::NonZeroU32,
     status_comment: bool,
     concurrency: Option<u32>,
     cwd: String,
@@ -368,7 +368,7 @@ mod tests {
         let rec = SuiteRecorder::open(SuiteRecorderConfig {
             suite: vec![(slug("a/b"), pr(1)), (slug("a/b"), pr(2))],
             mode: RunMode::Loop,
-            max_iter: 10,
+            max_iter: std::num::NonZeroU32::new(10).expect("non-zero"),
             status_comment: false,
             state_root: Some(root.clone()),
             concurrency: Some(2),
@@ -400,7 +400,7 @@ mod tests {
         let rec = SuiteRecorder::open(SuiteRecorderConfig {
             suite: vec![(slug("a/b"), pr(1))],
             mode: RunMode::Inspect,
-            max_iter: 1,
+            max_iter: std::num::NonZeroU32::new(1).expect("non-zero"),
             status_comment: false,
             state_root: Some(root.clone()),
             concurrency: None,
@@ -426,7 +426,7 @@ mod tests {
         let rec = SuiteRecorder::open(SuiteRecorderConfig {
             suite: vec![(slug("a/b"), pr(1)), (slug("a/b"), pr(2))],
             mode: RunMode::Loop,
-            max_iter: 50,
+            max_iter: std::num::NonZeroU32::new(50).expect("non-zero"),
             status_comment: false,
             state_root: Some(root.clone()),
             concurrency: None,

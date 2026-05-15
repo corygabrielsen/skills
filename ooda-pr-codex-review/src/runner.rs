@@ -10,6 +10,15 @@
 //! "outcome" type. Cap, stall, success, terminal, and handoff are
 //! all variants of the same partition. Exit-code mapping lives on
 //! `HaltReason::exit_code()`.
+//!
+//! `LoopConfig::max_iterations` is `NonZeroU32` so iter 1 is
+//! structurally guaranteed to run; the driver splits iter 1 from
+//! the subsequent iterations so `last_attempted` flows as a typed
+//! `Action` (not `Option<Action>`) into the eventual
+//! `HaltReason::CapReached` — eliminating the runtime expect that
+//! previously documented this invariant.
+
+use std::num::NonZeroU32;
 
 use crate::act::{ActContext, ActError, act};
 use crate::decide::action::Action;
@@ -44,7 +53,9 @@ impl std::fmt::Display for LoopError {
 impl std::error::Error for LoopError {}
 
 pub struct LoopConfig {
-    pub max_iterations: u32,
+    /// Iteration cap. `NonZeroU32` so the driver's "iter 1
+    /// always runs" guarantee is structural.
+    pub max_iterations: NonZeroU32,
     /// Codex review ladder configuration. `None` disables the
     /// codex review axis entirely (observe skips the filesystem
     /// scan, orient gets `codex_review = None`).
@@ -60,10 +71,18 @@ pub struct CodexReviewConfig {
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 50,
+            max_iterations: NonZeroU32::new(50).expect("50 is non-zero"),
             codex_review: None,
         }
     }
+}
+
+/// One iteration's typed outcome. The loop body produces either
+/// an early-halt (Decision::Halt or stall-detected) or a completed
+/// Execute that we keep as the running "last attempted" anchor.
+enum IterStep {
+    Halt(HaltReason),
+    Executed(Action),
 }
 
 /// Drive a PR until a halt fires or the iteration cap trips.
@@ -79,46 +98,85 @@ pub fn run_loop(
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<HaltReason, LoopError> {
+    let max_iter = config.max_iterations.get();
+    let codex_cfg = config.codex_review;
+
+    // Iter 1 is guaranteed by NonZeroU32. Stall is structurally
+    // impossible there (no prior key).
+    let mut last_attempted: Action = match run_iter(
+        &mut ctx,
+        codex_cfg.as_ref(),
+        recorder,
+        &mut on_state,
+        1,
+        None,
+    )? {
+        IterStep::Halt(reason) => return Ok(reason),
+        IterStep::Executed(action) => action,
+    };
+    let mut last_non_wait_key = if last_attempted.effect.is_wait() {
+        None
+    } else {
+        Some(last_attempted.stall_key())
+    };
+
+    for iter in 2..=max_iter {
+        let step = run_iter(
+            &mut ctx,
+            codex_cfg.as_ref(),
+            recorder,
+            &mut on_state,
+            iter,
+            last_non_wait_key.as_ref(),
+        )?;
+        match step {
+            IterStep::Halt(reason) => return Ok(reason),
+            IterStep::Executed(action) => {
+                if !action.effect.is_wait() {
+                    last_non_wait_key = Some(action.stall_key());
+                }
+                last_attempted = action;
+            }
+        }
+    }
+
+    Ok(HaltReason::CapReached(last_attempted))
+}
+
+/// Run one full observe (PR + optional codex) → orient → decide →
+/// act cycle. Returns either a halt reason or the action executed.
+#[allow(clippy::too_many_arguments)]
+fn run_iter(
+    ctx: &mut ActContext,
+    codex_cfg: Option<&CodexReviewConfig>,
+    recorder: &Recorder,
+    mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
+    iter: u32,
+    last_non_wait_key: Option<&ooda_core::StallKey<crate::decide::action::ActionKind>>,
+) -> Result<IterStep, LoopError> {
     let slug = ctx.slug.clone();
     let pr = ctx.pr;
-    // Two trackers, two purposes:
-    //   * `last_non_wait_key`: feeds the stall comparator. Polling
-    //     (Wait) is expected to repeat — only same-(kind, blocker)
-    //     non-Wait actions firing twice in a row trip Stalled.
-    //     Storing only non-Wait keys makes "Wait is invisible to
-    //     stall detection" structural rather than checked at
-    //     comparison time. The StallKey<K> newtype makes the
-    //     "compare on (kind, blocker)" rule the type, not a
-    //     comment.
-    //   * `last_attempted`: feeds CapReached's diagnostic payload.
-    //     Includes Wait actions — "we ran out of cap while waiting
-    //     for CI" is a useful triage signal.
-    let mut last_non_wait_key: Option<ooda_core::StallKey<crate::decide::action::ActionKind>> =
-        None;
-    let mut last_attempted: Option<Action> = None;
 
-    for iter in 1..=config.max_iterations {
-        recorder.set_iteration(Some(iter));
-        recorder.record_observe_start(iter);
-        let obs = match fetch_all(&slug, pr) {
-            Ok(obs) => {
-                recorder.record_observe_end(iter, Ok(()));
-                obs
-            }
-            Err(e) => {
-                recorder.record_observe_end(iter, Err(e.to_string()));
-                return Err(LoopError::Observe(e));
-            }
-        };
+    recorder.set_iteration(Some(iter));
+    recorder.record_observe_start(iter);
+    let obs = match fetch_all(&slug, pr) {
+        Ok(obs) => {
+            recorder.record_observe_end(iter, Ok(()));
+            obs
+        }
+        Err(e) => {
+            recorder.record_observe_end(iter, Err(e.to_string()));
+            return Err(LoopError::Observe(e));
+        }
+    };
 
-        // Refresh the codex side of the act context with this
-        // iteration's head SHA and base branch so RunCodexReviewBatch
-        // spawns under the correct batch directory, writes
-        // head_sha.txt consistently with what observe just read, and
-        // points `codex review --base` at the PR's actual base.
-        let codex_obs: Option<CodexObservations> = if let (Some(codex_cfg), Some(codex_ctx)) =
-            (config.codex_review.as_ref(), ctx.codex.as_mut())
-        {
+    // Refresh the codex side of the act context with this
+    // iteration's head SHA and base branch so RunCodexReviewBatch
+    // spawns under the correct batch directory, writes
+    // head_sha.txt consistently with what observe just read, and
+    // points `codex review --base` at the PR's actual base.
+    let codex_obs: Option<CodexObservations> =
+        if let (Some(codex_cfg), Some(codex_ctx)) = (codex_cfg, ctx.codex.as_mut()) {
             codex_ctx.head_sha = obs.pr_view.head_ref_oid.as_str().to_string();
             codex_ctx.base_branch = obs.pr_view.base_ref_name.as_str().to_string();
             let codex_pr_root = codex_ctx.codex_pr_root.clone();
@@ -138,53 +196,34 @@ pub fn run_loop(
             None
         };
 
-        let oriented = orient(&obs, codex_obs.as_ref(), None);
-        let candidates = candidates(&oriented);
-        let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
-        on_state(iter, &obs, &oriented, &candidates, &decision);
+    let oriented = orient(&obs, codex_obs.as_ref(), None);
+    let candidates = candidates(&oriented);
+    let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
+    on_state(iter, &obs, &oriented, &candidates, &decision);
 
-        match decision {
-            Decision::Halt(halt) => return Ok(HaltReason::Decision(halt)),
-            Decision::Execute(action) => {
-                // Stall check BEFORE act so a side-effecting Full
-                // action (e.g. RerequestCopilot) doesn't fire twice
-                // when GitHub's eventual consistency hasn't surfaced
-                // the previous call yet. Comparison is on the
-                // typed StallKey<K> — equality of (kind, blocker)
-                // alone IS the stall test.
-                let current_key = action.stall_key();
-                if last_non_wait_key.as_ref() == Some(&current_key) {
-                    return Ok(HaltReason::Stalled(action));
-                }
-                let is_wait = action.effect.is_wait();
-                recorder.record_action_start(iter, &action);
-                if is_wait {
-                    recorder.record_wait_start(iter, &action);
-                }
-                let act_result = act(&action, &ctx);
-                if is_wait && act_result.is_ok() {
-                    recorder.record_wait_end(iter, &action);
-                }
-                recorder.record_action_end(
-                    iter,
-                    &action,
-                    act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
-                );
-                act_result.map_err(LoopError::Act)?;
-                last_attempted = Some(action);
-                if !is_wait {
-                    last_non_wait_key = Some(current_key);
-                }
+    match decision {
+        Decision::Halt(halt) => Ok(IterStep::Halt(HaltReason::Decision(halt))),
+        Decision::Execute(action) => {
+            let current_key = action.stall_key();
+            if last_non_wait_key == Some(&current_key) {
+                return Ok(IterStep::Halt(HaltReason::Stalled(action)));
             }
+            let is_wait = action.effect.is_wait();
+            recorder.record_action_start(iter, &action);
+            if is_wait {
+                recorder.record_wait_start(iter, &action);
+            }
+            let act_result = act(&action, ctx);
+            if is_wait && act_result.is_ok() {
+                recorder.record_wait_end(iter, &action);
+            }
+            recorder.record_action_end(
+                iter,
+                &action,
+                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
+            );
+            act_result.map_err(LoopError::Act)?;
+            Ok(IterStep::Executed(action))
         }
     }
-
-    // CapReached fires only when the for-loop completes without
-    // an early return, which requires every iteration to have run
-    // an Execute (Halt returns early; Stalled returns early; Act
-    // failure returns early). With --max-iter ≥ 1 (parser-validated),
-    // at least one Execute fired and `last_attempted` is Some(_).
-    Ok(HaltReason::CapReached(last_attempted.expect(
-        "CapReached requires --max-iter ≥ 1 and one Execute iteration",
-    )))
 }

@@ -44,8 +44,8 @@ pub struct LoopConfig {
     pub max_iterations: u32,
     /// Top of the reasoning ladder. When the loop reaches an
     /// all-clean batch at this level, decide halts with
-    /// `Terminal(FixedPoint)` instead of emitting a `Retrospective`
-    /// handoff.
+    /// `Terminal(Succeeded)` (the codex-review fixed point at the
+    /// ceiling) instead of emitting a `Retrospective` handoff.
     pub ceiling: ReasoningLevel,
 }
 

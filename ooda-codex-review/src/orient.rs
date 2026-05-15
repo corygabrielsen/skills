@@ -20,8 +20,8 @@ pub struct OrientedState {
     pub current_level: ReasoningLevel,
     /// Top of the configured ladder. When `current_level == ceiling`
     /// AND the batch is `Complete { all_clean }`, decide halts with
-    /// `Terminal(FixedPoint)` instead of emitting a `Retrospective`
-    /// handoff.
+    /// `Terminal(Succeeded)` (the codex-review fixed point at the
+    /// ceiling) instead of emitting a `Retrospective` handoff.
     pub ceiling: ReasoningLevel,
     /// Filesystem-derived batch state (NotStarted / Running /
     /// Complete) for `current_level`.

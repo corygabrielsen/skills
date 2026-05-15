@@ -113,35 +113,34 @@ tempfile staging step.
 
 ```bash
 # Capture stdout to a file (preserves $?), then dispatch on $?.
-# Loop-mode invocation; no `4)` arm — exit 4 (WouldAdvance) is
+# Loop-mode invocation; no `2)` arm — exit 2 (WouldAdvance) is
 # inspect-only and cannot occur in loop mode.
 ~/.claude/skills/ooda-prs/run acme/widget 1 2 > prs.jsonl
 case $? in
-  0)     echo "all done" ;;
-  5)     jq -r 'select(.outcome=="HandoffAgent") | .prompt' prs.jsonl | dispatch_agents ;;
-  3)     jq -r 'select(.outcome=="HandoffHuman")' prs.jsonl | notify_human ;;
-  1|2|6) jq . prs.jsonl >&2; escalate ;;
-  64)    echo "fix invocation" >&2 ;;
-  *)     echo "unknown exit $? — likely a cargo build failure (see 'run' wrapper)"; \
-         exit 1 ;;
+  0)        echo "all done (all PRs terminal/Paused)" ;;
+  1)        echo "all PRs Paused (re-invoke later)" ;;
+  3)        jq -r 'select(.outcome=="HandoffHuman")' prs.jsonl | notify_human ;;
+  4)        jq -r 'select(.outcome=="HandoffAgent") | .prompt' prs.jsonl | dispatch_agents ;;
+  6|7|70)   jq . prs.jsonl >&2; escalate ;;
+  64)       echo "fix invocation" >&2 ;;
+  130|143)  echo "signal-killed ($? — SIGINT/SIGTERM)" >&2 ;;
+  *)        echo "unknown exit $? — likely a cargo build failure (see 'run' wrapper)"; \
+            exit 1 ;;
 esac
 ```
 
-The `*)` default arm catches non-Outcome exit codes the `run`
+The `*)` default arm catches non-`Outcome` exit codes the `run`
 wrapper itself can produce. Cargo build failures inside the
 wrapper's subshell propagate through `set -euo pipefail` with
-cargo's own exit code — commonly `101` for compile errors (caught
-by `*)`) and `1` for many cargo-cli failures.
+cargo's own exit code — commonly `101` for compile errors and
+`1` for many cargo-cli failures.
 
-**Cargo's exit `1` numerically aliases `Outcome::StuckRepeated`'s
-exit code 1**, and shell `case` matches arms top-to-bottom — so
-the `1|2|6)` arm above matches a cargo-1 failure first; the `*)`
-arm cannot guard against that specific collision. The only
-reliable guard is to verify the binary exists before invoking the
-wrapper, e.g. `[[ -x ~/.claude/skills/ooda-prs/target/release/ooda-prs ]]`,
-or check the wrapper's exit code separately from the dispatch
-table. The `*)` arm catches `101` and other non-Outcome codes
-(`128 + signal`, etc.) but not the `1` alias.
+**The redesigned exit-code scheme separates information-bearing
+halts (1–7) from system errors (64, 70).** Cargo's `1` no longer
+aliases any `Outcome` variant (`StuckRepeated` is now `6`), and
+the `*)` default arm cleanly catches cargo-1, `101`, and any
+`128 + signal` code the dispatch table doesn't enumerate.
+Wrapper failures fall through to `*)` predictably.
 
 ## Suite grammar
 
@@ -507,20 +506,23 @@ channels).
 | Condition                                              | `$?` | Mode reachability   |
 | :----------------------------------------------------- | :--: | :------------------ |
 | `MultiOutcome::UsageError`                             |  64  | both (parser-level) |
-| any `ProcessOutcome` carries `BinaryError(_)`          |  6   | both                |
-| else any carries `HandoffAgent(_)`                     |  5   | both                |
+| any `ProcessOutcome` carries `BinaryError(_)`          |  70  | both                |
+| else any carries `HandoffAgent(_)`                     |  4   | both                |
 | else any carries `HandoffHuman(_)`                     |  3   | both                |
-| else any carries `StuckCapReached(_)`                  |  2   | loop only           |
-| else any carries `StuckRepeated(_)`                    |  1   | loop only           |
-| else any carries `WouldAdvance(_)`                     |  4   | inspect only        |
+| else any carries `StuckCapReached(_)`                  |  7   | loop only           |
+| else any carries `StuckRepeated(_)`                    |  6   | loop only           |
+| else any carries `WouldAdvance(_)`                     |  2   | inspect only        |
 | else every PR ∈ `{DoneSucceeded, DoneAborted, Paused}` |  0   | both                |
 
 **Priority order** (highest first): `UsageError > BinaryError >
 HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated >
-WouldAdvance > non-actionable`. The "non-actionable" class is the
+WouldAdvance > non-actionable`. Priority is **semantic**, not
+numeric — the first matching condition wins, even though
+`StuckRepeated`'s code (`6`) is numerically smaller than
+`HandoffAgent`'s (`4`). The "non-actionable" class is the
 union `{DoneSucceeded, DoneAborted, Paused}`: every PR is either fully
-merged (exit-0 per-PR), already closed (exit-8 per-PR), or has no
-candidate action this pass (exit-7 per-PR — "Paused" is _not_ a
+merged (exit-0 per-PR), already closed (exit-5 per-PR), or has no
+candidate action this pass (exit-1 per-PR — "Paused" is _not_ a
 terminal lifecycle state, just a poll-back-later signal). All three
 collapse to suite-level `$? = 0`; per-PR JSONL records disambiguate
 which of the three each PR landed on.
@@ -557,7 +559,7 @@ records).
 
 ```jsonl
 {"slug":"acme/widget","pr":1,"outcome":"DoneMerged","exit":0}
-{"slug":"acme/widget","pr":2,"outcome":"HandoffAgent","exit":5,"action":"AddressThreads","blocker":"unresolved_threads","prompt":"Address 2 unresolved review threads.\nCopilot: 2 issues.\n\n1. Copilot @ src/foo.rs:42\n   > body line 1\n\n…"}
+{"slug":"acme/widget","pr":2,"outcome":"HandoffAgent","exit":4,"action":"AddressThreads","blocker":"unresolved_threads","prompt":"Address 2 unresolved review threads.\nCopilot: 2 issues.\n\n1. Copilot @ src/foo.rs:42\n   > body line 1\n\n…"}
 {"slug":"acme/infra","pr":100,"outcome":"HandoffHuman","exit":3,"action":"RequestApproval","blocker":"not_approved","prompt":"Request or self-approve"}
 ```
 
@@ -565,8 +567,8 @@ records).
 become `WouldAdvance` because `act` is skipped):
 
 ```jsonl
-{"slug":"acme/widget","pr":1,"outcome":"WouldAdvance","exit":4,"action":"MarkReady","blocker":"draft","automation":"Full"}
-{"slug":"acme/infra","pr":100,"outcome":"WouldAdvance","exit":4,"action":"WaitForCi","blocker":"ci_pending: build","automation":"Wait(1m)"}
+{"slug":"acme/widget","pr":1,"outcome":"WouldAdvance","exit":2,"action":"MarkReady","blocker":"draft","automation":"Full"}
+{"slug":"acme/infra","pr":100,"outcome":"WouldAdvance","exit":2,"action":"WaitForCi","blocker":"ci_pending: build","automation":"Wait(1m)"}
 ```
 
 The two modes do not mix in a single invocation. Loop-mode bundles
@@ -588,7 +590,7 @@ the duration's value):
 | `slug`       | string  |       yes       | `<owner>/<repo>`                                                                                                                                                                                                                                  |
 | `pr`         | integer |       yes       | positive integer                                                                                                                                                                                                                                  |
 | `outcome`    | string  |       yes       | variant name; **9 reachable values** in stdout: `DoneMerged`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`, `WouldAdvance`, `HandoffAgent`, `BinaryError`, `Paused`, `DoneClosed`. `UsageError` is suite-level only and never appears here. |
-| `exit`       | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 8}` — the 1:1 mapping inherited from `/ooda-pr`. `64` does **not** appear in JSONL records (UsageError emits no stdout).                                                                            |
+| `exit`       | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 70}` — the 1:1 mapping inherited from `/ooda-pr`. `64` does **not** appear in JSONL records (UsageError emits no stdout); `130`/`143` are signal-synthesized and the binary never returns them.     |
 | `action`     | string  |   conditional   | present iff `outcome ∈ {StuckRepeated, StuckCapReached, HandoffHuman, HandoffAgent, WouldAdvance}` — the `ActionKind::name()` (e.g. `"Rebase"`, `"AddressThreads"`)                                                                               |
 | `blocker`    | string  |   conditional   | same condition as `action` — the `BlockerKey` payload, a non-empty stable identifier. Typical values are ASCII with `:` and spaces (e.g. `"ci_fail: Build / test"`), but no surface form is contractual; consumers must not parse it.             |
 | `prompt`     | string  |   conditional   | `outcome ∈ {HandoffAgent, HandoffHuman}` — verbatim agent/human prompt from `Action.description`. Multi-line content is JSON-string-escaped (literal `\n` in the JSON source, real newlines after `jq -r` decoding).                              |
@@ -679,37 +681,40 @@ your harness's own actions.
 
 ```
 # Loop mode — drive the suite to a halt, dispatch when needed,
-# re-invoke until $? = 0. The `[[ -x … ]]` precheck is the only
-# reliable guard against cargo-1 failures aliasing Outcome::StuckRepeated.
+# re-invoke until $? = 0. The `[[ -x … ]]` precheck guards
+# against wrapper / cargo build failures, whose exit codes fall
+# through to the `*)` arm but might confuse logs.
 loop:
   [[ -x ~/.claude/skills/ooda-prs/target/release/ooda-prs ]] || \
     { wrapper_build_failed; break; }
   ~/.claude/skills/ooda-prs/run <suite> > prs.jsonl
   case $? in
-    0)  break ;;                                          # all converged
-    5)  jq -r 'select(.outcome=="HandoffAgent") | .prompt' prs.jsonl \
-          | dispatch_subagents_parallel ;;                # then continue (re-invoke)
-    3)  jq -r 'select(.outcome=="HandoffHuman")' prs.jsonl \
-          | notify_human; break ;;                        # block on human
-    1)  jq . prs.jsonl >&2; escalate_stuck ;;             # stall — diagnose
-    2)  jq . prs.jsonl >&2; raise_max_iter_or_escalate ;; # cap reached
-    6)  jq . prs.jsonl >&2; triage_binary_error ;;        # observe/act error
-    64) fix_invocation; break ;;                          # parser error — fatal
-    *)  unknown_exit "$?"; break ;;                       # 101 / 128+sig / etc.
+    0)       break ;;                                          # all converged
+    1)       break ;;                                          # all Paused; re-invoke later
+    3)       jq -r 'select(.outcome=="HandoffHuman")' prs.jsonl \
+               | notify_human; break ;;                        # block on human
+    4)       jq -r 'select(.outcome=="HandoffAgent") | .prompt' prs.jsonl \
+               | dispatch_subagents_parallel ;;                # then continue (re-invoke)
+    6)       jq . prs.jsonl >&2; escalate_stuck ;;             # stall — diagnose
+    7)       jq . prs.jsonl >&2; raise_max_iter_or_escalate ;; # cap reached
+    64)      fix_invocation; break ;;                          # parser error — fatal
+    70)      jq . prs.jsonl >&2; triage_binary_error ;;        # observe/act error (sysexits EX_SOFTWARE)
+    130|143) signal_killed; break ;;                           # SIGINT / SIGTERM
+    *)       unknown_exit "$?"; break ;;                       # 101 / wrapper / etc.
   esac
 ```
 
-For `inspect` mode the only additional class is `$? = 4`
+For `inspect` mode the only additional class is `$? = 2`
 (`WouldAdvance`); it never appears in loop mode. Inspect callers
 add an arm:
 
 ```
-4) jq -r 'select(.outcome=="WouldAdvance") | "\(.slug)#\(.pr): \(.action) (\(.automation))"' prs.jsonl
+2) jq -r 'select(.outcome=="WouldAdvance") | "\(.slug)#\(.pr): \(.action) (\(.automation))"' prs.jsonl
    ;;     # report what loop mode would do, then exit (inspect is one-shot)
 ```
 
 The single-PR pattern from `/ooda-pr` (one Outcome → one dispatch
-→ re-invoke) generalizes cleanly: when `$? = 5`, the harness
+→ re-invoke) generalizes cleanly: when `$? = 4`, the harness
 dispatches one sub-agent per `HandoffAgent` record on stdout —
 that count is at most `|suite|` but is typically smaller, since
 non-handoff PRs (already merged, blocked on a human, stuck, etc.)

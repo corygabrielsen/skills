@@ -141,10 +141,10 @@ each Bash call is an independent shell with its own `$?`.
 
 Loop mode is meant to run to a halt. The only correct stopping
 points are the halt-class exit codes: `0` (`DoneMerged`), `1`
-(`StuckRepeated`), `2` (`StuckCapReached`), `3` (`HandoffHuman`),
-`5` (`HandoffAgent`), `6` (`BinaryError`), `7` (`Paused`), `8`
-(`DoneClosed`). Stopping anywhere else — including after exit `4`
-(`WouldAdvance`) — is premature.
+(`Paused`), `3` (`HandoffHuman`), `4` (`HandoffAgent`), `5`
+(`DoneClosed`), `6` (`StuckRepeated`), `7` (`StuckCapReached`),
+and `70` (`BinaryError`). Stopping anywhere else — including
+after exit `2` (`WouldAdvance`) — is premature.
 
 **Anti-patterns that stop the loop early.** These are common
 agent mistakes; the binary is not at fault.
@@ -154,7 +154,7 @@ agent mistakes; the binary is not at fault.
   on an unfamiliar PR), drop `inspect` and re-invoke as the
   loop. Re-`inspect`-ing in place of running the loop is the
   most common way agents stall a PR.
-- **Treating `WouldAdvance` as a halt.** Exit 4 is **inspect-only**.
+- **Treating `WouldAdvance` as a halt.** Exit 2 is **inspect-only**.
   The action shown is what the loop _would_ do; re-invoke without
   `inspect` to actually do it. Do not report `WouldAdvance` to the
   user and stop.
@@ -167,14 +167,14 @@ agent mistakes; the binary is not at fault.
   exists because `Wait` iterations (15s/30s/60s) are how the loop
   polls slow external systems (CI runs, bot reviews, scheduled
   jobs). Capping at 3, 5, or 10 routinely converts a normal wait
-  into a spurious `StuckCapReached` (exit 2). Use the default
-  unless you have a specific reason; if exit 2 fires from a
+  into a spurious `StuckCapReached` (exit 7). Use the default
+  unless you have a specific reason; if exit 7 fires from a
   wait-heavy run, re-invoke with a higher cap, not a lower one.
 - **Inferring "stuck" from long wait runs.** A run that spends
   minutes in `Wait(1m)` polling for a CI check or a bot review is
   working correctly. The wait is the action. Let it finish.
 
-**After a `Handoff*` (exit 3 or 5).** Perform the requested action,
+**After a `Handoff*` (exit 3 or 4).** Perform the requested action,
 then re-invoke `/ooda-pr` in **loop mode** (no `inspect`). The
 loop's first iteration re-observes the now-modified state and
 either selects the next action or halts.
@@ -232,17 +232,17 @@ exit code (typically 101 for compile error) and ooda-pr does
 not execute — treat such codes as `BinaryError`-equivalent
 (see catch-all).
 
-| Flag                         | Meaning                                                                                                                                                                                                                                                                                                     |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-iter N`               | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                        |
-| `--status-comment`           | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                            |
-| `--state-root PATH`          | Override the always-on state root. Default resolution is `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then `~/.local/state/ooda-pr`, then the platform temp directory. State is keyed by GitHub repo+PR, not by checkout path.                                                                    |
-| `--trace PATH`               | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 6). Later trace writes are best-effort and do not change the Outcome. |
-| `--codex-review-ceiling LVL` | Enable codex review with reasoning ceiling LVL ∈ `{off, low, medium, high, xhigh}`. Default `off` — codex axis disabled, behavior is bit-equivalent to `/ooda-pr`. When set to a non-off level, the codex axis runs in parallel with the PR loop's other axes.                                              |
-| `--codex-review-floor LVL`   | Starting rung of the codex ladder. Default `low`. Must be ≤ `--codex-review-ceiling` when ceiling is set; otherwise `UsageError`. Inert when ceiling is `off`.                                                                                                                                              |
-| `--codex-review-n N`         | Parallel `codex review` subprocesses per batch. Default 3, must be ≥ 1. Inert when ceiling is `off`.                                                                                                                                                                                                        |
-| `--codex-review-bin PATH`    | Path to the `codex` binary. Default `codex` (PATH lookup). Inert when ceiling is `off`.                                                                                                                                                                                                                     |
-| `-h`, `--help`               | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                       |
+| Flag                         | Meaning                                                                                                                                                                                                                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--max-iter N`               | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                         |
+| `--status-comment`           | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                             |
+| `--state-root PATH`          | Override the always-on state root. Default resolution is `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then `~/.local/state/ooda-pr`, then the platform temp directory. State is keyed by GitHub repo+PR, not by checkout path.                                                                     |
+| `--trace PATH`               | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 70). Later trace writes are best-effort and do not change the Outcome. |
+| `--codex-review-ceiling LVL` | Enable codex review with reasoning ceiling LVL ∈ `{off, low, medium, high, xhigh}`. Default `off` — codex axis disabled, behavior is bit-equivalent to `/ooda-pr`. When set to a non-off level, the codex axis runs in parallel with the PR loop's other axes.                                               |
+| `--codex-review-floor LVL`   | Starting rung of the codex ladder. Default `low`. Must be ≤ `--codex-review-ceiling` when ceiling is set; otherwise `UsageError`. Inert when ceiling is `off`.                                                                                                                                               |
+| `--codex-review-n N`         | Parallel `codex review` subprocesses per batch. Default 3, must be ≥ 1. Inert when ceiling is `off`.                                                                                                                                                                                                         |
+| `--codex-review-bin PATH`    | Path to the `codex` binary. Default `codex` (PATH lookup). Inert when ceiling is `off`.                                                                                                                                                                                                                      |
+| `-h`, `--help`               | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                        |
 
 ## Codex review axis
 
@@ -324,7 +324,7 @@ needed there.
 
 ### Resolving codex spawn errors
 
-Codex subprocess failures classify as `BinaryError` (exit 6):
+Codex subprocess failures classify as `BinaryError` (exit 70):
 
 | Failure mode                                         | Trigger                                                                                                                                 |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -332,7 +332,7 @@ Codex subprocess failures classify as `BinaryError` (exit 6):
 | codex subprocess exited non-zero                     | Detected by observe (`<L>-<slot>.exit` file with non-zero status); surfaces as `BinaryError` on the next iteration's observe.           |
 | codex exited 0 without a verdict marker / empty body | Detected by observe; surfaces as `BinaryError` (would otherwise loop forever waiting for the verdict).                                  |
 
-The orchestrator should treat exit 6 from a codex-enabled
+The orchestrator should treat exit 70 from a codex-enabled
 invocation as triage-only: do not auto-retry; inspect the
 `<L>-<slot>.log` referenced in the BinaryError message.
 
@@ -424,10 +424,10 @@ Outcome's emission). Listed by emission site:
     `\w+`-style regexes will split them): `Success`,
     `Terminal(Succeeded)`, `Terminal(Aborted)`, `AgentNeeded`,
     `HumanNeeded`. Each maps to a boundary `Outcome` variant:
-    `Success` → `Paused` (exit 7), `Terminal(Succeeded)` →
+    `Success` → `Paused` (exit 1), `Terminal(Succeeded)` →
     `DoneSucceeded` (exit 0, stderr header `DoneMerged`),
-    `Terminal(Aborted)` → `DoneAborted` (exit 8, stderr header
-    `DoneClosed`), `AgentNeeded` → `HandoffAgent` (exit 5),
+    `Terminal(Aborted)` → `DoneAborted` (exit 5, stderr header
+    `DoneClosed`), `AgentNeeded` → `HandoffAgent` (exit 4),
     `HumanNeeded` → `HandoffHuman` (exit 3). Payloads are not
     expanded in the iter-log line; the boundary emission carries
     them — `Handoff*` in the prompt block, `Stuck*` in the
@@ -513,15 +513,17 @@ always carries an `Action` and always emits the
 | Exit | Outcome variant           | Stderr header                                           | Caller's response                                                                                                                                                                                                                                                                                                                                                |
 | :--: | ------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 |  0   | `DoneSucceeded`           | `DoneMerged`                                            | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
-|  1   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`              | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
-|  2   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`            | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
+|  1   | `Paused`                  | `Paused`                                                | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
+|  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`               | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
 |  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by prompt block) | Surface the prompt verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                                                                                                              |
-|  4   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`               | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
-|  5   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by prompt block) | Dispatch an agent with the prompt as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                                                                                       |
-|  6   | `BinaryError(msg)`        | `BinaryError: <msg>`                                    | Caught external failure (gh subprocess, network, IO). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                                                              |
-|  7   | `Paused`                  | `Paused`                                                | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
-|  8   | `DoneAborted`             | `DoneClosed`                                            | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
+|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by prompt block) | Dispatch an agent with the prompt as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                                                                                       |
+|  5   | `DoneAborted`             | `DoneClosed`                                            | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
+|  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`              | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
+|  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`            | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
 |  64  | `UsageError(msg)`         | `UsageError: <msg>` (followed by full usage block)      | Fix the invocation. The usage block (same content as `--help` writes to stdout) is written to stderr immediately after the header, so callers don't need to re-invoke with `--help` to see syntax.                                                                                                                                                               |
+|  70  | `BinaryError(msg)`        | `BinaryError: <msg>`                                    | BSD sysexits `EX_SOFTWARE`. Caught external failure (gh subprocess, network, IO, codex). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                           |
+| 130  | _(reserved)_              | _(none — kernel kills)_                                 | `SIGINT` (`128 + 2`). Synthesized by the shell when the process is signal-killed; the binary itself never returns this. Treat as user-initiated abort.                                                                                                                                                                                                           |
+| 143  | _(reserved)_              | _(none — kernel kills)_                                 | `SIGTERM` (`128 + 15`). Synthesized by the shell when the process is signal-killed; same handling as `SIGINT`.                                                                                                                                                                                                                                                   |
 
 **1:1 variant-to-exit-code mapping** is the design rule. Each
 variant has a unique exit code; `$?` is sufficient for dispatch.
@@ -652,15 +654,15 @@ are halts (not executes) in both modes — inspect emits the same
 | Exit | Variant           |                      Loop emits                       |         `inspect` emits         |
 | :--: | ----------------- | :---------------------------------------------------: | :-----------------------------: |
 |  0   | `DoneSucceeded`   |                          yes                          |               yes               |
-|  1   | `StuckRepeated`   |                          yes                          | no (requires ≥2 non-Wait iters) |
-|  2   | `StuckCapReached` |                          yes                          |     no (cap doesn't apply)      |
+|  1   | `Paused`          |                          yes                          |               yes               |
+|  2   | `WouldAdvance`    |                          no                           | yes (Execute path substitution) |
 |  3   | `HandoffHuman`    |                          yes                          |               yes               |
-|  4   | `WouldAdvance`    |                          no                           | yes (Execute path substitution) |
-|  5   | `HandoffAgent`    |                          yes                          |               yes               |
-|  6   | `BinaryError`     |                          yes                          |               yes               |
-|  7   | `Paused`          |                          yes                          |               yes               |
-|  8   | `DoneAborted`     |                          yes                          |               yes               |
+|  4   | `HandoffAgent`    |                          yes                          |               yes               |
+|  5   | `DoneAborted`     |                          yes                          |               yes               |
+|  6   | `StuckRepeated`   |                          yes                          | no (requires ≥2 non-Wait iters) |
+|  7   | `StuckCapReached` |                          yes                          |     no (cap doesn't apply)      |
 |  64  | `UsageError`      | yes (mode-independent — fires before mode dispatched) |     yes (mode-independent)      |
+|  70  | `BinaryError`     |                          yes                          |               yes               |
 
 ## Loop semantics
 
@@ -682,7 +684,7 @@ have arms, but the trap fires if a future `Full` kind is added
 without an `act` handler). Both are programmer-error traps;
 neither fires in practice today.
 
-`observe` runs unconditionally each iteration; `orient` runs whenever `observe` succeeds (an `observe` failure short-circuits to `BinaryError(msg)` exit 6 before `orient`).
+`observe` runs unconditionally each iteration; `orient` runs whenever `observe` succeeds (an `observe` failure short-circuits to `BinaryError(msg)` exit 70 before `orient`).
 `decide` then checks the PR's lifecycle state: if `Merged` or
 `Closed`, the loop emits the `DoneSucceeded` or `DoneAborted`
 variant respectively (stderr `DoneMerged` / `DoneClosed`)
@@ -694,7 +696,7 @@ output and inspects its `automation` field:
 | ---------------- | --------------------------- | ---------------------------------------------------------------------- |
 | `Full`           | `Execute(action)`           | `act` runs the action immediately; loop continues to next iteration    |
 | `Wait{interval}` | `Execute(action)`           | `act` sleeps `interval`; loop re-observes (counts toward `--max-iter`) |
-| `Agent`          | `Halt(AgentNeeded(action))` | Loop exits with `Outcome::HandoffAgent(action)` (exit 5)               |
+| `Agent`          | `Halt(AgentNeeded(action))` | Loop exits with `Outcome::HandoffAgent(action)` (exit 4)               |
 | `Human`          | `Halt(HumanNeeded(action))` | Loop exits with `Outcome::HandoffHuman(action)` (exit 3)               |
 
 `automation` is a flat 4-variant enum on `Action`:
@@ -703,13 +705,13 @@ separate `Disposition` type — automation IS the dispatch
 selector.
 
 If `decide` selects no candidate (no advancing actions
-available), the loop emits `Outcome::Paused` (exit 7).
+available), the loop emits `Outcome::Paused` (exit 1).
 
 The loop additionally exits if:
 
 - The same `(kind, blocker)` pair from a non-`Wait` action
   repeats on consecutive non-`Wait` iterations
-  (`StuckRepeated(action)` — exit 1). **Stall comparison rule:**
+  (`StuckRepeated(action)` — exit 6). **Stall comparison rule:**
   the comparator's `prev` slot is structurally non-`Wait` (the
   runner only records non-`Wait` actions there). The comparator
   is still invoked for `Wait` current iterations, but a `Wait`
@@ -740,7 +742,7 @@ blocked_checks }`, `FixCi { check_name }`. If any of these
   (alongside `Wait`-automation kinds and `Human`-automation
   halts which never reach the comparator at all).
 
-- The iteration cap is hit (`StuckCapReached(action)` — exit 2).
+- The iteration cap is hit (`StuckCapReached(action)` — exit 7).
   The action shown is the last action `act` ran successfully
   (Wait or non-Wait); iterations whose `act` returned an error
   exit with `BinaryError` and never reach `StuckCapReached`.

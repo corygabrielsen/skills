@@ -1046,6 +1046,107 @@ fn outcome_summary(outcome: &Outcome, code: ExitCode) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decide::action::{ActionEffect, ActionKind, TargetEffect, Urgency};
+    use crate::ids::BlockerKey;
+    use ooda_core::{HandoffPrompt, PollingInterval};
+
+    // ─── recorder JSONL schema goldens ─────────────────────────────
+    //
+    // Exhaustive snapshot tests for `action_projection`. The contract
+    // is the field set written into per-iteration JSONL records under
+    // the recorder tree. The match in `recorder_action_golden` is
+    // exhaustive over `ActionEffect`, so adding a new variant fails
+    // to compile until a golden arm is added.
+
+    fn sample_action(effect: ActionEffect) -> Action {
+        Action {
+            kind: ActionKind::Rebase,
+            effect,
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingFix,
+            blocker: BlockerKey::tag("rebase-needed"),
+        }
+    }
+
+    /// Canonical JSON shape for an `Action` written into the
+    /// recorder JSONL by `action_projection`. The variant-specific
+    /// tail lives inside `effect`; the surrounding object fields
+    /// are constant across variants.
+    fn recorder_action_golden(action: &Action) -> Value {
+        let effect_json = match &action.effect {
+            ActionEffect::Full { log } => json!({"Full": {"log": log}}),
+            ActionEffect::Wait { interval, log } => json!({
+                "Wait": {
+                    "interval": {
+                        "secs": interval.as_duration().as_secs(),
+                        "nanos": interval.as_duration().subsec_nanos(),
+                    },
+                    "log": log,
+                }
+            }),
+            ActionEffect::Agent { prompt } => json!({
+                "Agent": {"prompt": prompt_golden(prompt)}
+            }),
+            ActionEffect::Human { prompt } => json!({
+                "Human": {"prompt": prompt_golden(prompt)}
+            }),
+        };
+        json!({
+            "kind": action.kind.name(),
+            "effect": effect_json,
+            "target_effect": format!("{:?}", action.target_effect),
+            "urgency": format!("{:?}", action.urgency),
+            "blocker": action.blocker.to_string(),
+            "description": action.rendered_payload(),
+        })
+    }
+
+    fn prompt_golden(prompt: &HandoffPrompt) -> Value {
+        json!({
+            "headline": prompt.headline.as_str(),
+            "sections": prompt.sections,
+        })
+    }
+
+    fn recorder_sample_effects() -> Vec<ActionEffect> {
+        vec![
+            ActionEffect::Full {
+                log: "Mark PR ready".into(),
+            },
+            ActionEffect::Wait {
+                interval: PollingInterval::from_secs(30),
+                log: "Waiting for CI".into(),
+            },
+            ActionEffect::Agent {
+                prompt: HandoffPrompt::new("Address review threads"),
+            },
+            ActionEffect::Human {
+                prompt: HandoffPrompt::new("Request or self-approve"),
+            },
+        ]
+    }
+
+    #[test]
+    fn recorder_action_projection_schema_goldens() {
+        let samples = recorder_sample_effects();
+        assert_eq!(
+            samples.len(),
+            4,
+            "`recorder_sample_effects` must include one sample per `ActionEffect` variant; \
+             adding a new variant requires adding both a golden arm in `recorder_action_golden` \
+             AND a sample here.",
+        );
+        for effect in samples {
+            let action = sample_action(effect);
+            let actual = action_projection(&action);
+            let expected = recorder_action_golden(&action);
+            assert_eq!(
+                actual, expected,
+                "schema mismatch for ActionEffect: {:?}",
+                action.effect
+            );
+        }
+    }
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

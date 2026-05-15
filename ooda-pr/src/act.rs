@@ -49,7 +49,7 @@ pub fn act(action: &Action, slug: &RepoSlug, pr: PullRequestNumber) -> Result<()
     match action.automation {
         Automation::Full => run_full(&action.kind, slug, pr),
         Automation::Wait { interval } => {
-            thread::sleep(interval);
+            thread::sleep(interval.as_duration());
             Ok(())
         }
         Automation::Agent | Automation::Human => Err(ActError::UnsupportedAutomation),

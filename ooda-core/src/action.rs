@@ -13,9 +13,8 @@
 //! names for the per-iteration `[iter N] action: <name>` log line
 //! without exposing payload internals.
 
-use std::time::Duration;
-
 use crate::blocker::BlockerKey;
+use crate::polling_interval::PollingInterval;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -74,8 +73,11 @@ pub enum Urgency {
     Hygiene,
 }
 
-/// What dispatches the action. `Wait` carries the poll cadence so
-/// "Wait without a sleep duration" is unrepresentable.
+/// What dispatches the action. `Wait` carries the poll cadence as
+/// a [`PollingInterval`] (strictly-positive newtype), so both
+/// "Wait without a sleep duration" *and* "Wait with a zero
+/// duration" are unrepresentable — the latter would busy-loop the
+/// runner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Automation {
     /// We have the exact command and run it directly.
@@ -83,9 +85,8 @@ pub enum Automation {
     /// Hand off to an agent with `description` as prompt.
     Agent,
     /// Wait for an external signal — poll after `interval` and
-    /// re-iterate. `Duration` (not `u32`) so future backoff/jitter
-    /// compose without changing the type.
-    Wait { interval: Duration },
+    /// re-iterate.
+    Wait { interval: PollingInterval },
     /// Halt and surface to a human — only they can resolve.
     Human,
 }

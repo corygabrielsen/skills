@@ -2,7 +2,6 @@
 //! request approval.
 
 use crate::ids::BlockerKey;
-use std::time::Duration;
 
 use crate::observe::github::pr_view::ReviewDecision;
 use crate::orient::OrientedState;
@@ -55,7 +54,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::WaitForBotReview { reviewers: bots },
             automation: Automation::Wait {
-                interval: Duration::from_secs(60),
+                interval: ooda_core::PollingInterval::from_secs(60),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,

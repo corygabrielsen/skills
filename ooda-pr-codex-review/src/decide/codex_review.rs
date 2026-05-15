@@ -15,8 +15,6 @@
 //! whenever it has work, structurally gating merge on codex's
 //! fixed point.
 
-use std::time::Duration;
-
 use crate::ids::{BlockerKey, ReasoningLevel};
 use crate::observe::codex::VerdictClass;
 use crate::orient::codex_review::{CodexReviewReport, CodexReviewStatus};
@@ -66,7 +64,7 @@ fn mk_await(level: ReasoningLevel, pending: u32) -> Action {
     Action {
         kind: ActionKind::AwaitCodexReviewBatch { level, pending },
         automation: Automation::Wait {
-            interval: Duration::from_secs(AWAIT_INTERVAL_SECS),
+            interval: ooda_core::PollingInterval::from_secs(AWAIT_INTERVAL_SECS),
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::BlockingWait,

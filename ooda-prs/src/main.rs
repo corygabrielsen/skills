@@ -828,7 +828,9 @@ fn format_automation(a: &Automation) -> String {
         Automation::Full => "Full".to_string(),
         Automation::Agent => "Agent".to_string(),
         Automation::Human => "Human".to_string(),
-        Automation::Wait { interval } => format!("Wait({})", format_duration(*interval)),
+        Automation::Wait { interval } => {
+            format!("Wait({})", format_duration(interval.as_duration()))
+        }
     }
 }
 
@@ -884,7 +886,7 @@ mod tests {
         assert_eq!(format_automation(&Automation::Human), "Human");
         assert_eq!(
             format_automation(&Automation::Wait {
-                interval: Duration::from_secs(30)
+                interval: ooda_core::PollingInterval::from_secs(30)
             }),
             "Wait(30s)"
         );
@@ -971,7 +973,7 @@ mod tests {
         let action = decide::action::Action {
             kind: decide::action::ActionKind::Rebase,
             automation: Automation::Wait {
-                interval: Duration::from_secs(30),
+                interval: ooda_core::PollingInterval::from_secs(30),
             },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingWait,
@@ -1151,7 +1153,7 @@ mod tests {
     fn jsonl_would_advance_includes_automation_string() {
         let mut a = action("ci_pending: build");
         a.automation = Automation::Wait {
-            interval: Duration::from_secs(60),
+            interval: ooda_core::PollingInterval::from_secs(60),
         };
         let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::WouldAdvance(a)));
         let v = parse_record(&r);

@@ -11,8 +11,6 @@
 //! qualify — those have concrete advancement actions in their
 //! own axis candidate generators.
 
-use std::time::Duration;
-
 use super::action::{Action, ActionKind, Automation, NonEmpty, TargetEffect, Urgency};
 use crate::ids::{BlockerKey, CheckName};
 use crate::orient::ci::CiSummary;
@@ -82,7 +80,7 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
                 automation: Automation::Wait {
-                    interval: Duration::from_secs(60),
+                    interval: ooda_core::PollingInterval::from_secs(60),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
@@ -98,7 +96,7 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
                 automation: Automation::Wait {
-                    interval: Duration::from_secs(60),
+                    interval: ooda_core::PollingInterval::from_secs(60),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,

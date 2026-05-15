@@ -16,8 +16,6 @@
 pub mod action;
 pub mod decision;
 
-use std::time::Duration;
-
 use crate::ids::BlockerKey;
 use crate::observe::codex::VerdictClass;
 use crate::observe::codex::batch::{BatchState, VerdictRecord};
@@ -32,16 +30,19 @@ use decision::{Decision, DecisionHalt, Terminal};
 /// one-liner.
 ///
 /// Tests and unusual deployments override via the
-/// `OODA_AWAIT_SECS` env var — set it to 0 in CI to make the
-/// loop responsive without changing production semantics.
+/// `OODA_AWAIT_SECS` env var. Must be ≥ 1; a value of 0 (or any
+/// unparseable string) falls back to [`DEFAULT_AWAIT_SECS`] —
+/// [`ooda_core::PollingInterval`] enforces the no-busy-loop
+/// invariant structurally.
 const DEFAULT_AWAIT_SECS: u64 = 30;
 
-fn await_interval() -> Duration {
+fn await_interval() -> ooda_core::PollingInterval {
     let secs = std::env::var("OODA_AWAIT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_AWAIT_SECS);
-    Duration::from_secs(secs)
+    ooda_core::PollingInterval::from_secs(secs)
 }
 
 pub fn decide(oriented: &OrientedState) -> Decision {

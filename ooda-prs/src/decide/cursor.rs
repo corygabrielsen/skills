@@ -6,7 +6,6 @@
 //! for the user's next push to trigger Bugbot.
 
 use crate::ids::BlockerKey;
-use std::time::Duration;
 
 use crate::orient::cursor::{CursorActivity, CursorReport};
 
@@ -18,7 +17,7 @@ pub fn candidates(report: &CursorReport) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::WaitForCursorReview,
             automation: Automation::Wait {
-                interval: Duration::from_secs(60),
+                interval: ooda_core::PollingInterval::from_secs(60),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,

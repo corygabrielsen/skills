@@ -88,7 +88,7 @@ impl std::error::Error for ActError {
 pub fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match action.automation {
         Automation::Wait { interval } => {
-            std::thread::sleep(interval);
+            std::thread::sleep(interval.as_duration());
             Ok(())
         }
         Automation::Full => dispatch_full(action, ctx),

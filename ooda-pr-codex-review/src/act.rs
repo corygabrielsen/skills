@@ -115,7 +115,7 @@ pub fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match action.automation {
         Automation::Full => run_full(&action.kind, ctx),
         Automation::Wait { interval } => {
-            thread::sleep(interval);
+            thread::sleep(interval.as_duration());
             Ok(())
         }
         Automation::Agent | Automation::Human => Err(ActError::UnsupportedAutomation),

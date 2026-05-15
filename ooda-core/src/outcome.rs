@@ -19,6 +19,7 @@
 use crate::action::Action;
 use crate::decision::{Decision, DecisionHalt, HaltReason, Terminal};
 use crate::exit_code::ExitCode;
+use crate::single_line_string::SingleLineString;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -45,9 +46,11 @@ pub enum Outcome<K> {
     /// Decide selected an action requiring an agent. Carries the
     /// action; `act` did not run.
     HandoffAgent(Action<K>),
-    /// Caught external failure (subprocess, network, IO). String is
-    /// for human triage; no embedded newlines.
-    BinaryError(String),
+    /// Caught external failure (subprocess, network, IO). The
+    /// [`SingleLineString`] payload is for human triage; the
+    /// no-newlines invariant is enforced by the type so the
+    /// "stderr header is one line" contract holds by construction.
+    BinaryError(SingleLineString),
     /// Decide selected no candidate action — target is open with
     /// no advancing work this pass. May re-invoke later.
     Paused,
@@ -56,9 +59,10 @@ pub enum Outcome<K> {
     /// domain-specific stderr header (e.g. `DoneClosed`,
     /// `DoneAborted`).
     DoneAborted,
-    /// CLI parse / validation failure. String is the diagnostic;
-    /// no embedded newlines.
-    UsageError(String),
+    /// CLI parse / validation failure. The [`SingleLineString`]
+    /// payload is the diagnostic; the no-newlines invariant is
+    /// enforced by the type.
+    UsageError(SingleLineString),
 }
 
 impl<K> Outcome<K> {
@@ -83,11 +87,18 @@ impl<K> Outcome<K> {
         }
     }
 
-    /// Per-binary loop errors funnel through here. The argument is
-    /// flattened to a single line so the documented invariant
-    /// ("`BinaryError: <msg>` header is one line") holds.
-    pub fn binary_error(msg: impl Into<String>) -> Self {
-        Self::BinaryError(flatten_one_line(msg.into()))
+    /// Per-binary loop errors funnel through here. The
+    /// [`SingleLineString`] type enforces the
+    /// "`BinaryError: <msg>` header is one line" invariant by
+    /// construction.
+    pub fn binary_error(msg: impl Into<SingleLineString>) -> Self {
+        Self::BinaryError(msg.into())
+    }
+
+    /// CLI parse / validation failure constructor. Same
+    /// single-line invariant as [`Self::binary_error`].
+    pub fn usage_error(msg: impl Into<SingleLineString>) -> Self {
+        Self::UsageError(msg.into())
     }
 }
 
@@ -123,17 +134,6 @@ fn decision_halt_to_outcome<K>(halt: DecisionHalt<K>) -> Outcome<K> {
         DecisionHalt::Terminal(Terminal::Aborted) => Outcome::DoneAborted,
         DecisionHalt::AgentNeeded(action) => Outcome::HandoffAgent(action),
         DecisionHalt::HumanNeeded(action) => Outcome::HandoffHuman(action),
-    }
-}
-
-/// Strip newlines from an error string for the `BinaryError`
-/// payload. Preserves the documented invariant that the
-/// `BinaryError: <msg>` header is one line.
-fn flatten_one_line(s: String) -> String {
-    if s.contains('\n') {
-        s.replace('\n', " ")
-    } else {
-        s
     }
 }
 
@@ -264,23 +264,23 @@ mod tests {
     }
 
     #[test]
-    fn binary_error_strips_newlines() {
-        let o: Outcome<K> = Outcome::binary_error("line one\nline two\nline three");
+    fn binary_error_constructor_wraps_in_single_line_string() {
+        // The flatten-newlines invariant is owned by
+        // SingleLineString; this just verifies that the
+        // constructor routes through it.
+        let o: Outcome<K> = Outcome::binary_error("line one\nline two");
         match o {
-            Outcome::BinaryError(s) => {
-                assert_eq!(s, "line one line two line three");
-                assert!(!s.contains('\n'));
-            }
+            Outcome::BinaryError(s) => assert_eq!(s.as_str(), "line one line two"),
             _ => panic!("expected BinaryError"),
         }
     }
 
     #[test]
-    fn binary_error_preserves_single_line() {
-        let o: Outcome<K> = Outcome::binary_error("single line error");
+    fn usage_error_constructor_wraps_in_single_line_string() {
+        let o: Outcome<K> = Outcome::usage_error("oops\nbad flag");
         match o {
-            Outcome::BinaryError(s) => assert_eq!(s, "single line error"),
-            _ => panic!("expected BinaryError"),
+            Outcome::UsageError(s) => assert_eq!(s.as_str(), "oops bad flag"),
+            _ => panic!("expected UsageError"),
         }
     }
 }

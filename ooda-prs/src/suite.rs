@@ -163,7 +163,7 @@ mod tests {
             // Map each PR to a unique BinaryError carrying its
             // number, so we can assert order independently of which
             // thread ran first.
-            Outcome::BinaryError(format!("pr={p}"))
+            Outcome::binary_error(format!("pr={p}"))
         });
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].pr.get(), 10);
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(out[0].slug.to_string(), "a/b");
         assert_eq!(out[2].slug.to_string(), "c/d");
         match &out[1].outcome {
-            Outcome::BinaryError(s) => assert_eq!(s, "pr=20"),
+            Outcome::BinaryError(s) => assert_eq!(s.as_str(), "pr=20"),
             _ => panic!("expected BinaryError"),
         }
     }
@@ -210,7 +210,7 @@ mod tests {
         // not incorrect. We just verify all PRs run and outcomes
         // are collected in order.
         let s: Vec<_> = (1..=3).map(|n| (slug("x/y"), pr(n))).collect();
-        let out = drive_suite(&s, Some(100), |_, p| Outcome::BinaryError(format!("{p}")));
+        let out = drive_suite(&s, Some(100), |_, p| Outcome::binary_error(format!("{p}")));
         assert_eq!(out.len(), 3);
         for (i, po) in out.iter().enumerate() {
             assert_eq!(po.pr.get(), (i + 1) as u64);

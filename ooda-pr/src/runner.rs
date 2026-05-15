@@ -21,13 +21,12 @@
 use std::num::NonZeroU32;
 
 use crate::act::{ActError, act};
-use crate::decide::action::Action;
+use crate::decide::action::{Action, rate_limit_wait_action};
 use crate::decide::candidates;
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{PullRequestNumber, RepoSlug};
-use crate::observe::github::GitHubObservations;
-use crate::observe::github::fetch_all;
 use crate::observe::github::gh::GhError;
+use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
@@ -149,9 +148,31 @@ fn run_iter(
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
     let obs = match fetch_all(slug, pr) {
-        Ok(obs) => {
+        Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, Ok(()));
-            obs
+            *obs
+        }
+        Ok(FetchOutcome::RateLimited(hit)) => {
+            // Rate-limited mid-observe. Synthesize the
+            // WaitForRateLimit action and sleep its retry window;
+            // the next iteration re-observes from fresh state.
+            // No orient/decide call this iteration — every axis
+            // would be operating on stale or absent data.
+            recorder.record_observe_end(iter, Ok(()));
+            let action = rate_limit_wait_action(hit);
+            recorder.record_action_start(iter, &action);
+            recorder.record_wait_start(iter, &action);
+            let act_result = act(&action, slug, pr);
+            if act_result.is_ok() {
+                recorder.record_wait_end(iter, &action);
+            }
+            recorder.record_action_end(
+                iter,
+                &action,
+                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
+            );
+            act_result.map_err(LoopError::Act)?;
+            return Ok(IterStep::Executed(action));
         }
         Err(e) => {
             recorder.record_observe_end(iter, Err(e.to_string()));

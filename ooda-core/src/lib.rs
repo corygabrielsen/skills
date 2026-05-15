@@ -39,6 +39,7 @@ pub mod non_empty;
 pub mod outcome;
 pub mod polling_interval;
 pub mod pr_state;
+pub mod rate_limit;
 pub mod single_line_string;
 pub mod stall_key;
 
@@ -53,5 +54,6 @@ pub use non_empty::NonEmpty;
 pub use outcome::Outcome;
 pub use polling_interval::{PollingInterval, PollingIntervalError};
 pub use pr_state::{PrState, TerminalState};
+pub use rate_limit::{RateLimitHit, RateLimitScope};
 pub use single_line_string::SingleLineString;
 pub use stall_key::StallKey;

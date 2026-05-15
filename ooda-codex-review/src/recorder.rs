@@ -476,6 +476,111 @@ mod tests {
     use super::*;
     use crate::ids::BranchName;
 
+    // ─── RunManifest JSONL schema goldens ───────────────────────────
+    //
+    // The recorder's on-disk contract for ooda-codex-review is the
+    // `RunManifest` struct serialized as JSON (not per-iteration
+    // records — this binary writes one manifest per run). Resume
+    // logic and external tooling depend on the field names and the
+    // shape of `level_history` entries, so a rename here must
+    // surface as a test failure.
+    //
+    // The match in `level_outcome_golden` is exhaustive over
+    // `LevelOutcome`, so adding a new variant fails to compile
+    // until a golden arm is added.
+
+    fn sample_manifest_with_history(history: Vec<LevelOutcome>) -> RunManifest {
+        RunManifest {
+            run_id: "run-deadbeef".into(),
+            repo_id: "repo-cafebabe".into(),
+            mode: ReviewMode::Uncommitted,
+            target_key: "uncommitted".into(),
+            start_level: ReasoningLevel::Low,
+            current_level: ReasoningLevel::Medium,
+            batch_size: 3,
+            batch_number: 2,
+            level_history: history,
+            created_at: "2026-05-15T10:00:00Z".into(),
+        }
+    }
+
+    fn level_outcome_golden(o: &LevelOutcome) -> serde_json::Value {
+        use serde_json::json;
+        match o {
+            LevelOutcome::Clean { level } => json!({
+                "kind": "clean",
+                "level": level,
+            }),
+            LevelOutcome::Addressed { level, issue_count } => json!({
+                "kind": "addressed",
+                "level": level,
+                "issue_count": issue_count,
+            }),
+            LevelOutcome::RetrospectiveChanges { level, reason } => json!({
+                "kind": "retrospective_changes",
+                "level": level,
+                "reason": reason,
+            }),
+        }
+    }
+
+    fn manifest_golden(m: &RunManifest) -> serde_json::Value {
+        use serde_json::json;
+        json!({
+            "run_id": m.run_id,
+            "repo_id": m.repo_id,
+            "mode": m.mode,
+            "target_key": m.target_key,
+            "start_level": m.start_level,
+            "current_level": m.current_level,
+            "batch_size": m.batch_size,
+            "batch_number": m.batch_number,
+            "level_history": m.level_history.iter().map(level_outcome_golden).collect::<Vec<_>>(),
+            "created_at": m.created_at,
+        })
+    }
+
+    /// One sample `LevelOutcome` per variant. Hand-maintained; the
+    /// length sentinel in `manifest_schema_goldens_exhaustive`
+    /// catches drift.
+    fn level_outcome_samples() -> Vec<LevelOutcome> {
+        vec![
+            LevelOutcome::Clean {
+                level: ReasoningLevel::Low,
+            },
+            LevelOutcome::Addressed {
+                level: ReasoningLevel::Medium,
+                issue_count: 3,
+            },
+            LevelOutcome::RetrospectiveChanges {
+                level: ReasoningLevel::High,
+                reason: "extract helper".into(),
+            },
+        ]
+    }
+
+    /// Exhaustive snapshot test for the `RunManifest` JSON shape —
+    /// the on-disk schema other tools and the resume-probe code
+    /// depend on.
+    #[test]
+    fn manifest_schema_goldens_exhaustive() {
+        let samples = level_outcome_samples();
+        assert_eq!(
+            samples.len(),
+            3,
+            "`level_outcome_samples` must include one sample per `LevelOutcome` variant; \
+             adding a new variant requires adding both a golden arm in `level_outcome_golden` \
+             AND a sample here.",
+        );
+        // One manifest with every history-entry variant present, so
+        // a single round-trip exercises both the manifest fields and
+        // every `LevelOutcome` arm.
+        let manifest = sample_manifest_with_history(samples);
+        let actual: serde_json::Value = serde_json::to_value(&manifest).unwrap();
+        let expected = manifest_golden(&manifest);
+        assert_eq!(actual, expected, "RunManifest schema mismatch");
+    }
+
     fn temp_state_root(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ooda-codex-review-recorder-test-{label}-{}",

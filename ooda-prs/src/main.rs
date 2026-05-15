@@ -1032,38 +1032,149 @@ mod tests {
         serde_json::from_str(s).expect("JSONL record must parse as JSON")
     }
 
-    #[test]
-    fn jsonl_done_merged_minimal_shape() {
-        let r = per_pr_jsonl_record(&po("a/b", 42, Outcome::DoneSucceeded));
-        let v = parse_record(&r);
-        assert_eq!(v["slug"], "a/b");
-        assert_eq!(v["pr"], 42);
-        assert_eq!(v["outcome"], "DoneMerged");
-        assert_eq!(v["exit"], 0);
-        assert!(v.get("action").is_none());
-        assert!(v.get("prompt").is_none());
+    // ─── per-PR JSONL schema goldens ────────────────────────────────
+    //
+    // Exhaustive snapshot tests for `per_pr_jsonl_record`. The
+    // contract is the field set emitted for each `Outcome` variant —
+    // downstream tooling (jq, shell pipelines, dashboards) reads
+    // these field names directly, so a rename here is a breaking
+    // change that MUST surface as a test failure.
+    //
+    // The match in `pr_jsonl_golden` is exhaustive over `Outcome`,
+    // so adding a new variant fails to compile here until a golden
+    // is added. The sample list (`pr_jsonl_sample_outcomes`) is
+    // hand-maintained but the length sentinel in the test catches
+    // omissions.
+
+    /// Canonical JSON shape emitted by `per_pr_jsonl_record` for
+    /// each `Outcome` variant. Used by `jsonl_schema_goldens_exhaustive`.
+    fn pr_jsonl_golden(outcome: &Outcome) -> serde_json::Value {
+        use serde_json::json;
+        // Every record carries these four fields regardless of
+        // variant. The merge below adds the variant-specific tail.
+        let mut o = serde_json::Map::new();
+        o.insert("slug".into(), json!("acme/widget"));
+        o.insert("pr".into(), json!(42));
+        o.insert(
+            "pr_url".into(),
+            json!("https://github.com/acme/widget/pull/42"),
+        );
+        match outcome {
+            Outcome::DoneSucceeded => {
+                o.insert("outcome".into(), json!("DoneMerged"));
+                o.insert("exit".into(), json!(0));
+            }
+            Outcome::Paused => {
+                o.insert("outcome".into(), json!("Paused"));
+                o.insert("exit".into(), json!(1));
+            }
+            Outcome::WouldAdvance(a) => {
+                o.insert("outcome".into(), json!("WouldAdvance"));
+                o.insert("exit".into(), json!(2));
+                o.insert("action".into(), json!(a.kind.name()));
+                o.insert("blocker".into(), json!(a.blocker.to_string()));
+                o.insert("effect".into(), json!(format_effect(&a.effect)));
+            }
+            Outcome::HandoffHuman(a) => {
+                o.insert("outcome".into(), json!("HandoffHuman"));
+                o.insert("exit".into(), json!(3));
+                o.insert("action".into(), json!(a.kind.name()));
+                o.insert("blocker".into(), json!(a.blocker.to_string()));
+                o.insert("prompt".into(), json!(a.rendered_payload()));
+            }
+            Outcome::HandoffAgent(a) => {
+                o.insert("outcome".into(), json!("HandoffAgent"));
+                o.insert("exit".into(), json!(4));
+                o.insert("action".into(), json!(a.kind.name()));
+                o.insert("blocker".into(), json!(a.blocker.to_string()));
+                o.insert("prompt".into(), json!(a.rendered_payload()));
+            }
+            Outcome::DoneAborted => {
+                o.insert("outcome".into(), json!("DoneClosed"));
+                o.insert("exit".into(), json!(5));
+            }
+            Outcome::StuckRepeated(a) => {
+                o.insert("outcome".into(), json!("StuckRepeated"));
+                o.insert("exit".into(), json!(6));
+                o.insert("action".into(), json!(a.kind.name()));
+                o.insert("blocker".into(), json!(a.blocker.to_string()));
+            }
+            Outcome::StuckCapReached(a) => {
+                o.insert("outcome".into(), json!("StuckCapReached"));
+                o.insert("exit".into(), json!(7));
+                o.insert("action".into(), json!(a.kind.name()));
+                o.insert("blocker".into(), json!(a.blocker.to_string()));
+            }
+            Outcome::UsageError(msg) => {
+                o.insert("outcome".into(), json!("UsageError"));
+                o.insert("exit".into(), json!(64));
+                o.insert("msg".into(), json!(msg.as_str()));
+            }
+            Outcome::BinaryError(msg) => {
+                o.insert("outcome".into(), json!("BinaryError"));
+                o.insert("exit".into(), json!(70));
+                o.insert("msg".into(), json!(msg.as_str()));
+            }
+        }
+        serde_json::Value::Object(o)
     }
 
-    #[test]
-    fn jsonl_records_include_pr_url() {
-        // Every variant's record carries pr_url so harnesses can
-        // deep-link without re-deriving from slug + pr.
-        for outcome in [
+    /// One sample `Outcome` per variant. Hand-maintained; the length
+    /// sentinel in `jsonl_schema_goldens_exhaustive` catches drift.
+    /// Variants carrying an `Action` use distinct kinds / blockers /
+    /// payloads so the golden distinguishes them by shape.
+    fn pr_jsonl_sample_outcomes() -> Vec<Outcome> {
+        let stuck_action = action("rebase-needed");
+        let mut would_advance_action = action("ci_pending: build");
+        would_advance_action.effect = ActionEffect::Wait {
+            interval: ooda_core::PollingInterval::from_secs(60),
+            log: "Wait for 2 pending checks".into(),
+        };
+        let mut handoff_agent_action = action("unresolved_threads");
+        handoff_agent_action.effect = ActionEffect::Agent {
+            prompt: ooda_core::HandoffPrompt::new("Address 2 unresolved review threads."),
+        };
+        let mut handoff_human_action = action("pending_human_review: alice");
+        handoff_human_action.effect = ActionEffect::Human {
+            prompt: ooda_core::HandoffPrompt::new("Approve the PR."),
+        };
+        vec![
             Outcome::DoneSucceeded,
-            Outcome::DoneAborted,
             Outcome::Paused,
-            Outcome::StuckRepeated(Box::new(action("x"))),
-            Outcome::StuckCapReached(Box::new(action("x"))),
-            Outcome::HandoffAgent(Box::new(action("x"))),
-            Outcome::HandoffHuman(Box::new(action("x"))),
-            Outcome::WouldAdvance(Box::new(action("x"))),
-            Outcome::BinaryError("boom".into()),
-        ] {
-            let r = per_pr_jsonl_record(&po("acme/widget", 42, outcome));
-            let v = parse_record(&r);
+            Outcome::WouldAdvance(Box::new(would_advance_action)),
+            Outcome::HandoffHuman(Box::new(handoff_human_action)),
+            Outcome::HandoffAgent(Box::new(handoff_agent_action)),
+            Outcome::DoneAborted,
+            Outcome::StuckRepeated(Box::new(stuck_action.clone())),
+            Outcome::StuckCapReached(Box::new(stuck_action)),
+            Outcome::UsageError("bad --concurrency".into()),
+            Outcome::BinaryError("observe: gh: connection refused".into()),
+        ]
+    }
+
+    /// One golden assertion per `Outcome` variant. Compile-checked
+    /// exhaustiveness lives in `pr_jsonl_golden`; runtime
+    /// completeness for the sample list is enforced by the length
+    /// sentinel — every Outcome variant in the family of 10 must
+    /// be represented.
+    #[test]
+    fn jsonl_schema_goldens_exhaustive() {
+        let samples = pr_jsonl_sample_outcomes();
+        assert_eq!(
+            samples.len(),
+            10,
+            "`pr_jsonl_sample_outcomes` must include one sample per `Outcome` variant; \
+             adding a new variant requires adding both a golden arm in `pr_jsonl_golden` \
+             AND a sample here.",
+        );
+        for outcome in samples {
+            let outcome_name = outcome_variant_name(&outcome);
+            let po = po("acme/widget", 42, outcome);
+            let actual = parse_record(&per_pr_jsonl_record(&po));
+            let expected = pr_jsonl_golden(&po.outcome);
             assert_eq!(
-                v["pr_url"], "https://github.com/acme/widget/pull/42",
-                "missing pr_url in {r}"
+                actual, expected,
+                "schema mismatch for variant {outcome_name}"
             );
         }
     }
@@ -1111,106 +1222,10 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn jsonl_done_closed_minimal_shape() {
-        let r = per_pr_jsonl_record(&po("a/b", 1, Outcome::DoneAborted));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "DoneClosed");
-        assert_eq!(v["exit"], 5);
-    }
-
-    #[test]
-    fn jsonl_paused_minimal_shape() {
-        let r = per_pr_jsonl_record(&po("a/b", 1, Outcome::Paused));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "Paused");
-        assert_eq!(v["exit"], 1);
-    }
-
-    #[test]
-    fn jsonl_stuck_repeated_includes_action_and_blocker() {
-        let r = per_pr_jsonl_record(&po(
-            "a/b",
-            7,
-            Outcome::StuckRepeated(Box::new(action("rebase-needed"))),
-        ));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "StuckRepeated");
-        assert_eq!(v["exit"], 6);
-        assert_eq!(v["action"], "Rebase");
-        assert_eq!(v["blocker"], "rebase-needed");
-        assert!(v.get("prompt").is_none());
-    }
-
-    #[test]
-    fn jsonl_stuck_cap_reached_includes_action_and_blocker() {
-        let r = per_pr_jsonl_record(&po(
-            "a/b",
-            7,
-            Outcome::StuckCapReached(Box::new(action("rebase-needed"))),
-        ));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "StuckCapReached");
-        assert_eq!(v["exit"], 7);
-        assert_eq!(v["action"], "Rebase");
-        assert_eq!(v["blocker"], "rebase-needed");
-    }
-
-    #[test]
-    fn jsonl_handoff_agent_includes_prompt() {
-        let mut a = action("unresolved_threads");
-        a.effect = ActionEffect::Agent {
-            prompt: ooda_core::HandoffPrompt::new("Address 2 unresolved review threads."),
-        };
-        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffAgent(Box::new(a))));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "HandoffAgent");
-        assert_eq!(v["exit"], 4);
-        assert_eq!(v["action"], "Rebase");
-        assert_eq!(v["blocker"], "unresolved_threads");
-        assert_eq!(v["prompt"], "Address 2 unresolved review threads.");
-    }
-
-    #[test]
-    fn jsonl_handoff_human_includes_prompt() {
-        let mut a = action("pending_human_review: alice");
-        a.effect = ActionEffect::Human {
-            prompt: ooda_core::HandoffPrompt::new("Approve the PR."),
-        };
-        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffHuman(Box::new(a))));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "HandoffHuman");
-        assert_eq!(v["exit"], 3);
-        assert_eq!(v["prompt"], "Approve the PR.");
-    }
-
-    #[test]
-    fn jsonl_would_advance_includes_effect_string() {
-        let mut a = action("ci_pending: build");
-        a.effect = ActionEffect::Wait {
-            interval: ooda_core::PollingInterval::from_secs(60),
-            log: "x".into(),
-        };
-        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::WouldAdvance(Box::new(a))));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "WouldAdvance");
-        assert_eq!(v["exit"], 2);
-        assert_eq!(v["effect"], "Wait(1m)");
-    }
-
-    #[test]
-    fn jsonl_binary_error_includes_msg() {
-        let r = per_pr_jsonl_record(&po(
-            "a/b",
-            7,
-            Outcome::BinaryError("observe: gh: connection refused".into()),
-        ));
-        let v = parse_record(&r);
-        assert_eq!(v["outcome"], "BinaryError");
-        assert_eq!(v["exit"], 70);
-        assert_eq!(v["msg"], "observe: gh: connection refused");
-        assert!(v.get("action").is_none());
-    }
+    // Note: per-variant shape assertions for `per_pr_jsonl_record`
+    // are covered by `jsonl_schema_goldens_exhaustive` above. Adding
+    // new per-variant tests here would be redundant — the exhaustive
+    // golden's match arms are the per-variant contract.
 
     #[test]
     fn render_multi_jsonl_emits_one_line_per_pr_in_order() {

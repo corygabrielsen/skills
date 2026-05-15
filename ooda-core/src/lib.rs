@@ -34,6 +34,7 @@ pub mod exit_code;
 pub mod non_empty;
 pub mod outcome;
 pub mod single_line_string;
+pub mod stall_key;
 
 pub use action::{Action, ActionKindName, Automation, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};
@@ -42,3 +43,4 @@ pub use exit_code::ExitCode;
 pub use non_empty::NonEmpty;
 pub use outcome::Outcome;
 pub use single_line_string::SingleLineString;
+pub use stall_key::StallKey;

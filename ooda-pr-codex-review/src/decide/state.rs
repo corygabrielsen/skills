@@ -3,7 +3,6 @@
 //! it doesn't shadow review/bot work.
 
 use crate::ids::BlockerKey;
-use std::time::Duration;
 
 use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
 use crate::orient::state::PullRequestState;
@@ -58,7 +57,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::WaitForMergeability,
             automation: Automation::Wait {
-                interval: Duration::from_secs(30),
+                interval: ooda_core::PollingInterval::from_secs(30),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
@@ -137,7 +136,7 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
         MergeStateStatus::HasHooks => vec![Action {
             kind: ActionKind::WaitForMergeability,
             automation: Automation::Wait {
-                interval: Duration::from_secs(30),
+                interval: ooda_core::PollingInterval::from_secs(30),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
@@ -147,7 +146,7 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
         MergeStateStatus::Unknown => vec![Action {
             kind: ActionKind::WaitForMergeability,
             automation: Automation::Wait {
-                interval: Duration::from_secs(30),
+                interval: ooda_core::PollingInterval::from_secs(30),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,

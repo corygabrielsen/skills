@@ -2,7 +2,6 @@
 //! tier when it has reviewed but more is achievable.
 
 use crate::ids::BlockerKey;
-use std::time::Duration;
 
 use crate::orient::copilot::{CopilotActivity, CopilotReport, CopilotTier};
 
@@ -19,7 +18,7 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotAck,
                 automation: Automation::Wait {
-                    interval: Duration::from_secs(15),
+                    interval: ooda_core::PollingInterval::from_secs(15),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
@@ -31,7 +30,7 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotReview,
                 automation: Automation::Wait {
-                    interval: Duration::from_secs(60),
+                    interval: ooda_core::PollingInterval::from_secs(60),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,

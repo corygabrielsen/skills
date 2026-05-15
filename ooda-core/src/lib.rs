@@ -33,6 +33,7 @@ pub mod decision;
 pub mod exit_code;
 pub mod non_empty;
 pub mod outcome;
+pub mod polling_interval;
 pub mod single_line_string;
 pub mod stall_key;
 
@@ -42,5 +43,6 @@ pub use decision::{Decision, DecisionHalt, HaltReason, Terminal};
 pub use exit_code::ExitCode;
 pub use non_empty::NonEmpty;
 pub use outcome::Outcome;
+pub use polling_interval::{PollingInterval, PollingIntervalError};
 pub use single_line_string::SingleLineString;
 pub use stall_key::StallKey;

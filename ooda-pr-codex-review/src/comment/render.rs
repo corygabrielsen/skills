@@ -215,7 +215,7 @@ fn decision_block(d: &Decision) -> String {
 fn action_block(prefix: &str, action: &Action) -> String {
     let auto = match action.automation {
         Automation::Full => "auto".to_owned(),
-        Automation::Wait { interval } => format!("wait {}s", interval.as_secs()),
+        Automation::Wait { interval } => format!("wait {}s", interval.as_duration().as_secs()),
         Automation::Agent => "agent".to_owned(),
         Automation::Human => "human".to_owned(),
     };

@@ -39,7 +39,7 @@ impl From<LoopError> for Outcome {
 mod tests {
     use super::*;
     use crate::decide::action::{
-        Action, ActionEffect, ActionKind, ReasoningLevel, TargetEffect, Urgency,
+        Action, ActionEffect, ActionKind, CodexReasoningLevel, TargetEffect, Urgency,
     };
     use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
     use crate::ids::BlockerKey;
@@ -47,7 +47,7 @@ mod tests {
     fn dummy_action() -> Action {
         Action {
             kind: ActionKind::RunReviews {
-                level: ReasoningLevel::Low,
+                level: CodexReasoningLevel::Low,
                 n: 3,
             },
             effect: ActionEffect::Full { log: "test".into() },

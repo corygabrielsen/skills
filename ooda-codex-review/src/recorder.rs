@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::decide::action::ReasoningLevel;
+use crate::decide::action::CodexReasoningLevel;
 use crate::ids::{RepoId, ReviewMode, ReviewTarget};
 
 #[derive(Debug)]
@@ -81,7 +81,7 @@ pub struct RecorderConfig {
     /// Reasoning level the loop starts at this invocation. Recorded
     /// in the manifest. On resume, the existing manifest's level
     /// must match — mismatches force a fresh run.
-    pub start_level: ReasoningLevel,
+    pub start_level: CodexReasoningLevel,
     /// Configured `n` for the spawn batch — recorded in the manifest
     /// so the next invocation knows what to expect when polling.
     pub batch_size: u32,
@@ -109,8 +109,8 @@ pub struct RunManifest {
     pub repo_id: String,
     pub mode: ReviewMode,
     pub target_key: String,
-    pub start_level: ReasoningLevel,
-    pub current_level: ReasoningLevel,
+    pub start_level: CodexReasoningLevel,
+    pub current_level: CodexReasoningLevel,
     pub batch_size: u32,
     /// Batch counter at `current_level`. Level transitions select
     /// the next unused batch number for the destination level, so
@@ -132,16 +132,16 @@ pub struct RunManifest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LevelOutcome {
     Clean {
-        level: ReasoningLevel,
+        level: CodexReasoningLevel,
     },
     Addressed {
-        level: ReasoningLevel,
+        level: CodexReasoningLevel,
         issue_count: u32,
     },
     /// Retrospective synthesis flagged architectural patterns;
     /// the loop will restart from the floor next.
     RetrospectiveChanges {
-        level: ReasoningLevel,
+        level: CodexReasoningLevel,
         reason: String,
     },
 }
@@ -285,7 +285,7 @@ impl Recorder {
     /// Climb one rung. No-op + returns `None` at ceiling. Selects
     /// the next unused batch number at the destination level and
     /// persists.
-    pub fn advance_level(&mut self) -> Result<Option<ReasoningLevel>, RecorderError> {
+    pub fn advance_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.higher() else {
             return Ok(None);
         };
@@ -298,7 +298,7 @@ impl Recorder {
     /// Drop one rung, clamped at `start_level` (the floor). No-op +
     /// returns `None` when already at floor. Selects the next unused
     /// batch number at the destination level and persists.
-    pub fn drop_level(&mut self) -> Result<Option<ReasoningLevel>, RecorderError> {
+    pub fn drop_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.lower() else {
             return Ok(None);
         };
@@ -315,7 +315,7 @@ impl Recorder {
     /// Reset `current_level` to the floor (`start_level`) and
     /// persist. Used after a Retrospective surfaces architectural
     /// changes that invalidate prior per-level fixed points.
-    pub fn restart_from_floor(&mut self) -> Result<ReasoningLevel, RecorderError> {
+    pub fn restart_from_floor(&mut self) -> Result<CodexReasoningLevel, RecorderError> {
         self.manifest.current_level = self.manifest.start_level;
         self.manifest.batch_number = self.next_batch_number_for(self.manifest.start_level)?;
         self.write_manifest()?;
@@ -361,13 +361,13 @@ impl Recorder {
         Ok(())
     }
 
-    fn level_dir(&self, level: ReasoningLevel) -> PathBuf {
+    fn level_dir(&self, level: CodexReasoningLevel) -> PathBuf {
         self.current_run_dir
             .join("levels")
             .join(format!("level-{}", level.as_str()))
     }
 
-    fn next_batch_number_for(&self, level: ReasoningLevel) -> Result<u32, RecorderError> {
+    fn next_batch_number_for(&self, level: CodexReasoningLevel) -> Result<u32, RecorderError> {
         let level_dir = self.level_dir(level);
         let read_dir = match fs::read_dir(&level_dir) {
             Ok(rd) => rd,
@@ -495,8 +495,8 @@ mod tests {
             repo_id: "repo-cafebabe".into(),
             mode: ReviewMode::Uncommitted,
             target_key: "uncommitted".into(),
-            start_level: ReasoningLevel::Low,
-            current_level: ReasoningLevel::Medium,
+            start_level: CodexReasoningLevel::Low,
+            current_level: CodexReasoningLevel::Medium,
             batch_size: 3,
             batch_number: 2,
             level_history: history,
@@ -546,14 +546,14 @@ mod tests {
     fn level_outcome_samples() -> Vec<LevelOutcome> {
         vec![
             LevelOutcome::Clean {
-                level: ReasoningLevel::Low,
+                level: CodexReasoningLevel::Low,
             },
             LevelOutcome::Addressed {
-                level: ReasoningLevel::Medium,
+                level: CodexReasoningLevel::Medium,
                 issue_count: 3,
             },
             LevelOutcome::RetrospectiveChanges {
-                level: ReasoningLevel::High,
+                level: CodexReasoningLevel::High,
                 reason: "extract helper".into(),
             },
         ]
@@ -596,7 +596,7 @@ mod tests {
             state_root,
             repo_id: RepoId::parse("repo-deadbeef0001").unwrap(),
             target: ReviewTarget::Uncommitted,
-            start_level: ReasoningLevel::Low,
+            start_level: CodexReasoningLevel::Low,
             batch_size: 3,
             fresh: false,
             now: Some(
@@ -633,8 +633,8 @@ mod tests {
         assert_eq!(parsed.repo_id, "repo-deadbeef0001");
         assert_eq!(parsed.mode, ReviewMode::Uncommitted);
         assert_eq!(parsed.target_key, "uncommitted");
-        assert_eq!(parsed.start_level, ReasoningLevel::Low);
-        assert_eq!(parsed.current_level, ReasoningLevel::Low);
+        assert_eq!(parsed.start_level, CodexReasoningLevel::Low);
+        assert_eq!(parsed.current_level, CodexReasoningLevel::Low);
         assert_eq!(parsed.batch_size, 3);
         assert_eq!(parsed.batch_number, 1);
         assert!(parsed.level_history.is_empty());
@@ -733,7 +733,7 @@ mod tests {
         drop(first);
 
         let mut cfg = dummy_cfg(root.clone());
-        cfg.start_level = ReasoningLevel::High;
+        cfg.start_level = CodexReasoningLevel::High;
         cfg.now = Some(
             DateTime::parse_from_rfc3339("2026-05-04T10:00:00.000000123Z")
                 .unwrap()
@@ -741,7 +741,7 @@ mod tests {
         );
         let (rec, mode) = Recorder::open(cfg).unwrap();
         assert_eq!(mode, OpenMode::Fresh(FreshReason::LevelMismatch));
-        assert_eq!(rec.manifest().start_level, ReasoningLevel::High);
+        assert_eq!(rec.manifest().start_level, CodexReasoningLevel::High);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -807,17 +807,17 @@ mod tests {
     fn advance_level_climbs_one_rung_and_persists() {
         let root = temp_state_root("advance");
         let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Low);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Low);
 
         let next = rec.advance_level().unwrap();
-        assert_eq!(next, Some(ReasoningLevel::Medium));
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Medium);
+        assert_eq!(next, Some(CodexReasoningLevel::Medium));
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Medium);
         assert_eq!(rec.manifest().batch_number, 1);
 
         // Disk reflects the new level.
         let bytes = fs::read(rec.current_run_dir().join("manifest.json")).unwrap();
         let parsed: RunManifest = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(parsed.current_level, ReasoningLevel::Medium);
+        assert_eq!(parsed.current_level, CodexReasoningLevel::Medium);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -826,11 +826,11 @@ mod tests {
     fn advance_level_at_ceiling_returns_none() {
         let root = temp_state_root("advance-ceiling");
         let mut cfg = dummy_cfg(root.clone());
-        cfg.start_level = ReasoningLevel::Xhigh;
+        cfg.start_level = CodexReasoningLevel::Xhigh;
         let (mut rec, _) = Recorder::open(cfg).unwrap();
 
         assert_eq!(rec.advance_level().unwrap(), None);
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Xhigh);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Xhigh);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -839,21 +839,21 @@ mod tests {
     fn drop_level_clamps_at_floor() {
         let root = temp_state_root("drop-clamp");
         let mut cfg = dummy_cfg(root.clone());
-        cfg.start_level = ReasoningLevel::Medium;
+        cfg.start_level = CodexReasoningLevel::Medium;
         let (mut rec, _) = Recorder::open(cfg).unwrap();
 
         // Climb so we have somewhere to drop to.
         rec.advance_level().unwrap();
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::High);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::High);
 
         // Drop back to floor.
         let dropped = rec.drop_level().unwrap();
-        assert_eq!(dropped, Some(ReasoningLevel::Medium));
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Medium);
+        assert_eq!(dropped, Some(CodexReasoningLevel::Medium));
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Medium);
 
         // Already at floor — drop is a no-op.
         assert_eq!(rec.drop_level().unwrap(), None);
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Medium);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Medium);
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -862,16 +862,16 @@ mod tests {
     fn restart_from_floor_resets_to_start_level() {
         let root = temp_state_root("restart");
         let mut cfg = dummy_cfg(root.clone());
-        cfg.start_level = ReasoningLevel::Low;
+        cfg.start_level = CodexReasoningLevel::Low;
         let (mut rec, _) = Recorder::open(cfg).unwrap();
 
         rec.advance_level().unwrap(); // medium
         rec.advance_level().unwrap(); // high
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::High);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::High);
 
         let restarted = rec.restart_from_floor().unwrap();
-        assert_eq!(restarted, ReasoningLevel::Low);
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Low);
+        assert_eq!(restarted, CodexReasoningLevel::Low);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Low);
         assert_eq!(rec.manifest().batch_number, 1);
 
         let _ = fs::remove_dir_all(&root);
@@ -883,11 +883,11 @@ mod tests {
         let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
 
         rec.record_outcome(LevelOutcome::Clean {
-            level: ReasoningLevel::Low,
+            level: CodexReasoningLevel::Low,
         })
         .unwrap();
         rec.record_outcome(LevelOutcome::Addressed {
-            level: ReasoningLevel::Medium,
+            level: CodexReasoningLevel::Medium,
             issue_count: 4,
         })
         .unwrap();
@@ -901,13 +901,13 @@ mod tests {
         assert!(matches!(
             parsed.level_history[0],
             LevelOutcome::Clean {
-                level: ReasoningLevel::Low
+                level: CodexReasoningLevel::Low
             }
         ));
         assert!(matches!(
             parsed.level_history[1],
             LevelOutcome::Addressed {
-                level: ReasoningLevel::Medium,
+                level: CodexReasoningLevel::Medium,
                 issue_count: 4
             }
         ));
@@ -941,7 +941,7 @@ mod tests {
         rec.advance_level().unwrap(); // high
         rec.drop_level().unwrap(); // medium again
 
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Medium);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Medium);
         assert_eq!(rec.manifest().batch_number, 2);
         let expected_suffix = format!("runs/{}/levels/level-medium/batch-2", rec.manifest().run_id);
         assert!(rec.batch_dir().ends_with(&expected_suffix));
@@ -959,7 +959,7 @@ mod tests {
         rec.advance_level().unwrap(); // high
         rec.restart_from_floor().unwrap();
 
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Low);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Low);
         assert_eq!(rec.manifest().batch_number, 2);
 
         let _ = fs::remove_dir_all(&root);
@@ -974,7 +974,7 @@ mod tests {
         let next = rec.start_next_batch_at_current_level().unwrap();
 
         assert_eq!(next, 2);
-        assert_eq!(rec.manifest().current_level, ReasoningLevel::Low);
+        assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Low);
         assert_eq!(rec.manifest().batch_number, 2);
 
         let _ = fs::remove_dir_all(&root);

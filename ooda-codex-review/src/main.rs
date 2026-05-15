@@ -19,7 +19,9 @@ mod runner;
 mod text;
 
 use act::ActContext;
-use decide::action::{Action, ActionEffect, ActionKind, ReasoningLevel, TargetEffect, Urgency};
+use decide::action::{
+    Action, ActionEffect, ActionKind, CodexReasoningLevel, TargetEffect, Urgency,
+};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
 use outcome::Outcome;
@@ -51,8 +53,8 @@ fn print_usage(out: &mut dyn std::io::Write) {
 
 struct Args {
     target: ReviewTarget,
-    level: ReasoningLevel,
-    ceiling: ReasoningLevel,
+    level: CodexReasoningLevel,
+    ceiling: CodexReasoningLevel,
     n: u32,
     max_iter: u32,
     state_root: PathBuf,
@@ -103,12 +105,12 @@ fn default_state_root() -> PathBuf {
     std::env::temp_dir().join("ooda-codex-review")
 }
 
-fn parse_level(s: &str) -> Result<ReasoningLevel, String> {
+fn parse_level(s: &str) -> Result<CodexReasoningLevel, String> {
     match s {
-        "low" => Ok(ReasoningLevel::Low),
-        "medium" => Ok(ReasoningLevel::Medium),
-        "high" => Ok(ReasoningLevel::High),
-        "xhigh" => Ok(ReasoningLevel::Xhigh),
+        "low" => Ok(CodexReasoningLevel::Low),
+        "medium" => Ok(CodexReasoningLevel::Medium),
+        "high" => Ok(CodexReasoningLevel::High),
+        "xhigh" => Ok(CodexReasoningLevel::Xhigh),
         _ => Err(format!(
             "--level: unknown value `{s}` (expected: low|medium|high|xhigh)"
         )),
@@ -147,8 +149,8 @@ fn parse_args() -> Result<Args, Outcome> {
     }
 
     let mut target: Option<ReviewTarget> = None;
-    let mut level = ReasoningLevel::Low;
-    let mut ceiling = ReasoningLevel::Xhigh;
+    let mut level = CodexReasoningLevel::Low;
+    let mut ceiling = CodexReasoningLevel::Xhigh;
     let mut n: u32 = 3;
     let mut max_iter: u32 = 50;
     let mut state_root: Option<PathBuf> = None;
@@ -490,7 +492,7 @@ fn run_session(args: Args) -> Outcome {
 ///   MarkAddressFailed                              -> HandoffHuman
 fn apply_side_effect(
     recorder: &mut Recorder,
-    ceiling: ReasoningLevel,
+    ceiling: CodexReasoningLevel,
     side_effect: SideEffect,
 ) -> Outcome {
     let from = recorder.manifest().current_level;
@@ -535,8 +537,8 @@ fn log_idle(msg: String) -> Outcome {
 
 fn apply_mark_retro_clean(
     recorder: &mut Recorder,
-    ceiling: ReasoningLevel,
-    current: ReasoningLevel,
+    ceiling: CodexReasoningLevel,
+    current: CodexReasoningLevel,
 ) -> Outcome {
     if let Err(e) = recorder.record_outcome(LevelOutcome::Clean { level: current }) {
         return Outcome::binary_error(format!("recorder record-outcome: {e}"));
@@ -565,7 +567,7 @@ fn apply_mark_retro_clean(
 
 fn apply_mark_retro_changes(
     recorder: &mut Recorder,
-    current: ReasoningLevel,
+    current: CodexReasoningLevel,
     reason: String,
 ) -> Outcome {
     if let Err(e) = recorder.record_outcome(LevelOutcome::RetrospectiveChanges {
@@ -585,7 +587,7 @@ fn apply_mark_retro_changes(
     }
 }
 
-fn apply_mark_address_passed(recorder: &mut Recorder, current: ReasoningLevel) -> Outcome {
+fn apply_mark_address_passed(recorder: &mut Recorder, current: CodexReasoningLevel) -> Outcome {
     let issue_count = count_current_batch_issues(recorder, current);
     if let Err(e) = recorder.record_outcome(LevelOutcome::Addressed {
         level: current,
@@ -617,7 +619,7 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: ReasoningLevel) -
 /// reviewers flagged issues. Best-effort — returns 0 on read
 /// errors so the side-effect path stays robust to filesystem
 /// transients (the count is observational, not load-bearing).
-fn count_current_batch_issues(recorder: &Recorder, level: ReasoningLevel) -> u32 {
+fn count_current_batch_issues(recorder: &Recorder, level: CodexReasoningLevel) -> u32 {
     let batch_size = recorder.manifest().batch_size;
     match observe::codex::batch::scan_batch(&recorder.batch_dir(), level, batch_size) {
         Ok(observe::codex::batch::BatchState::Complete { verdicts }) => verdicts
@@ -628,7 +630,7 @@ fn count_current_batch_issues(recorder: &Recorder, level: ReasoningLevel) -> u32
     }
 }
 
-fn mk_handoff_human_test_failed(level: ReasoningLevel, details: String) -> Outcome {
+fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: String) -> Outcome {
     let action = Action {
         kind: ActionKind::TestsFailedTriage,
         effect: ActionEffect::Human {
@@ -713,10 +715,10 @@ mod tests {
 
     #[test]
     fn level_parses_all_four() {
-        assert_eq!(parse_level("low").unwrap(), ReasoningLevel::Low);
-        assert_eq!(parse_level("medium").unwrap(), ReasoningLevel::Medium);
-        assert_eq!(parse_level("high").unwrap(), ReasoningLevel::High);
-        assert_eq!(parse_level("xhigh").unwrap(), ReasoningLevel::Xhigh);
+        assert_eq!(parse_level("low").unwrap(), CodexReasoningLevel::Low);
+        assert_eq!(parse_level("medium").unwrap(), CodexReasoningLevel::Medium);
+        assert_eq!(parse_level("high").unwrap(), CodexReasoningLevel::High);
+        assert_eq!(parse_level("xhigh").unwrap(), CodexReasoningLevel::Xhigh);
         assert!(parse_level("LOW").is_err());
         assert!(parse_level("max").is_err());
     }

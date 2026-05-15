@@ -524,7 +524,7 @@ impl fmt::Display for Timestamp {
     }
 }
 
-// -- ReasoningLevel --------------------------------------------------
+// -- CodexReasoningLevel --------------------------------------------------
 
 /// Reasoning effort level for the codex review axis. Totally ordered
 /// `Low < Medium < High < Xhigh`. The token strings (`low`, `medium`,
@@ -533,14 +533,14 @@ impl fmt::Display for Timestamp {
 /// review args.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ReasoningLevel {
+pub enum CodexReasoningLevel {
     Low,
     Medium,
     High,
     Xhigh,
 }
 
-impl ReasoningLevel {
+impl CodexReasoningLevel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -569,7 +569,7 @@ impl ReasoningLevel {
     }
 }
 
-impl fmt::Display for ReasoningLevel {
+impl fmt::Display for CodexReasoningLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }

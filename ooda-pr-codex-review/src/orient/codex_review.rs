@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::ids::ReasoningLevel;
+use crate::ids::CodexReasoningLevel;
 use crate::observe::codex::VerdictClass;
 use crate::observe::codex::{BatchState, CodexLevelObservation, CodexObservations, VerdictRecord};
 
@@ -25,16 +25,16 @@ use crate::observe::codex::{BatchState, CodexLevelObservation, CodexObservations
 pub enum CodexReviewStatus {
     /// `current_level` has no in-flight batch for the current head
     /// SHA — runner should spawn `RunCodexReviewBatch`.
-    Spawn { level: ReasoningLevel },
+    Spawn { level: CodexReasoningLevel },
     /// `current_level`'s batch is streaming.
     Await {
-        level: ReasoningLevel,
+        level: CodexReasoningLevel,
         total: u32,
         completed: u32,
     },
     /// `current_level` completed with issues — address-batch handoff.
     Address {
-        level: ReasoningLevel,
+        level: CodexReasoningLevel,
         verdicts: Vec<VerdictRecord>,
     },
     /// Every level in [floor, ceiling] is `Complete { all-clean }`
@@ -47,15 +47,15 @@ pub enum CodexReviewStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexReviewReport {
     pub status: CodexReviewStatus,
-    pub floor: ReasoningLevel,
-    pub ceiling: ReasoningLevel,
+    pub floor: CodexReasoningLevel,
+    pub ceiling: CodexReasoningLevel,
     pub head_sha: String,
     pub expected: u32,
     /// The batch directory for the `current_level` slot, even when
     /// `status = LadderSatisfied` (in which case it points at the
     /// ceiling level — the most-recent clean batch).
     pub current_batch_dir: PathBuf,
-    pub current_level: ReasoningLevel,
+    pub current_level: CodexReasoningLevel,
 }
 
 /// Project a `CodexObservations` into the orient axis.
@@ -76,11 +76,10 @@ pub fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport {
     match current_level_observation {
         None => {
             // Every level is `Complete { all-clean }`. Anchor the
-            // diagnostic fields at the ceiling.
-            let last = obs
-                .levels
-                .last()
-                .expect("ladder_slice always non-empty when floor ≤ ceiling");
+            // diagnostic fields at the ceiling. `obs.levels` is
+            // `NonEmpty<CodexLevelObservation>`, so `last()` is
+            // total — no runtime check on cardinality.
+            let last = obs.levels.last();
             CodexReviewReport {
                 status: CodexReviewStatus::LadderSatisfied,
                 floor: obs.floor,
@@ -130,7 +129,7 @@ mod tests {
     use super::*;
     use crate::observe::codex::batch::VerdictRecord;
 
-    fn lvl_obs(level: ReasoningLevel, bs: BatchState) -> CodexLevelObservation {
+    fn lvl_obs(level: CodexReasoningLevel, bs: BatchState) -> CodexLevelObservation {
         CodexLevelObservation {
             level,
             batch_state: bs,
@@ -156,20 +155,24 @@ mod tests {
 
     fn obs(levels: Vec<CodexLevelObservation>) -> CodexObservations {
         CodexObservations {
-            levels,
+            levels: ooda_core::NonEmpty::try_from_vec(levels)
+                .expect("test setup must construct a non-empty levels list"),
             expected: 3,
             head_sha: "headsha".into(),
-            floor: ReasoningLevel::Low,
-            ceiling: ReasoningLevel::Xhigh,
+            floor: CodexReasoningLevel::Low,
+            ceiling: CodexReasoningLevel::Xhigh,
         }
     }
 
     #[test]
     fn empty_ladder_spawns_at_floor() {
-        let o = obs(vec![lvl_obs(ReasoningLevel::Low, BatchState::NotStarted)]);
+        let o = obs(vec![lvl_obs(
+            CodexReasoningLevel::Low,
+            BatchState::NotStarted,
+        )]);
         let r = orient_codex_review(&o);
         match r.status {
-            CodexReviewStatus::Spawn { level } => assert_eq!(level, ReasoningLevel::Low),
+            CodexReviewStatus::Spawn { level } => assert_eq!(level, CodexReasoningLevel::Low),
             other => panic!("expected Spawn, got {other:?}"),
         }
     }
@@ -177,7 +180,7 @@ mod tests {
     #[test]
     fn running_at_floor_emits_await() {
         let o = obs(vec![lvl_obs(
-            ReasoningLevel::Low,
+            CodexReasoningLevel::Low,
             BatchState::Running {
                 total: 3,
                 completed: 1,
@@ -190,7 +193,7 @@ mod tests {
                 total,
                 completed,
             } => {
-                assert_eq!(level, ReasoningLevel::Low);
+                assert_eq!(level, CodexReasoningLevel::Low);
                 assert_eq!(total, 3);
                 assert_eq!(completed, 1);
             }
@@ -201,7 +204,7 @@ mod tests {
     #[test]
     fn complete_with_issues_emits_address() {
         let o = obs(vec![lvl_obs(
-            ReasoningLevel::Low,
+            CodexReasoningLevel::Low,
             BatchState::Complete {
                 verdicts: vec![clean(1), has_issues(2), clean(3)],
             },
@@ -209,7 +212,7 @@ mod tests {
         let r = orient_codex_review(&o);
         match r.status {
             CodexReviewStatus::Address { level, verdicts } => {
-                assert_eq!(level, ReasoningLevel::Low);
+                assert_eq!(level, CodexReasoningLevel::Low);
                 assert_eq!(verdicts.len(), 3);
             }
             other => panic!("expected Address, got {other:?}"),
@@ -220,16 +223,16 @@ mod tests {
     fn all_clean_at_floor_advances_to_next_level() {
         let o = obs(vec![
             lvl_obs(
-                ReasoningLevel::Low,
+                CodexReasoningLevel::Low,
                 BatchState::Complete {
                     verdicts: vec![clean(1), clean(2), clean(3)],
                 },
             ),
-            lvl_obs(ReasoningLevel::Medium, BatchState::NotStarted),
+            lvl_obs(CodexReasoningLevel::Medium, BatchState::NotStarted),
         ]);
         let r = orient_codex_review(&o);
         match r.status {
-            CodexReviewStatus::Spawn { level } => assert_eq!(level, ReasoningLevel::Medium),
+            CodexReviewStatus::Spawn { level } => assert_eq!(level, CodexReasoningLevel::Medium),
             other => panic!("expected Spawn(Medium), got {other:?}"),
         }
     }
@@ -238,13 +241,13 @@ mod tests {
     fn all_levels_clean_emits_ladder_satisfied() {
         let o = obs(vec![
             lvl_obs(
-                ReasoningLevel::Low,
+                CodexReasoningLevel::Low,
                 BatchState::Complete {
                     verdicts: vec![clean(1), clean(2), clean(3)],
                 },
             ),
             lvl_obs(
-                ReasoningLevel::Medium,
+                CodexReasoningLevel::Medium,
                 BatchState::Complete {
                     verdicts: vec![clean(1), clean(2), clean(3)],
                 },
@@ -252,6 +255,6 @@ mod tests {
         ]);
         let r = orient_codex_review(&o);
         assert!(matches!(r.status, CodexReviewStatus::LadderSatisfied));
-        assert_eq!(r.current_level, ReasoningLevel::Medium);
+        assert_eq!(r.current_level, CodexReasoningLevel::Medium);
     }
 }

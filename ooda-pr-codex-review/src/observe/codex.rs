@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::ids::ReasoningLevel;
+use crate::ids::CodexReasoningLevel;
 
 pub use batch::{BatchState, VerdictRecord};
 pub use verdict::VerdictClass;
@@ -26,7 +26,7 @@ pub use verdict::VerdictClass;
 /// The ladder-climb logic lives in orient.
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexLevelObservation {
-    pub level: ReasoningLevel,
+    pub level: CodexReasoningLevel,
     pub batch_state: BatchState,
     pub batch_dir: PathBuf,
 }
@@ -34,20 +34,26 @@ pub struct CodexLevelObservation {
 /// Observation of the entire ladder slice `[floor, ceiling]`, one
 /// entry per level. Orient walks this to find the current level and
 /// emits the corresponding action.
+///
+/// `levels` is typed `NonEmpty<...>` because the ladder slice is
+/// always non-empty when `floor ≤ ceiling` (the validated CLI
+/// invariant). Carrying the non-emptiness as a structural type
+/// eliminates the orient layer's `.last().expect(...)` runtime
+/// panic.
 #[derive(Debug, Clone, Serialize)]
 pub struct CodexObservations {
-    pub levels: Vec<CodexLevelObservation>,
+    pub levels: ooda_core::NonEmpty<CodexLevelObservation>,
     pub expected: u32,
     pub head_sha: String,
-    pub floor: ReasoningLevel,
-    pub ceiling: ReasoningLevel,
+    pub floor: CodexReasoningLevel,
+    pub ceiling: CodexReasoningLevel,
 }
 
 /// Per-level batch directory: `<pr_codex_root>/levels/<level>/<head_sha_short>`.
 /// `head_sha_short` is the first 12 chars of the head SHA so the
 /// path stays bounded and prior heads' batches survive on disk as
 /// cache (orient ignores them once head changes).
-pub fn batch_dir(pr_codex_root: &Path, level: ReasoningLevel, head_sha: &str) -> PathBuf {
+pub fn batch_dir(pr_codex_root: &Path, level: CodexReasoningLevel, head_sha: &str) -> PathBuf {
     let short = head_sha.get(..12).unwrap_or(head_sha);
     pr_codex_root
         .join("levels")
@@ -61,21 +67,24 @@ pub fn batch_dir(pr_codex_root: &Path, level: ReasoningLevel, head_sha: &str) ->
 /// next.
 pub fn fetch_all(
     pr_codex_root: &Path,
-    floor: ReasoningLevel,
-    ceiling: ReasoningLevel,
+    floor: CodexReasoningLevel,
+    ceiling: CodexReasoningLevel,
     expected: u32,
     head_sha: &str,
 ) -> io::Result<CodexObservations> {
-    let mut levels = Vec::new();
-    for level in ladder_slice(floor, ceiling) {
+    // `ladder_slice` returns `NonEmpty<CodexReasoningLevel>`; `try_map`
+    // preserves that non-emptiness through the fallible per-level
+    // scan, so `levels` is `NonEmpty<CodexLevelObservation>` with
+    // no runtime check.
+    let levels = ladder_slice(floor, ceiling).try_map(|level| {
         let dir = batch_dir(pr_codex_root, level, head_sha);
         let batch_state = batch::scan_batch(&dir, level, expected, head_sha)?;
-        levels.push(CodexLevelObservation {
+        io::Result::Ok(CodexLevelObservation {
             level,
             batch_state,
             batch_dir: dir,
-        });
-    }
+        })
+    })?;
     Ok(CodexObservations {
         levels,
         expected,
@@ -85,17 +94,21 @@ pub fn fetch_all(
     })
 }
 
-/// The inclusive level slice `[floor, ceiling]`.
-pub fn ladder_slice(floor: ReasoningLevel, ceiling: ReasoningLevel) -> Vec<ReasoningLevel> {
-    let mut out = Vec::new();
+/// The inclusive level slice `[floor, ceiling]`. Always non-empty
+/// — the loop pushes `floor` unconditionally before any break, so
+/// even `floor == ceiling` yields a singleton.
+pub fn ladder_slice(
+    floor: CodexReasoningLevel,
+    ceiling: CodexReasoningLevel,
+) -> ooda_core::NonEmpty<CodexReasoningLevel> {
+    let mut out = ooda_core::NonEmpty::singleton(floor);
     let mut cur = floor;
-    loop {
-        out.push(cur);
-        if cur == ceiling {
-            break;
-        }
+    while cur != ceiling {
         match cur.higher() {
-            Some(next) => cur = next,
+            Some(next) => {
+                out.push(next);
+                cur = next;
+            }
             None => break,
         }
     }
@@ -109,19 +122,19 @@ mod tests {
     #[test]
     fn ladder_slice_inclusive() {
         assert_eq!(
-            ladder_slice(ReasoningLevel::Low, ReasoningLevel::High),
-            vec![
-                ReasoningLevel::Low,
-                ReasoningLevel::Medium,
-                ReasoningLevel::High,
+            ladder_slice(CodexReasoningLevel::Low, CodexReasoningLevel::High).as_slice(),
+            &[
+                CodexReasoningLevel::Low,
+                CodexReasoningLevel::Medium,
+                CodexReasoningLevel::High,
             ]
         );
         assert_eq!(
-            ladder_slice(ReasoningLevel::Medium, ReasoningLevel::Medium),
-            vec![ReasoningLevel::Medium]
+            ladder_slice(CodexReasoningLevel::Medium, CodexReasoningLevel::Medium).as_slice(),
+            &[CodexReasoningLevel::Medium]
         );
         assert_eq!(
-            ladder_slice(ReasoningLevel::Low, ReasoningLevel::Xhigh).len(),
+            ladder_slice(CodexReasoningLevel::Low, CodexReasoningLevel::Xhigh).len(),
             4
         );
     }
@@ -130,7 +143,7 @@ mod tests {
     fn batch_dir_uses_short_head_sha() {
         let p = batch_dir(
             Path::new("/tmp/codex"),
-            ReasoningLevel::Low,
+            CodexReasoningLevel::Low,
             "abcdef0123456789",
         );
         assert_eq!(p, PathBuf::from("/tmp/codex/levels/low/abcdef012345"));
@@ -146,8 +159,8 @@ mod tests {
 
         let obs = fetch_all(
             &root,
-            ReasoningLevel::Low,
-            ReasoningLevel::High,
+            CodexReasoningLevel::Low,
+            CodexReasoningLevel::High,
             3,
             "headsha12345abc",
         )

@@ -15,7 +15,7 @@ use crate::act::{ActContext, ActError, act};
 use crate::decide::action::Action;
 use crate::decide::decision::{Decision, HaltReason};
 use crate::decide::{candidates, decide_from_candidates};
-use crate::ids::ReasoningLevel;
+use crate::ids::CodexReasoningLevel;
 use crate::observe::codex::{CodexObservations, fetch_all as fetch_codex};
 use crate::observe::github::GitHubObservations;
 use crate::observe::github::fetch_all;
@@ -53,8 +53,8 @@ pub struct LoopConfig {
 
 #[derive(Debug, Clone)]
 pub struct CodexReviewConfig {
-    pub floor: ReasoningLevel,
-    pub ceiling: ReasoningLevel,
+    pub floor: CodexReasoningLevel,
+    pub ceiling: CodexReasoningLevel,
 }
 
 impl Default for LoopConfig {

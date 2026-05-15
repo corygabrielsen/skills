@@ -10,6 +10,8 @@ use crate::ids::{BranchName, GitCommitSha, GitHubLogin, PullRequestNumber, RepoS
 
 use super::gh::{GhError, gh_json};
 
+pub use ooda_core::PrState;
+
 /// Fields passed via `--json` to `gh pr view`. Must stay aligned with
 /// the `PullRequestView` struct below.
 const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
@@ -49,57 +51,6 @@ pub struct PullRequestView {
     pub review_requests: Vec<ReviewRequest>,
     #[serde(default)]
     pub commits: Vec<Commit>,
-}
-
-/// PR lifecycle state. Modeled as a sum of `Open` and `Terminal(_)`
-/// so the "open vs done" partition is structural — every site that
-/// branches on lifecycle reaches the terminal case through one arm
-/// (`PrState::Terminal(t)`), and the inner `TerminalState` carries
-/// the success/abort distinction.
-///
-/// Wire format is unchanged: deserializes from `"OPEN"` / `"MERGED"`
-/// / `"CLOSED"` (the GraphQL strings) and serializes back to those
-/// flat strings, so on-disk recorder state and JSONL records stay
-/// byte-identical.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrState {
-    Open,
-    Terminal(TerminalState),
-}
-
-/// PR terminal lifecycle states. `Merged` is the success terminal;
-/// `Closed` is the abort terminal. Lifted out of `PrState` so the
-/// "this PR is done" check is `matches!(state, PrState::Terminal(_))`
-/// without enumerating arms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalState {
-    Merged,
-    Closed,
-}
-
-impl<'de> Deserialize<'de> for PrState {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        match s.as_str() {
-            "OPEN" => Ok(PrState::Open),
-            "MERGED" => Ok(PrState::Terminal(TerminalState::Merged)),
-            "CLOSED" => Ok(PrState::Terminal(TerminalState::Closed)),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown PR state: {other}"
-            ))),
-        }
-    }
-}
-
-impl Serialize for PrState {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
-        let s = match self {
-            PrState::Open => "OPEN",
-            PrState::Terminal(TerminalState::Merged) => "MERGED",
-            PrState::Terminal(TerminalState::Closed) => "CLOSED",
-        };
-        ser.serialize_str(s)
-    }
 }
 
 // GraphQL's `Mergeable` enum has a variant literally named
@@ -198,7 +149,10 @@ mod tests {
         let view: PullRequestView = serde_json::from_str(MERGED_FIXTURE).unwrap();
         assert_eq!(view.number.get(), 1563);
         assert_eq!(view.title, "Fix usize hashing in runner selection");
-        assert_eq!(view.state, PrState::Terminal(TerminalState::Merged));
+        assert_eq!(
+            view.state,
+            PrState::Terminal(ooda_core::TerminalState::Merged)
+        );
         assert!(!view.is_draft);
         assert_eq!(view.mergeable, Mergeable::Unknown);
         assert_eq!(view.merge_state_status, MergeStateStatus::Unknown);

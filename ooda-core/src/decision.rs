@@ -11,7 +11,35 @@
 
 use crate::action::{Action, ActionEffect, HandoffAction};
 use crate::exit_code::ExitCode;
+use crate::pr_state::{PrState, TerminalState};
 use serde::Serialize;
+
+/// Reduce a ranked candidate set and a PR lifecycle state to a
+/// [`Decision<K>`]. The terminal-lifecycle arms map to
+/// [`DecisionHalt::Terminal`] regardless of the candidate set —
+/// merged/closed PRs have no advancement available. An empty
+/// candidate set on an open PR is success. Otherwise the top
+/// candidate is projected via [`classify`].
+pub fn decide_from_candidates<K>(candidates: Vec<Action<K>>, lifecycle: PrState) -> Decision<K> {
+    // PrState::Terminal(_) is the single arm that catches both
+    // merged-and-done and closed-without-merge — the inner
+    // TerminalState picks the boundary halt's Succeeded/Aborted.
+    match lifecycle {
+        PrState::Terminal(TerminalState::Merged) => {
+            return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
+        }
+        PrState::Terminal(TerminalState::Closed) => {
+            return Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
+        }
+        PrState::Open => {}
+    }
+
+    let Some(top) = candidates.into_iter().next() else {
+        return Decision::Halt(DecisionHalt::Success);
+    };
+
+    classify(top)
+}
 
 /// Project an [`Action<K>`] onto a [`Decision<K>`] using its
 /// `effect` field. The four `ActionEffect` variants partition the
@@ -314,6 +342,38 @@ mod tests {
             prompt: HandoffPrompt::new("p"),
         }));
         assert!(matches!(d, Decision::Halt(DecisionHalt::AgentNeeded(_))));
+    }
+
+    #[test]
+    fn decide_from_candidates_merged_yields_succeeded() {
+        let d: Decision<K> =
+            decide_from_candidates(vec![dummy()], PrState::Terminal(TerminalState::Merged));
+        assert!(matches!(
+            d,
+            Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded))
+        ));
+    }
+
+    #[test]
+    fn decide_from_candidates_closed_yields_aborted() {
+        let d: Decision<K> =
+            decide_from_candidates(vec![dummy()], PrState::Terminal(TerminalState::Closed));
+        assert!(matches!(
+            d,
+            Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted))
+        ));
+    }
+
+    #[test]
+    fn decide_from_candidates_open_empty_yields_success() {
+        let d: Decision<K> = decide_from_candidates(vec![], PrState::Open);
+        assert!(matches!(d, Decision::Halt(DecisionHalt::Success)));
+    }
+
+    #[test]
+    fn decide_from_candidates_open_nonempty_delegates_to_classify() {
+        let d: Decision<K> = decide_from_candidates(vec![dummy()], PrState::Open);
+        assert!(matches!(d, Decision::Execute(_)));
     }
 
     #[test]

@@ -14,10 +14,11 @@ mod runner;
 mod text;
 
 use decide::action::ActionEffect;
+use decide::candidates;
 use decide::decision::{Decision, DecisionHalt};
-use decide::{candidates, decide_from_candidates};
 use ids::{PullRequestNumber, RepoSlug};
 use observe::github::fetch_all;
+use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};

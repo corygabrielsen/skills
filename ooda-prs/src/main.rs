@@ -736,7 +736,7 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
         Outcome::BinaryError(s) | Outcome::UsageError(s) => {
             obj.insert("msg".into(), json!(s));
         }
-        Outcome::DoneMerged | Outcome::DoneClosed | Outcome::Paused => {
+        Outcome::DoneSucceeded | Outcome::DoneAborted | Outcome::Paused => {
             // No additional fields.
         }
     }
@@ -745,7 +745,7 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
 
 fn outcome_variant_name(o: &Outcome) -> &'static str {
     match o {
-        Outcome::DoneMerged => "DoneMerged",
+        Outcome::DoneSucceeded => "DoneMerged",
         Outcome::StuckRepeated(_) => "StuckRepeated",
         Outcome::StuckCapReached(_) => "StuckCapReached",
         Outcome::HandoffHuman(_) => "HandoffHuman",
@@ -753,7 +753,7 @@ fn outcome_variant_name(o: &Outcome) -> &'static str {
         Outcome::HandoffAgent(_) => "HandoffAgent",
         Outcome::BinaryError(_) => "BinaryError",
         Outcome::Paused => "Paused",
-        Outcome::DoneClosed => "DoneClosed",
+        Outcome::DoneAborted => "DoneClosed",
         Outcome::UsageError(_) => "UsageError",
     }
 }
@@ -763,7 +763,7 @@ fn outcome_variant_name(o: &Outcome) -> &'static str {
 /// block for `Handoff*` variants. No trailing content.
 fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
     match oc {
-        Outcome::DoneMerged => {
+        Outcome::DoneSucceeded => {
             let _ = writeln!(out, "DoneMerged");
         }
         Outcome::StuckRepeated(action) => {
@@ -804,7 +804,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         Outcome::Paused => {
             let _ = writeln!(out, "Paused");
         }
-        Outcome::DoneClosed => {
+        Outcome::DoneAborted => {
             let _ = writeln!(out, "DoneClosed");
         }
         Outcome::UsageError(msg) => {
@@ -925,7 +925,7 @@ mod tests {
     #[test]
     fn render_done_merged() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::DoneMerged);
+        render_outcome(&mut buf, &Outcome::DoneSucceeded);
         assert_eq!(String::from_utf8(buf).unwrap(), "DoneMerged\n");
     }
 
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn render_done_closed() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::DoneClosed);
+        render_outcome(&mut buf, &Outcome::DoneAborted);
         assert_eq!(String::from_utf8(buf).unwrap(), "DoneClosed\n");
     }
 
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn jsonl_done_merged_minimal_shape() {
-        let r = per_pr_jsonl_record(&po("a/b", 42, Outcome::DoneMerged));
+        let r = per_pr_jsonl_record(&po("a/b", 42, Outcome::DoneSucceeded));
         let v = parse_record(&r);
         assert_eq!(v["slug"], "a/b");
         assert_eq!(v["pr"], 42);
@@ -1029,8 +1029,8 @@ mod tests {
         // Every variant's record carries pr_url so harnesses can
         // deep-link without re-deriving from slug + pr.
         for outcome in [
-            Outcome::DoneMerged,
-            Outcome::DoneClosed,
+            Outcome::DoneSucceeded,
+            Outcome::DoneAborted,
             Outcome::Paused,
             Outcome::StuckRepeated(action("x")),
             Outcome::StuckCapReached(action("x")),
@@ -1081,8 +1081,8 @@ mod tests {
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("1").unwrap();
         assert!(matches!(
-            decorate_handoff_human(Outcome::DoneMerged, &slug, pr, None),
-            Outcome::DoneMerged
+            decorate_handoff_human(Outcome::DoneSucceeded, &slug, pr, None),
+            Outcome::DoneSucceeded
         ));
         assert!(matches!(
             decorate_handoff_human(Outcome::Paused, &slug, pr, None),
@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn jsonl_done_closed_minimal_shape() {
-        let r = per_pr_jsonl_record(&po("a/b", 1, Outcome::DoneClosed));
+        let r = per_pr_jsonl_record(&po("a/b", 1, Outcome::DoneAborted));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "DoneClosed");
         assert_eq!(v["exit"], 8);
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn render_multi_jsonl_emits_one_line_per_pr_in_order() {
         let multi = MultiOutcome::Bundle(vec![
-            po("a/b", 1, Outcome::DoneMerged),
+            po("a/b", 1, Outcome::DoneSucceeded),
             po("a/b", 2, Outcome::HandoffAgent(action("unresolved"))),
             po("c/d", 9, Outcome::Paused),
         ]);

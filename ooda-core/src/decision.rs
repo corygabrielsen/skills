@@ -67,8 +67,8 @@ impl<K> DecisionHalt<K> {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Success => "Success",
-            Self::Terminal(Terminal::Merged) => "Terminal(Merged)",
-            Self::Terminal(Terminal::Closed) => "Terminal(Closed)",
+            Self::Terminal(Terminal::Succeeded) => "Terminal(Succeeded)",
+            Self::Terminal(Terminal::Aborted) => "Terminal(Aborted)",
             Self::AgentNeeded(_) => "AgentNeeded",
             Self::HumanNeeded(_) => "HumanNeeded",
         }
@@ -105,10 +105,14 @@ impl<K> HaltReason<K> {
     }
 }
 
+/// Terminal lifecycle states. Domain-specific instances:
+/// `Succeeded` covers PR-merged and codex-ladder-fixed-point;
+/// `Aborted` covers PR-closed-without-merge and ladder-abandoned.
+/// Stable, neutral verbs so the same enum serves every binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Terminal {
-    Merged,
-    Closed,
+    Succeeded,
+    Aborted,
 }
 
 #[cfg(test)]
@@ -144,9 +148,9 @@ mod tests {
 
     #[test]
     fn decision_halt_terminal_is_zero() {
-        let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Merged));
+        let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
         assert_eq!(d.exit_code(), 0);
-        let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Closed));
+        let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
         assert_eq!(d.exit_code(), 0);
     }
 
@@ -179,12 +183,12 @@ mod tests {
     fn decision_halt_name_is_payload_free() {
         assert_eq!(DecisionHalt::<K>::Success.name(), "Success");
         assert_eq!(
-            DecisionHalt::<K>::Terminal(Terminal::Merged).name(),
-            "Terminal(Merged)"
+            DecisionHalt::<K>::Terminal(Terminal::Succeeded).name(),
+            "Terminal(Succeeded)"
         );
         assert_eq!(
-            DecisionHalt::<K>::Terminal(Terminal::Closed).name(),
-            "Terminal(Closed)"
+            DecisionHalt::<K>::Terminal(Terminal::Aborted).name(),
+            "Terminal(Aborted)"
         );
         assert_eq!(DecisionHalt::AgentNeeded(dummy()).name(), "AgentNeeded");
         assert_eq!(DecisionHalt::HumanNeeded(dummy()).name(), "HumanNeeded");

@@ -45,8 +45,8 @@ pub fn decide(oriented: &OrientedState, lifecycle: PrState) -> Decision {
 
 pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState) -> Decision {
     match lifecycle {
-        PrState::Merged => return Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)),
-        PrState::Closed => return Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)),
+        PrState::Merged => return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)),
+        PrState::Closed => return Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)),
         PrState::Open => {}
     }
 

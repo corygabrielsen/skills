@@ -19,7 +19,7 @@ mod runner;
 mod text;
 
 use act::ActContext;
-use decide::action::{Action, ActionKind, Automation, ReasoningLevel, TargetEffect, Urgency};
+use decide::action::{Action, ActionEffect, ActionKind, ReasoningLevel, TargetEffect, Urgency};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
 use outcome::Outcome;
@@ -631,15 +631,16 @@ fn count_current_batch_issues(recorder: &Recorder, level: ReasoningLevel) -> u32
 fn mk_handoff_human_test_failed(level: ReasoningLevel, details: String) -> Outcome {
     let action = Action {
         kind: ActionKind::TestsFailedTriage,
-        automation: Automation::Human,
+        effect: ActionEffect::Human {
+            prompt: ooda_core::HandoffPrompt::new(format!(
+                "Tests failed after addressing review batch at level {}. \
+                 Surface to a human for triage. Details: {}",
+                level.as_str(),
+                details
+            )),
+        },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
-        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-            "Tests failed after addressing review batch at level {}. \
-             Surface to a human for triage. Details: {}",
-            level.as_str(),
-            details
-        ))),
         blocker: BlockerKey::tag("address-failed"),
     };
     Outcome::HandoffHuman(Box::new(action))

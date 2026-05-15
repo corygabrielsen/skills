@@ -4,7 +4,7 @@
 //! (axis lines + decision-kind tag, no prose) so that count-only
 //! changes within the same structural state don't suppress posts.
 
-use crate::decide::action::{Action, Automation, TargetEffect};
+use crate::decide::action::{Action, ActionEffect, TargetEffect};
 use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::orient::OrientedState;
 use crate::orient::copilot::CopilotActivity;
@@ -213,11 +213,13 @@ fn decision_block(d: &Decision) -> String {
 }
 
 fn action_block(prefix: &str, action: &Action) -> String {
-    let auto = match action.automation {
-        Automation::Full => "auto".to_owned(),
-        Automation::Wait { interval } => format!("wait {}s", interval.as_duration().as_secs()),
-        Automation::Agent => "agent".to_owned(),
-        Automation::Human => "human".to_owned(),
+    let auto = match &action.effect {
+        ActionEffect::Full { .. } => "auto".to_owned(),
+        ActionEffect::Wait { interval, .. } => {
+            format!("wait {}s", interval.as_duration().as_secs())
+        }
+        ActionEffect::Agent { .. } => "agent".to_owned(),
+        ActionEffect::Human { .. } => "human".to_owned(),
     };
     let effect = match action.target_effect {
         TargetEffect::Blocks => "blocks",
@@ -253,7 +255,7 @@ fn decision_kind_tag(d: &Decision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decide::action::{Action, ActionKind, Automation, TargetEffect};
+    use crate::decide::action::{Action, ActionEffect, ActionKind, TargetEffect};
     use crate::decide::decision::{Decision, DecisionHalt};
     use crate::ids::Timestamp;
     use crate::observe::github::pr_view::Mergeable;
@@ -301,8 +303,8 @@ mod tests {
             },
             copilot: None,
             cursor: None,
-            threads: vec![],
             codex_review: None,
+            threads: vec![],
         }
     }
 
@@ -360,12 +362,12 @@ mod tests {
         // payload would force us to fabricate a thread here.
         let action = Action {
             kind: ActionKind::Rebase,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("line one")
+                    .with_paragraph("line two\nline three"),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(
-                ooda_core::HandoffPrompt::new("line one").with_paragraph("line two\nline three"),
-            ),
             blocker: crate::ids::BlockerKey::tag("rebase-needed"),
         };
         let r = render(&o, &Decision::Execute(action));

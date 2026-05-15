@@ -21,7 +21,7 @@ use crate::observe::codex::VerdictClass;
 use crate::observe::codex::batch::{BatchState, VerdictRecord};
 use crate::orient::OrientedState;
 
-use action::{Action, ActionKind, Automation, ReasoningLevel, TargetEffect, Urgency};
+use action::{Action, ActionEffect, ActionKind, ReasoningLevel, TargetEffect, Urgency};
 use decision::{Decision, DecisionHalt, Terminal};
 
 /// Default polling cadence for `AwaitReviews`. The runner sleeps
@@ -76,10 +76,14 @@ pub fn decide(oriented: &OrientedState) -> Decision {
 }
 
 fn classify(action: Action) -> Decision {
-    match action.automation {
-        Automation::Full | Automation::Wait { .. } => Decision::Execute(action),
-        Automation::Agent => Decision::Halt(DecisionHalt::AgentNeeded(action)),
-        Automation::Human => Decision::Halt(DecisionHalt::HumanNeeded(action)),
+    // Match on a borrow of `effect` so we can move `action` into the
+    // resulting variant. The four `ActionEffect` variants partition
+    // the action space into "loop drives it" (Full/Wait → Execute)
+    // and "external resolver needed" (Agent/Human → Halt).
+    match &action.effect {
+        ActionEffect::Full { .. } | ActionEffect::Wait { .. } => Decision::Execute(action),
+        ActionEffect::Agent { .. } => Decision::Halt(DecisionHalt::AgentNeeded(action)),
+        ActionEffect::Human { .. } => Decision::Halt(DecisionHalt::HumanNeeded(action)),
     }
 }
 
@@ -92,13 +96,14 @@ fn all_clean(verdicts: &[VerdictRecord]) -> bool {
 fn mk_run_reviews(level: ReasoningLevel, n: u32) -> Action {
     Action {
         kind: ActionKind::RunReviews { level, n },
-        automation: Automation::Full,
+        effect: ActionEffect::Full {
+            log: format!(
+                "Spawn {n} `codex review` subprocesses at reasoning level {}.",
+                level.as_str()
+            ),
+        },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Critical,
-        payload: ooda_core::ActionPayload::Logged(format!(
-            "Spawn {n} `codex review` subprocesses at reasoning level {}.",
-            level.as_str()
-        )),
         blocker: BlockerKey::tag(format!("runreviews:{}", level.as_str())),
     }
 }
@@ -106,15 +111,15 @@ fn mk_run_reviews(level: ReasoningLevel, n: u32) -> Action {
 fn mk_await_reviews(level: ReasoningLevel, pending: u32) -> Action {
     Action {
         kind: ActionKind::AwaitReviews { level, pending },
-        automation: Automation::Wait {
+        effect: ActionEffect::Wait {
             interval: await_interval(),
+            log: format!(
+                "Polling: {pending} review(s) still streaming at level {}.",
+                level.as_str()
+            ),
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::BlockingWait,
-        payload: ooda_core::ActionPayload::Logged(format!(
-            "Polling: {pending} review(s) still streaming at level {}.",
-            level.as_str()
-        )),
         blocker: BlockerKey::tag(format!("await:{}", level.as_str())),
     }
 }
@@ -122,15 +127,16 @@ fn mk_await_reviews(level: ReasoningLevel, pending: u32) -> Action {
 fn mk_address_batch(level: ReasoningLevel, issue_count: u32) -> Action {
     Action {
         kind: ActionKind::AddressBatch { issue_count, level },
-        automation: Automation::Agent,
+        effect: ActionEffect::Agent {
+            prompt: ooda_core::HandoffPrompt::new(format!(
+                "Verify and address {issue_count} review(s) with issues at level {}. \
+                 For each issue: real bug → fix; false positive → clarify code; \
+                 design tradeoff → document rationale. Then run tests.",
+                level.as_str()
+            )),
+        },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-            "Verify and address {issue_count} review(s) with issues at level {}. \
-             For each issue: real bug → fix; false positive → clarify code; \
-             design tradeoff → document rationale. Then run tests.",
-            level.as_str()
-        ))),
         blocker: BlockerKey::tag(format!("address:{}", level.as_str())),
     }
 }
@@ -138,16 +144,17 @@ fn mk_address_batch(level: ReasoningLevel, issue_count: u32) -> Action {
 fn mk_retrospective(level: ReasoningLevel) -> Action {
     Action {
         kind: ActionKind::Retrospective { level },
-        automation: Automation::Agent,
+        effect: ActionEffect::Agent {
+            prompt: ooda_core::HandoffPrompt::new(format!(
+                "All reviews clean at level {}. Synthesize the issue history \
+                 so far. Look for architectural patterns that would prevent \
+                 3+ issues each. If patterns exist: implement and the loop \
+                 restarts from the floor. If not: the loop advances.",
+                level.as_str()
+            )),
+        },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::BlockingFix,
-        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-            "All reviews clean at level {}. Synthesize the issue history \
-             so far. Look for architectural patterns that would prevent \
-             3+ issues each. If patterns exist: implement and the loop \
-             restarts from the floor. If not: the loop advances.",
-            level.as_str()
-        ))),
         blocker: BlockerKey::tag(format!("retro:{}", level.as_str())),
     }
 }
@@ -201,7 +208,7 @@ mod tests {
                         n: 3
                     }
                 ));
-                assert_eq!(action.automation, Automation::Full);
+                assert!(matches!(action.effect, ActionEffect::Full { .. }));
                 assert_eq!(action.urgency, Urgency::Critical);
             }
             other => panic!("expected Execute(RunReviews), got {other:?}"),
@@ -225,7 +232,7 @@ mod tests {
                         pending: 2
                     }
                 ));
-                assert!(matches!(action.automation, Automation::Wait { .. }));
+                assert!(matches!(action.effect, ActionEffect::Wait { .. }));
             }
             other => panic!("expected Execute(AwaitReviews), got {other:?}"),
         }

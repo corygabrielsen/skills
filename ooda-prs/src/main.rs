@@ -18,7 +18,7 @@ mod suite;
 mod suite_recorder;
 mod text;
 
-use decide::action::Automation;
+use decide::action::ActionEffect;
 use decide::decision::{Decision, DecisionHalt};
 use decide::{candidates, decide_from_candidates};
 use ids::{PullRequestNumber, RepoSlug};
@@ -582,7 +582,7 @@ fn iteration_line(i: u32, d: &Decision) -> String {
             format!(
                 "[iter {i}] {} ({}) blocker: {}",
                 action.kind.name(),
-                format_automation(&action.automation),
+                format_effect(&action.effect),
                 action.blocker,
             )
         }
@@ -590,8 +590,9 @@ fn iteration_line(i: u32, d: &Decision) -> String {
             // Use halt.name() (finite token set) instead of {:?}
             // so the per-iteration halt line stays single-line
             // and bounded — Debug would expand AgentNeeded(Action {
-            // payload: ooda_core::ActionPayload::Logged("..." })) into the action payload, which
-            // breaks the one-line-per-iteration invariant.
+            // effect: ActionEffect::Agent { prompt: ... } }) into the
+            // action payload, which breaks the
+            // one-line-per-iteration invariant.
             match halt_action(halt) {
                 Some(action) => format!(
                     "[iter {i}] halt: {} blocker: {}",
@@ -645,21 +646,26 @@ fn decorate_handoff_human(
 }
 
 /// Append the boundary context (PR URL, blocker, branch, CI,
-/// reviews) onto the handoff prompt. The action's payload must be
-/// a `Prompt(HandoffPrompt)` — decide-layer invariant for
-/// `Automation::Human` actions.
+/// reviews) onto the handoff prompt. The caller has already
+/// destructured the `Outcome::HandoffHuman` variant, so the action's
+/// effect is structurally `ActionEffect::Human { .. }` — the
+/// `unreachable!()` below is closed by the type system through
+/// `classify`'s `Human { .. } → HumanNeeded` mapping.
 fn push_handoff_context(
     action: &mut decide::action::Action,
     slug: &RepoSlug,
     pr: PullRequestNumber,
     snapshot: Option<&HandoffSnapshot>,
 ) {
-    let prompt = action
-        .payload
-        .as_prompt_mut()
-        .expect("HandoffHuman action must carry a Prompt payload");
+    let blocker = action.blocker.to_string();
+    let prompt = match &mut action.effect {
+        ActionEffect::Human { prompt } => prompt,
+        _ => unreachable!(
+            "Outcome::HandoffHuman variant carries ActionEffect::Human by classify()'s mapping"
+        ),
+    };
     prompt.push_context_line("PR", pr_url(slug, pr));
-    prompt.push_context_line("Blocker", action.blocker.to_string());
+    prompt.push_context_line("Blocker", blocker);
     if let Some(snap) = snapshot {
         prompt.push_context_line(
             "Branch",
@@ -735,7 +741,7 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
         Outcome::WouldAdvance(a) => {
             obj.insert("action".into(), json!(a.kind.name()));
             obj.insert("blocker".into(), json!(a.blocker.to_string()));
-            obj.insert("automation".into(), json!(format_automation(&a.automation)));
+            obj.insert("effect".into(), json!(format_effect(&a.effect)));
         }
         Outcome::BinaryError(s) | Outcome::UsageError(s) => {
             obj.insert("msg".into(), json!(s));
@@ -795,7 +801,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
                 out,
                 "WouldAdvance: {}:{}",
                 action.kind.name(),
-                format_automation(&action.automation)
+                format_effect(&action.effect)
             );
         }
         Outcome::HandoffAgent(action) => {
@@ -828,15 +834,17 @@ fn write_prompt_block(out: &mut dyn std::io::Write, description: &str) {
     let _ = writeln!(out, "  prompt: {description}");
 }
 
-/// Format `Automation` for the WouldAdvance stderr render.
-/// `Wait{interval}` becomes `Wait(<duration>)` with the duration in
-/// the smallest sensible compound unit (s, m, m+s).
-fn format_automation(a: &Automation) -> String {
-    match a {
-        Automation::Full => "Full".to_string(),
-        Automation::Agent => "Agent".to_string(),
-        Automation::Human => "Human".to_string(),
-        Automation::Wait { interval } => {
+/// Format `ActionEffect` for the WouldAdvance stderr render.
+/// `Wait{interval, ..}` becomes `Wait(<duration>)` with the duration
+/// in the smallest sensible compound unit (s, m, m+s). The log/prompt
+/// payload is intentionally omitted — that's what `write_prompt_block`
+/// renders separately for handoff variants.
+fn format_effect(e: &ActionEffect) -> String {
+    match e {
+        ActionEffect::Full { .. } => "Full".to_string(),
+        ActionEffect::Agent { .. } => "Agent".to_string(),
+        ActionEffect::Human { .. } => "Human".to_string(),
+        ActionEffect::Wait { interval, .. } => {
             format!("Wait({})", format_duration(interval.as_duration()))
         }
     }
@@ -864,10 +872,9 @@ mod tests {
     fn action(blocker: &str) -> decide::action::Action {
         decide::action::Action {
             kind: decide::action::ActionKind::Rebase,
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: "x".into() },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Logged("x".into()),
             blocker: ids::BlockerKey::tag(blocker),
         }
     }
@@ -888,13 +895,27 @@ mod tests {
     }
 
     #[test]
-    fn format_automation_variants() {
-        assert_eq!(format_automation(&Automation::Full), "Full");
-        assert_eq!(format_automation(&Automation::Agent), "Agent");
-        assert_eq!(format_automation(&Automation::Human), "Human");
+    fn format_effect_variants() {
         assert_eq!(
-            format_automation(&Automation::Wait {
-                interval: ooda_core::PollingInterval::from_secs(30)
+            format_effect(&ActionEffect::Full { log: String::new() }),
+            "Full"
+        );
+        assert_eq!(
+            format_effect(&ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("p")
+            }),
+            "Agent"
+        );
+        assert_eq!(
+            format_effect(&ActionEffect::Human {
+                prompt: ooda_core::HandoffPrompt::new("p")
+            }),
+            "Human"
+        );
+        assert_eq!(
+            format_effect(&ActionEffect::Wait {
+                interval: ooda_core::PollingInterval::from_secs(30),
+                log: String::new(),
             }),
             "Wait(30s)"
         );
@@ -963,12 +984,11 @@ mod tests {
     fn render_handoff_agent_includes_prompt() {
         let action = decide::action::Action {
             kind: decide::action::ActionKind::Rebase,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("Rebase onto base"),
+            },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                "Rebase onto base",
-            )),
             blocker: ids::BlockerKey::tag("rebase-needed"),
         };
         let mut buf = Vec::new();
@@ -982,12 +1002,12 @@ mod tests {
     fn render_would_advance_includes_automation() {
         let action = decide::action::Action {
             kind: decide::action::ActionKind::Rebase,
-            automation: Automation::Wait {
+            effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
+                log: "x".into(),
             },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingWait,
-            payload: ooda_core::ActionPayload::Logged("x".into()),
             blocker: ids::BlockerKey::tag("waiting"),
         };
         let mut buf = Vec::new();
@@ -1050,16 +1070,15 @@ mod tests {
 
     #[test]
     fn decorate_handoff_human_appends_pr_link_and_blocker() {
-        use crate::decide::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+        use crate::decide::action::{Action, ActionKind, TargetEffect, Urgency};
         use crate::ids::BlockerKey;
         let a = Action {
             kind: ActionKind::RequestApproval,
-            automation: Automation::Human,
+            effect: ActionEffect::Human {
+                prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                "Request or self-approve",
-            )),
             blocker: BlockerKey::tag("not_approved"),
         };
         let slug = RepoSlug::parse("acme/widget").unwrap();
@@ -1140,9 +1159,9 @@ mod tests {
     #[test]
     fn jsonl_handoff_agent_includes_prompt() {
         let mut a = action("unresolved_threads");
-        a.payload = ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-            "Address 2 unresolved review threads.",
-        ));
+        a.effect = ActionEffect::Agent {
+            prompt: ooda_core::HandoffPrompt::new("Address 2 unresolved review threads."),
+        };
         let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffAgent(Box::new(a))));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "HandoffAgent");
@@ -1155,8 +1174,9 @@ mod tests {
     #[test]
     fn jsonl_handoff_human_includes_prompt() {
         let mut a = action("pending_human_review: alice");
-        a.payload =
-            ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new("Approve the PR."));
+        a.effect = ActionEffect::Human {
+            prompt: ooda_core::HandoffPrompt::new("Approve the PR."),
+        };
         let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffHuman(Box::new(a))));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "HandoffHuman");
@@ -1165,16 +1185,17 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_would_advance_includes_automation_string() {
+    fn jsonl_would_advance_includes_effect_string() {
         let mut a = action("ci_pending: build");
-        a.automation = Automation::Wait {
+        a.effect = ActionEffect::Wait {
             interval: ooda_core::PollingInterval::from_secs(60),
+            log: "x".into(),
         };
         let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::WouldAdvance(Box::new(a))));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "WouldAdvance");
         assert_eq!(v["exit"], 2);
-        assert_eq!(v["automation"], "Wait(1m)");
+        assert_eq!(v["effect"], "Wait(1m)");
     }
 
     #[test]

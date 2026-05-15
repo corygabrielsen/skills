@@ -731,10 +731,10 @@ impl Inner {
     fn write_next_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
         let body = match decision_action(decision) {
             Some(action) => format!(
-                "# Next\n\n{}\n\n- action: `{}`\n- automation: `{:?}`\n- blocker: `{}`\n",
+                "# Next\n\n{}\n\n- action: `{}`\n- effect: `{:?}`\n- blocker: `{}`\n",
                 action.rendered_payload(),
                 action.kind.name(),
-                action.automation,
+                action.effect,
                 action.blocker,
             ),
             None => "# Next\n\nNo action selected.\n".to_string(),
@@ -1023,7 +1023,7 @@ fn action_summary(action: &Action) -> String {
     format!(
         "{} ({:?}) blocker: {}",
         action.kind.name(),
-        action.automation,
+        action.effect,
         action.blocker
     )
 }
@@ -1031,7 +1031,7 @@ fn action_summary(action: &Action) -> String {
 fn action_projection(action: &Action) -> Value {
     json!({
         "kind": action.kind.name(),
-        "automation": format!("{:?}", action.automation),
+        "effect": &action.effect,
         "target_effect": format!("{:?}", action.target_effect),
         "urgency": format!("{:?}", action.urgency),
         "blocker": action.blocker.to_string(),

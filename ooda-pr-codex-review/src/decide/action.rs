@@ -1,6 +1,6 @@
 //! Action shapes — the concrete operations decide can prescribe.
 //!
-//! [`Action`], [`Automation`], [`TargetEffect`], [`Urgency`] are
+//! [`Action`], [`ActionEffect`], [`TargetEffect`], [`Urgency`] are
 //! re-exported from [`ooda_core`] — the cross-binary spine. This
 //! module owns the per-binary [`ActionKind`] enum (the PR domain's
 //! action variants) and its [`ActionKindName`] impl. Payloads use
@@ -9,7 +9,7 @@
 
 use crate::ids::{CheckName, GitHubLogin, Reviewer};
 use crate::orient::thread::ReviewThread;
-pub use ooda_core::{ActionKindName, Automation, NonEmpty, TargetEffect, Urgency};
+pub use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
 use serde::Serialize;
 
 /// PR-domain `Action`. Concrete instantiation of the generic

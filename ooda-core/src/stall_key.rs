@@ -44,7 +44,7 @@ impl<K: Clone> Action<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Automation, TargetEffect, Urgency};
+    use crate::action::{ActionEffect, TargetEffect, Urgency};
     use serde::Serialize;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -56,10 +56,9 @@ mod tests {
     fn action_with(kind: K, blocker: &str, desc: &str) -> Action<K> {
         Action {
             kind,
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: desc.into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: crate::ActionPayload::Logged(desc.into()),
             blocker: BlockerKey::tag(blocker),
         }
     }

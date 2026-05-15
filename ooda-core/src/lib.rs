@@ -15,8 +15,11 @@
 //!   `Stalled` / `CapReached`.
 //! * `Action<K>` — the operation `decide` prescribes. Generic over
 //!   the per-binary action-kind enum (`K`).
-//! * `Automation` / `Urgency` / `TargetEffect` / `BlockerKey` —
-//!   domain-agnostic fields of `Action`.
+//! * `ActionEffect` / `Urgency` / `TargetEffect` / `BlockerKey` —
+//!   domain-agnostic fields of `Action`. `ActionEffect` fuses the
+//!   automation-kind discriminator with its correlated payload (a
+//!   log line for `Full` / `Wait`; a structured `HandoffPrompt`
+//!   for `Agent` / `Human`).
 //!
 //! Per-binary domain modules supply `K` (the action-kind enum,
 //! implementing `ActionKindName`) and the observe / orient / decide
@@ -38,7 +41,7 @@ pub mod polling_interval;
 pub mod single_line_string;
 pub mod stall_key;
 
-pub use action::{Action, ActionKindName, ActionPayload, Automation, TargetEffect, Urgency};
+pub use action::{Action, ActionEffect, ActionKindName, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};
 pub use decision::{Decision, DecisionHalt, HaltReason, Terminal};
 pub use exit_code::ExitCode;

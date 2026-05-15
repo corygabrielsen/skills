@@ -136,7 +136,7 @@ fn bundle_exit_code(prs: &[ProcessOutcome]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decide::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+    use crate::decide::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
     use crate::ids::BlockerKey;
 
     fn slug(s: &str) -> RepoSlug {
@@ -150,10 +150,9 @@ mod tests {
     fn dummy_action() -> Action {
         Action {
             kind: ActionKind::Rebase,
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Logged("x".into()),
             blocker: BlockerKey::tag("rebase-needed"),
         }
     }

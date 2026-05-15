@@ -1,6 +1,6 @@
 //! Structured handoff prompt body.
 //!
-//! When an action carries `Automation::Agent` or `Automation::Human`,
+//! When an action carries `ActionEffect::Agent` or `ActionEffect::Human`,
 //! the binary surfaces a *prompt* to the caller — the most
 //! caller-visible artifact the family produces. A prompt is what
 //! a human reads to triage a PR, what an agent receives as its

@@ -19,7 +19,7 @@ use crate::ids::{BlockerKey, ReasoningLevel};
 use crate::observe::codex::VerdictClass;
 use crate::orient::codex_review::{CodexReviewReport, CodexReviewStatus};
 
-use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 const AWAIT_INTERVAL_SECS: u64 = 30;
 
@@ -49,13 +49,14 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
 fn mk_run(level: ReasoningLevel, n: u32) -> Action {
     Action {
         kind: ActionKind::RunCodexReviewBatch { level, n },
-        automation: Automation::Full,
+        effect: ActionEffect::Full {
+            log: format!(
+                "Spawn {n} codex review subprocesses at reasoning level {}.",
+                level.as_str()
+            ),
+        },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Critical,
-        payload: ooda_core::ActionPayload::Logged(format!(
-            "Spawn {n} codex review subprocesses at reasoning level {}.",
-            level.as_str()
-        )),
         blocker: BlockerKey::tag(format!("codex_review_runbatch:{}", level.as_str())),
     }
 }
@@ -63,15 +64,15 @@ fn mk_run(level: ReasoningLevel, n: u32) -> Action {
 fn mk_await(level: ReasoningLevel, pending: u32) -> Action {
     Action {
         kind: ActionKind::AwaitCodexReviewBatch { level, pending },
-        automation: Automation::Wait {
+        effect: ActionEffect::Wait {
             interval: ooda_core::PollingInterval::from_secs(AWAIT_INTERVAL_SECS),
+            log: format!(
+                "Polling: {pending} codex review(s) still streaming at level {}.",
+                level.as_str()
+            ),
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::BlockingWait,
-        payload: ooda_core::ActionPayload::Logged(format!(
-            "Polling: {pending} codex review(s) still streaming at level {}.",
-            level.as_str()
-        )),
         blocker: BlockerKey::tag(format!("codex_review_await:{}", level.as_str())),
     }
 }
@@ -106,10 +107,9 @@ fn mk_address(
     }
     Action {
         kind: ActionKind::AddressCodexReviewBatch { level, count },
-        automation: Automation::Agent,
+        effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        payload: ooda_core::ActionPayload::Prompt(prompt),
         blocker: BlockerKey::tag(format!("codex_review_address:{}", level.as_str())),
     }
 }
@@ -146,7 +146,7 @@ mod tests {
                 n: 3
             }
         ));
-        assert_eq!(cs[0].automation, Automation::Full);
+        assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
         assert_eq!(cs[0].urgency, Urgency::Critical);
     }
 
@@ -166,7 +166,7 @@ mod tests {
                 pending: 2
             }
         ));
-        assert!(matches!(cs[0].automation, Automation::Wait { .. }));
+        assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
         assert_eq!(cs[0].urgency, Urgency::BlockingWait);
     }
 
@@ -201,7 +201,7 @@ mod tests {
             }
             other => panic!("expected AddressCodexReviewBatch, got {other:?}"),
         }
-        assert_eq!(cs[0].automation, Automation::Agent);
+        assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
         assert_eq!(cs[0].urgency, Urgency::BlockingFix);
         // Description bundles verdict bodies.
         assert!(cs[0].rendered_payload().contains("slot 2"));

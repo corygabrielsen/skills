@@ -1,6 +1,6 @@
 //! Positive-duration newtype for polling waits.
 //!
-//! The runner's `Automation::Wait { interval }` puts the loop to
+//! The runner's `ActionEffect::Wait { interval, .. }` puts the loop to
 //! sleep for `interval` between observe passes. The interval is
 //! intended to be a real wait (seconds to minutes for CI / bot
 //! polling). [`PollingInterval`] makes that intent structural:

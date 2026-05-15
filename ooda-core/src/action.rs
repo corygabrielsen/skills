@@ -3,10 +3,13 @@
 //! Each `Action<K>` carries:
 //!   * `kind`: a domain-specific enum naming the action and its
 //!     payload — supplied by the binary as the type parameter `K`.
-//!   * `automation`: who executes (us, an agent, a human, just wait).
+//!   * `effect`: who executes (us / agent / human / wait) AND the
+//!     correlated human-readable payload. The two are fused into a
+//!     single tagged enum so the "Agent/Human carry a prompt,
+//!     Full/Wait carry a log line" class invariant is structural
+//!     rather than enforced at construction.
 //!   * `target_effect`: how this action changes blocker/tier state.
 //!   * `urgency`: declared sort priority for candidate ordering.
-//!   * `description`: human-readable prompt material for handoff.
 //!   * `blocker`: stable `(kind, blocker)` stall key.
 //!
 //! `K` must implement `ActionKindName` so the loop can render variant
@@ -17,93 +20,106 @@ use crate::blocker::BlockerKey;
 use crate::handoff_prompt::HandoffPrompt;
 use crate::polling_interval::PollingInterval;
 use serde::Serialize;
-use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Action<K> {
     pub kind: K,
-    pub automation: Automation,
+    /// Fused automation kind + caller-facing payload. The four
+    /// variants encode the only valid (automation, payload) pairings;
+    /// any other combination is uninhabitable.
+    pub effect: ActionEffect,
     pub target_effect: TargetEffect,
     /// Declared sort priority — replaces an emergent tuple-comparator
     /// rule. Each action names its urgency at construction; the sort
     /// is `urgency as u8` ascending.
     pub urgency: Urgency,
-    /// Caller-facing payload. [`ActionPayload::Logged`] is a plain
-    /// trace message for `Full` / `Wait` actions (appears in iter
-    /// logs and trace files; never surfaced to a caller-side agent
-    /// or human). [`ActionPayload::Prompt`] is a structured
-    /// [`HandoffPrompt`] for `Agent` / `Human` actions (surfaced
-    /// to the caller via the stderr prompt block and recorded for
-    /// audit).
-    pub payload: ActionPayload,
     /// Stable iteration key — `run_loop` detects stalls by comparing
     /// `(kind, blocker)` against the prior iteration. The
-    /// [`BlockerKey`] newtype prevents accidental confusion with
-    /// `payload` (also human-readable) and documents that the
+    /// [`BlockerKey`] newtype prevents accidental confusion with the
+    /// effect's payload (also human-readable) and documents that the
     /// value MUST NOT embed varying counts or progress markers.
     pub blocker: BlockerKey,
 }
 
-/// Dual-purpose human-readable payload on an [`Action`].
+/// What dispatches the action AND the human-readable payload that
+/// goes with it. The four variants are the diagonal of the
+/// Cartesian product `Automation × Payload` — the only reachable
+/// pairings. Encoding them as a single sum type makes the class
+/// invariant ("Agent/Human carry a `HandoffPrompt`; Full/Wait
+/// carry a log line") structural rather than runtime-checked.
 ///
-/// The distinction between the two variants is the rendering
-/// audience:
-///
-/// * `Logged` is *trace material* — printed to iter-log lines and
-///   the `trace.md` summary inside the recorder tree. The recipient
-///   is a human reading the audit trail later, not the caller's
-///   agent / human currently in the loop. Free-form `String`
-///   (may be multi-line).
-///
-/// * `Prompt` is *handoff material* — the structured body the
-///   caller surfaces when the binary halts on an Agent or Human
-///   action. The [`HandoffPrompt`] type gives this material
-///   compositional structure (headline + sections) so renderers
-///   and recorders see the shape, not just bytes.
+/// `Wait` carries the poll cadence as a [`PollingInterval`]
+/// (strictly-positive newtype), so both "Wait without a sleep
+/// duration" *and* "Wait with a zero duration" are unrepresentable
+/// — the latter would busy-loop the runner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum ActionPayload {
-    Logged(String),
-    Prompt(HandoffPrompt),
+pub enum ActionEffect {
+    /// Loop dispatches the action directly. The log line appears in
+    /// iter logs and trace files; never surfaced to a caller-side
+    /// agent or human.
+    Full { log: String },
+    /// Loop sleeps for `interval` then re-iterates. Same audience
+    /// for `log` as [`Self::Full`].
+    Wait {
+        interval: PollingInterval,
+        log: String,
+    },
+    /// Loop halts and surfaces the prompt to an agent.
+    Agent { prompt: HandoffPrompt },
+    /// Loop halts and surfaces the prompt to a human.
+    Human { prompt: HandoffPrompt },
 }
 
-impl ActionPayload {
-    /// Borrow the inner `HandoffPrompt` if this is a `Prompt`
-    /// payload. Returns `None` for `Logged`.
-    pub fn as_prompt(&self) -> Option<&HandoffPrompt> {
+impl ActionEffect {
+    /// Borrow the inner `HandoffPrompt` if this is a handoff
+    /// variant. Returns `None` for `Full` / `Wait`.
+    pub fn prompt(&self) -> Option<&HandoffPrompt> {
         match self {
-            Self::Prompt(p) => Some(p),
-            Self::Logged(_) => None,
+            Self::Agent { prompt } | Self::Human { prompt } => Some(prompt),
+            Self::Full { .. } | Self::Wait { .. } => None,
         }
     }
 
     /// Mutable borrow of the inner `HandoffPrompt`. Used by the
     /// boundary `decorate_handoff_*` decorators that append
     /// context lines to a handoff's prompt.
-    pub fn as_prompt_mut(&mut self) -> Option<&mut HandoffPrompt> {
+    pub fn prompt_mut(&mut self) -> Option<&mut HandoffPrompt> {
         match self {
-            Self::Prompt(p) => Some(p),
-            Self::Logged(_) => None,
+            Self::Agent { prompt } | Self::Human { prompt } => Some(prompt),
+            Self::Full { .. } | Self::Wait { .. } => None,
         }
     }
-}
 
-impl fmt::Display for ActionPayload {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// `true` iff this is the `Wait` variant. Used by the runner's
+    /// stall detector to skip the equality check on `Wait`
+    /// iterations (polling for the same blocker isn't a stall).
+    pub fn is_wait(&self) -> bool {
+        matches!(self, Self::Wait { .. })
+    }
+
+    /// `true` iff this effect requires halting the loop and
+    /// handing off to an external actor (agent or human).
+    pub fn is_handoff(&self) -> bool {
+        matches!(self, Self::Agent { .. } | Self::Human { .. })
+    }
+
+    /// Render the payload as a single `String` regardless of variant.
+    /// Call sites that just need "the human-readable payload as text"
+    /// (comment renderer, JSONL emission, stderr prompt block) use
+    /// this; sites that match on structure (decorate_handoff_*) use
+    /// [`Self::prompt_mut`].
+    pub fn rendered_message(&self) -> String {
         match self {
-            Self::Logged(s) => f.write_str(s),
-            Self::Prompt(p) => fmt::Display::fmt(p, f),
+            Self::Full { log } | Self::Wait { log, .. } => log.clone(),
+            Self::Agent { prompt } | Self::Human { prompt } => prompt.to_string(),
         }
     }
 }
 
 impl<K> Action<K> {
-    /// Render the payload as a single `String` regardless of
-    /// variant. Call sites that just need "the human-readable
-    /// payload as text" (comment renderer, JSONL emission,
-    /// stderr prompt block) use this; sites that match on
-    /// structure (decorate_handoff_*) use `payload` directly.
+    /// Convenience pass-through — same as `self.effect.rendered_message()`.
     pub fn rendered_payload(&self) -> String {
-        self.payload.to_string()
+        self.effect.rendered_message()
     }
 }
 
@@ -144,24 +160,6 @@ pub enum Urgency {
     Hygiene,
 }
 
-/// What dispatches the action. `Wait` carries the poll cadence as
-/// a [`PollingInterval`] (strictly-positive newtype), so both
-/// "Wait without a sleep duration" *and* "Wait with a zero
-/// duration" are unrepresentable — the latter would busy-loop the
-/// runner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum Automation {
-    /// We have the exact command and run it directly.
-    Full,
-    /// Hand off to an agent with `description` as prompt.
-    Agent,
-    /// Wait for an external signal — poll after `interval` and
-    /// re-iterate.
-    Wait { interval: PollingInterval },
-    /// Halt and surface to a human — only they can resolve.
-    Human,
-}
-
 /// What dispatching this action would do to the blocker state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TargetEffect {
@@ -195,10 +193,9 @@ mod tests {
     fn dummy(kind: TestKind) -> Action<TestKind> {
         Action {
             kind,
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: crate::ActionPayload::Logged("test".into()),
             blocker: BlockerKey::tag("test:blocker"),
         }
     }
@@ -238,5 +235,49 @@ mod tests {
     fn action_kind_name_is_payload_free() {
         assert_eq!(TestKind::Foo.name(), "Foo");
         assert_eq!(TestKind::Bar.name(), "Bar");
+    }
+
+    #[test]
+    fn effect_classifies_handoff_variants() {
+        let agent = ActionEffect::Agent {
+            prompt: HandoffPrompt::new("p"),
+        };
+        let human = ActionEffect::Human {
+            prompt: HandoffPrompt::new("p"),
+        };
+        let full = ActionEffect::Full { log: "x".into() };
+        let wait = ActionEffect::Wait {
+            interval: PollingInterval::from_secs(30),
+            log: "x".into(),
+        };
+        assert!(agent.is_handoff());
+        assert!(human.is_handoff());
+        assert!(!full.is_handoff());
+        assert!(!wait.is_handoff());
+        assert!(wait.is_wait());
+        assert!(!full.is_wait());
+        assert!(!agent.is_wait());
+    }
+
+    #[test]
+    fn effect_prompt_mut_returns_some_only_for_handoff() {
+        let mut a = ActionEffect::Agent {
+            prompt: HandoffPrompt::new("p"),
+        };
+        let mut f = ActionEffect::Full { log: "x".into() };
+        assert!(a.prompt_mut().is_some());
+        assert!(f.prompt_mut().is_none());
+    }
+
+    #[test]
+    fn effect_rendered_message_dispatches_to_payload() {
+        let f = ActionEffect::Full {
+            log: "fulled".into(),
+        };
+        let a = ActionEffect::Agent {
+            prompt: HandoffPrompt::new("agented"),
+        };
+        assert_eq!(f.rendered_message(), "fulled");
+        assert_eq!(a.rendered_message(), "agented");
     }
 }

@@ -79,7 +79,7 @@ pub struct GitHubObservations {
 ///      concurrently. Fail-fast on the first error.
 pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<GitHubObservations, GhError> {
     let pr_view = fetch_pr_view(slug, pr)?;
-    if matches!(pr_view.state, PrState::Merged | PrState::Closed) {
+    if matches!(pr_view.state, PrState::Terminal(_)) {
         return Ok(terminal_observations(pr_view));
     }
     // Branch rules and protection live at the protected root, not

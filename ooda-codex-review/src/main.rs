@@ -19,9 +19,7 @@ mod runner;
 mod text;
 
 use act::ActContext;
-use decide::action::{
-    Action, ActionEffect, ActionKind, CodexReasoningLevel, TargetEffect, Urgency,
-};
+use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
 use outcome::Outcome;
@@ -628,21 +626,19 @@ fn count_current_batch_issues(recorder: &Recorder, level: CodexReasoningLevel) -
 }
 
 fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: String) -> Outcome {
-    let action = Action {
+    let handoff = ooda_core::HandoffAction {
         kind: ActionKind::TestsFailedTriage,
-        effect: ActionEffect::Human {
-            prompt: ooda_core::HandoffPrompt::new(format!(
-                "Tests failed after addressing review batch at level {}. \
-                 Surface to a human for triage. Details: {}",
-                level.as_str(),
-                details
-            )),
-        },
+        prompt: ooda_core::HandoffPrompt::new(format!(
+            "Tests failed after addressing review batch at level {}. \
+             Surface to a human for triage. Details: {}",
+            level.as_str(),
+            details
+        )),
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
         blocker: BlockerKey::tag("address-failed"),
     };
-    Outcome::HandoffHuman(Box::new(action))
+    Outcome::HandoffHuman(Box::new(handoff))
 }
 
 fn main() -> ExitCode {
@@ -679,16 +675,16 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
                 action.blocker
             );
         }
-        Outcome::HandoffHuman(action) => {
-            let _ = writeln!(out, "HandoffHuman: {}", action.kind.name());
-            let _ = writeln!(out, "  prompt: {}", action.rendered_payload());
+        Outcome::HandoffHuman(handoff) => {
+            let _ = writeln!(out, "HandoffHuman: {}", handoff.kind.name());
+            let _ = writeln!(out, "  prompt: {}", handoff.prompt);
         }
         Outcome::WouldAdvance(action) => {
             let _ = writeln!(out, "WouldAdvance: {}", action.kind.name());
         }
-        Outcome::HandoffAgent(action) => {
-            let _ = writeln!(out, "HandoffAgent: {}", action.kind.name());
-            let _ = writeln!(out, "  prompt: {}", action.rendered_payload());
+        Outcome::HandoffAgent(handoff) => {
+            let _ = writeln!(out, "HandoffAgent: {}", handoff.kind.name());
+            let _ = writeln!(out, "  prompt: {}", handoff.prompt);
         }
         Outcome::BinaryError(msg) => {
             let _ = writeln!(out, "BinaryError: {msg}");

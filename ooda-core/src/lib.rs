@@ -41,7 +41,7 @@ pub mod polling_interval;
 pub mod single_line_string;
 pub mod stall_key;
 
-pub use action::{Action, ActionEffect, ActionKindName, TargetEffect, Urgency};
+pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};
 pub use decision::{Decision, DecisionHalt, HaltReason, Terminal};
 pub use exit_code::ExitCode;

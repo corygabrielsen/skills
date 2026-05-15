@@ -598,11 +598,11 @@ fn iteration_line(i: u32, d: &Decision) -> String {
             // effect: ActionEffect::Agent { prompt: ... } }) into the
             // action payload, which breaks the
             // one-line-per-iteration invariant.
-            match halt_action(halt) {
-                Some(action) => format!(
+            match halt_blocker(halt) {
+                Some(blocker) => format!(
                     "[iter {i}] halt: {} blocker: {}",
                     DecisionHalt::name(halt),
-                    action.blocker,
+                    blocker,
                 ),
                 None => format!("[iter {i}] halt: {}", DecisionHalt::name(halt)),
             }
@@ -610,9 +610,11 @@ fn iteration_line(i: u32, d: &Decision) -> String {
     }
 }
 
-fn halt_action(halt: &DecisionHalt) -> Option<&decide::action::Action> {
+fn halt_blocker(halt: &DecisionHalt) -> Option<&ooda_core::BlockerKey> {
     match halt {
-        DecisionHalt::AgentNeeded(action) | DecisionHalt::HumanNeeded(action) => Some(action),
+        DecisionHalt::AgentNeeded(handoff) | DecisionHalt::HumanNeeded(handoff) => {
+            Some(&handoff.blocker)
+        }
         DecisionHalt::Success | DecisionHalt::Terminal(_) => None,
     }
 }
@@ -651,24 +653,18 @@ fn decorate_handoff_human(
 }
 
 /// Append the boundary context (PR URL, blocker, branch, CI,
-/// reviews) onto the handoff prompt. The caller has already
-/// destructured the `Outcome::HandoffHuman` variant, so the action's
-/// effect is structurally `ActionEffect::Human { .. }` — the
-/// `unreachable!()` below is closed by the type system through
-/// `classify`'s `Human { .. } → HumanNeeded` mapping.
+/// reviews) onto the handoff prompt. `HandoffAction` exposes
+/// `prompt` as a direct field, so there's no inner `match` on
+/// `ActionEffect` and no `unreachable!()` arm — the structural
+/// projection done in `classify()` carries the invariant.
 fn push_handoff_context(
-    action: &mut decide::action::Action,
+    handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
     slug: &RepoSlug,
     pr: PullRequestNumber,
     snapshot: Option<&HandoffSnapshot>,
 ) {
-    let blocker = action.blocker.to_string();
-    let prompt = match &mut action.effect {
-        ActionEffect::Human { prompt } => prompt,
-        _ => unreachable!(
-            "Outcome::HandoffHuman variant carries ActionEffect::Human by classify()'s mapping"
-        ),
-    };
+    let blocker = handoff.blocker.to_string();
+    let prompt = &mut handoff.prompt;
     prompt.push_context_line("PR", pr_url(slug, pr));
     prompt.push_context_line("Blocker", blocker);
     if let Some(snap) = snapshot {
@@ -738,10 +734,10 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
             obj.insert("action".into(), json!(a.kind.name()));
             obj.insert("blocker".into(), json!(a.blocker.to_string()));
         }
-        Outcome::HandoffHuman(a) | Outcome::HandoffAgent(a) => {
-            obj.insert("action".into(), json!(a.kind.name()));
-            obj.insert("blocker".into(), json!(a.blocker.to_string()));
-            obj.insert("prompt".into(), json!(a.rendered_payload()));
+        Outcome::HandoffHuman(h) | Outcome::HandoffAgent(h) => {
+            obj.insert("action".into(), json!(h.kind.name()));
+            obj.insert("blocker".into(), json!(h.blocker.to_string()));
+            obj.insert("prompt".into(), json!(h.prompt.to_string()));
         }
         Outcome::WouldAdvance(a) => {
             obj.insert("action".into(), json!(a.kind.name()));
@@ -797,9 +793,9 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
                 action.blocker
             );
         }
-        Outcome::HandoffHuman(action) => {
-            let _ = writeln!(out, "HandoffHuman: {}", action.kind.name());
-            write_prompt_block(out, &action.rendered_payload());
+        Outcome::HandoffHuman(handoff) => {
+            let _ = writeln!(out, "HandoffHuman: {}", handoff.kind.name());
+            write_prompt_block(out, &handoff.prompt.to_string());
         }
         Outcome::WouldAdvance(action) => {
             let _ = writeln!(
@@ -809,9 +805,9 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
                 format_effect(&action.effect)
             );
         }
-        Outcome::HandoffAgent(action) => {
-            let _ = writeln!(out, "HandoffAgent: {}", action.kind.name());
-            write_prompt_block(out, &action.rendered_payload());
+        Outcome::HandoffAgent(handoff) => {
+            let _ = writeln!(out, "HandoffAgent: {}", handoff.kind.name());
+            write_prompt_block(out, &handoff.prompt.to_string());
         }
         Outcome::BinaryError(msg) => {
             let _ = writeln!(out, "BinaryError: {msg}");
@@ -873,6 +869,16 @@ fn format_duration(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn handoff(blocker: &str) -> ooda_core::HandoffAction<decide::action::ActionKind> {
+        ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::RequestApproval,
+            prompt: ooda_core::HandoffPrompt::new("h"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            blocker: ids::BlockerKey::tag(blocker),
+        }
+    }
 
     fn action(blocker: &str) -> decide::action::Action {
         decide::action::Action {
@@ -937,7 +943,7 @@ mod tests {
 
     #[test]
     fn iteration_line_handoff_includes_blocker() {
-        let decision = Decision::Halt(decide::decision::DecisionHalt::HumanNeeded(action(
+        let decision = Decision::Halt(decide::decision::DecisionHalt::HumanNeeded(handoff(
             "pending_human_review: review-team",
         )));
         assert_eq!(
@@ -987,17 +993,15 @@ mod tests {
 
     #[test]
     fn render_handoff_agent_includes_prompt() {
-        let action = decide::action::Action {
+        let handoff = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::Rebase,
-            effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new("Rebase onto base"),
-            },
+            prompt: ooda_core::HandoffPrompt::new("Rebase onto base"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
             blocker: ids::BlockerKey::tag("rebase-needed"),
         };
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::HandoffAgent(Box::new(action)));
+        render_outcome(&mut buf, &Outcome::HandoffAgent(Box::new(handoff)));
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("HandoffAgent: Rebase\n"));
         assert!(s.contains("\n  prompt: Rebase onto base\n"));
@@ -1080,19 +1084,19 @@ mod tests {
                 o.insert("blocker".into(), json!(a.blocker.to_string()));
                 o.insert("effect".into(), json!(format_effect(&a.effect)));
             }
-            Outcome::HandoffHuman(a) => {
+            Outcome::HandoffHuman(h) => {
                 o.insert("outcome".into(), json!("HandoffHuman"));
                 o.insert("exit".into(), json!(3));
-                o.insert("action".into(), json!(a.kind.name()));
-                o.insert("blocker".into(), json!(a.blocker.to_string()));
-                o.insert("prompt".into(), json!(a.rendered_payload()));
+                o.insert("action".into(), json!(h.kind.name()));
+                o.insert("blocker".into(), json!(h.blocker.to_string()));
+                o.insert("prompt".into(), json!(h.prompt.to_string()));
             }
-            Outcome::HandoffAgent(a) => {
+            Outcome::HandoffAgent(h) => {
                 o.insert("outcome".into(), json!("HandoffAgent"));
                 o.insert("exit".into(), json!(4));
-                o.insert("action".into(), json!(a.kind.name()));
-                o.insert("blocker".into(), json!(a.blocker.to_string()));
-                o.insert("prompt".into(), json!(a.rendered_payload()));
+                o.insert("action".into(), json!(h.kind.name()));
+                o.insert("blocker".into(), json!(h.blocker.to_string()));
+                o.insert("prompt".into(), json!(h.prompt.to_string()));
             }
             Outcome::DoneAborted => {
                 o.insert("outcome".into(), json!("DoneClosed"));
@@ -1135,13 +1139,23 @@ mod tests {
             interval: ooda_core::PollingInterval::from_secs(60),
             log: "Wait for 2 pending checks".into(),
         };
-        let mut handoff_agent_action = action("unresolved_threads");
-        handoff_agent_action.effect = ActionEffect::Agent {
+        // Handoff variants now carry `HandoffAction` (the typed
+        // projection with a top-level `prompt` field); construct
+        // those directly instead of going via an `Action` and
+        // mutating `effect`.
+        let handoff_agent_action = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::Rebase,
             prompt: ooda_core::HandoffPrompt::new("Address 2 unresolved review threads."),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingFix,
+            blocker: ids::BlockerKey::tag("unresolved_threads"),
         };
-        let mut handoff_human_action = action("pending_human_review: alice");
-        handoff_human_action.effect = ActionEffect::Human {
+        let handoff_human_action = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::Rebase,
             prompt: ooda_core::HandoffPrompt::new("Approve the PR."),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            blocker: ids::BlockerKey::tag("pending_human_review: alice"),
         };
         vec![
             Outcome::DoneSucceeded,
@@ -1186,31 +1200,28 @@ mod tests {
 
     #[test]
     fn decorate_handoff_human_appends_pr_link_and_blocker() {
-        use crate::decide::action::{Action, ActionKind, TargetEffect, Urgency};
+        use crate::decide::action::{ActionKind, TargetEffect, Urgency};
         use crate::ids::BlockerKey;
-        let a = Action {
+        let h = ooda_core::HandoffAction {
             kind: ActionKind::RequestApproval,
-            effect: ActionEffect::Human {
-                prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
-            },
+            prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
             blocker: BlockerKey::tag("not_approved"),
         };
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
-        let decorated = decorate_handoff_human(Outcome::HandoffHuman(Box::new(a)), &slug, pr, None);
-        let Outcome::HandoffHuman(a) = decorated else {
+        let decorated = decorate_handoff_human(Outcome::HandoffHuman(Box::new(h)), &slug, pr, None);
+        let Outcome::HandoffHuman(h) = decorated else {
             panic!("expected HandoffHuman");
         };
+        let rendered = h.prompt.to_string();
         assert!(
-            a.rendered_payload()
-                .contains("PR: https://github.com/acme/widget/pull/42"),
-            "decoration: {}",
-            a.rendered_payload()
+            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            "decoration: {rendered}",
         );
-        assert!(a.rendered_payload().contains("Blocker: not_approved"));
-        assert!(a.rendered_payload().starts_with("Request or self-approve"));
+        assert!(rendered.contains("Blocker: not_approved"));
+        assert!(rendered.starts_with("Request or self-approve"));
     }
 
     #[test]
@@ -1239,7 +1250,7 @@ mod tests {
             po(
                 "a/b",
                 2,
-                Outcome::HandoffAgent(Box::new(action("unresolved"))),
+                Outcome::HandoffAgent(Box::new(handoff("unresolved"))),
             ),
             po("c/d", 9, Outcome::Paused),
         ]);

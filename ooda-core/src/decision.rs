@@ -9,7 +9,7 @@
 //! [`HaltReason::exit_code`]) so the taxonomy and its IPC encoding
 //! share one source of truth.
 
-use crate::action::Action;
+use crate::action::{Action, HandoffAction};
 use crate::exit_code::ExitCode;
 use serde::Serialize;
 
@@ -48,11 +48,15 @@ pub enum DecisionHalt<K> {
     /// Target is in a terminal lifecycle state.
     Terminal(Terminal),
     /// Top candidate requires an agent to execute. Outer driver
-    /// runs the agent and re-invokes.
-    AgentNeeded(Action<K>),
+    /// runs the agent and re-invokes. Carries a [`HandoffAction`]
+    /// — the prompt is a top-level field, not nested in an
+    /// `ActionEffect` enum, so decorators can access it without
+    /// pattern-matching past an impossible-by-construction arm.
+    AgentNeeded(HandoffAction<K>),
     /// Top candidate requires a human. Outer driver surfaces and
-    /// waits.
-    HumanNeeded(Action<K>),
+    /// waits. Same [`HandoffAction`] shape as
+    /// [`Self::AgentNeeded`].
+    HumanNeeded(HandoffAction<K>),
 }
 
 impl<K> DecisionHalt<K> {
@@ -129,6 +133,7 @@ mod tests {
     use super::*;
     use crate::action::{Action, ActionEffect, TargetEffect, Urgency};
     use crate::blocker::BlockerKey;
+    use crate::handoff_prompt::HandoffPrompt;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     struct K;
@@ -139,6 +144,16 @@ mod tests {
             effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
+            blocker: BlockerKey::tag("t"),
+        }
+    }
+
+    fn dummy_handoff() -> HandoffAction<K> {
+        HandoffAction {
+            kind: K,
+            prompt: HandoffPrompt::new("handoff"),
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingHuman,
             blocker: BlockerKey::tag("t"),
         }
     }
@@ -172,11 +187,11 @@ mod tests {
             ExitCode::DoneSucceeded
         );
         assert_eq!(
-            DecisionHalt::HumanNeeded(dummy()).exit_code(),
+            DecisionHalt::HumanNeeded(dummy_handoff()).exit_code(),
             ExitCode::HandoffHuman
         );
         assert_eq!(
-            DecisionHalt::AgentNeeded(dummy()).exit_code(),
+            DecisionHalt::AgentNeeded(dummy_handoff()).exit_code(),
             ExitCode::HandoffAgent
         );
     }
@@ -196,11 +211,11 @@ mod tests {
             ExitCode::StuckCapReached
         );
         assert_eq!(
-            HaltReason::Decision(DecisionHalt::HumanNeeded(dummy())).exit_code(),
+            HaltReason::Decision(DecisionHalt::HumanNeeded(dummy_handoff())).exit_code(),
             ExitCode::HandoffHuman
         );
         assert_eq!(
-            HaltReason::Decision(DecisionHalt::AgentNeeded(dummy())).exit_code(),
+            HaltReason::Decision(DecisionHalt::AgentNeeded(dummy_handoff())).exit_code(),
             ExitCode::HandoffAgent
         );
     }
@@ -216,7 +231,13 @@ mod tests {
             DecisionHalt::<K>::Terminal(Terminal::Aborted).name(),
             "Terminal(Aborted)"
         );
-        assert_eq!(DecisionHalt::AgentNeeded(dummy()).name(), "AgentNeeded");
-        assert_eq!(DecisionHalt::HumanNeeded(dummy()).name(), "HumanNeeded");
+        assert_eq!(
+            DecisionHalt::AgentNeeded(dummy_handoff()).name(),
+            "AgentNeeded"
+        );
+        assert_eq!(
+            DecisionHalt::HumanNeeded(dummy_handoff()).name(),
+            "HumanNeeded"
+        );
     }
 }

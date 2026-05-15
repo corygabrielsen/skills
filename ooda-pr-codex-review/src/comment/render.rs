@@ -62,16 +62,18 @@ pub fn render(oriented: &OrientedState, decision: &Decision) -> Rendered {
 }
 
 fn decision_blocker_tag(d: &Decision) -> String {
-    let action = match d {
-        Decision::Execute(a) => Some(a),
-        Decision::Halt(DecisionHalt::AgentNeeded(a))
-        | Decision::Halt(DecisionHalt::HumanNeeded(a)) => Some(a),
-        Decision::Halt(_) => None,
+    // Mechanical (Execute) and handoff variants carry different
+    // payload types — `Action<K>` vs `HandoffAction<K>` — but both
+    // expose `kind: K` and `blocker: BlockerKey`. The tag depends
+    // only on those two fields, so we project them inline rather
+    // than threading a unification trait.
+    let (kind, blocker) = match d {
+        Decision::Execute(a) => (&a.kind, &a.blocker),
+        Decision::Halt(DecisionHalt::AgentNeeded(h))
+        | Decision::Halt(DecisionHalt::HumanNeeded(h)) => (&h.kind, &h.blocker),
+        Decision::Halt(_) => return String::new(),
     };
-    match action {
-        None => String::new(),
-        Some(a) => format!("{}|{}", a.blocker, action_payload_tag(a)),
-    }
+    format!("{}|{}", blocker, action_payload_tag(kind))
 }
 
 /// Comma-join any `Display` slice. Used for dedup tags, where the
@@ -83,9 +85,13 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 /// Stringify any in-action counts that materially change the
 /// rendered body so dedup doesn't collapse e.g. 3 unresolved
 /// threads → 2 unresolved threads to the same key.
-fn action_payload_tag(a: &Action) -> String {
+///
+/// Takes `&ActionKind` rather than `&Action` so it works
+/// uniformly over `Action<K>` and `HandoffAction<K>` — both
+/// expose `kind: K`.
+fn action_payload_tag(kind: &crate::decide::action::ActionKind) -> String {
     use crate::decide::action::ActionKind;
-    match &a.kind {
+    match kind {
         // Use len() so 3→2 progress flips the dedup key (re-post),
         // matching the prior count-based behavior. Using thread IDs
         // here would be more precise but unnecessary churn — the
@@ -207,8 +213,12 @@ fn decision_block(d: &Decision) -> String {
             "**Halt:** PR merged.".into()
         }
         Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => "**Halt:** PR closed.".into(),
-        Decision::Halt(DecisionHalt::AgentNeeded(action)) => action_block("Agent needed", action),
-        Decision::Halt(DecisionHalt::HumanNeeded(action)) => action_block("Human needed", action),
+        Decision::Halt(DecisionHalt::AgentNeeded(h)) => {
+            handoff_action_block("Agent needed", "agent", h)
+        }
+        Decision::Halt(DecisionHalt::HumanNeeded(h)) => {
+            handoff_action_block("Human needed", "human", h)
+        }
     }
 }
 
@@ -230,6 +240,28 @@ fn action_block(prefix: &str, action: &Action) -> String {
         "**{prefix}:** `{kind}` ({auto}, {effect})\n\n{quoted}",
         kind = action.blocker,
         quoted = blockquote(&action.rendered_payload()),
+    )
+}
+
+/// Render block for a handoff variant (`AgentNeeded` / `HumanNeeded`).
+/// `automation_label` distinguishes "agent" vs "human" — the
+/// underlying `HandoffAction` shape is identical for both, so the
+/// caller picks the label from the variant being rendered.
+fn handoff_action_block(
+    prefix: &str,
+    automation_label: &str,
+    handoff: &ooda_core::HandoffAction<crate::decide::action::ActionKind>,
+) -> String {
+    let effect = match handoff.target_effect {
+        TargetEffect::Blocks => "blocks",
+        TargetEffect::Advances => "advances",
+        TargetEffect::Neutral => "neutral",
+    };
+    format!(
+        "**{prefix}:** `{kind}` ({auto}, {effect})\n\n{quoted}",
+        kind = handoff.blocker,
+        auto = automation_label,
+        quoted = blockquote(&handoff.prompt.to_string()),
     )
 }
 

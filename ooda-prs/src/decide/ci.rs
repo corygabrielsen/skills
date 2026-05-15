@@ -35,7 +35,9 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: format!("Fix failing check: {}", f.name),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                format!("Fix failing check: {}", f.name),
+            )),
             blocker: BlockerKey::tag(format!("ci_fail: {}", f.name)),
         });
     }
@@ -71,7 +73,9 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: desc.join("\n"),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                desc.join("\n"),
+            )),
             blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
         });
     } else {
@@ -84,10 +88,10 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                description: format!(
+                payload: ooda_core::ActionPayload::Logged(format!(
                     "Wait for {}",
                     crate::text::count(ci.required.pending(), "pending check"),
-                ),
+                )),
                 blocker: BlockerKey::tag(format!("ci_pending: {blocker_list}")),
             });
         }
@@ -100,10 +104,10 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                description: format!(
+                payload: ooda_core::ActionPayload::Logged(format!(
                     "{} not started: {blocker_list}",
                     crate::text::count(ci.missing(), "required check"),
-                ),
+                )),
                 blocker: BlockerKey::tag(format!("ci_missing: {blocker_list}")),
             });
         }

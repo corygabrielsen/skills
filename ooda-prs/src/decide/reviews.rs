@@ -39,7 +39,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description,
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                description,
+            )),
             // Stable key — the action carries the witness; the
             // blocker remains a fixed tag so 3→2 progress doesn't
             // mask as stall. Live and Outdated threads share this
@@ -58,7 +60,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            description: format!("Wait for bot review from {names}"),
+            payload: ooda_core::ActionPayload::Logged(format!("Wait for bot review from {names}")),
             blocker: BlockerKey::tag(format!("pending_bot_review: {names}")),
         });
     }
@@ -70,7 +72,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            description: format!("Waiting on human review from {names}"),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                format!("Waiting on human review from {names}"),
+            )),
             blocker: BlockerKey::tag(format!("pending_human_review: {names}")),
         });
     }
@@ -98,7 +102,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            description: "Request or self-approve".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "Request or self-approve",
+            )),
             blocker: BlockerKey::tag("not_approved"),
         });
     }
@@ -126,7 +132,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: address_change_request_description(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                address_change_request_description(),
+            )),
             blocker: BlockerKey::tag("changes_requested_summary"),
         });
     }
@@ -411,7 +419,7 @@ mod tests {
             live_thread("src/bar.rs", 99, "missing error context"),
         ];
         let cs = candidates(&oriented_with_threads(r, threads));
-        let desc = &cs[0].description;
+        let desc = &cs[0].rendered_payload();
         // Headline + per-author breakdown
         assert!(desc.contains("Address 2 unresolved review threads."));
         assert!(desc.contains("Copilot: 2 issues."));
@@ -461,16 +469,16 @@ mod tests {
             _ => unreachable!(),
         }
         // Headline carries the live/outdated breakdown.
-        assert!(action.description.contains("(1 live, 1 outdated)"));
+        assert!(action.rendered_payload().contains("(1 live, 1 outdated)"));
         // Outdated entry tagged; live entry not.
-        assert!(action.description.contains("[outdated]"));
+        assert!(action.rendered_payload().contains("[outdated]"));
         // thread_id surfaced for the resolve mutation.
-        assert!(action.description.contains("T_outdated"));
+        assert!(action.rendered_payload().contains("T_outdated"));
         // Verify-then-act-or-resolve clause appears for outdated.
-        assert!(action.description.contains("isOutdated` flag is"));
+        assert!(action.rendered_payload().contains("isOutdated` flag is"));
         // Resolve mutation template appears unconditionally (any
         // unresolved set ends with the resolve instruction).
-        assert!(action.description.contains("resolveReviewThread"));
+        assert!(action.rendered_payload().contains("resolveReviewThread"));
     }
 
     #[test]
@@ -481,7 +489,7 @@ mod tests {
             outdated_thread("src/b.rs", 2, "second", "T_b"),
         ];
         let cs = candidates(&oriented_with_threads(r, threads));
-        let desc = &cs[0].description;
+        let desc = &cs[0].rendered_payload();
         assert!(desc.contains("Address 2 unresolved review threads (all outdated"));
         // Live/outdated breakdown only appears when mixed.
         assert!(!desc.contains("0 live"));

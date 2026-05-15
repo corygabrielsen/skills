@@ -590,7 +590,7 @@ fn iteration_line(i: u32, d: &Decision) -> String {
             // Use halt.name() (finite token set) instead of {:?}
             // so the per-iteration halt line stays single-line
             // and bounded — Debug would expand AgentNeeded(Action {
-            // description: "..." }) into the action payload, which
+            // payload: ooda_core::ActionPayload::Logged("..." })) into the action payload, which
             // breaks the one-line-per-iteration invariant.
             match halt_action(halt) {
                 Some(action) => format!(
@@ -626,41 +626,6 @@ fn pr_url(slug: &RepoSlug, pr: PullRequestNumber) -> String {
     format!("https://github.com/{slug}/pull/{pr}")
 }
 
-/// Build the multi-line context block appended to `HandoffHuman`
-/// prompts: PR URL + one-line snapshot per axis the human typically
-/// needs to triage (branch, CI, reviews). Computed from
-/// already-observed state — no extra fetches.
-fn human_handoff_context(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    snapshot: Option<&HandoffSnapshot>,
-    blocker: &ids::BlockerKey,
-) -> String {
-    let mut lines = vec![format!("PR: {}", pr_url(slug, pr))];
-    lines.push(format!("Blocker: {blocker}"));
-    if let Some(snap) = snapshot {
-        lines.push(format!(
-            "Branch: {} ← {}",
-            snap.base_branch, snap.head_short
-        ));
-        let req = &snap.oriented.ci.required;
-        lines.push(format!(
-            "CI: {} pass / {} failed / {} pending (required)",
-            req.pass,
-            req.fail(),
-            req.pending()
-        ));
-        let r = &snap.oriented.reviews;
-        lines.push(format!(
-            "Reviews: {} unresolved thread(s) / {} pending bot / {} pending human",
-            r.threads_unresolved,
-            r.pending_reviews.bots.len(),
-            r.pending_reviews.humans.len()
-        ));
-    }
-    lines.join("\n")
-}
-
 /// Append a PR-context block to `HandoffHuman` prompts so the
 /// stderr handoff is usable on its own — no tab-juggling. Pass-
 /// through for every other `Outcome` variant.
@@ -672,11 +637,54 @@ fn decorate_handoff_human(
 ) -> Outcome {
     match outcome {
         Outcome::HandoffHuman(mut action) => {
-            let context = human_handoff_context(slug, pr, snapshot, &action.blocker);
-            action.description = format!("{}\n\n{}", action.description.trim_end(), context);
+            push_handoff_context(&mut action, slug, pr, snapshot);
             Outcome::HandoffHuman(action)
         }
         other => other,
+    }
+}
+
+/// Append the boundary context (PR URL, blocker, branch, CI,
+/// reviews) onto the handoff prompt. The action's payload must be
+/// a `Prompt(HandoffPrompt)` — decide-layer invariant for
+/// `Automation::Human` actions.
+fn push_handoff_context(
+    action: &mut decide::action::Action,
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    snapshot: Option<&HandoffSnapshot>,
+) {
+    let prompt = action
+        .payload
+        .as_prompt_mut()
+        .expect("HandoffHuman action must carry a Prompt payload");
+    prompt.push_context_line("PR", pr_url(slug, pr));
+    prompt.push_context_line("Blocker", action.blocker.to_string());
+    if let Some(snap) = snapshot {
+        prompt.push_context_line(
+            "Branch",
+            format!("{} ← {}", snap.base_branch, snap.head_short),
+        );
+        let req = &snap.oriented.ci.required;
+        prompt.push_context_line(
+            "CI",
+            format!(
+                "{} pass / {} failed / {} pending (required)",
+                req.pass,
+                req.fail(),
+                req.pending()
+            ),
+        );
+        let r = &snap.oriented.reviews;
+        prompt.push_context_line(
+            "Reviews",
+            format!(
+                "{} unresolved thread(s) / {} pending bot / {} pending human",
+                r.threads_unresolved,
+                r.pending_reviews.bots.len(),
+                r.pending_reviews.humans.len()
+            ),
+        );
     }
 }
 
@@ -722,7 +730,7 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
         Outcome::HandoffHuman(a) | Outcome::HandoffAgent(a) => {
             obj.insert("action".into(), json!(a.kind.name()));
             obj.insert("blocker".into(), json!(a.blocker.to_string()));
-            obj.insert("prompt".into(), json!(a.description));
+            obj.insert("prompt".into(), json!(a.rendered_payload()));
         }
         Outcome::WouldAdvance(a) => {
             obj.insert("action".into(), json!(a.kind.name()));
@@ -780,7 +788,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         }
         Outcome::HandoffHuman(action) => {
             let _ = writeln!(out, "HandoffHuman: {}", action.kind.name());
-            write_prompt_block(out, &action.description);
+            write_prompt_block(out, &action.rendered_payload());
         }
         Outcome::WouldAdvance(action) => {
             let _ = writeln!(
@@ -792,7 +800,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         }
         Outcome::HandoffAgent(action) => {
             let _ = writeln!(out, "HandoffAgent: {}", action.kind.name());
-            write_prompt_block(out, &action.description);
+            write_prompt_block(out, &action.rendered_payload());
         }
         Outcome::BinaryError(msg) => {
             let _ = writeln!(out, "BinaryError: {msg}");
@@ -859,7 +867,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            description: "x".into(),
+            payload: ooda_core::ActionPayload::Logged("x".into()),
             blocker: ids::BlockerKey::tag(blocker),
         }
     }
@@ -937,7 +945,7 @@ mod tests {
     fn render_stuck_cap_reached_carries_action() {
         let action = action("rebase-needed");
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::StuckCapReached(action));
+        render_outcome(&mut buf, &Outcome::StuckCapReached(Box::new(action)));
         assert_eq!(
             String::from_utf8(buf).unwrap(),
             "StuckCapReached: Rebase:rebase-needed\n"
@@ -958,11 +966,13 @@ mod tests {
             automation: Automation::Agent,
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            description: "Rebase onto base".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "Rebase onto base",
+            )),
             blocker: ids::BlockerKey::tag("rebase-needed"),
         };
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::HandoffAgent(action));
+        render_outcome(&mut buf, &Outcome::HandoffAgent(Box::new(action)));
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("HandoffAgent: Rebase\n"));
         assert!(s.contains("\n  prompt: Rebase onto base\n"));
@@ -977,11 +987,11 @@ mod tests {
             },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingWait,
-            description: "x".into(),
+            payload: ooda_core::ActionPayload::Logged("x".into()),
             blocker: ids::BlockerKey::tag("waiting"),
         };
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::WouldAdvance(action));
+        render_outcome(&mut buf, &Outcome::WouldAdvance(Box::new(action)));
         assert_eq!(
             String::from_utf8(buf).unwrap(),
             "WouldAdvance: Rebase:Wait(30s)\n"
@@ -1022,11 +1032,11 @@ mod tests {
             Outcome::DoneSucceeded,
             Outcome::DoneAborted,
             Outcome::Paused,
-            Outcome::StuckRepeated(action("x")),
-            Outcome::StuckCapReached(action("x")),
-            Outcome::HandoffAgent(action("x")),
-            Outcome::HandoffHuman(action("x")),
-            Outcome::WouldAdvance(action("x")),
+            Outcome::StuckRepeated(Box::new(action("x"))),
+            Outcome::StuckCapReached(Box::new(action("x"))),
+            Outcome::HandoffAgent(Box::new(action("x"))),
+            Outcome::HandoffHuman(Box::new(action("x"))),
+            Outcome::WouldAdvance(Box::new(action("x"))),
             Outcome::BinaryError("boom".into()),
         ] {
             let r = per_pr_jsonl_record(&po("acme/widget", 42, outcome));
@@ -1047,23 +1057,25 @@ mod tests {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            description: "Request or self-approve".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "Request or self-approve",
+            )),
             blocker: BlockerKey::tag("not_approved"),
         };
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
-        let decorated = decorate_handoff_human(Outcome::HandoffHuman(a), &slug, pr, None);
+        let decorated = decorate_handoff_human(Outcome::HandoffHuman(Box::new(a)), &slug, pr, None);
         let Outcome::HandoffHuman(a) = decorated else {
             panic!("expected HandoffHuman");
         };
         assert!(
-            a.description
+            a.rendered_payload()
                 .contains("PR: https://github.com/acme/widget/pull/42"),
             "decoration: {}",
-            a.description
+            a.rendered_payload()
         );
-        assert!(a.description.contains("Blocker: not_approved"));
-        assert!(a.description.starts_with("Request or self-approve"));
+        assert!(a.rendered_payload().contains("Blocker: not_approved"));
+        assert!(a.rendered_payload().starts_with("Request or self-approve"));
     }
 
     #[test]
@@ -1101,7 +1113,7 @@ mod tests {
         let r = per_pr_jsonl_record(&po(
             "a/b",
             7,
-            Outcome::StuckRepeated(action("rebase-needed")),
+            Outcome::StuckRepeated(Box::new(action("rebase-needed"))),
         ));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "StuckRepeated");
@@ -1116,7 +1128,7 @@ mod tests {
         let r = per_pr_jsonl_record(&po(
             "a/b",
             7,
-            Outcome::StuckCapReached(action("rebase-needed")),
+            Outcome::StuckCapReached(Box::new(action("rebase-needed"))),
         ));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "StuckCapReached");
@@ -1128,8 +1140,10 @@ mod tests {
     #[test]
     fn jsonl_handoff_agent_includes_prompt() {
         let mut a = action("unresolved_threads");
-        a.description = "Address 2 unresolved review threads.".into();
-        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffAgent(a)));
+        a.payload = ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            "Address 2 unresolved review threads.",
+        ));
+        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffAgent(Box::new(a))));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "HandoffAgent");
         assert_eq!(v["exit"], 4);
@@ -1141,8 +1155,10 @@ mod tests {
     #[test]
     fn jsonl_handoff_human_includes_prompt() {
         let mut a = action("pending_human_review: alice");
-        a.description = "Approve the PR.".into();
-        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffHuman(a)));
+        a.payload = ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            "Approve the PR.",
+        ));
+        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffHuman(Box::new(a))));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "HandoffHuman");
         assert_eq!(v["exit"], 3);
@@ -1155,7 +1171,7 @@ mod tests {
         a.automation = Automation::Wait {
             interval: ooda_core::PollingInterval::from_secs(60),
         };
-        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::WouldAdvance(a)));
+        let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::WouldAdvance(Box::new(a))));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "WouldAdvance");
         assert_eq!(v["exit"], 2);
@@ -1180,7 +1196,11 @@ mod tests {
     fn render_multi_jsonl_emits_one_line_per_pr_in_order() {
         let multi = MultiOutcome::Bundle(vec![
             po("a/b", 1, Outcome::DoneSucceeded),
-            po("a/b", 2, Outcome::HandoffAgent(action("unresolved"))),
+            po(
+                "a/b",
+                2,
+                Outcome::HandoffAgent(Box::new(action("unresolved"))),
+            ),
             po("c/d", 9, Outcome::Paused),
         ]);
         let mut buf = Vec::new();

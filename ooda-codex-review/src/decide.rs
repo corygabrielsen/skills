@@ -95,10 +95,10 @@ fn mk_run_reviews(level: ReasoningLevel, n: u32) -> Action {
         automation: Automation::Full,
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Critical,
-        description: format!(
+        payload: ooda_core::ActionPayload::Logged(format!(
             "Spawn {n} `codex review` subprocesses at reasoning level {}.",
             level.as_str()
-        ),
+        )),
         blocker: BlockerKey::tag(format!("runreviews:{}", level.as_str())),
     }
 }
@@ -111,10 +111,10 @@ fn mk_await_reviews(level: ReasoningLevel, pending: u32) -> Action {
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::BlockingWait,
-        description: format!(
+        payload: ooda_core::ActionPayload::Logged(format!(
             "Polling: {pending} review(s) still streaming at level {}.",
             level.as_str()
-        ),
+        )),
         blocker: BlockerKey::tag(format!("await:{}", level.as_str())),
     }
 }
@@ -125,12 +125,14 @@ fn mk_address_batch(level: ReasoningLevel, issue_count: u32) -> Action {
         automation: Automation::Agent,
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        description: format!(
-            "Verify and address {issue_count} review(s) with issues at level {}. \
+        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            format!(
+                "Verify and address {issue_count} review(s) with issues at level {}. \
              For each issue: real bug → fix; false positive → clarify code; \
              design tradeoff → document rationale. Then run tests.",
-            level.as_str()
-        ),
+                level.as_str()
+            ),
+        )),
         blocker: BlockerKey::tag(format!("address:{}", level.as_str())),
     }
 }
@@ -141,13 +143,15 @@ fn mk_retrospective(level: ReasoningLevel) -> Action {
         automation: Automation::Agent,
         target_effect: TargetEffect::Advances,
         urgency: Urgency::BlockingFix,
-        description: format!(
-            "All reviews clean at level {}. Synthesize the issue history \
+        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            format!(
+                "All reviews clean at level {}. Synthesize the issue history \
              so far. Look for architectural patterns that would prevent \
              3+ issues each. If patterns exist: implement and the loop \
              restarts from the floor. If not: the loop advances.",
-            level.as_str()
-        ),
+                level.as_str()
+            ),
+        )),
         blocker: BlockerKey::tag(format!("retro:{}", level.as_str())),
     }
 }

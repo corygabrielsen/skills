@@ -32,20 +32,27 @@ pub enum Outcome<K> {
     DoneSucceeded,
     /// Same `(kind, blocker)` action repeated on consecutive
     /// non-`Wait` iterations. Carries the repeated action.
-    StuckRepeated(Action<K>),
+    ///
+    /// `Action` is boxed because `Outcome` is used as the `Err`
+    /// type in `Result<_, Outcome>` chains; keeping the variant
+    /// small avoids the `clippy::result_large_err` lint and keeps
+    /// the success path cheap.
+    StuckRepeated(Box<Action<K>>),
     /// Iteration cap hit. Carries the last attempted action — the
     /// natural triage anchor (`<ActionKind>:<BlockerKey>` shows
-    /// what was running when the cap fired).
-    StuckCapReached(Action<K>),
+    /// what was running when the cap fired). Boxed; see
+    /// [`Self::StuckRepeated`].
+    StuckCapReached(Box<Action<K>>),
     /// Decide selected an action requiring a human. Carries the
-    /// action; `act` did not run.
-    HandoffHuman(Action<K>),
+    /// action; `act` did not run. Boxed; see [`Self::StuckRepeated`].
+    HandoffHuman(Box<Action<K>>),
     /// Inspect-only. Decide selected an `Execute(action)`; the loop
-    /// would have run it, inspect halts before acting.
-    WouldAdvance(Action<K>),
+    /// would have run it, inspect halts before acting. Boxed; see
+    /// [`Self::StuckRepeated`].
+    WouldAdvance(Box<Action<K>>),
     /// Decide selected an action requiring an agent. Carries the
-    /// action; `act` did not run.
-    HandoffAgent(Action<K>),
+    /// action; `act` did not run. Boxed; see [`Self::StuckRepeated`].
+    HandoffAgent(Box<Action<K>>),
     /// Caught external failure (subprocess, network, IO). The
     /// [`SingleLineString`] payload is for human triage; the
     /// no-newlines invariant is enforced by the type so the
@@ -108,8 +115,8 @@ impl<K> From<HaltReason<K>> for Outcome<K> {
     fn from(reason: HaltReason<K>) -> Self {
         match reason {
             HaltReason::Decision(halt) => decision_halt_to_outcome(halt),
-            HaltReason::Stalled(action) => Self::StuckRepeated(action),
-            HaltReason::CapReached(action) => Self::StuckCapReached(action),
+            HaltReason::Stalled(action) => Self::StuckRepeated(Box::new(action)),
+            HaltReason::CapReached(action) => Self::StuckCapReached(Box::new(action)),
         }
     }
 }
@@ -121,7 +128,7 @@ impl<K> From<HaltReason<K>> for Outcome<K> {
 impl<K> From<Decision<K>> for Outcome<K> {
     fn from(decision: Decision<K>) -> Self {
         match decision {
-            Decision::Execute(action) => Self::WouldAdvance(action),
+            Decision::Execute(action) => Self::WouldAdvance(Box::new(action)),
             Decision::Halt(halt) => decision_halt_to_outcome(halt),
         }
     }
@@ -132,8 +139,8 @@ fn decision_halt_to_outcome<K>(halt: DecisionHalt<K>) -> Outcome<K> {
         DecisionHalt::Success => Outcome::Paused,
         DecisionHalt::Terminal(Terminal::Succeeded) => Outcome::DoneSucceeded,
         DecisionHalt::Terminal(Terminal::Aborted) => Outcome::DoneAborted,
-        DecisionHalt::AgentNeeded(action) => Outcome::HandoffAgent(action),
-        DecisionHalt::HumanNeeded(action) => Outcome::HandoffHuman(action),
+        DecisionHalt::AgentNeeded(action) => Outcome::HandoffAgent(Box::new(action)),
+        DecisionHalt::HumanNeeded(action) => Outcome::HandoffHuman(Box::new(action)),
     }
 }
 
@@ -152,7 +159,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: "x".into(),
+            payload: crate::ActionPayload::Logged("x".into()),
             blocker: BlockerKey::tag("t"),
         }
     }
@@ -165,24 +172,24 @@ mod tests {
         );
         assert_eq!(Outcome::<K>::Paused.exit_code(), ExitCode::Paused);
         assert_eq!(
-            Outcome::WouldAdvance(dummy()).exit_code(),
+            Outcome::WouldAdvance(Box::new(dummy())).exit_code(),
             ExitCode::WouldAdvance
         );
         assert_eq!(
-            Outcome::HandoffHuman(dummy()).exit_code(),
+            Outcome::HandoffHuman(Box::new(dummy())).exit_code(),
             ExitCode::HandoffHuman
         );
         assert_eq!(
-            Outcome::HandoffAgent(dummy()).exit_code(),
+            Outcome::HandoffAgent(Box::new(dummy())).exit_code(),
             ExitCode::HandoffAgent
         );
         assert_eq!(Outcome::<K>::DoneAborted.exit_code(), ExitCode::DoneAborted);
         assert_eq!(
-            Outcome::StuckRepeated(dummy()).exit_code(),
+            Outcome::StuckRepeated(Box::new(dummy())).exit_code(),
             ExitCode::StuckRepeated
         );
         assert_eq!(
-            Outcome::StuckCapReached(dummy()).exit_code(),
+            Outcome::StuckCapReached(Box::new(dummy())).exit_code(),
             ExitCode::StuckCapReached
         );
         assert_eq!(

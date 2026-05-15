@@ -22,7 +22,9 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                description: "Waiting for Copilot to start reviewing".into(),
+                payload: ooda_core::ActionPayload::Logged(
+                    "Waiting for Copilot to start reviewing".into(),
+                ),
                 blocker: BlockerKey::tag("copilot_not_acked"),
             });
         }
@@ -34,7 +36,9 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                description: "Waiting for Copilot to finish reviewing".into(),
+                payload: ooda_core::ActionPayload::Logged(
+                    "Waiting for Copilot to finish reviewing".into(),
+                ),
                 blocker: BlockerKey::tag("copilot_reviewing"),
             });
         }
@@ -67,7 +71,7 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                     automation: Automation::Full,
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Critical,
-                    description: desc,
+                    payload: ooda_core::ActionPayload::Logged(desc),
                     blocker: BlockerKey::tag(format!("copilot_tier_{}", report.tier.slug())),
                 });
             } else if report.tier == CopilotTier::Silver && suppressed > 0 {
@@ -76,10 +80,12 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                     automation: Automation::Agent,
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Advancing,
-                    description: format!(
-                        "Copilot flagged {}. Investigate and push fixes for any \
+                    payload: ooda_core::ActionPayload::Prompt(
+                        ooda_core::HandoffPrompt::from_legacy_text(format!(
+                            "Copilot flagged {}. Investigate and push fixes for any \
                          that are real — the next review may clear them.",
-                        crate::text::count(suppressed as usize, "low-confidence finding"),
+                            crate::text::count(suppressed as usize, "low-confidence finding"),
+                        )),
                     ),
                     blocker: BlockerKey::tag("copilot_tier_silver"),
                 });

@@ -24,7 +24,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
-            description: "Mark PR as ready for review".into(),
+            payload: ooda_core::ActionPayload::Logged("Mark PR as ready for review".into()),
             blocker: BlockerKey::tag("draft"),
         });
     }
@@ -34,7 +34,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
-            description: "Remove \"work in progress\" label".into(),
+            payload: ooda_core::ActionPayload::Logged("Remove \"work in progress\" label".into()),
             blocker: BlockerKey::tag("wip_label"),
         });
     }
@@ -46,7 +46,9 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: format!("Shorten title ({} chars, max 50)", state.title_len),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                format!("Shorten title ({} chars, max 50)", state.title_len),
+            )),
             blocker: BlockerKey::tag("title_too_long"),
         });
     }
@@ -61,7 +63,9 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            description: "GitHub is still computing mergeability — wait and re-observe".into(),
+            payload: ooda_core::ActionPayload::Logged(
+                "GitHub is still computing mergeability — wait and re-observe".into(),
+            ),
             blocker: BlockerKey::tag("mergeability_unknown"),
         });
     } else if state.conflict == Mergeable::Conflicting {
@@ -70,7 +74,9 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: rebase_description("Rebase to resolve merge conflicts", state),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                rebase_description("Rebase to resolve merge conflicts", state),
+            )),
             blocker: BlockerKey::tag("merge_conflict"),
         });
     } else if state.behind {
@@ -79,7 +85,9 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: rebase_description("Rebase onto the latest base branch", state),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                rebase_description("Rebase onto the latest base branch", state),
+            )),
             blocker: BlockerKey::tag("behind_base"),
         });
     }
@@ -126,11 +134,12 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            description: "GitHub reports BLOCKED but no modeled axis explains the blockage \
-                — likely an unmodeled merge requirement (deployment protection, signed \
-                commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
-                the specific gate."
-                .into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "GitHub reports BLOCKED but no modeled axis explains the blockage \
+                 — likely an unmodeled merge requirement (deployment protection, signed \
+                 commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
+                 the specific gate.",
+            )),
             blocker: BlockerKey::tag("merge_blocked_unmodeled"),
         }],
         MergeStateStatus::HasHooks => vec![Action {
@@ -140,7 +149,9 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            description: "Commit hooks are still running — wait and re-observe".into(),
+            payload: ooda_core::ActionPayload::Logged(
+                "Commit hooks are still running — wait and re-observe".into(),
+            ),
             blocker: BlockerKey::tag("merge_state_has_hooks"),
         }],
         MergeStateStatus::Unknown => vec![Action {
@@ -150,7 +161,9 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            description: "GitHub is still computing merge state — wait and re-observe".into(),
+            payload: ooda_core::ActionPayload::Logged(
+                "GitHub is still computing merge state — wait and re-observe".into(),
+            ),
             blocker: BlockerKey::tag("merge_state_unknown"),
         }],
         // Clean / Behind / Dirty / Draft / Unstable / HasHooks
@@ -173,7 +186,9 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            description: "Add a content label (bug or enhancement)".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "Add a content label (bug or enhancement)",
+            )),
             blocker: BlockerKey::tag("no_content_label"),
         });
     }
@@ -183,7 +198,9 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            description: "Assign the PR (default: author)".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "Assign the PR (default: author)",
+            )),
             blocker: BlockerKey::tag("no_assignee"),
         });
     }
@@ -204,10 +221,12 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            description: format!(
-                "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
-                missing.join(", ")
-            ),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                format!(
+                    "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
+                    missing.join(", ")
+                ),
+            )),
             blocker: BlockerKey::tag("incomplete_description"),
         });
     }

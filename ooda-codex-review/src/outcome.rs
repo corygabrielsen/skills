@@ -53,7 +53,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: TargetEffect::Advances,
             urgency: Urgency::Critical,
-            description: "test".into(),
+            payload: ooda_core::ActionPayload::Logged("test".into()),
             blocker: BlockerKey::tag("not-started"),
         }
     }
@@ -64,24 +64,24 @@ mod tests {
         assert_eq!(Outcome::DoneSucceeded.exit_code(), ExitCode::DoneSucceeded);
         assert_eq!(Outcome::Paused.exit_code(), ExitCode::Paused);
         assert_eq!(
-            Outcome::WouldAdvance(dummy_action()).exit_code(),
+            Outcome::WouldAdvance(Box::new(dummy_action())).exit_code(),
             ExitCode::WouldAdvance
         );
         assert_eq!(
-            Outcome::HandoffHuman(dummy_action()).exit_code(),
+            Outcome::HandoffHuman(Box::new(dummy_action())).exit_code(),
             ExitCode::HandoffHuman
         );
         assert_eq!(
-            Outcome::HandoffAgent(dummy_action()).exit_code(),
+            Outcome::HandoffAgent(Box::new(dummy_action())).exit_code(),
             ExitCode::HandoffAgent
         );
         assert_eq!(Outcome::DoneAborted.exit_code(), ExitCode::DoneAborted);
         assert_eq!(
-            Outcome::StuckRepeated(dummy_action()).exit_code(),
+            Outcome::StuckRepeated(Box::new(dummy_action())).exit_code(),
             ExitCode::StuckRepeated
         );
         assert_eq!(
-            Outcome::StuckCapReached(dummy_action()).exit_code(),
+            Outcome::StuckCapReached(Box::new(dummy_action())).exit_code(),
             ExitCode::StuckCapReached
         );
         assert_eq!(

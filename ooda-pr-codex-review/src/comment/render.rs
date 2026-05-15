@@ -203,8 +203,10 @@ fn decision_block(d: &Decision) -> String {
         Decision::Halt(DecisionHalt::Success) => {
             "**Halt:** Success — no advancing actions remain.".into()
         }
-        Decision::Halt(DecisionHalt::Terminal(Terminal::Merged)) => "**Halt:** PR merged.".into(),
-        Decision::Halt(DecisionHalt::Terminal(Terminal::Closed)) => "**Halt:** PR closed.".into(),
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)) => {
+            "**Halt:** PR merged.".into()
+        }
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => "**Halt:** PR closed.".into(),
         Decision::Halt(DecisionHalt::AgentNeeded(action)) => action_block("Agent needed", action),
         Decision::Halt(DecisionHalt::HumanNeeded(action)) => action_block("Human needed", action),
     }

@@ -303,57 +303,11 @@ impl fmt::Display for GitHubLogin {
 
 /// Stable iteration key for stall detection. Two consecutive
 /// iterations with the same `(ActionKind discriminant, BlockerKey)`
-/// halt the loop with `Stalled`. The key MUST NOT embed varying
-/// counts or progress markers — the comment in `decide/reviews.rs`
-/// (`AddressThreads { count }`) calls this out explicitly: "count
-/// lives in ActionKind, never in the blocker string."
+/// halt the loop with `Stalled`.
 ///
-/// Newtype promotes that invariant from a comment to a type
-/// distinction: a `String` of human-readable text can no longer be
-/// passed where a stall key is expected.
-///
-/// No serde — `BlockerKey` is constructed and consumed entirely
-/// inside the decide/runner layers; nothing serializes it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct BlockerKey(String);
-
-impl BlockerKey {
-    /// Validating constructor for arbitrary input. Use for any
-    /// value not known at the call site to be non-empty.
-    pub fn parse(s: impl Into<String>) -> Result<Self, IdError> {
-        let s = s.into();
-        if s.is_empty() {
-            return Err(err("blocker key", "empty"));
-        }
-        Ok(Self(s))
-    }
-
-    /// Infallible constructor for internal, known-non-empty
-    /// construction (literal prefixes + typed payloads in the
-    /// decide layer). Panics if the input is empty — that would
-    /// be a programmer error in the caller, not user input. The
-    /// `Self` return signals "construction is intended to succeed"
-    /// to the reader, where `parse(...).expect(...)` would suggest
-    /// a fallible operation.
-    ///
-    /// `pub(crate)` to constrain the panic surface — external
-    /// callers must go through `parse` and handle the `Result`.
-    pub(crate) fn tag(s: impl Into<String>) -> Self {
-        let s = s.into();
-        assert!(!s.is_empty(), "BlockerKey::tag called with empty string");
-        Self(s)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for BlockerKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
+/// constructor, and infallible `tag` live in the shared crate.
+pub use ooda_core::BlockerKey;
 
 // -- BranchName ------------------------------------------------------
 

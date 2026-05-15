@@ -697,7 +697,7 @@ fn decorate_handoff_human(
 /// block for `Handoff*` variants. No trailing content.
 fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
     match oc {
-        Outcome::DoneMerged => {
+        Outcome::DoneSucceeded => {
             let _ = writeln!(out, "DoneMerged");
         }
         Outcome::StuckRepeated(action) => {
@@ -738,7 +738,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         Outcome::Paused => {
             let _ = writeln!(out, "Paused");
         }
-        Outcome::DoneClosed => {
+        Outcome::DoneAborted => {
             let _ = writeln!(out, "DoneClosed");
         }
         Outcome::UsageError(msg) => {
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn render_done_merged() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::DoneMerged);
+        render_outcome(&mut buf, &Outcome::DoneSucceeded);
         assert_eq!(String::from_utf8(buf).unwrap(), "DoneMerged\n");
     }
 
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn render_done_closed() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::DoneClosed);
+        render_outcome(&mut buf, &Outcome::DoneAborted);
         assert_eq!(String::from_utf8(buf).unwrap(), "DoneClosed\n");
     }
 
@@ -947,8 +947,8 @@ mod tests {
     fn decorate_handoff_human_passes_through_other_variants() {
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("1").unwrap();
-        let outcome = decorate_handoff_human(Outcome::DoneMerged, &slug, pr, None);
-        assert!(matches!(outcome, Outcome::DoneMerged));
+        let outcome = decorate_handoff_human(Outcome::DoneSucceeded, &slug, pr, None);
+        assert!(matches!(outcome, Outcome::DoneSucceeded));
         let outcome = decorate_handoff_human(Outcome::Paused, &slug, pr, None);
         assert!(matches!(outcome, Outcome::Paused));
     }

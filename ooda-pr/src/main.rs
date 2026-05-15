@@ -13,11 +13,11 @@ mod recorder;
 mod runner;
 mod text;
 
-use decide::action::ActionEffect;
+use decide::action::{ActionEffect, rate_limit_wait_action};
 use decide::candidates;
 use decide::decision::{Decision, DecisionHalt};
 use ids::{PullRequestNumber, RepoSlug};
-use observe::github::fetch_all;
+use observe::github::{FetchOutcome, fetch_all};
 use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
@@ -236,9 +236,28 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
     let obs = match fetch_all(&args.slug, args.pr) {
-        Ok(o) => {
+        Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, Ok(()));
-            o
+            *o
+        }
+        Ok(FetchOutcome::RateLimited(hit)) => {
+            // Rate-limited mid-inspect: no orient/decide possible
+            // (we have no observations). Surface the synthetic
+            // WaitForRateLimit through the same Outcome::from
+            // pipeline as any other Execute decision so wrappers
+            // see a `WouldAdvance` exit code with this action's
+            // payload — exactly what the full-loop runner would
+            // dispatch on iter 1.
+            let line = format!(
+                "rate-limited on {}; would wait {}s",
+                hit.scope.name(),
+                hit.retry_after.as_duration().as_secs(),
+            );
+            eprintln!("{line}");
+            recorder.write_trace_line(&line);
+            recorder.record_observe_end(1, Ok(()));
+            let action = rate_limit_wait_action(hit);
+            return Outcome::from(Decision::Execute(action));
         }
         Err(e) => {
             recorder.record_observe_end(1, Err(e.to_string()));

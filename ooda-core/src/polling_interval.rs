@@ -12,7 +12,7 @@
 //! backoff) belongs to caller-chosen values, not the type. The
 //! lower bound is the only structural guarantee.
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::time::Duration;
 
@@ -87,6 +87,17 @@ impl Serialize for PollingInterval {
     }
 }
 
+impl<'de> Deserialize<'de> for PollingInterval {
+    /// Mirrors [`Serialize`]: deserializes a `Duration` and
+    /// validates strict positivity. Zero — which `Duration` does
+    /// allow — fails with a serde error rather than silently
+    /// reconstructing a degenerate value.
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let dur = Duration::deserialize(d)?;
+        Self::try_from_duration(dur).map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +152,20 @@ mod tests {
             serde_json::to_string(&p).unwrap(),
             serde_json::to_string(&d).unwrap()
         );
+    }
+
+    #[test]
+    fn deserialize_roundtrips_positive() {
+        let p = PollingInterval::from_secs(42);
+        let json = serde_json::to_string(&p).unwrap();
+        let back: PollingInterval = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn deserialize_rejects_zero() {
+        let zero = Duration::ZERO;
+        let json = serde_json::to_string(&zero).unwrap();
+        assert!(serde_json::from_str::<PollingInterval>(&json).is_err());
     }
 }

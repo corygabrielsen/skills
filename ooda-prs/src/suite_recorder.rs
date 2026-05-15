@@ -314,7 +314,7 @@ impl Inner {
 fn outcome_short(o: &crate::outcome::Outcome) -> String {
     use crate::outcome::Outcome;
     match o {
-        Outcome::DoneMerged => "DoneMerged".into(),
+        Outcome::DoneSucceeded => "DoneMerged".into(),
         Outcome::StuckRepeated(a) => format!("StuckRepeated:{}", a.kind.name()),
         Outcome::StuckCapReached(a) => format!("StuckCapReached:{}", a.kind.name()),
         Outcome::HandoffHuman(a) => format!("HandoffHuman:{}", a.kind.name()),
@@ -322,7 +322,7 @@ fn outcome_short(o: &crate::outcome::Outcome) -> String {
         Outcome::HandoffAgent(a) => format!("HandoffAgent:{}", a.kind.name()),
         Outcome::BinaryError(_) => "BinaryError".into(),
         Outcome::Paused => "Paused".into(),
-        Outcome::DoneClosed => "DoneClosed".into(),
+        Outcome::DoneAborted => "DoneClosed".into(),
         Outcome::UsageError(_) => "UsageError".into(),
     }
 }
@@ -435,7 +435,7 @@ mod tests {
             ProcessOutcome {
                 slug: slug("a/b"),
                 pr: pr(1),
-                outcome: Outcome::DoneMerged,
+                outcome: Outcome::DoneSucceeded,
             },
             ProcessOutcome {
                 slug: slug("a/b"),

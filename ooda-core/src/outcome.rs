@@ -22,9 +22,12 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub enum Outcome<K> {
-    /// Target reached its terminal success state (PR merged, ladder
-    /// satisfied, etc.).
-    DoneMerged,
+    /// Target reached its terminal success state. Domain-specific
+    /// instances: PR merged, codex-review ladder satisfied, etc.
+    /// Per-binary `render_outcome` emits the domain-specific stderr
+    /// header (e.g. `DoneMerged`, `DoneFixedPoint`); this variant
+    /// name is internal.
+    DoneSucceeded,
     /// Same `(kind, blocker)` action repeated on consecutive
     /// non-`Wait` iterations. Carries the repeated action.
     StuckRepeated(Action<K>),
@@ -47,9 +50,11 @@ pub enum Outcome<K> {
     /// Decide selected no candidate action — target is open with
     /// no advancing work this pass. May re-invoke later.
     Paused,
-    /// Target closed without reaching success (PR closed, ladder
-    /// aborted). Terminal but non-success.
-    DoneClosed,
+    /// Target reached a terminal non-success state (PR closed, ladder
+    /// abandoned). Per-binary `render_outcome` emits the
+    /// domain-specific stderr header (e.g. `DoneClosed`,
+    /// `DoneAborted`).
+    DoneAborted,
     /// CLI parse / validation failure. String is the diagnostic;
     /// no embedded newlines.
     UsageError(String),
@@ -59,7 +64,7 @@ impl<K> Outcome<K> {
     /// 1:1 variant → exit-code. The contract.
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::DoneMerged => 0,
+            Self::DoneSucceeded => 0,
             Self::StuckRepeated(_) => 1,
             Self::StuckCapReached(_) => 2,
             Self::HandoffHuman(_) => 3,
@@ -67,7 +72,7 @@ impl<K> Outcome<K> {
             Self::HandoffAgent(_) => 5,
             Self::BinaryError(_) => 6,
             Self::Paused => 7,
-            Self::DoneClosed => 8,
+            Self::DoneAborted => 8,
             Self::UsageError(_) => 64,
         }
     }
@@ -108,8 +113,8 @@ impl<K> From<Decision<K>> for Outcome<K> {
 fn decision_halt_to_outcome<K>(halt: DecisionHalt<K>) -> Outcome<K> {
     match halt {
         DecisionHalt::Success => Outcome::Paused,
-        DecisionHalt::Terminal(Terminal::Merged) => Outcome::DoneMerged,
-        DecisionHalt::Terminal(Terminal::Closed) => Outcome::DoneClosed,
+        DecisionHalt::Terminal(Terminal::Succeeded) => Outcome::DoneSucceeded,
+        DecisionHalt::Terminal(Terminal::Aborted) => Outcome::DoneAborted,
         DecisionHalt::AgentNeeded(action) => Outcome::HandoffAgent(action),
         DecisionHalt::HumanNeeded(action) => Outcome::HandoffHuman(action),
     }
@@ -148,7 +153,7 @@ mod tests {
 
     #[test]
     fn exit_codes_match_spec() {
-        assert_eq!(Outcome::<K>::DoneMerged.exit_code(), 0);
+        assert_eq!(Outcome::<K>::DoneSucceeded.exit_code(), 0);
         assert_eq!(Outcome::StuckRepeated(dummy()).exit_code(), 1);
         assert_eq!(Outcome::StuckCapReached(dummy()).exit_code(), 2);
         assert_eq!(Outcome::HandoffHuman(dummy()).exit_code(), 3);
@@ -156,7 +161,7 @@ mod tests {
         assert_eq!(Outcome::HandoffAgent(dummy()).exit_code(), 5);
         assert_eq!(Outcome::<K>::BinaryError("oops".into()).exit_code(), 6);
         assert_eq!(Outcome::<K>::Paused.exit_code(), 7);
-        assert_eq!(Outcome::<K>::DoneClosed.exit_code(), 8);
+        assert_eq!(Outcome::<K>::DoneAborted.exit_code(), 8);
         assert_eq!(Outcome::<K>::UsageError("bad".into()).exit_code(), 64);
     }
 
@@ -164,15 +169,15 @@ mod tests {
     fn halt_reason_maps_terminals_to_done_variants() {
         assert!(matches!(
             Outcome::<K>::from(HaltReason::Decision(DecisionHalt::Terminal(
-                Terminal::Merged
+                Terminal::Succeeded
             ))),
-            Outcome::DoneMerged
+            Outcome::DoneSucceeded
         ));
         assert!(matches!(
             Outcome::<K>::from(HaltReason::Decision(DecisionHalt::Terminal(
-                Terminal::Closed
+                Terminal::Aborted
             ))),
-            Outcome::DoneClosed
+            Outcome::DoneAborted
         ));
     }
 
@@ -223,8 +228,8 @@ mod tests {
             Outcome::Paused
         ));
         assert!(matches!(
-            Outcome::<K>::from(Decision::Halt(DecisionHalt::Terminal(Terminal::Merged))),
-            Outcome::DoneMerged
+            Outcome::<K>::from(Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded))),
+            Outcome::DoneSucceeded
         ));
     }
 

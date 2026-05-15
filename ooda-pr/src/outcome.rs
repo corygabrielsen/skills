@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn exit_codes_match_spec() {
-        assert_eq!(Outcome::DoneMerged.exit_code(), 0);
+        assert_eq!(Outcome::DoneSucceeded.exit_code(), 0);
         assert_eq!(Outcome::StuckRepeated(dummy_action()).exit_code(), 1);
         assert_eq!(Outcome::StuckCapReached(dummy_action()).exit_code(), 2);
         assert_eq!(Outcome::HandoffHuman(dummy_action()).exit_code(), 3);
@@ -54,7 +54,7 @@ mod tests {
         assert_eq!(Outcome::HandoffAgent(dummy_action()).exit_code(), 5);
         assert_eq!(Outcome::BinaryError("oops".into()).exit_code(), 6);
         assert_eq!(Outcome::Paused.exit_code(), 7);
-        assert_eq!(Outcome::DoneClosed.exit_code(), 8);
+        assert_eq!(Outcome::DoneAborted.exit_code(), 8);
         assert_eq!(Outcome::UsageError("bad".into()).exit_code(), 64);
     }
 
@@ -62,15 +62,15 @@ mod tests {
     fn halt_reason_maps_terminals_to_done_variants() {
         assert!(matches!(
             Outcome::from(HaltReason::Decision(DecisionHalt::Terminal(
-                Terminal::Merged
+                Terminal::Succeeded
             ))),
-            Outcome::DoneMerged
+            Outcome::DoneSucceeded
         ));
         assert!(matches!(
             Outcome::from(HaltReason::Decision(DecisionHalt::Terminal(
-                Terminal::Closed
+                Terminal::Aborted
             ))),
-            Outcome::DoneClosed
+            Outcome::DoneAborted
         ));
     }
 
@@ -125,8 +125,8 @@ mod tests {
             Outcome::Paused
         ));
         assert!(matches!(
-            Outcome::from(Decision::Halt(DecisionHalt::Terminal(Terminal::Merged))),
-            Outcome::DoneMerged
+            Outcome::from(Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded))),
+            Outcome::DoneSucceeded
         ));
     }
 }

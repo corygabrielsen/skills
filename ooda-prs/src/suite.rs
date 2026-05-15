@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn empty_suite_returns_empty() {
-        let out = drive_suite(&[], None, |_, _| Outcome::DoneMerged);
+        let out = drive_suite(&[], None, |_, _| Outcome::DoneSucceeded);
         assert!(out.is_empty());
     }
 
@@ -198,7 +198,7 @@ mod tests {
         let counter = AtomicU32::new(0);
         let out = drive_suite(&s, Some(0), |_, _| {
             counter.fetch_add(1, O::SeqCst);
-            Outcome::DoneMerged
+            Outcome::DoneSucceeded
         });
         assert_eq!(counter.load(O::SeqCst), 5);
         assert_eq!(out.len(), 5);

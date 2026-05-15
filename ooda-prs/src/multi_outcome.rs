@@ -24,10 +24,10 @@
 //! ∃ ProcessOutcome with StuckCapReached(_)      → 2
 //! ∃ ProcessOutcome with StuckRepeated(_)        → 1
 //! ∃ ProcessOutcome with WouldAdvance(_)         → 4    (inspect-only)
-//! all terminal/Paused (DoneMerged | DoneClosed | Paused) → 0
+//! all terminal/Paused (DoneSucceeded | DoneAborted | Paused) → 0
 //! ```
 //!
-//! `Paused` (per-PR exit 7) and `DoneClosed` (per-PR exit 8) fold
+//! `Paused` (per-PR exit 7) and `DoneAborted` (per-PR exit 8) fold
 //! into `0` at the suite level: they are non-actionable terminal
 //! states from the harness's perspective. The per-PR records on
 //! stdout disambiguate.
@@ -123,7 +123,7 @@ fn bundle_exit_code(prs: &[ProcessOutcome]) -> u8 {
     {
         return 4;
     }
-    // Remaining variants — DoneMerged, DoneClosed, Paused — are
+    // Remaining variants — DoneSucceeded, DoneAborted, Paused — are
     // non-actionable terminal states at the suite level. Collapse
     // to 0; per-PR records on stdout disambiguate.
     0
@@ -180,19 +180,19 @@ mod tests {
     #[test]
     fn all_done_merged_is_zero() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::DoneMerged),
-            record("a/b", 2, Outcome::DoneMerged),
+            record("a/b", 1, Outcome::DoneSucceeded),
+            record("a/b", 2, Outcome::DoneSucceeded),
         ]);
         assert_eq!(m.exit_code(), 0);
     }
 
     #[test]
     fn mixed_terminal_collapses_to_zero() {
-        // DoneMerged + DoneClosed + Paused → all "no further action"
+        // DoneSucceeded + DoneAborted + Paused → all "no further action"
         // → 0 at suite level. Per-PR records disambiguate.
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::DoneMerged),
-            record("a/b", 2, Outcome::DoneClosed),
+            record("a/b", 1, Outcome::DoneSucceeded),
+            record("a/b", 2, Outcome::DoneAborted),
             record("a/b", 3, Outcome::Paused),
         ]);
         assert_eq!(m.exit_code(), 0);
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn would_advance_beats_terminal() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::DoneMerged),
+            record("a/b", 1, Outcome::DoneSucceeded),
             record("a/b", 2, Outcome::WouldAdvance(dummy_action())),
         ]);
         assert_eq!(m.exit_code(), 4);
@@ -312,8 +312,8 @@ mod tests {
     fn full_priority_ordering_holds() {
         // Ten variants stacked in one bundle: BinaryError must win.
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::DoneMerged),
-            record("a/b", 2, Outcome::DoneClosed),
+            record("a/b", 1, Outcome::DoneSucceeded),
+            record("a/b", 2, Outcome::DoneAborted),
             record("a/b", 3, Outcome::Paused),
             record("a/b", 4, Outcome::WouldAdvance(dummy_action())),
             record("a/b", 5, Outcome::StuckRepeated(dummy_action())),

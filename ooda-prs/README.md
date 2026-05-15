@@ -18,6 +18,7 @@ see `src/`.
 ```
 ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder
    ⊕ outcome ⊕ multi_outcome ⊕ suite ⊕ suite_recorder
+   ⊕ ooda-core (sibling crate)
 
 Suite          = Vec⟨RepoSlug × PullRequestNumber⟩          (non-empty, distinct)
 ProcessOutcome = (RepoSlug, PullRequestNumber, Outcome)
@@ -33,11 +34,31 @@ main : Argv → MultiOutcome → ExitCode
 ExitCode = MultiOutcome.exit_code()       (priority projection; see MultiOutcome)
 ```
 
-`recorder` is the always-on per-PR memory harness (keyed by forge
+`recorder` is the always-on per-PR memory harness (keyed by
+`forge + repo + PR`; identical to `/ooda-pr`). `suite_recorder`
+is the suite-level harness, keyed by `<suite-id>` per invocation.
+The two are independent and coexist on the same state-root tree.
 
-- repo + PR; identical to `/ooda-pr`). `suite_recorder` is the
-  new suite-level harness, keyed by `<suite-id>` per invocation.
-  The two are independent and coexist on the same state-root tree.
+### Shared boundary types (`ooda-core` crate)
+
+This binary depends on the sibling [`ooda-core`](../ooda-core/)
+library crate for the per-PR cross-binary type spine: `Outcome`,
+`Decision`, `DecisionHalt`, `HaltReason`, `Terminal`, `Action`,
+`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, and the
+`ActionKindName` trait. Each generic-over-`ActionKind` type is
+instantiated locally via a type alias
+(`pub type Outcome = ooda_core::Outcome<ActionKind>` and similar).
+The suite-level `MultiOutcome` stays per-binary — it is specific
+to `/ooda-prs`'s aggregate priority projection over N PRs.
+
+**Variant name ≠ stderr / JSONL header.** Rust variant names
+(`DoneSucceeded`, `DoneAborted`, `Paused`) are internal. Stderr
+headers and the JSONL `outcome` field both emit the PR-domain
+strings (`DoneMerged`, `DoneClosed`, `Paused`) via the per-binary
+`render_outcome` and `outcome_variant_name` functions — so the
+documented stderr regex `^(DoneMerged|DoneClosed|Paused)$` and the
+JSONL contract are unchanged. Mapping shown in the Outcome
+section.
 
 ### Domain primitives (`ids` module)
 
@@ -56,7 +77,7 @@ TeamName         := { String | non-empty }                  (distinct namespace 
 Reviewer         := User(GitHubLogin) ⊕ Team(TeamName)      (symmetric sum, both arms validated)
 CheckName        := { String | non-empty }
 Timestamp        := chrono::DateTime⟨Utc⟩                   (Copy, Ord on instant)
-BlockerKey       := { String | non-empty }                  (parse: Result, tag: pub(crate) infallible)
+BlockerKey       := { String | non-empty }                  (parse: Result, tag: pub infallible; defined in ooda-core)
 Urgency          := total enum { Critical < BlockingFix < BlockingWait
                                  < BlockingHuman < Advancing < Hygiene }
 ```
@@ -309,8 +330,8 @@ candidates : OrientedState → Vec⟨Action⟩
 
 decide(o, lifecycle) =
     case lifecycle of
-        Merged → Halt(Terminal(Merged))
-        Closed → Halt(Terminal(Closed))
+        Merged → Halt(Terminal(Succeeded))
+        Closed → Halt(Terminal(Aborted))
         Open → case candidates(o) of
             []        → Halt(Success)
             top :: _  → classify(top)
@@ -405,17 +426,17 @@ The internal `Decision`/`HaltReason`/`LoopError` split is what
 invocation with **one** exit code. `Outcome` is the boundary type.
 
 ```
-Outcome =                                              ⟶ exit_code()
-    DoneMerged                                         ⟶ 0
-  ⊕ StuckRepeated(Action)                              ⟶ 1
-  ⊕ StuckCapReached(Action)                            ⟶ 2
-  ⊕ HandoffHuman(Action)                               ⟶ 3
-  ⊕ WouldAdvance(Action)                               ⟶ 4    (inspect-only)
-  ⊕ HandoffAgent(Action)                               ⟶ 5
-  ⊕ BinaryError(String)                                ⟶ 6
-  ⊕ Paused                                             ⟶ 7
-  ⊕ DoneClosed                                         ⟶ 8
-  ⊕ UsageError(String)                                 ⟶ 64
+Outcome =                                              ⟶ exit_code()  stderr / JSONL
+    DoneSucceeded                                      ⟶ 0            "DoneMerged"
+  ⊕ StuckRepeated(Action)                              ⟶ 1            "StuckRepeated: ..."
+  ⊕ StuckCapReached(Action)                            ⟶ 2            "StuckCapReached: ..."
+  ⊕ HandoffHuman(Action)                               ⟶ 3            "HandoffHuman: ..."
+  ⊕ WouldAdvance(Action)                               ⟶ 4            "WouldAdvance: ..."    (inspect-only)
+  ⊕ HandoffAgent(Action)                               ⟶ 5            "HandoffAgent: ..."
+  ⊕ BinaryError(String)                                ⟶ 6            "BinaryError: ..."
+  ⊕ Paused                                             ⟶ 7            "Paused"
+  ⊕ DoneAborted                                        ⟶ 8            "DoneClosed"
+  ⊕ UsageError(String)                                 ⟶ 64           "UsageError: ..."
 ```
 
 **1:1 variant→exit-code.** Each variant has a unique code; `$?`
@@ -426,20 +447,20 @@ for future variants; codes ≥64 follow BSD `sysexits` starting at
 ### Boundary functors
 
 ```
-From⟨HaltReason⟩ for Outcome    (loop mode):
+From⟨HaltReason⟩ for Outcome    (loop mode):       [blanket impl in ooda-core]
     Decision(Success)                  → Paused
-    Decision(Terminal(Merged))         → DoneMerged
-    Decision(Terminal(Closed))         → DoneClosed
+    Decision(Terminal(Succeeded))      → DoneSucceeded
+    Decision(Terminal(Aborted))        → DoneAborted
     Decision(AgentNeeded(a))           → HandoffAgent(a)
     Decision(HumanNeeded(a))           → HandoffHuman(a)
     Stalled(a)                         → StuckRepeated(a)
     CapReached(action)                 → StuckCapReached(action)
 
-From⟨Decision⟩ for Outcome      (inspect mode):
+From⟨Decision⟩ for Outcome      (inspect mode):    [blanket impl in ooda-core]
     Execute(a)                         → WouldAdvance(a)        ← single substitution rule
     Halt(Success)                      → Paused                  ← all halts pass through
-    Halt(Terminal(Merged))             → DoneMerged                via the same DecisionHalt
-    Halt(Terminal(Closed))             → DoneClosed                projection used in loop
+    Halt(Terminal(Succeeded))          → DoneSucceeded             via the same DecisionHalt
+    Halt(Terminal(Aborted))            → DoneAborted               projection used in loop
     Halt(AgentNeeded(a))               → HandoffAgent(a)
     Halt(HumanNeeded(a))               → HandoffHuman(a)
 
@@ -459,8 +480,8 @@ exactly one header line; `Handoff*` variants additionally emit a
 prompt block. See `SKILL.md` for the per-variant header format.
 
 ```
-header(Outcome) ::=
-    DoneMerged                           "DoneMerged"
+header(Outcome) ::=                      ← left: variant; right: emitted stderr text
+    DoneSucceeded                        "DoneMerged"
     StuckRepeated(a)                     "StuckRepeated: {a.kind.name()}:{a.blocker}"
     StuckCapReached(a)                   "StuckCapReached: {a.kind.name()}:{a.blocker}"
     HandoffHuman(a)                      "HandoffHuman: {a.kind.name()}"  + prompt block
@@ -468,7 +489,7 @@ header(Outcome) ::=
     HandoffAgent(a)                      "HandoffAgent: {a.kind.name()}"  + prompt block
     BinaryError(msg)                     "BinaryError: {msg}"
     Paused                               "Paused"
-    DoneClosed                           "DoneClosed"
+    DoneAborted                          "DoneClosed"
     UsageError(msg)                      "UsageError: {msg}" + usage text
 
 prompt block ::= "  prompt: {a.description}"      ← 10-byte prefix is contract
@@ -506,7 +527,7 @@ Bundle(prs).exit_code() :=
     else if ∃ p ∈ prs. p.outcome = StuckCapReached  → 2
     else if ∃ p ∈ prs. p.outcome = StuckRepeated    → 1
     else if ∃ p ∈ prs. p.outcome = WouldAdvance     → 4
-    else (DoneMerged | DoneClosed | Paused only)    → 0
+    else (DoneSucceeded | DoneAborted | Paused only) → 0
 ```
 
 **Coarsening trade-off.** `/ooda-pr`'s 1:1 variant→exit gives
@@ -580,7 +601,7 @@ record : ProcessOutcome → JSON object
     Handoff*(a)→ Stuck*(a) fields ⊎ { prompt = a.description }
     WouldAdvance(a) → Stuck*(a) fields ⊎ { automation = format_automation(a.automation) }
     BinaryError(s)  → base ⊎ { msg = s }
-    DoneMerged | DoneClosed | Paused → base
+    DoneSucceeded | DoneAborted | Paused → base
 ```
 
 ### Suite-level Recorder (`suite_recorder`)

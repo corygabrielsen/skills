@@ -14,6 +14,7 @@ implementation see `src/`.
 
 ```
 ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder ⊕ outcome
+        ⊕ ooda-core (sibling crate)
 
 main      : Argv → Outcome → ExitCode
             ExitCode = Outcome.exit_code()    (1:1 variant → code)
@@ -30,6 +31,35 @@ The binary is a **stateless step function**. Each invocation: open
 recorder → observe filesystem → orient → decide → optionally act →
 emit one Outcome. Cross-iteration logic lives in the outer Claude
 session that dispatches on the exit code.
+
+## Shared boundary types (`ooda-core` crate)
+
+This binary depends on the sibling [`ooda-core`](../ooda-core/)
+library crate for the cross-binary type spine: `Outcome`,
+`Decision`, `DecisionHalt`, `HaltReason`, `Terminal`, `Action`,
+`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, and the
+`ActionKindName` trait. Each generic-over-`ActionKind` type is
+instantiated locally via a type alias
+(`pub type Outcome = ooda_core::Outcome<ActionKind>` and similar).
+The codex-review-domain `ActionKind` enum and its
+`ActionKindName::name()` impl stay in `decide/action.rs`;
+`ReasoningLevel` (the ladder type) lives alongside it.
+
+**Variant name ≠ stderr header.** Rust variant names
+(`DoneSucceeded`, `DoneAborted`, `Paused`) are neutral verbs
+shared with the three sibling OODA binaries. Stderr headers
+emitted by this binary's `render_outcome` are the codex-review
+vocabulary that callers see:
+
+| Variant         | Stderr header    | Exit |
+| --------------- | ---------------- | :--: |
+| `DoneSucceeded` | `DoneFixedPoint` |  0   |
+| `DoneAborted`   | `DoneAborted`    |  8   |
+| `Paused`        | `Idle`           |  7   |
+
+The exit code is the formal contract; the stderr text is
+codex-flavoured documentation. The variant column in the
+Outcome section below uses ooda-core names.
 
 ## Domain primitives (`ids`)
 
@@ -101,7 +131,7 @@ Decision =
 
 DecisionHalt =
     Success
-  | Terminal(Terminal)         -- FixedPoint | Aborted
+  | Terminal(Terminal)         -- Succeeded | Aborted  (Succeeded is the codex fixed point)
   | AgentNeeded(Action)
   | HumanNeeded(Action)
 
@@ -127,7 +157,7 @@ In-batch state machine:
 match (batch_state, current_level == ceiling):
   (NotStarted,                _)     → Execute(RunReviews)
   (Running { c < expected },  _)     → Execute(AwaitReviews)
-  (Complete { all clean },    true)  → Halt(Terminal(FixedPoint))
+  (Complete { all clean },    true)  → Halt(Terminal(Succeeded))   -- codex fixed point
   (Complete { all clean },    false) → Halt(AgentNeeded(Retrospective))
   (Complete { has issues },   _)     → Halt(AgentNeeded(AddressBatch))
 ```
@@ -234,32 +264,32 @@ The orchestrator-facing CLI exposes these through `--mark-*`
 subcommands. Each one combines a `record_outcome` call with the
 appropriate level transition and returns a documented Outcome:
 
-| Flag                                 | Records                               | Transition                          | Outcome             |
+| Flag                                 | Records                               | Transition                          | Stderr header       |
 | ------------------------------------ | ------------------------------------- | ----------------------------------- | ------------------- |
 | `--mark-retro-clean` (at ceiling)    | `Clean(level)`                        | none                                | `DoneFixedPoint`    |
 | `--mark-retro-clean` (below ceiling) | `Clean(level)`                        | `advance_level`                     | `Idle`              |
 | `--mark-retro-changes REASON`        | `RetrospectiveChanges(level, reason)` | `restart_from_floor`                | `Idle`              |
 | `--mark-address-passed`              | `Addressed(level, issue_count)`       | `drop_level` or next batch at floor | `Idle`              |
-| `--mark-address-failed DETAILS`      | (none)                                | none                                | `HandoffHuman(...)` |
+| `--mark-address-failed DETAILS`      | (none)                                | none                                | `HandoffHuman: ...` |
 
 ## outcome
 
 ```
-Outcome =
-    DoneFixedPoint           0
-  | StuckRepeated(Action)    1
-  | StuckCapReached(Action)  2
-  | HandoffHuman(Action)     3
-  | WouldAdvance(Action)     4    -- inspect mode (not wired)
-  | HandoffAgent(Action)     5
-  | BinaryError(String)      6
-  | Idle                     7
-  | DoneAborted              8
-  | UsageError(String)       64
+Outcome =                          exit  stderr
+    DoneSucceeded                    0   "DoneFixedPoint"
+  | StuckRepeated(Action)            1   "StuckRepeated: ..."
+  | StuckCapReached(Action)          2   "StuckCapReached: ..."
+  | HandoffHuman(Action)             3   "HandoffHuman: ..."
+  | WouldAdvance(Action)             4   "WouldAdvance: ..."     -- inspect mode (not wired)
+  | HandoffAgent(Action)             5   "HandoffAgent: ..."
+  | BinaryError(String)              6   "BinaryError: ..."
+  | Paused                           7   "Idle"
+  | DoneAborted                      8   "DoneAborted"
+  | UsageError(String)              64   "UsageError: ..."
 
-From⟨HaltReason⟩  : loop-mode collapse
-From⟨Decision⟩    : inspect-mode collapse (not wired)
-From⟨LoopError⟩   : caught external failure
+From⟨HaltReason⟩  : loop-mode collapse        [blanket impl in ooda-core]
+From⟨Decision⟩    : inspect-mode collapse     [blanket impl in ooda-core] (not wired)
+From⟨LoopError⟩   : caught external failure   [per-binary impl]
 ```
 
 The exit-code mapping is the binary's contract. Callers dispatch on

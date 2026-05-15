@@ -54,6 +54,6 @@ pub use non_empty::NonEmpty;
 pub use outcome::Outcome;
 pub use polling_interval::{PollingInterval, PollingIntervalError};
 pub use pr_state::{PrState, TerminalState};
-pub use rate_limit::{RateLimitHit, RateLimitScope};
+pub use rate_limit::{BucketState, RateLimitBudget, RateLimitHit, RateLimitScope};
 pub use single_line_string::SingleLineString;
 pub use stall_key::StallKey;

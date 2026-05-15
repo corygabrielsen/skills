@@ -18,7 +18,8 @@ The crate exposes:
 
 | Type                              | Role                                                                                                                      |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `Outcome<K>`                      | Binary boundary. 1:1 variant → exit-code (0–8, 64). Generic over a per-binary `ActionKind`.                               |
+| `Outcome<K>`                      | Binary boundary. Generic over a per-binary `ActionKind`. 1:1 variant → [`ExitCode`]; see "Exit-code scheme" below.        |
+| `ExitCode`                        | The numeric process-exit contract. `#[repr(u8)]` discriminants in one place; every typed result returns or takes this.    |
 | `Decision<K>` / `DecisionHalt<K>` | Returned by `decide()`. Three-layered halt taxonomy (`Success` / `Terminal` / `AgentNeeded` / `HumanNeeded`).             |
 | `HaltReason<K>`                   | Returned by `run_loop`. Superset of `DecisionHalt` with loop-only `Stalled` / `CapReached` variants.                      |
 | `Terminal`                        | `Succeeded` \| `Aborted` — neutral verbs that fit every domain.                                                           |
@@ -59,6 +60,60 @@ Existing call sites continue to write `Outcome::DoneSucceeded`,
 `Action { kind, … }`, `Decision::Halt(DecisionHalt::Success)`
 without seeing the generic parameter — type aliases are
 transparent.
+
+## Exit-code scheme
+
+`Outcome::exit_code()` returns an [`ExitCode`] — a `#[repr(u8)]`
+enum that holds the entire numeric contract. Call sites never
+hardcode numbers; they pattern-match on `ExitCode::Variant`. The
+numbers live exactly once, in `src/exit_code.rs`.
+
+| Code | Variant         | Meaning                                                                                           |
+| ---: | --------------- | ------------------------------------------------------------------------------------------------- |
+|    0 | DoneSucceeded   | Terminal success (PR merged, codex ladder satisfied)                                              |
+|    1 | Paused          | Loop completed this pass with no candidate action. Re-invoke later                                |
+|    2 | WouldAdvance    | Inspect-only: would have run an action                                                            |
+|    3 | HandoffHuman    | Handoff halt — caller must surface to a human                                                     |
+|    4 | HandoffAgent    | Handoff halt — caller must dispatch an agent                                                      |
+|    5 | DoneAborted     | Terminal non-success (PR closed without merge, ladder abandoned)                                  |
+|    6 | StuckRepeated   | Escalation halt — same `(kind, blocker)` action fired twice consecutively                         |
+|    7 | StuckCapReached | Escalation halt — iteration cap hit without halting                                               |
+|   64 | UsageError      | BSD `sysexits.h` `EX_USAGE` — CLI parse failure                                                   |
+|   70 | BinaryError     | BSD `sysexits.h` `EX_SOFTWARE` — caught internal failure (subprocess, IO)                         |
+|  130 | _(reserved)_    | `SIGINT` (`128 + 2`). Synthesized by the shell on signal-kill; the binary itself never returns it |
+|  143 | _(reserved)_    | `SIGTERM` (`128 + 15`). Same as `SIGINT`                                                          |
+
+Codes `8–63` and `65–69` are deliberately unassigned. Adding a
+new variant should either consume one of these slots (for a
+genuinely new typed result) or adopt the appropriate `sysexits.h`
+code (`EX_IOERR = 74`, `EX_TEMPFAIL = 75`, etc.) — never invent
+a number for a category sysexits already names.
+
+### Why these numbers
+
+Three traditions converge in the scheme:
+
+1. **POSIX shell + signals.** `0` for success; `128 + N` for
+   signals. Non-negotiable.
+2. **grep / diff / pytest** — _information-bearing low codes_.
+   `1` is not "the tool broke"; it's "the tool worked and here
+   is the result you asked for". `grep "needle"` exits `1` for
+   no-match; pytest exits `1` when tests fail. `Paused` is the
+   OODA family's analog: the loop ran, nothing needed driving,
+   caller may invoke again later.
+3. **BSD `sysexits.h`** (sendmail, 1993; adopted by `mail`,
+   `postfix`, `systemd`, etc.). `64–78` are the closest thing
+   the Unix world has to standardized typed-error codes:
+   `EX_USAGE = 64`, `EX_SOFTWARE = 70`, `EX_IOERR = 74`,
+   `EX_TEMPFAIL = 75`. The OODA binaries adopt `64` and `70`
+   verbatim; future error categories should take other
+   sysexits slots rather than squat on the low range.
+
+Within the typed-halt block (`1–7`) the ordering is
+**escalation-intensity ascending**: benign at the low end
+(Paused, WouldAdvance), handoffs in the middle, escalation
+halts at the high end. An agent reading `$?` can dispatch on
+rough magnitude even without recalling each variant.
 
 ## Variant name vs stderr header
 

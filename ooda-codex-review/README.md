@@ -277,15 +277,16 @@ appropriate level transition and returns a documented Outcome:
 ```
 Outcome =                          exit  stderr
     DoneSucceeded                    0   "DoneFixedPoint"
-  | StuckRepeated(Action)            1   "StuckRepeated: ..."
-  | StuckCapReached(Action)          2   "StuckCapReached: ..."
+  | Paused                           1   "Idle"
+  | WouldAdvance(Action)             2   "WouldAdvance: ..."     -- inspect mode (not wired)
   | HandoffHuman(Action)             3   "HandoffHuman: ..."
-  | WouldAdvance(Action)             4   "WouldAdvance: ..."     -- inspect mode (not wired)
-  | HandoffAgent(Action)             5   "HandoffAgent: ..."
-  | BinaryError(String)              6   "BinaryError: ..."
-  | Paused                           7   "Idle"
-  | DoneAborted                      8   "DoneAborted"
+  | HandoffAgent(Action)             4   "HandoffAgent: ..."
+  | DoneAborted                      5   "DoneAborted"
+  | StuckRepeated(Action)            6   "StuckRepeated: ..."
+  | StuckCapReached(Action)          7   "StuckCapReached: ..."
   | UsageError(String)              64   "UsageError: ..."
+  | BinaryError(String)             70   "BinaryError: ..."
+  -- reserved: 130 (SIGINT), 143 (SIGTERM) — kernel-synthesized
 
 From⟨HaltReason⟩  : loop-mode collapse        [blanket impl in ooda-core]
 From⟨Decision⟩    : inspect-mode collapse     [blanket impl in ooda-core] (not wired)

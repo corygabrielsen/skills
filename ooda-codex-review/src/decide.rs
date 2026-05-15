@@ -59,7 +59,7 @@ pub fn decide(oriented: &OrientedState) -> Decision {
             // handoff. Below ceiling: hand off to retrospective
             // synthesis as before.
             if oriented.current_level == oriented.ceiling {
-                return Decision::Halt(DecisionHalt::Terminal(Terminal::FixedPoint));
+                return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
             }
             mk_retrospective(oriented.current_level)
         }
@@ -268,7 +268,7 @@ mod tests {
         let d = decide(&o);
         assert!(matches!(
             d,
-            Decision::Halt(DecisionHalt::Terminal(Terminal::FixedPoint))
+            Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded))
         ));
     }
 
@@ -287,7 +287,7 @@ mod tests {
         let d = decide(&o);
         assert!(matches!(
             d,
-            Decision::Halt(DecisionHalt::Terminal(Terminal::FixedPoint))
+            Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded))
         ));
     }
 

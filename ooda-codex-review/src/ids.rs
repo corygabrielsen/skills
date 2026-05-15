@@ -75,36 +75,9 @@ impl fmt::Display for GitCommitSha {
 /// halt the loop with `Stalled`. The key MUST NOT embed varying
 /// counts or progress markers.
 ///
-/// No serde — `BlockerKey` is constructed and consumed entirely
-/// inside the decide/runner layers; nothing serializes it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct BlockerKey(String);
-
-impl BlockerKey {
-    pub fn parse(s: impl Into<String>) -> Result<Self, IdError> {
-        let s = s.into();
-        if s.is_empty() {
-            return Err(err("blocker key", "empty"));
-        }
-        Ok(Self(s))
-    }
-
-    pub(crate) fn tag(s: impl Into<String>) -> Self {
-        let s = s.into();
-        assert!(!s.is_empty(), "BlockerKey::tag called with empty string");
-        Self(s)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for BlockerKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
+/// constructor, and infallible `tag` live in the shared crate.
+pub use ooda_core::BlockerKey;
 
 // -- BranchName ------------------------------------------------------
 

@@ -41,7 +41,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  --trace PATH         also append the compact trace to PATH\n  -h, --help           show this help and exit\n\
          \n\
-         Exit codes — aggregate priority projection over per-PR Outcomes:\n  0 all DoneMerged (or mixed terminal: Paused/DoneClosed/DoneMerged)\n  1 any StuckRepeated      2 any StuckCapReached    3 any HandoffHuman\n  4 any WouldAdvance       5 any HandoffAgent       6 any BinaryError\n  7 (unused at suite level — Paused folded into 0)\n  8 (unused at suite level — DoneClosed folded into 0)\n  64 UsageError\n\
+         Exit codes — aggregate priority projection over per-PR Outcomes:\n   0 all DoneMerged/DoneClosed/Paused (no further action)\n   1 (unused at suite level — Paused folds into 0)\n   2 any WouldAdvance\n   3 any HandoffHuman\n   4 any HandoffAgent\n   5 (unused at suite level — DoneClosed folds into 0)\n   6 any StuckRepeated\n   7 any StuckCapReached\n  64 UsageError\n  70 any BinaryError\n  (130 SIGINT, 143 SIGTERM reserved)\n\
          Priority order (highest first): UsageError > BinaryError > HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated > WouldAdvance > terminal."
     );
 }

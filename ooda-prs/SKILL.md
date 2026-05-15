@@ -436,7 +436,7 @@ MultiOutcome =
 ProcessOutcome = (RepoSlug, PullRequestNumber, Outcome)
 
 Outcome =                                              -- per-PR; identical to /ooda-pr
-    DoneMerged
+    DoneSucceeded                                      -- stderr: "DoneMerged"
   ⊕ StuckRepeated(Action)
   ⊕ StuckCapReached(Action)
   ⊕ HandoffHuman(Action)
@@ -444,7 +444,7 @@ Outcome =                                              -- per-PR; identical to /
   ⊕ HandoffAgent(Action)
   ⊕ BinaryError(String)
   ⊕ Paused
-  ⊕ DoneClosed
+  ⊕ DoneAborted                                        -- stderr: "DoneClosed"
   ⊕ UsageError(String)                                 -- parser-only; never appears
                                                            in a ProcessOutcome
 ```
@@ -464,21 +464,21 @@ channels).
 
 `MultiOutcome::exit_code()` is a **priority projection**:
 
-| Condition                                          | `$?` | Mode reachability   |
-| :------------------------------------------------- | :--: | :------------------ |
-| `MultiOutcome::UsageError`                         |  64  | both (parser-level) |
-| any `ProcessOutcome` carries `BinaryError(_)`      |  6   | both                |
-| else any carries `HandoffAgent(_)`                 |  5   | both                |
-| else any carries `HandoffHuman(_)`                 |  3   | both                |
-| else any carries `StuckCapReached(_)`              |  2   | loop only           |
-| else any carries `StuckRepeated(_)`                |  1   | loop only           |
-| else any carries `WouldAdvance(_)`                 |  4   | inspect only        |
-| else every PR ∈ `{DoneMerged, DoneClosed, Paused}` |  0   | both                |
+| Condition                                              | `$?` | Mode reachability   |
+| :----------------------------------------------------- | :--: | :------------------ |
+| `MultiOutcome::UsageError`                             |  64  | both (parser-level) |
+| any `ProcessOutcome` carries `BinaryError(_)`          |  6   | both                |
+| else any carries `HandoffAgent(_)`                     |  5   | both                |
+| else any carries `HandoffHuman(_)`                     |  3   | both                |
+| else any carries `StuckCapReached(_)`                  |  2   | loop only           |
+| else any carries `StuckRepeated(_)`                    |  1   | loop only           |
+| else any carries `WouldAdvance(_)`                     |  4   | inspect only        |
+| else every PR ∈ `{DoneSucceeded, DoneAborted, Paused}` |  0   | both                |
 
 **Priority order** (highest first): `UsageError > BinaryError >
 HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated >
 WouldAdvance > non-actionable`. The "non-actionable" class is the
-union `{DoneMerged, DoneClosed, Paused}`: every PR is either fully
+union `{DoneSucceeded, DoneAborted, Paused}`: every PR is either fully
 merged (exit-0 per-PR), already closed (exit-8 per-PR), or has no
 candidate action this pass (exit-7 per-PR — "Paused" is _not_ a
 terminal lifecycle state, just a poll-back-later signal). All three
@@ -572,7 +572,7 @@ log lines as `/ooda-pr`:
 ```
 
 `<DecisionHaltName>` is one of the literal strings `Success`,
-`Terminal(Merged)`, `Terminal(Closed)`, `AgentNeeded`,
+`Terminal(Succeeded)`, `Terminal(Aborted)`, `AgentNeeded`,
 `HumanNeeded` (from `DecisionHalt::name()`). The first three carry
 no action; `AgentNeeded` / `HumanNeeded` carry an `Action` whose
 blocker is appended in the second form.
@@ -704,7 +704,7 @@ Across PRs:
   driven exactly once. A `panic!` in any worker propagates at
   scope-exit and aborts the binary; partial per-PR ledgers from
   workers that ran to completion remain on disk.
-- Each per-PR halt outcome (any of `DoneMerged`, `DoneClosed`,
+- Each per-PR halt outcome (any of `DoneSucceeded`, `DoneAborted`,
   `Paused`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`,
   `WouldAdvance`, `HandoffAgent`, `BinaryError`) ends that PR's
   iteration. The worker that ran that PR returns to the atomic

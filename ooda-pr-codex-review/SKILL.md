@@ -378,11 +378,12 @@ Outcome's emission). Listed by emission site:
     of a finite five-element set of strings (two of which
     contain parentheses, so paren-splitting tokenizers or
     `\w+`-style regexes will split them): `Success`,
-    `Terminal(Merged)`, `Terminal(Closed)`, `AgentNeeded`,
-    `HumanNeeded`. Each maps to a boundary
-    `Outcome`: `Success` → `Paused` (exit 7), `Terminal(Merged)`
-    → `DoneMerged` (exit 0), `Terminal(Closed)` → `DoneClosed`
-    (exit 8), `AgentNeeded` → `HandoffAgent` (exit 5),
+    `Terminal(Succeeded)`, `Terminal(Aborted)`, `AgentNeeded`,
+    `HumanNeeded`. Each maps to a boundary `Outcome` variant:
+    `Success` → `Paused` (exit 7), `Terminal(Succeeded)` →
+    `DoneSucceeded` (exit 0, stderr header `DoneMerged`),
+    `Terminal(Aborted)` → `DoneAborted` (exit 8, stderr header
+    `DoneClosed`), `AgentNeeded` → `HandoffAgent` (exit 5),
     `HumanNeeded` → `HandoffHuman` (exit 3). Payloads are not
     expanded in the iter-log line; the boundary emission carries
     them — `Handoff*` in the prompt block, `Stuck*` in the
@@ -453,20 +454,21 @@ and `$?` remains the dispatch contract.
   `Wait(0s)` are representable by the formatter but no current
   action constructs them.
 
-**Header format.** The variants with no payload — exactly
-`DoneMerged`, `DoneClosed`, `Paused` — emit only the variant
-name on the header line (no colon, no trailing space). All
-other variants emit `<Variant>: <details>` (colon and one
+**Header format.** The stderr headers with no payload — exactly
+`DoneMerged`, `DoneClosed`, `Paused` (underlying variants
+`DoneSucceeded`, `DoneAborted`, `Paused`) — emit only the
+header token on the line (no colon, no trailing space). All
+other variants emit `<Header>: <details>` (colon and one
 ASCII space, then payload). A regex matching the header must
 allow both forms: `^(DoneMerged|DoneClosed|Paused)$` for the
-no-payload variants, `^<Variant>: ` for the rest. There is no
+no-payload headers, `^<Header>: ` for the rest. There is no
 `StuckCapReached:` (bare-colon) form — `StuckCapReached`
 always carries an `Action` and always emits the
 `<ActionKind>:<BlockerKey>` payload.
 
 | Exit | Outcome variant           | Stderr header                                           | Caller's response                                                                                                                                                                                                                                                                                                                                                |
 | :--: | ------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|  0   | `DoneMerged`              | `DoneMerged`                                            | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
+|  0   | `DoneSucceeded`           | `DoneMerged`                                            | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
 |  1   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`              | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
 |  2   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`            | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
 |  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by prompt block) | Surface the prompt verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                                                                                                              |
@@ -474,7 +476,7 @@ always carries an `Action` and always emits the
 |  5   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by prompt block) | Dispatch an agent with the prompt as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                                                                                       |
 |  6   | `BinaryError(msg)`        | `BinaryError: <msg>`                                    | Caught external failure (gh subprocess, network, IO). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                                                              |
 |  7   | `Paused`                  | `Paused`                                                | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
-|  8   | `DoneClosed`              | `DoneClosed`                                            | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
+|  8   | `DoneAborted`             | `DoneClosed`                                            | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
 |  64  | `UsageError(msg)`         | `UsageError: <msg>` (followed by full usage block)      | Fix the invocation. The usage block (same content as `--help` writes to stdout) is written to stderr immediately after the header, so callers don't need to re-invoke with `--help` to see syntax.                                                                                                                                                               |
 
 **1:1 variant-to-exit-code mapping** is the design rule. Each
@@ -605,7 +607,7 @@ are halts (not executes) in both modes — inspect emits the same
 
 | Exit | Variant           |                      Loop emits                       |         `inspect` emits         |
 | :--: | ----------------- | :---------------------------------------------------: | :-----------------------------: |
-|  0   | `DoneMerged`      |                          yes                          |               yes               |
+|  0   | `DoneSucceeded`   |                          yes                          |               yes               |
 |  1   | `StuckRepeated`   |                          yes                          | no (requires ≥2 non-Wait iters) |
 |  2   | `StuckCapReached` |                          yes                          |     no (cap doesn't apply)      |
 |  3   | `HandoffHuman`    |                          yes                          |               yes               |
@@ -613,7 +615,7 @@ are halts (not executes) in both modes — inspect emits the same
 |  5   | `HandoffAgent`    |                          yes                          |               yes               |
 |  6   | `BinaryError`     |                          yes                          |               yes               |
 |  7   | `Paused`          |                          yes                          |               yes               |
-|  8   | `DoneClosed`      |                          yes                          |               yes               |
+|  8   | `DoneAborted`     |                          yes                          |               yes               |
 |  64  | `UsageError`      | yes (mode-independent — fires before mode dispatched) |     yes (mode-independent)      |
 
 ## Loop semantics
@@ -638,7 +640,8 @@ neither fires in practice today.
 
 `observe` runs unconditionally each iteration; `orient` runs whenever `observe` succeeds (an `observe` failure short-circuits to `BinaryError(msg)` exit 6 before `orient`).
 `decide` then checks the PR's lifecycle state: if `Merged` or
-`Closed`, the loop emits `DoneMerged` or `DoneClosed` respectively
+`Closed`, the loop emits the `DoneSucceeded` or `DoneAborted`
+variant respectively (stderr `DoneMerged` / `DoneClosed`)
 (lifecycle short-circuits inside `decide`, not before `orient`).
 Otherwise `decide` selects a candidate action from the `orient`
 output and inspects its `automation` field:

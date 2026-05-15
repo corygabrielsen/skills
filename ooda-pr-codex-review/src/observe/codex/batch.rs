@@ -1,14 +1,34 @@
 //! Per-level batch scanning: read the run directory, count log
 //! files, extract completed verdicts, build [`BatchState`].
 //!
-//! Layout:
+//! Filesystem layout:
+//!
 //! ```text
 //! <batch_dir>/
 //!   head_sha.txt              (the PR head SHA the batch was spawned against)
 //!   {level}-1.log             stdout/stderr of the codex review subprocess
-//!   {level}-1.exit            exit status when the subprocess finished
+//!   {level}-1.exit            exit status written when the subprocess finished
+//!   {level}-2.log
+//!   {level}-2.exit
 //!   ...
+//!   {level}-n.log
+//!   {level}-n.exit
 //! ```
+//!
+//! A log file is "completed" once it contains a `codex` marker line
+//! AND a non-empty body after the marker. The marker-only state
+//! (body still streaming) counts as Running — operationally the body
+//! lands within seconds of the marker, but observing mid-stream once
+//! burned us with empty-verdict false-cleans.
+//!
+//! Head-SHA gating: each batch directory is stamped with the PR
+//! head SHA at spawn time (`head_sha.txt`). When the PR head
+//! changes (e.g. a fix is pushed) the per-head batch directory
+//! naming already prevents collisions, but a stale `batch_dir`
+//! lingering from a prior head would otherwise look complete and
+//! short-circuit the re-run. Treating a missing or mismatched
+//! `head_sha.txt` as `NotStarted` forces a fresh spawn at the
+//! current head.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,26 +41,60 @@ use crate::ids::ReasoningLevel;
 
 use super::verdict::{self, VerdictClass};
 
-/// Per-level batch state.
+/// Per-level batch state. The three discrete states a batch can be
+/// in from the observe layer's perspective.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BatchState {
+    /// No log files for this level yet — `RunCodexReviewBatch` has
+    /// not been dispatched (or its spawn failed before any process
+    /// created its log), OR a prior batch's `head_sha.txt` does not
+    /// match the current PR head (treated as never-started so the
+    /// runner re-spawns at the current head).
     NotStarted,
+    /// Some logs are still streaming. `total` files exist on disk;
+    /// `completed` of them have a verdict body extracted.
+    /// `pending = total - completed`. Decide reads `completed` vs
+    /// `expected` to choose `AwaitCodexReviewBatch` vs
+    /// `AddressCodexReviewBatch`.
     Running { total: u32, completed: u32 },
+    /// All `expected` log files have completed verdicts. The
+    /// per-slot bodies and classifications are attached for the
+    /// orient/decide layers.
     Complete { verdicts: Vec<VerdictRecord> },
 }
 
+/// One reviewer's verdict within a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VerdictRecord {
+    /// 1-indexed slot within the batch (matches the `{n}` in
+    /// `{level}-{n}.log`).
     pub slot: u32,
+    /// Raw verdict body — everything after the last `codex` marker
+    /// line in the log.
     pub body: String,
+    /// Heuristic classification.
     pub class: VerdictClass,
 }
 
 /// Scan `batch_dir` for `{level}-*.log` files and produce a
-/// [`BatchState`]. Stale batches (mismatched `head_sha.txt`) are
+/// [`BatchState`]. `expected` is the configured `n` — the number
+/// of reviews launched for this batch.
+///
+/// Stale batches (missing or mismatched `head_sha.txt`) are
 /// reported as [`BatchState::NotStarted`] so the runner re-spawns
-/// at the current head.
+/// at the current head. This is the entire mechanism that lets a
+/// pushed fix invalidate prior codex verdicts.
+///
+/// Three-way logic once head_sha matches:
+///   - 0 files                 → `NotStarted`
+///   - completed < expected    → `Running { total, completed }`
+///   - completed == expected   → `Complete { verdicts }`
+///
+/// `expected` is required because filesystem absence cannot
+/// distinguish "review hasn't started" from "review crashed before
+/// its first log write". The orient/decide layer owns that
+/// interpretation; observe surfaces what's on disk.
 pub fn scan_batch(
     batch_dir: &Path,
     level: ReasoningLevel,
@@ -54,7 +108,7 @@ pub fn scan_batch(
         Err(e) => return Err(e),
     };
 
-    // Head SHA gate: a batch_dir without head_sha.txt or with a
+    // Head SHA gate: a batch_dir without `head_sha.txt` or with a
     // mismatch is treated as if the batch never started so the
     // runner re-spawns at the current head.
     match fs::read_to_string(batch_dir.join("head_sha.txt")) {
@@ -170,7 +224,9 @@ fn read_exit_status(path: &Path) -> io::Result<i32> {
 mod tests {
     use super::*;
 
-    fn temp_batch_dir(label: &str) -> std::path::PathBuf {
+    const SHA: &str = "matchsha";
+
+    fn temp_batch_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ooda-pr-codex-review-batch-test-{label}-{}",
             std::process::id()
@@ -191,8 +247,17 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, "deadbeef").unwrap();
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(s, BatchState::NotStarted);
+    }
+
+    #[test]
+    fn empty_dir_with_head_is_not_started() {
+        let dir = temp_batch_dir("empty");
+        write_head(&dir, SHA);
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        assert_eq!(s, BatchState::NotStarted);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -216,9 +281,57 @@ mod tests {
     }
 
     #[test]
+    fn ignores_other_levels() {
+        let dir = temp_batch_dir("other-levels");
+        write_head(&dir, SHA);
+        fs::write(dir.join("high-1.log"), "thinking\ncodex\nverdict\n").unwrap();
+        fs::write(dir.join("medium-1.log"), "thinking\ncodex\nverdict\n").unwrap();
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        assert_eq!(s, BatchState::NotStarted);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_only_counts_as_running() {
+        let dir = temp_batch_dir("marker-only");
+        write_head(&dir, SHA);
+        // Marker present but body empty → still streaming.
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
+        fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
+        fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        assert_eq!(
+            s,
+            BatchState::Running {
+                total: 3,
+                completed: 0
+            }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn partial_completion_is_running() {
+        let dir = temp_batch_dir("partial");
+        write_head(&dir, SHA);
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
+        fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        assert_eq!(
+            s,
+            BatchState::Running {
+                total: 3,
+                completed: 1
+            }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn full_completion_with_matching_head_classifies_each() {
         let dir = temp_batch_dir("complete");
-        write_head(&dir, "matchsha");
+        write_head(&dir, SHA);
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(
             dir.join("low-2.log"),
@@ -226,16 +339,110 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nLooks good.\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, "matchsha").unwrap();
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
         match s {
             BatchState::Complete { verdicts } => {
                 assert_eq!(verdicts.len(), 3);
+                assert_eq!(verdicts[0].slot, 1);
                 assert_eq!(verdicts[0].class, VerdictClass::Clean);
+                assert_eq!(verdicts[1].slot, 2);
                 assert_eq!(verdicts[1].class, VerdictClass::HasIssues);
+                assert_eq!(verdicts[2].slot, 3);
                 assert_eq!(verdicts[2].class, VerdictClass::Clean);
             }
             other => panic!("expected Complete, got {other:?}"),
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonzero_exit_status_is_binary_error_instead_of_running_forever() {
+        let dir = temp_batch_dir("nonzero-exit");
+        write_head(&dir, SHA);
+        fs::write(dir.join("low-1.log"), "error: unexpected argument '--pr'\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "2\n").unwrap();
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("slot 1 exited 2"), "msg: {msg}");
+        assert!(msg.contains("low-1.log"), "msg: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_exit_without_verdict_marker_is_binary_error() {
+        let dir = temp_batch_dir("zero-no-marker");
+        write_head(&dir, SHA);
+        fs::write(dir.join("low-1.log"), "thinking\nfinished without marker\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exited 0 without a verdict marker"),
+            "msg: {msg}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_exit_with_empty_verdict_body_is_binary_error() {
+        let dir = temp_batch_dir("zero-empty-body");
+        write_head(&dir, SHA);
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("without a verdict body"), "msg: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orphan_exit_status_is_binary_error() {
+        let dir = temp_batch_dir("orphan-exit");
+        write_head(&dir, SHA);
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-2.exit"), "0\n").unwrap();
+        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("slot 2"), "msg: {msg}");
+        assert!(msg.contains("without a matching log"), "msg: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_slots_keep_filename_slot_numbers() {
+        let dir = temp_batch_dir("filename-slots");
+        write_head(&dir, SHA);
+        fs::write(dir.join("low-2.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        let s = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap();
+        match s {
+            BatchState::Complete { verdicts } => assert_eq!(verdicts[0].slot, 2),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extra_completed_logs_are_still_running_until_expected_match() {
+        // 4 done but expected=3 — could happen if a stray log lingers
+        // from a prior batch. Treat as Running so decide doesn't commit
+        // to a mis-sized verdict set.
+        let dir = temp_batch_dir("oversize");
+        write_head(&dir, SHA);
+        for n in 1..=4 {
+            fs::write(
+                dir.join(format!("low-{n}.log")),
+                "thinking\ncodex\nNo issues found\n",
+            )
+            .unwrap();
+        }
+        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        assert_eq!(
+            s,
+            BatchState::Running {
+                total: 4,
+                completed: 4
+            }
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

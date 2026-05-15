@@ -289,4 +289,88 @@ mod tests {
             _ => panic!("expected UsageError"),
         }
     }
+
+    // ─── Outcome serialization schema goldens ───────────────────────
+    //
+    // The recorder writes `Outcome` to `outcome.json` via serde. The
+    // serialized shape is part of the on-disk caller contract — any
+    // variant rename or structural change here breaks downstream
+    // tooling. The exhaustive match in `outcome_serialization_golden`
+    // is the contract: adding a new `Outcome` variant fails to
+    // compile here until a golden arm is added.
+    //
+    // The Action payload's `kind` field serializes via K's
+    // `Serialize` impl. The test `K` is a unit struct (serializes as
+    // `null`); per-binary tests cover the real-K serialization via
+    // their own recorder goldens.
+
+    fn outcome_serialization_golden(o: &Outcome<K>) -> serde_json::Value {
+        use serde_json::json;
+        // The Action payload for every variant that carries one is
+        // the same dummy() — only the OUTER tag/wrapping shape
+        // differs across variants. dummy_action_json captures that
+        // canonical inner shape so the variant goldens stay short.
+        let dummy_action_json = json!({
+            "kind": null,
+            "effect": {"Full": {"log": "x"}},
+            "target_effect": "Blocks",
+            "urgency": "BlockingFix",
+            "blocker": "t",
+        });
+        match o {
+            // Unit variants serialize as a bare variant-name string.
+            Outcome::DoneSucceeded => json!("DoneSucceeded"),
+            Outcome::Paused => json!("Paused"),
+            Outcome::DoneAborted => json!("DoneAborted"),
+            // Tuple variants wrapping an Action serialize as
+            // `{"VariantName": <Action json>}`. Box<Action> is
+            // transparent via Box's Serialize impl.
+            Outcome::StuckRepeated(_) => json!({"StuckRepeated": dummy_action_json}),
+            Outcome::StuckCapReached(_) => json!({"StuckCapReached": dummy_action_json}),
+            Outcome::WouldAdvance(_) => json!({"WouldAdvance": dummy_action_json}),
+            Outcome::HandoffHuman(_) => json!({"HandoffHuman": dummy_action_json}),
+            Outcome::HandoffAgent(_) => json!({"HandoffAgent": dummy_action_json}),
+            // Tuple variants wrapping a SingleLineString serialize
+            // as `{"VariantName": "msg"}` — SingleLineString
+            // serializes transparently as a String.
+            Outcome::BinaryError(s) => json!({"BinaryError": s.as_str()}),
+            Outcome::UsageError(s) => json!({"UsageError": s.as_str()}),
+        }
+    }
+
+    /// One sample `Outcome` per variant. Hand-maintained; the length
+    /// sentinel in `outcome_serialization_goldens_exhaustive` catches
+    /// drift.
+    fn outcome_variant_samples() -> Vec<Outcome<K>> {
+        vec![
+            Outcome::DoneSucceeded,
+            Outcome::Paused,
+            Outcome::DoneAborted,
+            Outcome::StuckRepeated(Box::new(dummy())),
+            Outcome::StuckCapReached(Box::new(dummy())),
+            Outcome::WouldAdvance(Box::new(dummy())),
+            Outcome::HandoffHuman(Box::new(dummy())),
+            Outcome::HandoffAgent(Box::new(dummy())),
+            Outcome::BinaryError("err".into()),
+            Outcome::UsageError("bad flag".into()),
+        ]
+    }
+
+    #[test]
+    fn outcome_serialization_goldens_exhaustive() {
+        let samples = outcome_variant_samples();
+        assert_eq!(
+            samples.len(),
+            10,
+            "`outcome_variant_samples` must include one sample per \
+             `Outcome` variant; adding a new variant requires adding \
+             both an arm in `outcome_serialization_golden` AND a \
+             sample here.",
+        );
+        for outcome in samples {
+            let actual = serde_json::to_value(&outcome).unwrap();
+            let expected = outcome_serialization_golden(&outcome);
+            assert_eq!(actual, expected, "schema mismatch for {outcome:?}");
+        }
+    }
 }

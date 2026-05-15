@@ -98,20 +98,20 @@ pub enum ActionKind {
     /// level against the PR's current head. Full automation; the
     /// next iteration's observe sees the in-flight batch.
     RunCodexReviewBatch {
-        level: crate::ids::ReasoningLevel,
+        level: crate::ids::CodexReasoningLevel,
         n: u32,
     },
     /// Codex review batch is streaming. Wait automation; runner
     /// sleeps then re-observes.
     AwaitCodexReviewBatch {
-        level: crate::ids::ReasoningLevel,
+        level: crate::ids::CodexReasoningLevel,
         pending: u32,
     },
     /// Codex review batch completed with at least one reviewer
     /// flagging issues. Hand to an agent that verifies and addresses
     /// each issue. Description carries the verdict bodies as prompt.
     AddressCodexReviewBatch {
-        level: crate::ids::ReasoningLevel,
+        level: crate::ids::CodexReasoningLevel,
         count: u32,
     },
 }

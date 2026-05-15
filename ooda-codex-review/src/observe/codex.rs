@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::decide::action::ReasoningLevel;
+use crate::decide::action::CodexReasoningLevel;
 use crate::ids::{RepoId, ReviewTarget};
 
 use batch::{BatchState, scan_batch};
@@ -33,7 +33,7 @@ pub use verdict::VerdictClass;
 pub struct CodexObservations {
     pub repo_id: RepoId,
     pub target: ReviewTarget,
-    pub current_level: ReasoningLevel,
+    pub current_level: CodexReasoningLevel,
     pub batch_state: BatchState,
     /// The directory the batch was scanned from. Recorded so the
     /// orient/decide layers can reference log paths in handoff
@@ -62,7 +62,7 @@ pub fn fetch_all(
     repo_id: RepoId,
     target: ReviewTarget,
     batch_dir: &Path,
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     expected: u32,
 ) -> io::Result<CodexObservations> {
     let batch_state = scan_batch(batch_dir, level, expected)?;
@@ -105,14 +105,14 @@ mod tests {
             dummy_repo_id(),
             ReviewTarget::Uncommitted,
             &dir,
-            ReasoningLevel::Low,
+            CodexReasoningLevel::Low,
             2,
         )
         .unwrap();
 
         assert_eq!(obs.repo_id.as_str(), "ooda-codex-review-deadbeef");
         assert_eq!(obs.target, ReviewTarget::Uncommitted);
-        assert_eq!(obs.current_level, ReasoningLevel::Low);
+        assert_eq!(obs.current_level, CodexReasoningLevel::Low);
         assert_eq!(obs.batch_dir, dir);
         match obs.batch_state {
             BatchState::Complete { verdicts } => assert_eq!(verdicts.len(), 2),
@@ -128,7 +128,7 @@ mod tests {
             dummy_repo_id(),
             ReviewTarget::Uncommitted,
             &dir,
-            ReasoningLevel::High,
+            CodexReasoningLevel::High,
             5,
         )
         .unwrap();

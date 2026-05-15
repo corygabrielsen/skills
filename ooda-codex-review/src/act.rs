@@ -19,7 +19,7 @@ use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::decide::action::{Action, ActionEffect, ActionKind, ReasoningLevel};
+use crate::decide::action::{Action, ActionEffect, ActionKind, CodexReasoningLevel};
 use crate::ids::ReviewTarget;
 
 /// Per-invocation environment for `act`. Stable across all
@@ -116,7 +116,11 @@ fn dispatch_full(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
 /// error. Already-spawned children are *not* killed — they'll
 /// continue and their logs will land. The next observe call will
 /// see partial completion (Running with `total < expected`).
-fn spawn_codex_reviews(level: ReasoningLevel, n: u32, ctx: &ActContext) -> Result<(), ActError> {
+fn spawn_codex_reviews(
+    level: CodexReasoningLevel,
+    n: u32,
+    ctx: &ActContext,
+) -> Result<(), ActError> {
     std::fs::create_dir_all(&ctx.batch_dir)
         .map_err(|source| ActError::Spawn { slot: 0, source })?;
 
@@ -164,7 +168,7 @@ fn spawn_codex_reviews(level: ReasoningLevel, n: u32, ctx: &ActContext) -> Resul
 /// Build the `codex review` argv for the given target and reasoning
 /// level. Pure — no I/O. Public for unit tests.
 pub fn build_codex_args(
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     target: &ReviewTarget,
 ) -> Result<Vec<OsString>, ActError> {
     let mut args = vec![OsString::from("review")];
@@ -199,7 +203,7 @@ pub fn build_codex_args(
 /// so observe can see child exit status after this process returns.
 pub fn build_codex_command(
     codex_bin: &std::path::Path,
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     target: &ReviewTarget,
 ) -> Result<Command, ActError> {
     let mut cmd = Command::new(codex_bin);
@@ -244,7 +248,7 @@ mod tests {
     fn build_command_uses_codex_bin_path() {
         let cmd = build_codex_command(
             std::path::Path::new("/fake/codex"),
-            ReasoningLevel::Low,
+            CodexReasoningLevel::Low,
             &ReviewTarget::Uncommitted,
         )
         .unwrap();
@@ -255,7 +259,7 @@ mod tests {
     fn build_command_uncommitted() {
         let cmd = build_codex_command(
             std::path::Path::new("codex"),
-            ReasoningLevel::Low,
+            CodexReasoningLevel::Low,
             &ReviewTarget::Uncommitted,
         )
         .unwrap();
@@ -273,7 +277,7 @@ mod tests {
         let branch = BranchName::parse("master").unwrap();
         let cmd = build_codex_command(
             std::path::Path::new("codex"),
-            ReasoningLevel::High,
+            CodexReasoningLevel::High,
             &ReviewTarget::Base(branch),
         )
         .unwrap();
@@ -292,7 +296,7 @@ mod tests {
         let sha = GitCommitSha::parse(&"a".repeat(40)).unwrap();
         let cmd = build_codex_command(
             std::path::Path::new("codex"),
-            ReasoningLevel::Medium,
+            CodexReasoningLevel::Medium,
             &ReviewTarget::Commit(sha),
         )
         .unwrap();
@@ -311,7 +315,7 @@ mod tests {
     fn build_command_rejects_unresolved_pr_target() {
         let err = build_codex_command(
             std::path::Path::new("codex"),
-            ReasoningLevel::Xhigh,
+            CodexReasoningLevel::Xhigh,
             &ReviewTarget::Pr(42),
         )
         .unwrap_err();
@@ -322,7 +326,7 @@ mod tests {
     fn act_unsupported_for_agent() {
         let action = Action {
             kind: ActionKind::Retrospective {
-                level: ReasoningLevel::Low,
+                level: CodexReasoningLevel::Low,
             },
             effect: ActionEffect::Agent {
                 prompt: ooda_core::HandoffPrompt::new("n/a"),
@@ -362,7 +366,7 @@ mod tests {
         };
         let action = Action {
             kind: ActionKind::RunReviews {
-                level: ReasoningLevel::Low,
+                level: CodexReasoningLevel::Low,
                 n: 2,
             },
             effect: ActionEffect::Full { log: "n/a".into() },

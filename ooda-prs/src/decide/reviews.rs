@@ -166,8 +166,8 @@ fn address_change_request_prompt() -> ooda_core::HandoffPrompt {
 ///
 /// The actor receives the prompt material directly — no second
 /// `gh api graphql` round-trip required to discover what to fix.
-fn address_threads_prompt(threads: &[ReviewThread]) -> ooda_core::HandoffPrompt {
-    use ooda_core::{HandoffPrompt, NonEmpty as NE, SingleLineString, Witness};
+fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::HandoffPrompt {
+    use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
     let outdated_count = threads
         .iter()
@@ -205,38 +205,33 @@ fn address_threads_prompt(threads: &[ReviewThread]) -> ooda_core::HandoffPrompt 
         prompt.push_paragraph(format!("{}.", bits.join(" · ")));
     }
 
-    let witnesses: Vec<Witness> = threads
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let tag = match t.state {
-                ThreadState::Outdated => "    [outdated]",
-                // Live and Resolved both render without a tag;
-                // Resolved is excluded by the caller's filter.
-                _ => "",
-            };
-            let label = SingleLineString::new(format!(
-                "{}. {} @ {}{}    thread_id: {}",
-                i + 1,
-                t.author,
-                t.location,
-                tag,
-                t.id,
-            ));
-            let body = t
-                .body
-                .lines()
-                .map(|line| format!("   > {line}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            Witness { label, body }
-        })
-        .collect();
-    // `threads` is non-empty by the caller's filter; expressing
-    // that here without a panic would require threading
-    // `NonEmpty<ReviewThread>` through the signature. Caller
-    // contract is sufficient.
-    prompt.push_witnesses(NE::try_from_vec(witnesses).expect("threads is non-empty by caller"));
+    // `enumerate_map_ref` preserves the non-empty invariant
+    // structurally: input `NonEmpty<ReviewThread>` ⇒ output
+    // `NonEmpty<Witness>`, no runtime check on cardinality.
+    let witnesses = threads.enumerate_map_ref(|i, t| {
+        let tag = match t.state {
+            ThreadState::Outdated => "    [outdated]",
+            // Live and Resolved both render without a tag;
+            // Resolved is excluded by the caller's filter.
+            _ => "",
+        };
+        let label = SingleLineString::new(format!(
+            "{}. {} @ {}{}    thread_id: {}",
+            i + 1,
+            t.author,
+            t.location,
+            tag,
+            t.id,
+        ));
+        let body = t
+            .body
+            .lines()
+            .map(|line| format!("   > {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Witness { label, body }
+    });
+    prompt.push_witnesses(witnesses);
 
     prompt.push_paragraph(
         "For each issue, think deeply about the entire class of issue, in \

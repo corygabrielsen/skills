@@ -15,7 +15,7 @@
 //! Full/Wait. Agent/Human halts return up to the caller.
 
 use crate::act::{ActContext, ActError, act};
-use crate::decide::action::{Action, ReasoningLevel};
+use crate::decide::action::{Action, CodexReasoningLevel};
 use crate::decide::decide;
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{RepoId, ReviewTarget};
@@ -46,14 +46,14 @@ pub struct LoopConfig {
     /// all-clean batch at this level, decide halts with
     /// `Terminal(Succeeded)` (the codex-review fixed point at the
     /// ceiling) instead of emitting a `Retrospective` handoff.
-    pub ceiling: ReasoningLevel,
+    pub ceiling: CodexReasoningLevel,
 }
 
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
             max_iterations: 50,
-            ceiling: ReasoningLevel::Xhigh,
+            ceiling: CodexReasoningLevel::Xhigh,
         }
     }
 }

@@ -21,7 +21,7 @@ use crate::observe::codex::VerdictClass;
 use crate::observe::codex::batch::{BatchState, VerdictRecord};
 use crate::orient::OrientedState;
 
-use action::{Action, ActionEffect, ActionKind, ReasoningLevel, TargetEffect, Urgency};
+use action::{Action, ActionEffect, ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use decision::{Decision, DecisionHalt, Terminal};
 
 /// Default polling cadence for `AwaitReviews`. The runner sleeps
@@ -93,7 +93,7 @@ fn all_clean(verdicts: &[VerdictRecord]) -> bool {
         .all(|v| matches!(v.class, VerdictClass::Clean))
 }
 
-fn mk_run_reviews(level: ReasoningLevel, n: u32) -> Action {
+fn mk_run_reviews(level: CodexReasoningLevel, n: u32) -> Action {
     Action {
         kind: ActionKind::RunReviews { level, n },
         effect: ActionEffect::Full {
@@ -108,7 +108,7 @@ fn mk_run_reviews(level: ReasoningLevel, n: u32) -> Action {
     }
 }
 
-fn mk_await_reviews(level: ReasoningLevel, pending: u32) -> Action {
+fn mk_await_reviews(level: CodexReasoningLevel, pending: u32) -> Action {
     Action {
         kind: ActionKind::AwaitReviews { level, pending },
         effect: ActionEffect::Wait {
@@ -124,7 +124,7 @@ fn mk_await_reviews(level: ReasoningLevel, pending: u32) -> Action {
     }
 }
 
-fn mk_address_batch(level: ReasoningLevel, issue_count: u32) -> Action {
+fn mk_address_batch(level: CodexReasoningLevel, issue_count: u32) -> Action {
     Action {
         kind: ActionKind::AddressBatch { issue_count, level },
         effect: ActionEffect::Agent {
@@ -141,7 +141,7 @@ fn mk_address_batch(level: ReasoningLevel, issue_count: u32) -> Action {
     }
 }
 
-fn mk_retrospective(level: ReasoningLevel) -> Action {
+fn mk_retrospective(level: CodexReasoningLevel) -> Action {
     Action {
         kind: ActionKind::Retrospective { level },
         effect: ActionEffect::Agent {
@@ -164,10 +164,14 @@ mod tests {
     use super::*;
     use crate::observe::codex::VerdictClass;
 
-    fn oriented(batch_state: BatchState, level: ReasoningLevel, expected: u32) -> OrientedState {
+    fn oriented(
+        batch_state: BatchState,
+        level: CodexReasoningLevel,
+        expected: u32,
+    ) -> OrientedState {
         OrientedState {
             current_level: level,
-            ceiling: ReasoningLevel::Xhigh,
+            ceiling: CodexReasoningLevel::Xhigh,
             batch_state,
             expected,
         }
@@ -175,8 +179,8 @@ mod tests {
 
     fn oriented_with_ceiling(
         batch_state: BatchState,
-        level: ReasoningLevel,
-        ceiling: ReasoningLevel,
+        level: CodexReasoningLevel,
+        ceiling: CodexReasoningLevel,
         expected: u32,
     ) -> OrientedState {
         OrientedState {
@@ -197,14 +201,14 @@ mod tests {
 
     #[test]
     fn not_started_runs_reviews() {
-        let o = oriented(BatchState::NotStarted, ReasoningLevel::Low, 3);
+        let o = oriented(BatchState::NotStarted, CodexReasoningLevel::Low, 3);
         let d = decide(&o);
         match d {
             Decision::Execute(action) => {
                 assert!(matches!(
                     action.kind,
                     ActionKind::RunReviews {
-                        level: ReasoningLevel::Low,
+                        level: CodexReasoningLevel::Low,
                         n: 3
                     }
                 ));
@@ -221,14 +225,14 @@ mod tests {
             total: 3,
             completed: 1,
         };
-        let o = oriented(bs, ReasoningLevel::Medium, 3);
+        let o = oriented(bs, CodexReasoningLevel::Medium, 3);
         let d = decide(&o);
         match d {
             Decision::Execute(action) => {
                 assert!(matches!(
                     action.kind,
                     ActionKind::AwaitReviews {
-                        level: ReasoningLevel::Medium,
+                        level: CodexReasoningLevel::Medium,
                         pending: 2
                     }
                 ));
@@ -248,14 +252,14 @@ mod tests {
             ],
         };
         // current=High, ceiling=Xhigh — below ceiling → Retrospective.
-        let o = oriented(bs, ReasoningLevel::High, 3);
+        let o = oriented(bs, CodexReasoningLevel::High, 3);
         let d = decide(&o);
         match d {
             Decision::Halt(DecisionHalt::AgentNeeded(action)) => {
                 assert!(matches!(
                     action.kind,
                     ActionKind::Retrospective {
-                        level: ReasoningLevel::High
+                        level: CodexReasoningLevel::High
                     }
                 ));
             }
@@ -272,7 +276,7 @@ mod tests {
                 record(3, VerdictClass::Clean),
             ],
         };
-        let o = oriented(bs, ReasoningLevel::Xhigh, 3); // ceiling = Xhigh by default
+        let o = oriented(bs, CodexReasoningLevel::Xhigh, 3); // ceiling = Xhigh by default
         let d = decide(&o);
         assert!(matches!(
             d,
@@ -291,7 +295,7 @@ mod tests {
                 record(3, VerdictClass::Clean),
             ],
         };
-        let o = oriented_with_ceiling(bs, ReasoningLevel::High, ReasoningLevel::High, 3);
+        let o = oriented_with_ceiling(bs, CodexReasoningLevel::High, CodexReasoningLevel::High, 3);
         let d = decide(&o);
         assert!(matches!(
             d,
@@ -308,13 +312,13 @@ mod tests {
                 record(3, VerdictClass::HasIssues),
             ],
         };
-        let o = oriented(bs, ReasoningLevel::Xhigh, 3);
+        let o = oriented(bs, CodexReasoningLevel::Xhigh, 3);
         let d = decide(&o);
         match d {
             Decision::Halt(DecisionHalt::AgentNeeded(action)) => match action.kind {
                 ActionKind::AddressBatch { issue_count, level } => {
                     assert_eq!(issue_count, 2, "only HasIssues verdicts count");
-                    assert_eq!(level, ReasoningLevel::Xhigh);
+                    assert_eq!(level, CodexReasoningLevel::Xhigh);
                 }
                 other => panic!("expected AddressBatch, got {other:?}"),
             },
@@ -331,7 +335,7 @@ mod tests {
                 record(3, VerdictClass::HasIssues),
             ],
         };
-        let o = oriented(bs, ReasoningLevel::Low, 3);
+        let o = oriented(bs, CodexReasoningLevel::Low, 3);
         let d = decide(&o);
         match d {
             Decision::Halt(DecisionHalt::AgentNeeded(action)) => {
@@ -347,7 +351,7 @@ mod tests {
             total: 5,
             completed: 5,
         };
-        let o = oriented(bs, ReasoningLevel::Low, 3);
+        let o = oriented(bs, CodexReasoningLevel::Low, 3);
         let d = decide(&o);
         // saturating_sub means pending = 0 here; runner re-observes
         // and the next pass will likely transition to Complete.
@@ -362,12 +366,12 @@ mod tests {
 
     #[test]
     fn blocker_keys_are_level_scoped() {
-        let low = mk_run_reviews(ReasoningLevel::Low, 3);
-        let high = mk_run_reviews(ReasoningLevel::High, 3);
+        let low = mk_run_reviews(CodexReasoningLevel::Low, 3);
+        let high = mk_run_reviews(CodexReasoningLevel::High, 3);
         assert_ne!(low.blocker, high.blocker);
         // Same level → identical blocker (this is what the runner's
         // stall detection compares against).
-        let low_again = mk_run_reviews(ReasoningLevel::Low, 5);
+        let low_again = mk_run_reviews(CodexReasoningLevel::Low, 5);
         assert_eq!(low.blocker, low_again.blocker);
     }
 
@@ -458,8 +462,8 @@ mod tests {
             // Retrospective, not Terminal::Succeeded.
             let o = oriented_with_ceiling(
                 batch_state.clone(),
-                ReasoningLevel::Low,
-                ReasoningLevel::Xhigh,
+                CodexReasoningLevel::Low,
+                CodexReasoningLevel::Xhigh,
                 3,
             );
             let actual = observed_decide_behavior(&decide(&o));

@@ -8,7 +8,7 @@
 
 use serde::Serialize;
 
-use crate::decide::action::ReasoningLevel;
+use crate::decide::action::CodexReasoningLevel;
 use crate::observe::codex::CodexObservations;
 use crate::observe::codex::batch::BatchState;
 
@@ -17,12 +17,12 @@ use crate::observe::codex::batch::BatchState;
 #[derive(Debug, Clone, Serialize)]
 pub struct OrientedState {
     /// Reasoning level the current batch is running at.
-    pub current_level: ReasoningLevel,
+    pub current_level: CodexReasoningLevel,
     /// Top of the configured ladder. When `current_level == ceiling`
     /// AND the batch is `Complete { all_clean }`, decide halts with
     /// `Terminal(Succeeded)` (the codex-review fixed point at the
     /// ceiling) instead of emitting a `Retrospective` handoff.
-    pub ceiling: ReasoningLevel,
+    pub ceiling: CodexReasoningLevel,
     /// Filesystem-derived batch state (NotStarted / Running /
     /// Complete) for `current_level`.
     pub batch_state: BatchState,
@@ -36,7 +36,7 @@ pub struct OrientedState {
 /// the invocation was configured with. `ceiling` lives outside the
 /// observation because it's a CLI/orchestrator-time configuration
 /// value, not a filesystem-derived signal.
-pub fn orient(obs: &CodexObservations, ceiling: ReasoningLevel) -> OrientedState {
+pub fn orient(obs: &CodexObservations, ceiling: CodexReasoningLevel) -> OrientedState {
     OrientedState {
         current_level: obs.current_level,
         ceiling,

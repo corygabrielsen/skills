@@ -5,7 +5,7 @@
 //! re-exported from [`ooda_core`] — the cross-binary spine. This
 //! module owns the per-binary [`ActionKind`] enum (the codex-review
 //! domain's action variants), its [`ActionKindName`] impl, and the
-//! [`ReasoningLevel`] ladder type referenced by several action
+//! [`CodexReasoningLevel`] ladder type referenced by several action
 //! payloads.
 //!
 //! Domain notes:
@@ -32,14 +32,14 @@ pub type Action = ooda_core::Action<ActionKind>;
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
-pub enum ReasoningLevel {
+pub enum CodexReasoningLevel {
     Low,
     Medium,
     High,
     Xhigh,
 }
 
-impl ReasoningLevel {
+impl CodexReasoningLevel {
     /// Canonical lowercase token used in CLI args, log file
     /// names, and recorder paths.
     pub fn as_str(self) -> &'static str {
@@ -77,42 +77,45 @@ pub enum ActionKind {
     /// Spawn `n` parallel `codex review` subprocesses at the
     /// given reasoning level. Full automation (returns immediately
     /// after spawn; AwaitReviews polls on subsequent iterations).
-    RunReviews { level: ReasoningLevel, n: u32 },
+    RunReviews { level: CodexReasoningLevel, n: u32 },
 
     /// Poll the in-flight review subprocesses for completion.
     /// Wait automation — sleeps `interval`, then re-observes.
-    AwaitReviews { level: ReasoningLevel, pending: u32 },
+    AwaitReviews {
+        level: CodexReasoningLevel,
+        pending: u32,
+    },
 
     /// Extract verdict blocks from completed log files, classify
     /// each (clean / has-issues), and merge issue records across
     /// the n reviews into a single batch. Full automation.
-    ParseVerdicts { level: ReasoningLevel },
+    ParseVerdicts { level: CodexReasoningLevel },
 
     /// Hand off the merged issue batch to Claude for verify-and-
     /// address. Agent automation; description is the prompt.
     AddressBatch {
         issue_count: u32,
-        level: ReasoningLevel,
+        level: CodexReasoningLevel,
     },
 
     /// Hand off the issue history to Claude for retrospective
     /// pattern synthesis. Agent automation; runs after every
     /// per-level fixed point.
-    Retrospective { level: ReasoningLevel },
+    Retrospective { level: CodexReasoningLevel },
 
     /// Climb one rung up the reasoning ladder (e.g., low →
     /// medium). Full automation; pure state transition.
     AdvanceLevel {
-        from: ReasoningLevel,
-        to: ReasoningLevel,
+        from: CodexReasoningLevel,
+        to: CodexReasoningLevel,
     },
 
     /// Drop one rung down after addressing issues, clamped at
     /// the configured floor. Full automation; pure state
     /// transition.
     DropLevel {
-        from: ReasoningLevel,
-        to: ReasoningLevel,
+        from: CodexReasoningLevel,
+        to: CodexReasoningLevel,
     },
 
     /// Reset to the configured floor level (after retrospective

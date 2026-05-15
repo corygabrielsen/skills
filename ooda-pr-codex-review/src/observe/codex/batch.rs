@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::ids::ReasoningLevel;
+use crate::ids::CodexReasoningLevel;
 
 use super::verdict::{self, VerdictClass};
 
@@ -97,7 +97,7 @@ pub struct VerdictRecord {
 /// interpretation; observe surfaces what's on disk.
 pub fn scan_batch(
     batch_dir: &Path,
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     expected: u32,
     expected_head_sha: &str,
 ) -> io::Result<BatchState> {
@@ -247,7 +247,7 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(s, BatchState::NotStarted);
     }
 
@@ -255,7 +255,7 @@ mod tests {
     fn empty_dir_with_head_is_not_started() {
         let dir = temp_batch_dir("empty");
         write_head(&dir, SHA);
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -265,7 +265,7 @@ mod tests {
         let dir = temp_batch_dir("no-head-sha");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         // No head_sha.txt → treat as never started.
-        let s = scan_batch(&dir, ReasoningLevel::Low, 1, "abc").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, "abc").unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -275,7 +275,7 @@ mod tests {
         let dir = temp_batch_dir("head-sha-mismatch");
         write_head(&dir, "old-sha");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 1, "new-sha").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, "new-sha").unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -286,7 +286,7 @@ mod tests {
         write_head(&dir, SHA);
         fs::write(dir.join("high-1.log"), "thinking\ncodex\nverdict\n").unwrap();
         fs::write(dir.join("medium-1.log"), "thinking\ncodex\nverdict\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -299,7 +299,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(
             s,
             BatchState::Running {
@@ -317,7 +317,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(
             s,
             BatchState::Running {
@@ -339,7 +339,7 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nLooks good.\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         match s {
             BatchState::Complete { verdicts } => {
                 assert_eq!(verdicts.len(), 3);
@@ -361,7 +361,7 @@ mod tests {
         write_head(&dir, SHA);
         fs::write(dir.join("low-1.log"), "error: unexpected argument '--pr'\n").unwrap();
         fs::write(dir.join("low-1.exit"), "2\n").unwrap();
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, SHA).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("slot 1 exited 2"), "msg: {msg}");
         assert!(msg.contains("low-1.log"), "msg: {msg}");
@@ -374,7 +374,7 @@ mod tests {
         write_head(&dir, SHA);
         fs::write(dir.join("low-1.log"), "thinking\nfinished without marker\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, SHA).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("exited 0 without a verdict marker"),
@@ -389,7 +389,7 @@ mod tests {
         write_head(&dir, SHA);
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, SHA).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("without a verdict body"), "msg: {msg}");
         let _ = fs::remove_dir_all(&dir);
@@ -401,7 +401,7 @@ mod tests {
         write_head(&dir, SHA);
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-2.exit"), "0\n").unwrap();
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, SHA).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("slot 2"), "msg: {msg}");
         assert!(msg.contains("without a matching log"), "msg: {msg}");
@@ -413,7 +413,7 @@ mod tests {
         let dir = temp_batch_dir("filename-slots");
         write_head(&dir, SHA);
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nNo issues found\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 1, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, SHA).unwrap();
         match s {
             BatchState::Complete { verdicts } => assert_eq!(verdicts[0].slot, 2),
             other => panic!("expected Complete, got {other:?}"),
@@ -435,7 +435,7 @@ mod tests {
             )
             .unwrap();
         }
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3, SHA).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, SHA).unwrap();
         assert_eq!(
             s,
             BatchState::Running {

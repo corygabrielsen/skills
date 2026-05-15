@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::decide::action::ReasoningLevel;
+use crate::decide::action::CodexReasoningLevel;
 
 use super::verdict::{self, VerdictClass};
 
@@ -80,7 +80,7 @@ pub struct VerdictRecord {
 /// that interpretation; observe surfaces what's on disk.
 pub fn scan_batch(
     batch_dir: &Path,
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     expected: u32,
 ) -> io::Result<BatchState> {
     let prefix = format!("{}-", level.as_str());
@@ -210,14 +210,14 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         assert_eq!(s, BatchState::NotStarted);
     }
 
     #[test]
     fn empty_dir_is_not_started() {
         let dir = temp_batch_dir("empty");
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -227,7 +227,7 @@ mod tests {
         let dir = temp_batch_dir("other-levels");
         fs::write(dir.join("high-1.log"), "thinking\ncodex\nverdict\n").unwrap();
         fs::write(dir.join("medium-1.log"), "thinking\ncodex\nverdict\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -239,7 +239,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         assert_eq!(
             s,
             BatchState::Running {
@@ -256,7 +256,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         assert_eq!(
             s,
             BatchState::Running {
@@ -277,7 +277,7 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nLooks good.\n").unwrap();
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         match s {
             BatchState::Complete { verdicts } => {
                 assert_eq!(verdicts.len(), 3);
@@ -299,7 +299,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "error: unexpected argument '--pr'\n").unwrap();
         fs::write(dir.join("low-1.exit"), "2\n").unwrap();
 
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("slot 1 exited 2"), "msg: {msg}");
         assert!(msg.contains("low-1.log"), "msg: {msg}");
@@ -312,7 +312,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\nfinished without marker\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
 
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("exited 0 without a verdict marker"),
@@ -327,7 +327,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
 
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("without a verdict body"), "msg: {msg}");
         let _ = fs::remove_dir_all(&dir);
@@ -339,7 +339,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-2.exit"), "0\n").unwrap();
 
-        let err = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("slot 2"), "msg: {msg}");
         assert!(msg.contains("without a matching log"), "msg: {msg}");
@@ -351,7 +351,7 @@ mod tests {
         let dir = temp_batch_dir("filename-slots");
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nNo issues found\n").unwrap();
 
-        let s = scan_batch(&dir, ReasoningLevel::Low, 1).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap();
         match s {
             BatchState::Complete { verdicts } => assert_eq!(verdicts[0].slot, 2),
             other => panic!("expected Complete, got {other:?}"),
@@ -372,7 +372,7 @@ mod tests {
             )
             .unwrap();
         }
-        let s = scan_batch(&dir, ReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         assert_eq!(
             s,
             BatchState::Running {

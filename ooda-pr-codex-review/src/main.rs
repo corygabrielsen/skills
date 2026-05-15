@@ -19,7 +19,7 @@ use act::{ActContext, CodexActContext};
 use decide::action::ActionEffect;
 use decide::decision::{Decision, DecisionHalt};
 use decide::{candidates, decide_from_candidates};
-use ids::{PullRequestNumber, ReasoningLevel, RepoSlug};
+use ids::{CodexReasoningLevel, PullRequestNumber, RepoSlug};
 use observe::codex::fetch_all as fetch_codex;
 use observe::github::fetch_all;
 use orient::orient;
@@ -57,10 +57,10 @@ struct Args {
     /// Codex review ceiling. `None` means the axis is disabled
     /// entirely (ooda-pr-equivalent behavior); `Some(level)` enables
     /// the axis with that level as its upper bound.
-    codex_review_ceiling: Option<ReasoningLevel>,
+    codex_review_ceiling: Option<CodexReasoningLevel>,
     /// Codex review floor — the starting rung of the ladder. Must be
     /// ≤ ceiling when ceiling is set. Default `Low`.
-    codex_review_floor: ReasoningLevel,
+    codex_review_floor: CodexReasoningLevel,
     /// Number of parallel `codex review` subprocesses per batch.
     /// Default 3, must be ≥ 1.
     codex_review_n: u32,
@@ -68,25 +68,25 @@ struct Args {
     codex_review_bin: PathBuf,
 }
 
-fn parse_ceiling(s: &str) -> Result<Option<ReasoningLevel>, String> {
+fn parse_ceiling(s: &str) -> Result<Option<CodexReasoningLevel>, String> {
     match s {
         "off" => Ok(None),
-        "low" => Ok(Some(ReasoningLevel::Low)),
-        "medium" => Ok(Some(ReasoningLevel::Medium)),
-        "high" => Ok(Some(ReasoningLevel::High)),
-        "xhigh" => Ok(Some(ReasoningLevel::Xhigh)),
+        "low" => Ok(Some(CodexReasoningLevel::Low)),
+        "medium" => Ok(Some(CodexReasoningLevel::Medium)),
+        "high" => Ok(Some(CodexReasoningLevel::High)),
+        "xhigh" => Ok(Some(CodexReasoningLevel::Xhigh)),
         _ => Err(format!(
             "--codex-review-ceiling: unknown value `{s}` (expected: off|low|medium|high|xhigh)"
         )),
     }
 }
 
-fn parse_level(s: &str, flag: &str) -> Result<ReasoningLevel, String> {
+fn parse_level(s: &str, flag: &str) -> Result<CodexReasoningLevel, String> {
     match s {
-        "low" => Ok(ReasoningLevel::Low),
-        "medium" => Ok(ReasoningLevel::Medium),
-        "high" => Ok(ReasoningLevel::High),
-        "xhigh" => Ok(ReasoningLevel::Xhigh),
+        "low" => Ok(CodexReasoningLevel::Low),
+        "medium" => Ok(CodexReasoningLevel::Medium),
+        "high" => Ok(CodexReasoningLevel::High),
+        "xhigh" => Ok(CodexReasoningLevel::Xhigh),
         _ => Err(format!(
             "{flag}: unknown value `{s}` (expected: low|medium|high|xhigh)"
         )),
@@ -113,8 +113,8 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
     let mut trace: Option<PathBuf> = None;
-    let mut codex_review_ceiling: Option<ReasoningLevel> = None;
-    let mut codex_review_floor: ReasoningLevel = ReasoningLevel::Low;
+    let mut codex_review_ceiling: Option<CodexReasoningLevel> = None;
+    let mut codex_review_floor: CodexReasoningLevel = CodexReasoningLevel::Low;
     let mut codex_review_n: u32 = 3;
     let mut codex_review_bin: PathBuf = PathBuf::from("codex");
     let mut positional: Vec<String> = Vec::new();

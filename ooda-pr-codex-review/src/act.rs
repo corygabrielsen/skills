@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind};
-use crate::ids::{PullRequestNumber, ReasoningLevel, RepoSlug};
+use crate::ids::{CodexReasoningLevel, PullRequestNumber, RepoSlug};
 use crate::observe::codex::batch_dir as codex_batch_dir;
 use crate::observe::github::gh::{GhError, gh_run};
 use crate::orient::copilot::COPILOT_REVIEWER_LOGIN;
@@ -154,7 +154,7 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
 
 fn spawn_codex_review_batch(
     codex: &CodexActContext,
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     n: u32,
 ) -> Result<(), ActError> {
     let dir = codex_batch_dir(&codex.codex_pr_root, level, &codex.head_sha);
@@ -213,7 +213,7 @@ fn spawn_codex_review_batch(
 /// so the `--base` selection drives codex to review the diff between
 /// the current worktree and the PR's base branch (typed payload from
 /// [`CodexActContext::base_branch`], refreshed each iteration).
-fn build_codex_args(level: ReasoningLevel, base_branch: &str) -> Vec<OsString> {
+fn build_codex_args(level: CodexReasoningLevel, base_branch: &str) -> Vec<OsString> {
     vec![
         OsString::from("review"),
         OsString::from("--base"),
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn build_codex_args_renders_review_base_and_reasoning() {
-        let args = build_codex_args(ReasoningLevel::Low, "main");
+        let args = build_codex_args(CodexReasoningLevel::Low, "main");
         let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
         assert_eq!(
             strs,
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn build_codex_args_passes_high_reasoning() {
-        let args = build_codex_args(ReasoningLevel::Xhigh, "feature/release");
+        let args = build_codex_args(CodexReasoningLevel::Xhigh, "feature/release");
         let s = args.last().unwrap().to_str().unwrap();
         assert_eq!(s, "model_reasoning_effort=\"xhigh\"");
         let base_pos = args.iter().position(|a| a == "--base").unwrap();

@@ -15,7 +15,7 @@
 //! whenever it has work, structurally gating merge on codex's
 //! fixed point.
 
-use crate::ids::{BlockerKey, ReasoningLevel};
+use crate::ids::{BlockerKey, CodexReasoningLevel};
 use crate::observe::codex::VerdictClass;
 use crate::orient::codex_review::{CodexReviewReport, CodexReviewStatus};
 
@@ -46,7 +46,7 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
     }
 }
 
-fn mk_run(level: ReasoningLevel, n: u32) -> Action {
+fn mk_run(level: CodexReasoningLevel, n: u32) -> Action {
     Action {
         kind: ActionKind::RunCodexReviewBatch { level, n },
         effect: ActionEffect::Full {
@@ -61,7 +61,7 @@ fn mk_run(level: ReasoningLevel, n: u32) -> Action {
     }
 }
 
-fn mk_await(level: ReasoningLevel, pending: u32) -> Action {
+fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
     Action {
         kind: ActionKind::AwaitCodexReviewBatch { level, pending },
         effect: ActionEffect::Wait {
@@ -78,7 +78,7 @@ fn mk_await(level: ReasoningLevel, pending: u32) -> Action {
 }
 
 fn mk_address(
-    level: ReasoningLevel,
+    level: CodexReasoningLevel,
     count: u32,
     issues: &[&crate::observe::codex::VerdictRecord],
 ) -> Action {
@@ -123,26 +123,26 @@ mod tests {
     fn report(status: CodexReviewStatus) -> CodexReviewReport {
         CodexReviewReport {
             status,
-            floor: ReasoningLevel::Low,
-            ceiling: ReasoningLevel::Xhigh,
+            floor: CodexReasoningLevel::Low,
+            ceiling: CodexReasoningLevel::Xhigh,
             head_sha: "headsha".into(),
             expected: 3,
             current_batch_dir: PathBuf::from("/tmp/x"),
-            current_level: ReasoningLevel::Low,
+            current_level: CodexReasoningLevel::Low,
         }
     }
 
     #[test]
     fn spawn_emits_run_full_critical() {
         let r = report(CodexReviewStatus::Spawn {
-            level: ReasoningLevel::Low,
+            level: CodexReasoningLevel::Low,
         });
         let cs = candidates(&r);
         assert_eq!(cs.len(), 1);
         assert!(matches!(
             cs[0].kind,
             ActionKind::RunCodexReviewBatch {
-                level: ReasoningLevel::Low,
+                level: CodexReasoningLevel::Low,
                 n: 3
             }
         ));
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn await_emits_wait() {
         let r = report(CodexReviewStatus::Await {
-            level: ReasoningLevel::Medium,
+            level: CodexReasoningLevel::Medium,
             total: 3,
             completed: 1,
         });
@@ -162,7 +162,7 @@ mod tests {
         assert!(matches!(
             cs[0].kind,
             ActionKind::AwaitCodexReviewBatch {
-                level: ReasoningLevel::Medium,
+                level: CodexReasoningLevel::Medium,
                 pending: 2
             }
         ));
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn address_emits_agent_with_only_has_issues_counted() {
         let r = report(CodexReviewStatus::Address {
-            level: ReasoningLevel::High,
+            level: CodexReasoningLevel::High,
             verdicts: vec![
                 VerdictRecord {
                     slot: 1,
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(cs.len(), 1);
         match &cs[0].kind {
             ActionKind::AddressCodexReviewBatch { level, count } => {
-                assert_eq!(*level, ReasoningLevel::High);
+                assert_eq!(*level, CodexReasoningLevel::High);
                 assert_eq!(*count, 2);
             }
             other => panic!("expected AddressCodexReviewBatch, got {other:?}"),
@@ -244,15 +244,15 @@ mod tests {
         vec![
             CodexReviewStatus::LadderSatisfied,
             CodexReviewStatus::Spawn {
-                level: ReasoningLevel::Low,
+                level: CodexReasoningLevel::Low,
             },
             CodexReviewStatus::Await {
-                level: ReasoningLevel::Medium,
+                level: CodexReasoningLevel::Medium,
                 total: 3,
                 completed: 1,
             },
             CodexReviewStatus::Address {
-                level: ReasoningLevel::High,
+                level: CodexReasoningLevel::High,
                 verdicts: vec![VerdictRecord {
                     slot: 1,
                     body: "needs fix".into(),

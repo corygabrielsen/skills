@@ -148,9 +148,7 @@ mod tests {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                name,
-            )),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(name)),
             blocker: BlockerKey::tag(name),
         }
     }

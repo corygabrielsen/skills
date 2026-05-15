@@ -934,7 +934,7 @@ mod tests {
             automation: Automation::Agent,
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 "Rebase onto base",
             )),
             blocker: ids::BlockerKey::tag("rebase-needed"),
@@ -953,7 +953,7 @@ mod tests {
             automation: Automation::Human,
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 "Request or self-approve",
             )),
             blocker: ids::BlockerKey::tag("not_approved"),

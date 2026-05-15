@@ -81,22 +81,35 @@ fn mk_address(
     count: u32,
     issues: &[&crate::observe::codex::VerdictRecord],
 ) -> Action {
-    let mut body = format!(
+    use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString, Witness};
+
+    let headline = format!(
         "Verify and address {count} codex review(s) with issues at level {}. \
          For each issue: real bug → fix; false positive → clarify code; \
          design tradeoff → document rationale. Then push the fix; the PR \
          loop will observe the new head and re-run codex review at this level.",
         level.as_str()
     );
-    for v in issues {
-        body.push_str(&format!("\n\n— slot {} —\n{}", v.slot, v.body.trim_end()));
+    let mut prompt = HandoffPrompt::new(headline);
+    let witnesses: Vec<Witness> = issues
+        .iter()
+        .map(|v| Witness {
+            label: SingleLineString::new(format!("— slot {} —", v.slot)),
+            body: v.body.trim_end().to_string(),
+        })
+        .collect();
+    // `mk_address` is only invoked when at least one verdict has
+    // issues (decide-side filter above); empty witnesses would
+    // mean an empty Address candidate, which the caller skips.
+    if let Some(witnesses) = NonEmpty::try_from_vec(witnesses) {
+        prompt.push_witnesses(witnesses);
     }
     Action {
         kind: ActionKind::AddressCodexReviewBatch { level, count },
         automation: Automation::Agent,
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(body)),
+        payload: ooda_core::ActionPayload::Prompt(prompt),
         blocker: BlockerKey::tag(format!("codex_review_address:{}", level.as_str())),
     }
 }

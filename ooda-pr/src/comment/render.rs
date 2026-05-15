@@ -227,7 +227,7 @@ fn action_block(prefix: &str, action: &Action) -> String {
     format!(
         "**{prefix}:** `{kind}` ({auto}, {effect})\n\n{quoted}",
         kind = action.blocker,
-        quoted = blockquote(&action.description),
+        quoted = blockquote(&action.rendered_payload()),
     )
 }
 
@@ -362,7 +362,9 @@ mod tests {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            description: "line one\nline two\nline three".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "line one\nline two\nline three",
+            )),
             blocker: crate::ids::BlockerKey::tag("rebase-needed"),
         };
         let r = render(&o, &Decision::Execute(action));

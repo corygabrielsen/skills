@@ -139,7 +139,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: "x".into(),
+            payload: crate::ActionPayload::Logged("x".into()),
             blocker: BlockerKey::tag("t"),
         }
     }

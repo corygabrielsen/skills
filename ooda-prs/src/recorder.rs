@@ -756,7 +756,7 @@ impl Inner {
         let body = match decision_action(decision) {
             Some(action) => format!(
                 "# Next\n\n{}\n\n- action: `{}`\n- automation: `{:?}`\n- blocker: `{}`\n",
-                action.description,
+                action.rendered_payload(),
                 action.kind.name(),
                 action.automation,
                 action.blocker,
@@ -1058,7 +1058,7 @@ fn action_projection(action: &Action) -> Value {
         "target_effect": format!("{:?}", action.target_effect),
         "urgency": format!("{:?}", action.urgency),
         "blocker": action.blocker.to_string(),
-        "description": action.description,
+        "description": action.rendered_payload(),
     })
 }
 

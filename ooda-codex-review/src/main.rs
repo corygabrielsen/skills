@@ -634,15 +634,17 @@ fn mk_handoff_human_test_failed(level: ReasoningLevel, details: String) -> Outco
         automation: Automation::Human,
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
-        description: format!(
-            "Tests failed after addressing review batch at level {}. \
+        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            format!(
+                "Tests failed after addressing review batch at level {}. \
              Surface to a human for triage. Details: {}",
-            level.as_str(),
-            details
-        ),
+                level.as_str(),
+                details
+            ),
+        )),
         blocker: BlockerKey::tag("address-failed"),
     };
-    Outcome::HandoffHuman(action)
+    Outcome::HandoffHuman(Box::new(action))
 }
 
 fn main() -> ExitCode {
@@ -681,14 +683,14 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         }
         Outcome::HandoffHuman(action) => {
             let _ = writeln!(out, "HandoffHuman: {}", action.kind.name());
-            let _ = writeln!(out, "  prompt: {}", action.description);
+            let _ = writeln!(out, "  prompt: {}", action.rendered_payload());
         }
         Outcome::WouldAdvance(action) => {
             let _ = writeln!(out, "WouldAdvance: {}", action.kind.name());
         }
         Outcome::HandoffAgent(action) => {
             let _ = writeln!(out, "HandoffAgent: {}", action.kind.name());
-            let _ = writeln!(out, "  prompt: {}", action.description);
+            let _ = writeln!(out, "  prompt: {}", action.rendered_payload());
         }
         Outcome::BinaryError(msg) => {
             let _ = writeln!(out, "BinaryError: {msg}");

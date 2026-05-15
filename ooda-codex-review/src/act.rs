@@ -325,7 +325,9 @@ mod tests {
             automation: Automation::Agent,
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            description: "n/a".into(),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+                "n/a",
+            )),
             blocker: crate::ids::BlockerKey::tag("retro:low"),
         };
         let ctx = ActContext {
@@ -365,7 +367,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::Critical,
-            description: "n/a".into(),
+            payload: ooda_core::ActionPayload::Logged("n/a".into()),
             blocker: crate::ids::BlockerKey::tag("runreviews:low"),
         };
 

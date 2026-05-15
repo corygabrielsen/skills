@@ -153,7 +153,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: "x".into(),
+            payload: ooda_core::ActionPayload::Logged("x".into()),
             blocker: BlockerKey::tag("rebase-needed"),
         }
     }
@@ -207,7 +207,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::WouldAdvance(dummy_action()),
+            Outcome::WouldAdvance(Box::new(dummy_action())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::WouldAdvance);
     }
@@ -217,7 +217,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::StuckRepeated(dummy_action()),
+            Outcome::StuckRepeated(Box::new(dummy_action())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::StuckRepeated);
     }
@@ -227,7 +227,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::StuckCapReached(dummy_action()),
+            Outcome::StuckCapReached(Box::new(dummy_action())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::StuckCapReached);
     }
@@ -237,7 +237,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::HandoffHuman(dummy_action()),
+            Outcome::HandoffHuman(Box::new(dummy_action())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::HandoffHuman);
     }
@@ -247,7 +247,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::HandoffAgent(dummy_action()),
+            Outcome::HandoffAgent(Box::new(dummy_action())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::HandoffAgent);
     }
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn binary_error_beats_handoff_agent() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::HandoffAgent(dummy_action())),
+            record("a/b", 1, Outcome::HandoffAgent(Box::new(dummy_action()))),
             record("a/b", 2, Outcome::BinaryError("oops".into())),
         ]);
         assert_eq!(m.exit_code(), ExitCode::BinaryError);
@@ -270,8 +270,8 @@ mod tests {
     #[test]
     fn handoff_agent_beats_handoff_human() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::HandoffHuman(dummy_action())),
-            record("a/b", 2, Outcome::HandoffAgent(dummy_action())),
+            record("a/b", 1, Outcome::HandoffHuman(Box::new(dummy_action()))),
+            record("a/b", 2, Outcome::HandoffAgent(Box::new(dummy_action()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::HandoffAgent);
     }
@@ -279,8 +279,8 @@ mod tests {
     #[test]
     fn handoff_human_beats_stuck_cap_reached() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::StuckCapReached(dummy_action())),
-            record("a/b", 2, Outcome::HandoffHuman(dummy_action())),
+            record("a/b", 1, Outcome::StuckCapReached(Box::new(dummy_action()))),
+            record("a/b", 2, Outcome::HandoffHuman(Box::new(dummy_action()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::HandoffHuman);
     }
@@ -288,8 +288,8 @@ mod tests {
     #[test]
     fn stuck_cap_reached_beats_stuck_repeated() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::StuckRepeated(dummy_action())),
-            record("a/b", 2, Outcome::StuckCapReached(dummy_action())),
+            record("a/b", 1, Outcome::StuckRepeated(Box::new(dummy_action()))),
+            record("a/b", 2, Outcome::StuckCapReached(Box::new(dummy_action()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::StuckCapReached);
     }
@@ -297,8 +297,8 @@ mod tests {
     #[test]
     fn stuck_repeated_beats_would_advance() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::WouldAdvance(dummy_action())),
-            record("a/b", 2, Outcome::StuckRepeated(dummy_action())),
+            record("a/b", 1, Outcome::WouldAdvance(Box::new(dummy_action()))),
+            record("a/b", 2, Outcome::StuckRepeated(Box::new(dummy_action()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::StuckRepeated);
     }
@@ -307,7 +307,7 @@ mod tests {
     fn would_advance_beats_terminal() {
         let m = MultiOutcome::Bundle(vec![
             record("a/b", 1, Outcome::DoneSucceeded),
-            record("a/b", 2, Outcome::WouldAdvance(dummy_action())),
+            record("a/b", 2, Outcome::WouldAdvance(Box::new(dummy_action()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::WouldAdvance);
     }
@@ -319,11 +319,11 @@ mod tests {
             record("a/b", 1, Outcome::DoneSucceeded),
             record("a/b", 2, Outcome::DoneAborted),
             record("a/b", 3, Outcome::Paused),
-            record("a/b", 4, Outcome::WouldAdvance(dummy_action())),
-            record("a/b", 5, Outcome::StuckRepeated(dummy_action())),
-            record("a/b", 6, Outcome::StuckCapReached(dummy_action())),
-            record("a/b", 7, Outcome::HandoffHuman(dummy_action())),
-            record("a/b", 8, Outcome::HandoffAgent(dummy_action())),
+            record("a/b", 4, Outcome::WouldAdvance(Box::new(dummy_action()))),
+            record("a/b", 5, Outcome::StuckRepeated(Box::new(dummy_action()))),
+            record("a/b", 6, Outcome::StuckCapReached(Box::new(dummy_action()))),
+            record("a/b", 7, Outcome::HandoffHuman(Box::new(dummy_action()))),
+            record("a/b", 8, Outcome::HandoffAgent(Box::new(dummy_action()))),
             record("a/b", 9, Outcome::BinaryError("e".into())),
         ]);
         assert_eq!(m.exit_code(), ExitCode::BinaryError);

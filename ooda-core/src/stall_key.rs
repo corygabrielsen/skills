@@ -59,7 +59,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: desc.into(),
+            payload: crate::ActionPayload::Logged(desc.into()),
             blocker: BlockerKey::tag(blocker),
         }
     }

@@ -52,10 +52,10 @@ fn mk_run(level: ReasoningLevel, n: u32) -> Action {
         automation: Automation::Full,
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Critical,
-        description: format!(
+        payload: ooda_core::ActionPayload::Logged(format!(
             "Spawn {n} codex review subprocesses at reasoning level {}.",
             level.as_str()
-        ),
+        )),
         blocker: BlockerKey::tag(format!("codex_review_runbatch:{}", level.as_str())),
     }
 }
@@ -68,10 +68,10 @@ fn mk_await(level: ReasoningLevel, pending: u32) -> Action {
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::BlockingWait,
-        description: format!(
+        payload: ooda_core::ActionPayload::Logged(format!(
             "Polling: {pending} codex review(s) still streaming at level {}.",
             level.as_str()
-        ),
+        )),
         blocker: BlockerKey::tag(format!("codex_review_await:{}", level.as_str())),
     }
 }
@@ -96,7 +96,7 @@ fn mk_address(
         automation: Automation::Agent,
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        description: body,
+        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(body)),
         blocker: BlockerKey::tag(format!("codex_review_address:{}", level.as_str())),
     }
 }
@@ -191,8 +191,8 @@ mod tests {
         assert_eq!(cs[0].automation, Automation::Agent);
         assert_eq!(cs[0].urgency, Urgency::BlockingFix);
         // Description bundles verdict bodies.
-        assert!(cs[0].description.contains("slot 2"));
-        assert!(cs[0].description.contains("slot 3"));
+        assert!(cs[0].rendered_payload().contains("slot 2"));
+        assert!(cs[0].rendered_payload().contains("slot 3"));
     }
 
     #[test]

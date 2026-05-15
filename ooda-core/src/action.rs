@@ -14,8 +14,10 @@
 //! without exposing payload internals.
 
 use crate::blocker::BlockerKey;
+use crate::handoff_prompt::HandoffPrompt;
 use crate::polling_interval::PollingInterval;
 use serde::Serialize;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Action<K> {
@@ -26,14 +28,83 @@ pub struct Action<K> {
     /// rule. Each action names its urgency at construction; the sort
     /// is `urgency as u8` ascending.
     pub urgency: Urgency,
-    /// Human-readable. For agent handoff actions, this is the prompt.
-    pub description: String,
+    /// Caller-facing payload. [`ActionPayload::Logged`] is a plain
+    /// trace message for `Full` / `Wait` actions (appears in iter
+    /// logs and trace files; never surfaced to a caller-side agent
+    /// or human). [`ActionPayload::Prompt`] is a structured
+    /// [`HandoffPrompt`] for `Agent` / `Human` actions (surfaced
+    /// to the caller via the stderr prompt block and recorded for
+    /// audit).
+    pub payload: ActionPayload,
     /// Stable iteration key — `run_loop` detects stalls by comparing
     /// `(kind, blocker)` against the prior iteration. The
     /// [`BlockerKey`] newtype prevents accidental confusion with
-    /// `description` (also `String`-shaped) and documents that the
+    /// `payload` (also human-readable) and documents that the
     /// value MUST NOT embed varying counts or progress markers.
     pub blocker: BlockerKey,
+}
+
+/// Dual-purpose human-readable payload on an [`Action`].
+///
+/// The distinction between the two variants is the rendering
+/// audience:
+///
+/// * `Logged` is *trace material* — printed to iter-log lines and
+///   the `trace.md` summary inside the recorder tree. The recipient
+///   is a human reading the audit trail later, not the caller's
+///   agent / human currently in the loop. Free-form `String`
+///   (may be multi-line).
+///
+/// * `Prompt` is *handoff material* — the structured body the
+///   caller surfaces when the binary halts on an Agent or Human
+///   action. The [`HandoffPrompt`] type gives this material
+///   compositional structure (headline + sections) so renderers
+///   and recorders see the shape, not just bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ActionPayload {
+    Logged(String),
+    Prompt(HandoffPrompt),
+}
+
+impl ActionPayload {
+    /// Borrow the inner `HandoffPrompt` if this is a `Prompt`
+    /// payload. Returns `None` for `Logged`.
+    pub fn as_prompt(&self) -> Option<&HandoffPrompt> {
+        match self {
+            Self::Prompt(p) => Some(p),
+            Self::Logged(_) => None,
+        }
+    }
+
+    /// Mutable borrow of the inner `HandoffPrompt`. Used by the
+    /// boundary `decorate_handoff_*` decorators that append
+    /// context lines to a handoff's prompt.
+    pub fn as_prompt_mut(&mut self) -> Option<&mut HandoffPrompt> {
+        match self {
+            Self::Prompt(p) => Some(p),
+            Self::Logged(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for ActionPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Logged(s) => f.write_str(s),
+            Self::Prompt(p) => fmt::Display::fmt(p, f),
+        }
+    }
+}
+
+impl<K> Action<K> {
+    /// Render the payload as a single `String` regardless of
+    /// variant. Call sites that just need "the human-readable
+    /// payload as text" (comment renderer, JSONL emission,
+    /// stderr prompt block) use this; sites that match on
+    /// structure (decorate_handoff_*) use `payload` directly.
+    pub fn rendered_payload(&self) -> String {
+        self.payload.to_string()
+    }
 }
 
 /// Stable, finite, single-token rendering for the action-kind
@@ -127,7 +198,7 @@ mod tests {
             automation: Automation::Full,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            description: "test".into(),
+            payload: crate::ActionPayload::Logged("test".into()),
             blocker: BlockerKey::tag("test:blocker"),
         }
     }

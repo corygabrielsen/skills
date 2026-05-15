@@ -21,7 +21,9 @@ pub fn candidates(report: &CursorReport) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            description: "Waiting for Cursor Bugbot to finish reviewing".into(),
+            payload: ooda_core::ActionPayload::Logged(
+                "Waiting for Cursor Bugbot to finish reviewing".into(),
+            ),
             blocker: BlockerKey::tag("cursor_reviewing"),
         });
     }

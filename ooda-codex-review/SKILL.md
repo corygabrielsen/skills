@@ -103,6 +103,54 @@ when an LLM is needed (verify-and-address, retrospective synthesis).
 > `<DETAILS>` becomes the orchestrator-supplied string). Angle
 > brackets are never literal in the binary's output.
 
+## Type spine
+
+Boundary types are defined in the `ooda-core` library crate
+(`/home/cory/code/skills/ooda-core/`) and shared with the three
+sibling OODA binaries. This binary depends on `ooda-core` via
+path dep and instantiates each generic type over its
+domain-specific `ActionKind` enum — the codex-review-domain
+variant set (`RunReviews`, `AwaitReviews`, `ParseVerdicts`,
+`AddressBatch`, `Retrospective`, `AdvanceLevel`, `DropLevel`,
+`RestartFromFloor`, `RunTests`, `RequestCriteriaRefinement`,
+`TestsFailedTriage`):
+
+```rust
+pub type Outcome      = ooda_core::Outcome<ActionKind>;
+pub type Decision     = ooda_core::Decision<ActionKind>;
+pub type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
+pub type HaltReason   = ooda_core::HaltReason<ActionKind>;
+pub type Action       = ooda_core::Action<ActionKind>;
+```
+
+`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
+and the `ActionKindName` trait are re-exported from `ooda-core`.
+`ReasoningLevel` (the codex-review ladder type) stays per-binary
+in `decide/action.rs`.
+
+**Variant name ≠ stderr header.** Rust variant names
+(`DoneSucceeded`, `DoneAborted`, `Paused`) are internal — neutral
+verbs shared across the binary family. Stderr header strings
+(`DoneFixedPoint`, `DoneAborted`, `Idle`) are this binary's
+caller contract, emitted by the per-binary `render_outcome`
+function. The Outcomes table below shows both representations.
+The mapping is:
+
+| Variant name    | Stderr header    | Exit |
+| --------------- | ---------------- | :--: |
+| `DoneSucceeded` | `DoneFixedPoint` |  0   |
+| `DoneAborted`   | `DoneAborted`    |  8   |
+| `Paused`        | `Idle`           |  7   |
+
+**Per-binary code (not lifted):** `runner.rs::run_loop` (the
+codex-side runner carries the advisory flock + side-effect-mode
+dispatch), `recorder.rs` (codex-specific state-root tree),
+`decide/action.rs::ActionKind` and its `ActionKindName` impl,
+and `From<LoopError> for Outcome`.
+
+See `ooda-core/README.md` and `ooda-core/src/lib.rs` for the
+shared-spine design rationale.
+
 ## Two invocation modes
 
 A single binary serves two distinct flows; both produce one `Outcome`

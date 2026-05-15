@@ -44,6 +44,46 @@ records on stdout, and surfaces stderr to humans for triage.
 
 Always invoke `run`; never the binary directly.
 
+## Type spine
+
+Per-PR boundary types are defined in the `ooda-core` library
+crate (`/home/cory/code/skills/ooda-core/`) and shared with the
+three sibling OODA binaries. `ooda-prs` depends on `ooda-core`
+via path dep and instantiates each generic type over its
+domain-specific `ActionKind` enum (identical to `/ooda-pr`'s):
+
+```rust
+pub type Outcome      = ooda_core::Outcome<ActionKind>;
+pub type Decision     = ooda_core::Decision<ActionKind>;
+pub type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
+pub type HaltReason   = ooda_core::HaltReason<ActionKind>;
+pub type Action       = ooda_core::Action<ActionKind>;
+```
+
+`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
+and the `ActionKindName` trait are re-exported from `ooda-core`.
+The suite-level `MultiOutcome` type stays per-binary — it's
+specific to `/ooda-prs`'s aggregate priority projection over N
+PRs (see "MultiOutcome" below).
+
+**Variant name ≠ stderr / JSONL header.** Rust variant names
+(`DoneSucceeded`, `DoneAborted`, `Paused`) are internal. Stderr
+headers and the JSONL `outcome` field both emit the PR-domain
+strings (`DoneMerged`, `DoneClosed`, `Paused`) via the
+per-binary `render_outcome` and `outcome_variant_name`
+functions — so the documented regex
+`^(DoneMerged|DoneClosed|Paused)$` and the JSONL contract are
+unchanged. The Outcomes table below shows both representations.
+
+**Per-binary code (not lifted):** `runner.rs` (per-PR
+iteration loop), `recorder.rs` with `thread_local!` cell for
+parallel workers, `suite_recorder.rs`, `multi_outcome.rs`,
+`decide/action.rs::ActionKind` and its `ActionKindName` impl,
+and the per-binary `From<LoopError> for Outcome`.
+
+See `ooda-core/README.md` and `ooda-core/src/lib.rs` for the
+shared-spine design rationale.
+
 ## Calling discipline
 
 **`$?` MUST reflect ooda-prs's exit when ooda-prs runs.** The same

@@ -59,6 +59,50 @@ last completed. Invoking the binary directly skips the rebuild
 and may serve a stale build relative to the current source
 tree.
 
+## Type spine
+
+Boundary types are defined in the `ooda-core` library crate
+(`/home/cory/code/skills/ooda-core/`) and shared with the three
+sibling OODA binaries. This binary depends on `ooda-core` via
+path dep and instantiates each generic type over its
+domain-specific `ActionKind` enum — the merged PR + codex-review
+variant set:
+
+```rust
+pub type Outcome      = ooda_core::Outcome<ActionKind>;
+pub type Decision     = ooda_core::Decision<ActionKind>;
+pub type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
+pub type HaltReason   = ooda_core::HaltReason<ActionKind>;
+pub type Action       = ooda_core::Action<ActionKind>;
+```
+
+`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
+and the `ActionKindName` trait are re-exported from `ooda-core`.
+`ActionKind` is per-binary — it carries the 22 PR-merge variants
+(`FixCi`, `AddressThreads`, `Rebase`, …) **plus** the three
+codex-review variants (`RunCodexReviewBatch`,
+`AwaitCodexReviewBatch`, `AddressCodexReviewBatch`) and
+implements `ActionKindName`.
+
+**Variant name ≠ stderr header.** Rust variant names
+(`DoneSucceeded`, `DoneAborted`, `Paused`) are internal — the
+neutral verbs that fit every binary in the family. Stderr
+header strings (`DoneMerged`, `DoneClosed`, `Paused`) are this
+binary's caller contract, emitted by the per-binary
+`render_outcome` function. The Outcomes table below shows both
+columns.
+
+**Per-binary code (not lifted):** `runner.rs::run_loop` (carries
+the codex-axis flock acquisition + head-SHA refresh, distinct
+from the three sibling runners), `recorder.rs`,
+`decide/action.rs::ActionKind` and its `ActionKindName` impl,
+the codex-axis observe / orient / decide sub-trees, and
+`From<LoopError> for Outcome` (this binary's `LoopError` carries
+a `CodexObserve` variant in addition to the PR-side variants).
+
+See `ooda-core/README.md` and `ooda-core/src/lib.rs` for the
+shared-spine design rationale.
+
 ## Calling discipline
 
 **`$?` MUST reflect ooda-pr's exit when ooda-pr runs.** Two

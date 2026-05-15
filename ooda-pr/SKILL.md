@@ -41,6 +41,53 @@ last completed. Invoking the binary directly skips the rebuild
 and may serve a stale build relative to the current source
 tree.
 
+## Type spine
+
+Boundary types are defined in the `ooda-core` library crate
+(`/home/cory/code/skills/ooda-core/`) and shared with the three
+sibling OODA binaries. This binary depends on `ooda-core` via
+path dep and instantiates each generic type over its
+domain-specific `ActionKind` enum:
+
+```rust
+pub type Outcome      = ooda_core::Outcome<ActionKind>;
+pub type Decision     = ooda_core::Decision<ActionKind>;
+pub type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
+pub type HaltReason   = ooda_core::HaltReason<ActionKind>;
+pub type Action       = ooda_core::Action<ActionKind>;
+```
+
+`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
+and the `ActionKindName` trait are re-exported from `ooda-core`
+directly. `ActionKind` is per-binary — this binary's variants
+cover the PR-merge domain (`FixCi`, `AddressThreads`, `Rebase`,
+…) and implement `ActionKindName` so the loop can render variant
+tokens for iter-log lines and stderr headers without leaking
+payload internals.
+
+**Variant name ≠ stderr header.** The Rust variant names
+(`DoneSucceeded`, `DoneAborted`, `Paused`) are internal — the
+neutral verbs that fit every binary in the family. The stderr
+header strings (`DoneMerged`, `DoneClosed`, `Paused`) are this
+binary's caller contract and are emitted by the per-binary
+`render_outcome` function. The Outcomes table below shows both
+columns; callers dispatch on `$?` and read the stderr header,
+not the variant name.
+
+**Per-binary code (not lifted):**
+
+- `runner.rs::run_loop` — iteration sequencing, stall detection,
+  cap detection. Each binary's runner diverges enough on
+  side-effects / flock / refresh logic that lifting is premature.
+- `recorder.rs` — on-disk event ledger. Three binaries share the
+  PR-side schema; `ooda-codex-review` uses a different one.
+- `decide/action.rs::ActionKind` and its `ActionKindName` impl.
+- `From<LoopError> for Outcome` — `LoopError` shape differs per
+  binary.
+
+See `ooda-core/README.md` and `ooda-core/src/lib.rs` for the
+shared-spine design rationale.
+
 ## Calling discipline
 
 **`$?` MUST reflect ooda-pr's exit when ooda-pr runs.** Two

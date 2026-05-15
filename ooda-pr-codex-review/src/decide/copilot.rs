@@ -224,4 +224,107 @@ mod tests {
         // Reviews axis handles unresolved threads; Copilot stays silent.
         assert!(candidates(&r).is_empty());
     }
+
+    // ─── property test for the class invariant ──────────────────────
+    //
+    // The copilot axis's per-variant baseline behavior: in the
+    // most-progressive state (tier=Bronze, fresh at HEAD, no unresolved
+    // threads, no stale replies, no suppressed comments) each
+    // `CopilotActivity` variant produces a deterministic candidate
+    // set. The Reviewed branch has sub-conditions exercised by the
+    // scenario tests above (gold-not-fresh, silver-with-suppressed,
+    // etc.); this property test pins the per-variant baseline.
+    //
+    // The exhaustive match in `expected_copilot_baseline_behavior`
+    // is the contract. Adding a new `CopilotActivity` variant fails
+    // to compile here until the new arm is added.
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CopilotBaselineBehavior {
+        NoCandidate,
+        EmitWaitForAck,
+        EmitWaitForReview,
+    }
+
+    /// What the copilot axis emits for each `CopilotActivity` variant
+    /// in the baseline state (Bronze tier, fresh, no stale, no
+    /// suppressed). Other states are exercised by the scenario tests.
+    fn expected_copilot_baseline_behavior(activity: &CopilotActivity) -> CopilotBaselineBehavior {
+        match activity {
+            CopilotActivity::Idle => CopilotBaselineBehavior::NoCandidate,
+            CopilotActivity::Requested { .. } => CopilotBaselineBehavior::EmitWaitForAck,
+            CopilotActivity::Working { .. } => CopilotBaselineBehavior::EmitWaitForReview,
+            // Reviewed at Bronze tier, fresh, no stale, no suppressed:
+            // nothing actionable at the copilot layer. Tier advancement
+            // gates on the next code push (re-requests Copilot
+            // automatically) or on the agent addressing threads.
+            CopilotActivity::Reviewed { .. } => CopilotBaselineBehavior::NoCandidate,
+        }
+    }
+
+    fn all_copilot_activities() -> Vec<CopilotActivity> {
+        vec![
+            CopilotActivity::Idle,
+            CopilotActivity::Requested {
+                requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+            },
+            CopilotActivity::Working {
+                requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+                ack_at: Timestamp::parse("2026-04-23T10:01:00Z").unwrap(),
+            },
+            CopilotActivity::Reviewed {
+                latest: round_at_head(),
+            },
+        ]
+    }
+
+    fn observed_copilot_baseline_behavior(cs: &[Action]) -> CopilotBaselineBehavior {
+        match cs {
+            [] => CopilotBaselineBehavior::NoCandidate,
+            [a] => match (&a.kind, &a.effect) {
+                (ActionKind::WaitForCopilotAck, ActionEffect::Wait { .. }) => {
+                    CopilotBaselineBehavior::EmitWaitForAck
+                }
+                (ActionKind::WaitForCopilotReview, ActionEffect::Wait { .. }) => {
+                    CopilotBaselineBehavior::EmitWaitForReview
+                }
+                (kind, effect) => panic!(
+                    "copilot axis emitted unexpected (kind, effect) in baseline: \
+                     {kind:?}, {effect:?}",
+                ),
+            },
+            multi => panic!(
+                "copilot axis emitted unexpected candidate count in baseline: {} items",
+                multi.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn copilot_axis_property_holds_for_every_activity_baseline() {
+        let activities = all_copilot_activities();
+        assert_eq!(
+            activities.len(),
+            4,
+            "`all_copilot_activities` must include one sample per \
+             `CopilotActivity` variant; adding a new variant requires \
+             adding both an arm in `expected_copilot_baseline_behavior` \
+             AND a sample here.",
+        );
+        for activity in activities {
+            let r = report(
+                activity.clone(),
+                CopilotTier::Bronze,
+                BotThreadSummary::default(),
+                true,
+            );
+            let cs = candidates(&r);
+            let actual = observed_copilot_baseline_behavior(&cs);
+            let expected = expected_copilot_baseline_behavior(&activity);
+            assert_eq!(
+                actual, expected,
+                "copilot baseline contract violated for activity = {activity:?}",
+            );
+        }
+    }
 }

@@ -213,4 +213,100 @@ mod tests {
         let r = report(CodexReviewStatus::LadderSatisfied);
         assert!(candidates(&r).is_empty());
     }
+
+    // ─── property test for the class invariant ──────────────────────
+    //
+    // Class invariant: every `CodexReviewStatus` variant maps to a
+    // unique candidate-set shape. The exhaustive match in
+    // `expected_codex_review_axis_behavior` is the contract. Adding
+    // a new `CodexReviewStatus` variant fails to compile here until
+    // the new arm is added.
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CodexReviewAxisBehavior {
+        /// Empty candidate set — ladder is satisfied, nothing to do.
+        NoCandidate,
+        EmitRunBatch,
+        EmitAwaitBatch,
+        EmitAddressBatch,
+    }
+
+    fn expected_codex_review_axis_behavior(status: &CodexReviewStatus) -> CodexReviewAxisBehavior {
+        match status {
+            CodexReviewStatus::LadderSatisfied => CodexReviewAxisBehavior::NoCandidate,
+            CodexReviewStatus::Spawn { .. } => CodexReviewAxisBehavior::EmitRunBatch,
+            CodexReviewStatus::Await { .. } => CodexReviewAxisBehavior::EmitAwaitBatch,
+            CodexReviewStatus::Address { .. } => CodexReviewAxisBehavior::EmitAddressBatch,
+        }
+    }
+
+    fn all_codex_review_statuses() -> Vec<CodexReviewStatus> {
+        vec![
+            CodexReviewStatus::LadderSatisfied,
+            CodexReviewStatus::Spawn {
+                level: ReasoningLevel::Low,
+            },
+            CodexReviewStatus::Await {
+                level: ReasoningLevel::Medium,
+                total: 3,
+                completed: 1,
+            },
+            CodexReviewStatus::Address {
+                level: ReasoningLevel::High,
+                verdicts: vec![VerdictRecord {
+                    slot: 1,
+                    body: "needs fix".into(),
+                    class: VerdictClass::HasIssues,
+                }],
+            },
+        ]
+    }
+
+    fn observed_codex_review_axis_behavior(cs: &[Action]) -> CodexReviewAxisBehavior {
+        match cs {
+            [] => CodexReviewAxisBehavior::NoCandidate,
+            [a] => match (&a.kind, &a.effect) {
+                (ActionKind::RunCodexReviewBatch { .. }, ActionEffect::Full { .. }) => {
+                    CodexReviewAxisBehavior::EmitRunBatch
+                }
+                (ActionKind::AwaitCodexReviewBatch { .. }, ActionEffect::Wait { .. }) => {
+                    CodexReviewAxisBehavior::EmitAwaitBatch
+                }
+                (ActionKind::AddressCodexReviewBatch { .. }, ActionEffect::Agent { .. }) => {
+                    CodexReviewAxisBehavior::EmitAddressBatch
+                }
+                (kind, effect) => panic!(
+                    "codex-review axis emitted unexpected (kind, effect): \
+                     {kind:?}, {effect:?}",
+                ),
+            },
+            multi => panic!(
+                "codex-review axis emitted unexpected candidate count: {} items",
+                multi.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn codex_review_axis_property_holds_for_every_status() {
+        let statuses = all_codex_review_statuses();
+        assert_eq!(
+            statuses.len(),
+            4,
+            "`all_codex_review_statuses` must include one sample per \
+             `CodexReviewStatus` variant; adding a new variant requires \
+             adding both an arm in `expected_codex_review_axis_behavior` \
+             AND a sample here.",
+        );
+        for status in statuses {
+            let r = report(status.clone());
+            let cs = candidates(&r);
+            let actual = observed_codex_review_axis_behavior(&cs);
+            let expected = expected_codex_review_axis_behavior(&status);
+            assert_eq!(
+                actual, expected,
+                "codex-review axis contract violated for status = {status:?}",
+            );
+        }
+    }
 }

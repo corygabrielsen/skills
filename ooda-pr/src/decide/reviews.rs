@@ -689,4 +689,93 @@ mod tests {
                 .any(|a| matches!(a.kind, ActionKind::WaitForHumanReview { .. }))
         );
     }
+
+    // ─── property tests for the class invariant ─────────────────────
+    //
+    // Class invariant from `candidates`'s docs: "Every blocking
+    // ReviewDecision must produce a candidate." In a clean baseline
+    // state (no threads, no pending reviewers, no CI gates), the
+    // review axis produces exactly one decision-derived candidate
+    // — or none, for the non-blocking decisions.
+    //
+    // The exhaustive match in `expected_review_axis_behavior` is the
+    // contract. Adding a new `ReviewDecision` variant fails to
+    // compile here until the new arm is added.
+
+    /// Decision-axis behavior in a clean baseline state. The axis
+    /// also emits `WaitForBotReview` / `WaitForHumanReview` when
+    /// pending reviewers exist — those are not decision-driven and
+    /// are deliberately excluded by this property test's setup.
+    #[derive(Debug, PartialEq, Eq)]
+    enum ReviewAxisBehavior {
+        /// No decision-derived candidate (decision is None or Approved).
+        NoBlocker,
+        /// `RequestApproval` — `ReviewRequired` with everything else
+        /// clean: agent has nothing left to do, human must approve.
+        EmitRequestApproval,
+        /// `AddressChangeRequest` — `ChangesRequested` with no inline
+        /// threads (summary-only review) and no pending re-review.
+        EmitAddressChangeRequest,
+    }
+
+    /// Exhaustive over `Option<ReviewDecision>`. The compiler
+    /// enforces that every variant has an explicit behavior arm.
+    fn expected_review_axis_behavior(decision: Option<ReviewDecision>) -> ReviewAxisBehavior {
+        match decision {
+            None => ReviewAxisBehavior::NoBlocker,
+            Some(ReviewDecision::Approved) => ReviewAxisBehavior::NoBlocker,
+            Some(ReviewDecision::ReviewRequired) => ReviewAxisBehavior::EmitRequestApproval,
+            Some(ReviewDecision::ChangesRequested) => ReviewAxisBehavior::EmitAddressChangeRequest,
+        }
+    }
+
+    fn all_review_decisions() -> Vec<Option<ReviewDecision>> {
+        vec![
+            None,
+            Some(ReviewDecision::Approved),
+            Some(ReviewDecision::ReviewRequired),
+            Some(ReviewDecision::ChangesRequested),
+        ]
+    }
+
+    fn observed_review_axis_behavior(cs: &[Action]) -> ReviewAxisBehavior {
+        let has_request_approval = cs
+            .iter()
+            .any(|a| matches!(a.kind, ActionKind::RequestApproval));
+        let has_address_change = cs
+            .iter()
+            .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest));
+        match (has_request_approval, has_address_change) {
+            (false, false) => ReviewAxisBehavior::NoBlocker,
+            (true, false) => ReviewAxisBehavior::EmitRequestApproval,
+            (false, true) => ReviewAxisBehavior::EmitAddressChangeRequest,
+            (true, true) => {
+                panic!("review axis emitted both RequestApproval and AddressChangeRequest")
+            }
+        }
+    }
+
+    #[test]
+    fn review_axis_property_holds_for_every_decision() {
+        let decisions = all_review_decisions();
+        assert_eq!(
+            decisions.len(),
+            4,
+            "`all_review_decisions` must include `None` plus one sample \
+             per `ReviewDecision` variant; adding a new variant requires \
+             adding both an arm in `expected_review_axis_behavior` AND a \
+             sample here.",
+        );
+        for decision in decisions {
+            let mut r = clean_reviews();
+            r.decision = decision;
+            let cs = candidates(&oriented_with(r));
+            let actual = observed_review_axis_behavior(&cs);
+            let expected = expected_review_axis_behavior(decision);
+            assert_eq!(
+                actual, expected,
+                "review-axis contract violated for decision = {decision:?}",
+            );
+        }
+    }
 }

@@ -22,8 +22,8 @@ use std::num::NonZeroU32;
 
 use crate::act::{ActError, act};
 use crate::decide::action::Action;
+use crate::decide::candidates;
 use crate::decide::decision::{Decision, HaltReason};
-use crate::decide::{candidates, decide_from_candidates};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::GitHubObservations;
 use crate::observe::github::fetch_all;
@@ -31,6 +31,7 @@ use crate::observe::github::gh::GhError;
 use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
+use ooda_core::decide_from_candidates;
 
 #[derive(Debug)]
 pub enum LoopError {

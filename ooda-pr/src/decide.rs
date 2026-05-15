@@ -15,37 +15,14 @@ pub mod decision;
 mod reviews;
 mod state;
 
-use crate::observe::github::pr_view::{PrState, TerminalState};
 use crate::orient::OrientedState;
 
 use action::{Action, TargetEffect};
-use decision::{Decision, DecisionHalt, Terminal};
 
 // `ActionEffect` and `Urgency` are referenced only by tests in this
 // module; gate the imports to suppress the unused-import lint.
 #[cfg(test)]
 use action::{ActionEffect, Urgency};
-
-pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState) -> Decision {
-    // PrState::Terminal(_) is the single arm that catches both
-    // merged-and-done and closed-without-merge — the inner
-    // TerminalState picks the boundary halt's Succeeded/Aborted.
-    match lifecycle {
-        PrState::Terminal(TerminalState::Merged) => {
-            return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
-        }
-        PrState::Terminal(TerminalState::Closed) => {
-            return Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
-        }
-        PrState::Open => {}
-    }
-
-    let Some(top) = candidates.into_iter().next() else {
-        return Decision::Halt(DecisionHalt::Success);
-    };
-
-    ooda_core::classify(top)
-}
 
 /// Generate ranked candidate actions across all axes.
 ///

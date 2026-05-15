@@ -15,11 +15,12 @@ mod text;
 
 use act::{ActContext, CodexActContext};
 use decide::action::ActionEffect;
+use decide::candidates;
 use decide::decision::{Decision, DecisionHalt};
-use decide::{candidates, decide_from_candidates};
 use ids::{CodexReasoningLevel, PullRequestNumber, RepoSlug};
 use observe::codex::fetch_all as fetch_codex;
 use observe::github::fetch_all;
+use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};

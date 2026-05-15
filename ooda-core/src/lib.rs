@@ -38,16 +38,20 @@ pub mod handoff_prompt;
 pub mod non_empty;
 pub mod outcome;
 pub mod polling_interval;
+pub mod pr_state;
 pub mod single_line_string;
 pub mod stall_key;
 
 pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};
-pub use decision::{Decision, DecisionHalt, HaltReason, Terminal, classify};
+pub use decision::{
+    Decision, DecisionHalt, HaltReason, Terminal, classify, decide_from_candidates,
+};
 pub use exit_code::ExitCode;
 pub use handoff_prompt::{ContextLine, HandoffPrompt, PromptSection, Witness};
 pub use non_empty::NonEmpty;
 pub use outcome::Outcome;
 pub use polling_interval::{PollingInterval, PollingIntervalError};
+pub use pr_state::{PrState, TerminalState};
 pub use single_line_string::SingleLineString;
 pub use stall_key::StallKey;

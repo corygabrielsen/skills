@@ -320,7 +320,7 @@ fn inspect_after_flag_is_allowed() {
     // and fails at observe (network/auth). We accept both as long
     // as the inspect-placement check itself didn't reject.
     assert!(
-        code == 6 || code == 64,
+        code == 70 || code == 64,
         "unexpected exit {code}; stderr: {stderr}"
     );
     if code == 64 {
@@ -355,7 +355,7 @@ fn state_root_records_even_when_observe_fails() {
 
     let code = out.status.code().expect("no exit code");
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert_eq!(code, 6, "stderr: {stderr}");
+    assert_eq!(code, 70, "stderr: {stderr}");
     assert!(stderr.starts_with("BinaryError: observe:"));
 
     let pr_root = state_root.join("github.com/owner/repo/prs/1");
@@ -425,7 +425,7 @@ fn homogeneous_pr_list_emits_three_jsonl_records() {
         ],
         &state,
     );
-    assert_eq!(code, 6, "all 3 PRs must yield BinaryError");
+    assert_eq!(code, 70, "all 3 PRs must yield BinaryError");
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 3, "stdout: {stdout}");
     for (i, want_pr) in [1u64, 2, 3].iter().enumerate() {
@@ -433,7 +433,7 @@ fn homogeneous_pr_list_emits_three_jsonl_records() {
         assert_eq!(v["slug"], "acme/widget");
         assert_eq!(v["pr"], *want_pr);
         assert_eq!(v["outcome"], "BinaryError");
-        assert_eq!(v["exit"], 6);
+        assert_eq!(v["exit"], 70);
         assert!(v["msg"].is_string());
     }
 }
@@ -456,7 +456,7 @@ fn comma_separated_multi_slug_preserves_input_order() {
         ],
         &state,
     );
-    assert_eq!(code, 6);
+    assert_eq!(code, 70);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "stdout: {stdout}");
     let r0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -483,7 +483,7 @@ fn slug_inheritance_carries_to_subsequent_groups() {
         ],
         &state,
     );
-    assert_eq!(code, 6);
+    assert_eq!(code, 70);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "stdout: {stdout}");
     for line in &lines {
@@ -586,7 +586,7 @@ fn concurrency_capped_run_completes_all_prs() {
         ],
         &state,
     );
-    assert_eq!(code, 6);
+    assert_eq!(code, 70);
     assert_eq!(stdout.lines().count(), 3);
 }
 
@@ -607,7 +607,7 @@ fn suite_recorder_writes_manifest_pointers_outcome_and_trace() {
         ],
         &state,
     );
-    assert_eq!(code, 6);
+    assert_eq!(code, 70);
 
     // <state>/suites/<suite-id>/ has all four artifacts.
     let suite_dirs: Vec<_> = std::fs::read_dir(state.join("suites"))
@@ -649,7 +649,7 @@ fn suite_recorder_writes_manifest_pointers_outcome_and_trace() {
     // MultiOutcome.
     let outcome: serde_json::Value =
         serde_json::from_slice(&std::fs::read(suite_dir.join("outcome.json")).unwrap()).unwrap();
-    assert_eq!(outcome["exit_code"], 6);
+    assert_eq!(outcome["exit_code"], 70);
     assert!(outcome["multi_outcome"]["Bundle"].is_array());
 
     // trace.md contains the human-readable summary table.
@@ -657,7 +657,7 @@ fn suite_recorder_writes_manifest_pointers_outcome_and_trace() {
     assert!(trace.contains("Per-PR results"));
     assert!(trace.contains("acme/widget"));
     assert!(trace.contains("acme/infra"));
-    assert!(trace.contains("Aggregate exit: **6**"));
+    assert!(trace.contains("Aggregate exit: **70**"));
 }
 
 #[test]

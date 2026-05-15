@@ -45,6 +45,7 @@ use serde::Serialize;
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::multi_outcome::MultiOutcome;
 use crate::recorder::{RecorderError, RunMode, make_run_id, resolve_state_root};
+use ooda_core::ExitCode;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -112,7 +113,7 @@ struct OutcomeFile<'a> {
     schema_version: u32,
     suite_id: &'a str,
     finished_at: DateTime<Utc>,
-    exit_code: u8,
+    exit_code: ExitCode,
     multi_outcome: &'a MultiOutcome,
 }
 
@@ -206,7 +207,7 @@ impl SuiteRecorder {
 
     /// Final write: outcome.json + close the trace.md summary table.
     /// Called from the main thread after `thread::scope` joins.
-    pub fn record_outcome(&self, multi: &MultiOutcome, exit_code: u8) {
+    pub fn record_outcome(&self, multi: &MultiOutcome, exit_code: ExitCode) {
         if let Ok(inner) = self.inner.lock() {
             let _ = inner.write_outcome(multi, exit_code);
             let _ = inner.write_trace_summary(multi, exit_code);
@@ -242,7 +243,11 @@ impl Inner {
         write_json(&path, &payload)
     }
 
-    fn write_outcome(&self, multi: &MultiOutcome, exit_code: u8) -> Result<(), RecorderError> {
+    fn write_outcome(
+        &self,
+        multi: &MultiOutcome,
+        exit_code: ExitCode,
+    ) -> Result<(), RecorderError> {
         let path = self.suite_root.join("outcome.json");
         let payload = OutcomeFile {
             schema_version: SCHEMA_VERSION,
@@ -257,7 +262,7 @@ impl Inner {
     fn write_trace_summary(
         &self,
         multi: &MultiOutcome,
-        exit_code: u8,
+        exit_code: ExitCode,
     ) -> Result<(), RecorderError> {
         let trace_path = self.suite_root.join("trace.md");
         let mut trace = OpenOptions::new()
@@ -443,7 +448,7 @@ mod tests {
                 outcome: Outcome::Paused,
             },
         ]);
-        rec.record_outcome(&multi, 0);
+        rec.record_outcome(&multi, ExitCode::DoneSucceeded);
 
         let out: serde_json::Value =
             serde_json::from_slice(&fs::read(rec.suite_root().join("outcome.json")).unwrap())

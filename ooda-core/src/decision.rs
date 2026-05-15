@@ -10,6 +10,7 @@
 //! share one source of truth.
 
 use crate::action::Action;
+use crate::exit_code::ExitCode;
 use serde::Serialize;
 
 /// What the loop should do next. Returned by `decide()`.
@@ -23,14 +24,16 @@ pub enum Decision<K> {
 }
 
 impl<K> Decision<K> {
-    /// Documented exit-code mapping. `Execute` is `4` (in_progress):
-    /// the full loop would auto-run the action, but a single-pass
-    /// probe (`inspect`) does not — wrappers gating on success must
-    /// see a non-zero exit so a still-advancing target doesn't look
-    /// green.
-    pub fn exit_code(&self) -> u8 {
+    /// Documented exit-code mapping. `Execute` maps to
+    /// [`ExitCode::WouldAdvance`]: the full loop would auto-run
+    /// the action, but a single-pass probe (`inspect`) does not —
+    /// wrappers gating on success must see a non-zero exit so a
+    /// still-advancing target doesn't look green. An inspect pass
+    /// that would have executed produces the same `$?` as a
+    /// `WouldAdvance` halt.
+    pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Execute(_) => 4,
+            Self::Execute(_) => ExitCode::WouldAdvance,
             Self::Halt(halt) => halt.exit_code(),
         }
     }
@@ -53,11 +56,16 @@ pub enum DecisionHalt<K> {
 }
 
 impl<K> DecisionHalt<K> {
-    pub fn exit_code(&self) -> u8 {
+    /// Decide-level exit codes track [`crate::Outcome`]:
+    /// `Success` and `Terminal` halt the loop with
+    /// [`ExitCode::DoneSucceeded`] (Paused is not produced at the
+    /// decide layer); `HumanNeeded` maps to [`ExitCode::HandoffHuman`];
+    /// `AgentNeeded` maps to [`ExitCode::HandoffAgent`].
+    pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Success | Self::Terminal(_) => 0,
-            Self::HumanNeeded(_) => 3,
-            Self::AgentNeeded(_) => 5,
+            Self::Success | Self::Terminal(_) => ExitCode::DoneSucceeded,
+            Self::HumanNeeded(_) => ExitCode::HandoffHuman,
+            Self::AgentNeeded(_) => ExitCode::HandoffAgent,
         }
     }
 
@@ -92,15 +100,16 @@ pub enum HaltReason<K> {
 }
 
 impl<K> HaltReason<K> {
-    /// Exit-code mapping. Codes `6` (runtime) and `64` (usage) live
-    /// outside this enum: they describe loop *failure* (not halt)
-    /// and CLI *parse* failure (not invocation), respectively, and
-    /// are encoded on [`crate::Outcome`].
-    pub fn exit_code(&self) -> u8 {
+    /// Exit-code mapping. [`ExitCode::UsageError`] and
+    /// [`ExitCode::BinaryError`] live outside this enum: they
+    /// describe CLI *parse* failure and caught *external* failure
+    /// (subprocess, IO, etc.), neither of which is a halt. Both
+    /// are encoded on [`crate::Outcome`] directly.
+    pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Decision(halt) => halt.exit_code(),
-            Self::Stalled(_) => 1,
-            Self::CapReached(_) => 2,
+            Self::Stalled(_) => ExitCode::StuckRepeated,
+            Self::CapReached(_) => ExitCode::StuckCapReached,
         }
     }
 }
@@ -136,46 +145,64 @@ mod tests {
     }
 
     #[test]
-    fn decision_execute_exit_code() {
-        assert_eq!(Decision::Execute(dummy()).exit_code(), 4);
+    fn decision_execute_maps_to_would_advance() {
+        assert_eq!(
+            Decision::Execute(dummy()).exit_code(),
+            ExitCode::WouldAdvance
+        );
     }
 
     #[test]
-    fn decision_halt_success_is_zero() {
+    fn decision_halt_success_maps_to_done_succeeded() {
         let d: Decision<K> = Decision::Halt(DecisionHalt::Success);
-        assert_eq!(d.exit_code(), 0);
+        assert_eq!(d.exit_code(), ExitCode::DoneSucceeded);
     }
 
     #[test]
-    fn decision_halt_terminal_is_zero() {
+    fn decision_halt_terminal_maps_to_done_succeeded() {
         let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
-        assert_eq!(d.exit_code(), 0);
+        assert_eq!(d.exit_code(), ExitCode::DoneSucceeded);
         let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
-        assert_eq!(d.exit_code(), 0);
+        assert_eq!(d.exit_code(), ExitCode::DoneSucceeded);
     }
 
     #[test]
     fn decision_halt_handoffs_have_distinct_codes() {
-        assert_eq!(DecisionHalt::<K>::Success.exit_code(), 0);
-        assert_eq!(DecisionHalt::HumanNeeded(dummy()).exit_code(), 3);
-        assert_eq!(DecisionHalt::AgentNeeded(dummy()).exit_code(), 5);
+        assert_eq!(
+            DecisionHalt::<K>::Success.exit_code(),
+            ExitCode::DoneSucceeded
+        );
+        assert_eq!(
+            DecisionHalt::HumanNeeded(dummy()).exit_code(),
+            ExitCode::HandoffHuman
+        );
+        assert_eq!(
+            DecisionHalt::AgentNeeded(dummy()).exit_code(),
+            ExitCode::HandoffAgent
+        );
     }
 
     #[test]
     fn halt_reason_layers_exit_codes() {
         assert_eq!(
             HaltReason::Decision(DecisionHalt::<K>::Success).exit_code(),
-            0
+            ExitCode::DoneSucceeded
         );
-        assert_eq!(HaltReason::Stalled(dummy()).exit_code(), 1);
-        assert_eq!(HaltReason::CapReached(dummy()).exit_code(), 2);
+        assert_eq!(
+            HaltReason::Stalled(dummy()).exit_code(),
+            ExitCode::StuckRepeated
+        );
+        assert_eq!(
+            HaltReason::CapReached(dummy()).exit_code(),
+            ExitCode::StuckCapReached
+        );
         assert_eq!(
             HaltReason::Decision(DecisionHalt::HumanNeeded(dummy())).exit_code(),
-            3
+            ExitCode::HandoffHuman
         );
         assert_eq!(
             HaltReason::Decision(DecisionHalt::AgentNeeded(dummy())).exit_code(),
-            5
+            ExitCode::HandoffAgent
         );
     }
 

@@ -18,6 +18,7 @@
 
 use crate::action::Action;
 use crate::decision::{Decision, DecisionHalt, HaltReason, Terminal};
+use crate::exit_code::ExitCode;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -62,18 +63,23 @@ pub enum Outcome<K> {
 
 impl<K> Outcome<K> {
     /// 1:1 variant → exit-code. The contract.
-    pub fn exit_code(&self) -> u8 {
+    ///
+    /// Returns an [`ExitCode`] rather than a raw `u8` so the
+    /// numeric values live in exactly one place
+    /// (`exit_code.rs`). Convert via `u8::from(_)` /
+    /// `i32::from(_)` when handing to `std::process::exit`.
+    pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::DoneSucceeded => 0,
-            Self::StuckRepeated(_) => 1,
-            Self::StuckCapReached(_) => 2,
-            Self::HandoffHuman(_) => 3,
-            Self::WouldAdvance(_) => 4,
-            Self::HandoffAgent(_) => 5,
-            Self::BinaryError(_) => 6,
-            Self::Paused => 7,
-            Self::DoneAborted => 8,
-            Self::UsageError(_) => 64,
+            Self::DoneSucceeded => ExitCode::DoneSucceeded,
+            Self::Paused => ExitCode::Paused,
+            Self::WouldAdvance(_) => ExitCode::WouldAdvance,
+            Self::HandoffHuman(_) => ExitCode::HandoffHuman,
+            Self::HandoffAgent(_) => ExitCode::HandoffAgent,
+            Self::DoneAborted => ExitCode::DoneAborted,
+            Self::StuckRepeated(_) => ExitCode::StuckRepeated,
+            Self::StuckCapReached(_) => ExitCode::StuckCapReached,
+            Self::UsageError(_) => ExitCode::UsageError,
+            Self::BinaryError(_) => ExitCode::BinaryError,
         }
     }
 
@@ -152,17 +158,41 @@ mod tests {
     }
 
     #[test]
-    fn exit_codes_match_spec() {
-        assert_eq!(Outcome::<K>::DoneSucceeded.exit_code(), 0);
-        assert_eq!(Outcome::StuckRepeated(dummy()).exit_code(), 1);
-        assert_eq!(Outcome::StuckCapReached(dummy()).exit_code(), 2);
-        assert_eq!(Outcome::HandoffHuman(dummy()).exit_code(), 3);
-        assert_eq!(Outcome::WouldAdvance(dummy()).exit_code(), 4);
-        assert_eq!(Outcome::HandoffAgent(dummy()).exit_code(), 5);
-        assert_eq!(Outcome::<K>::BinaryError("oops".into()).exit_code(), 6);
-        assert_eq!(Outcome::<K>::Paused.exit_code(), 7);
-        assert_eq!(Outcome::<K>::DoneAborted.exit_code(), 8);
-        assert_eq!(Outcome::<K>::UsageError("bad".into()).exit_code(), 64);
+    fn outcome_maps_to_matching_exit_code_variant() {
+        assert_eq!(
+            Outcome::<K>::DoneSucceeded.exit_code(),
+            ExitCode::DoneSucceeded
+        );
+        assert_eq!(Outcome::<K>::Paused.exit_code(), ExitCode::Paused);
+        assert_eq!(
+            Outcome::WouldAdvance(dummy()).exit_code(),
+            ExitCode::WouldAdvance
+        );
+        assert_eq!(
+            Outcome::HandoffHuman(dummy()).exit_code(),
+            ExitCode::HandoffHuman
+        );
+        assert_eq!(
+            Outcome::HandoffAgent(dummy()).exit_code(),
+            ExitCode::HandoffAgent
+        );
+        assert_eq!(Outcome::<K>::DoneAborted.exit_code(), ExitCode::DoneAborted);
+        assert_eq!(
+            Outcome::StuckRepeated(dummy()).exit_code(),
+            ExitCode::StuckRepeated
+        );
+        assert_eq!(
+            Outcome::StuckCapReached(dummy()).exit_code(),
+            ExitCode::StuckCapReached
+        );
+        assert_eq!(
+            Outcome::<K>::UsageError("bad".into()).exit_code(),
+            ExitCode::UsageError
+        );
+        assert_eq!(
+            Outcome::<K>::BinaryError("oops".into()).exit_code(),
+            ExitCode::BinaryError
+        );
     }
 
     #[test]

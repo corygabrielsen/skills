@@ -1095,7 +1095,7 @@ mod tests {
         let r = per_pr_jsonl_record(&po("a/b", 1, Outcome::DoneAborted));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "DoneClosed");
-        assert_eq!(v["exit"], 8);
+        assert_eq!(v["exit"], 5);
     }
 
     #[test]
@@ -1103,7 +1103,7 @@ mod tests {
         let r = per_pr_jsonl_record(&po("a/b", 1, Outcome::Paused));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "Paused");
-        assert_eq!(v["exit"], 7);
+        assert_eq!(v["exit"], 1);
     }
 
     #[test]
@@ -1115,7 +1115,7 @@ mod tests {
         ));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "StuckRepeated");
-        assert_eq!(v["exit"], 1);
+        assert_eq!(v["exit"], 6);
         assert_eq!(v["action"], "Rebase");
         assert_eq!(v["blocker"], "rebase-needed");
         assert!(v.get("prompt").is_none());
@@ -1130,7 +1130,7 @@ mod tests {
         ));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "StuckCapReached");
-        assert_eq!(v["exit"], 2);
+        assert_eq!(v["exit"], 7);
         assert_eq!(v["action"], "Rebase");
         assert_eq!(v["blocker"], "rebase-needed");
     }
@@ -1142,7 +1142,7 @@ mod tests {
         let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::HandoffAgent(a)));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "HandoffAgent");
-        assert_eq!(v["exit"], 5);
+        assert_eq!(v["exit"], 4);
         assert_eq!(v["action"], "Rebase");
         assert_eq!(v["blocker"], "unresolved_threads");
         assert_eq!(v["prompt"], "Address 2 unresolved review threads.");
@@ -1168,7 +1168,7 @@ mod tests {
         let r = per_pr_jsonl_record(&po("a/b", 7, Outcome::WouldAdvance(a)));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "WouldAdvance");
-        assert_eq!(v["exit"], 4);
+        assert_eq!(v["exit"], 2);
         assert_eq!(v["automation"], "Wait(1m)");
     }
 
@@ -1181,7 +1181,7 @@ mod tests {
         ));
         let v = parse_record(&r);
         assert_eq!(v["outcome"], "BinaryError");
-        assert_eq!(v["exit"], 6);
+        assert_eq!(v["exit"], 70);
         assert_eq!(v["msg"], "observe: gh: connection refused");
         assert!(v.get("action").is_none());
     }

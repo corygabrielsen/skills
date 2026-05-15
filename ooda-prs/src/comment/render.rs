@@ -353,13 +353,17 @@ mod tests {
     #[test]
     fn render_action_blockquotes_multiline_description() {
         let o = empty_oriented();
+        // Use a no-payload variant to exercise the renderer's
+        // multiline-description path without needing a stub
+        // ReviewThread; AddressThreads' NonEmpty<ReviewThread>
+        // payload would force us to fabricate a thread here.
         let action = Action {
-            kind: ActionKind::AddressThreads { threads: vec![] },
+            kind: ActionKind::Rebase,
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
             description: "line one\nline two\nline three".into(),
-            blocker: crate::ids::BlockerKey::tag("unresolved_threads"),
+            blocker: crate::ids::BlockerKey::tag("rebase-needed"),
         };
         let r = render(&o, &Decision::Execute(action));
         assert!(r.body.contains("> line one"));

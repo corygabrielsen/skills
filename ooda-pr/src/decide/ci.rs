@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use super::action::{Action, ActionKind, Automation, NonEmpty, TargetEffect, Urgency};
 use crate::ids::{BlockerKey, CheckName};
 use crate::orient::ci::CiSummary;
 
@@ -50,7 +50,9 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
         .cloned()
         .collect();
 
-    if ci.required.fail() == 0 && !blocked.is_empty() && !ci.advisory.failed.is_empty() {
+    if let Some(blocked) = NonEmpty::try_from_vec(blocked)
+        .filter(|_| ci.required.fail() == 0 && !ci.advisory.failed.is_empty())
+    {
         let advisory_lines: Vec<String> = ci
             .advisory
             .failed
@@ -75,8 +77,7 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
         });
     } else {
-        if !ci.required.pending_names.is_empty() {
-            let names = ci.required.pending_names.clone();
+        if let Some(names) = NonEmpty::try_from_vec(ci.required.pending_names.clone()) {
             let blocker_list = join_names(&names);
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
@@ -92,8 +93,7 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
                 blocker: BlockerKey::tag(format!("ci_pending: {blocker_list}")),
             });
         }
-        if !ci.missing_names.is_empty() {
-            let names = ci.missing_names.clone();
+        if let Some(names) = NonEmpty::try_from_vec(ci.missing_names.clone()) {
             let blocker_list = join_names(&names);
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },

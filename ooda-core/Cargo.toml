@@ -1,0 +1,10 @@
+[package]
+name = "ooda-core"
+version = "0.1.0"
+edition = "2024"
+description = "Shared boundary types and loop spine for the OODA skill family"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]

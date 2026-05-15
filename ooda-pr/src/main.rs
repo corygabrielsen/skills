@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -403,41 +401,6 @@ struct HandoffSnapshot {
     oriented: orient::OrientedState,
     head_short: String,
     base_branch: String,
-}
-
-/// Build the multi-line context block appended to `HandoffHuman`
-/// prompts: PR URL + one-line snapshot per axis the human typically
-/// needs to triage (branch, CI, reviews). Computed from
-/// already-observed state — no extra fetches.
-fn human_handoff_context(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    snapshot: Option<&HandoffSnapshot>,
-    blocker: &ids::BlockerKey,
-) -> String {
-    let mut lines = vec![format!("PR: https://github.com/{slug}/pull/{pr}")];
-    lines.push(format!("Blocker: {blocker}"));
-    if let Some(snap) = snapshot {
-        lines.push(format!(
-            "Branch: {} ← {}",
-            snap.base_branch, snap.head_short
-        ));
-        let req = &snap.oriented.ci.required;
-        lines.push(format!(
-            "CI: {} pass / {} failed / {} pending (required)",
-            req.pass,
-            req.fail(),
-            req.pending()
-        ));
-        let r = &snap.oriented.reviews;
-        lines.push(format!(
-            "Reviews: {} unresolved thread(s) / {} pending bot / {} pending human",
-            r.threads_unresolved,
-            r.pending_reviews.bots.len(),
-            r.pending_reviews.humans.len()
-        ));
-    }
-    lines.join("\n")
 }
 
 /// Append a PR-context block to `HandoffHuman` prompts so the

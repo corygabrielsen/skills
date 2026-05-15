@@ -245,6 +245,7 @@ impl Recorder {
         }
     }
 
+    #[cfg(test)]
     pub fn pr_root(&self) -> PathBuf {
         self.with_inner(|inner| inner.pr_root.clone())
             .unwrap_or_default()

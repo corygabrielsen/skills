@@ -148,7 +148,6 @@ pub enum LevelOutcome {
 
 #[derive(Debug)]
 pub struct Recorder {
-    cfg: RecorderConfig,
     target_root: PathBuf,
     current_run_dir: PathBuf,
     manifest: RunManifest,
@@ -222,7 +221,6 @@ impl Recorder {
             && let Some((run_dir, manifest, mode)) = try_resume(&target_root, &cfg)?
         {
             let recorder = Self {
-                cfg,
                 target_root,
                 current_run_dir: run_dir,
                 manifest,
@@ -257,7 +255,6 @@ impl Recorder {
         };
 
         let recorder = Self {
-            cfg,
             target_root,
             current_run_dir,
             manifest,
@@ -333,10 +330,12 @@ impl Recorder {
         Ok(next)
     }
 
+    #[cfg(test)]
     pub fn target_root(&self) -> &Path {
         &self.target_root
     }
 
+    #[cfg(test)]
     pub fn current_run_dir(&self) -> &Path {
         &self.current_run_dir
     }

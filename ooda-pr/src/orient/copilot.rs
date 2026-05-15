@@ -570,9 +570,6 @@ mod tests {
     fn head() -> GitCommitSha {
         GitCommitSha::parse(HEAD_SHA).unwrap()
     }
-    fn old() -> GitCommitSha {
-        GitCommitSha::parse(OLD_SHA).unwrap()
-    }
     fn ts(s: &str) -> Timestamp {
         Timestamp::parse(s).unwrap()
     }

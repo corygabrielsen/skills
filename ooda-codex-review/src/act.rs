@@ -198,9 +198,10 @@ pub fn build_codex_args(
     Ok(args)
 }
 
-/// Build the direct `codex review` command for unit tests and
-/// diagnostics. Runtime spawning uses [`build_logged_codex_command`]
-/// so observe can see child exit status after this process returns.
+/// Build the direct `codex review` command for unit tests.
+/// Runtime spawning uses [`build_logged_codex_command`] so observe
+/// can see child exit status after this process returns.
+#[cfg(test)]
 pub fn build_codex_command(
     codex_bin: &std::path::Path,
     level: CodexReasoningLevel,

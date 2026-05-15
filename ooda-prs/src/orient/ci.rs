@@ -47,6 +47,7 @@ impl CheckBucket {
     pub fn pending(&self) -> usize {
         self.pending_names.len()
     }
+    #[cfg(test)]
     pub fn total(&self) -> usize {
         self.pass + self.fail() + self.pending()
     }

@@ -65,11 +65,9 @@ pub struct SuiteRecorder {
 }
 
 struct Inner {
-    state_root: PathBuf,
     suite_root: PathBuf,
     suite_id: String,
     started_at: DateTime<Utc>,
-    suite: Vec<(RepoSlug, PullRequestNumber)>,
     pointers: Vec<PrPointer>,
 }
 
@@ -179,11 +177,9 @@ impl SuiteRecorder {
 
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
-                state_root,
                 suite_root,
                 suite_id,
                 started_at: now,
-                suite: cfg.suite,
                 pointers: Vec::new(),
             })),
         })
@@ -214,20 +210,14 @@ impl SuiteRecorder {
         }
     }
 
-    /// Path to `<state-root>/suites/<suite-id>/`. Useful for tests
-    /// and for the `BinaryError` triage path that wants to point a
-    /// human at the audit trail.
+    /// Path to `<state-root>/suites/<suite-id>/`. Used by in-module
+    /// tests; production code reaches the audit trail via the
+    /// suite-id stamped into per-PR Recorder state.
+    #[cfg(test)]
     pub fn suite_root(&self) -> PathBuf {
         self.inner
             .lock()
             .map(|inner| inner.suite_root.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn suite_id(&self) -> String {
-        self.inner
-            .lock()
-            .map(|inner| inner.suite_id.clone())
             .unwrap_or_default()
     }
 }

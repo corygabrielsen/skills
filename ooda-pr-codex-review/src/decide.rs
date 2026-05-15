@@ -27,24 +27,10 @@ use decision::{Decision, DecisionHalt, Terminal};
 #[cfg(test)]
 use action::Urgency;
 
-/// Decide the next action for a PR given its oriented state.
-///
-/// Lifecycle terminal cases short-circuit: merged or closed PRs
-/// have no advancement available.
-///
-/// Otherwise, generate candidates from each axis, take the first,
-/// classify by automation:
-///   * Full   → Execute (the loop runs the action itself)
-///   * Wait   → Execute (the loop sleeps and re-observes)
-///   * Agent  → Halt(AgentNeeded(action))
-///   * Human  → Halt(HumanNeeded(action))
-///
-/// Empty candidate set → Halt(Success).
-pub fn decide(oriented: &OrientedState, lifecycle: PrState) -> Decision {
-    decide_from_candidates(candidates(oriented), lifecycle)
-}
-
 pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState) -> Decision {
+    // PrState::Terminal(_) is the single arm that catches both
+    // merged-and-done and closed-without-merge — the inner
+    // TerminalState picks the boundary halt's Succeeded/Aborted.
     match lifecycle {
         PrState::Terminal(TerminalState::Merged) => {
             return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));

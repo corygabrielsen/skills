@@ -32,9 +32,11 @@ pub mod blocker;
 pub mod decision;
 pub mod exit_code;
 pub mod outcome;
+pub mod single_line_string;
 
 pub use action::{Action, ActionKindName, Automation, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};
 pub use decision::{Decision, DecisionHalt, HaltReason, Terminal};
 pub use exit_code::ExitCode;
 pub use outcome::Outcome;
+pub use single_line_string::SingleLineString;

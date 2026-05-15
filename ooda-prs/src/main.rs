@@ -311,13 +311,7 @@ fn infer_cwd_slug() -> Result<RepoSlug, String> {
 }
 
 fn usage(msg: &str) -> Outcome {
-    // Newline-strip per SKILL.md UsageError invariant.
-    let flat = if msg.contains('\n') {
-        msg.replace('\n', " ")
-    } else {
-        msg.to_string()
-    };
-    Outcome::UsageError(flat)
+    Outcome::usage_error(msg)
 }
 
 fn main() -> ExitCode {
@@ -424,10 +418,9 @@ fn drive_one_pr(
     }) {
         Ok(r) => r,
         Err(e) => {
-            let msg = flatten(format!("recorder: {e}"));
             // No recorder was opened for this PR; render to stderr
             // so the suite-level summary still observes the failure.
-            let outcome = Outcome::BinaryError(msg);
+            let outcome = Outcome::binary_error(format!("recorder: {e}"));
             render_outcome(&mut std::io::stderr(), &outcome);
             return outcome;
         }
@@ -475,7 +468,7 @@ fn run_inspect(
         }
         Err(e) => {
             recorder.record_observe_end(1, Err(e.to_string()));
-            return Outcome::BinaryError(flatten(format!("observe: {e}")));
+            return Outcome::binary_error(format!("observe: {e}"));
         }
     };
     if obs.stack_root_branch != obs.pr_view.base_ref_name {
@@ -576,7 +569,10 @@ fn post_result_line(
         // gh's stderr, so a multi-line error would otherwise break the
         // implied one-line-per-comment-event contract documented in
         // SKILL.md.
-        Err(e) => Some(format!("{prefix}: {}", flatten(e.to_string()))),
+        Err(e) => Some(format!(
+            "{prefix}: {}",
+            ooda_core::SingleLineString::new(e.to_string())
+        )),
     }
 }
 
@@ -848,14 +844,6 @@ fn format_duration(d: Duration) -> String {
         } else {
             format!("{m}m{s}s")
         }
-    }
-}
-
-fn flatten(s: String) -> String {
-    if s.contains('\n') {
-        s.replace('\n', " ")
-    } else {
-        s
     }
 }
 

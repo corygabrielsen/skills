@@ -116,13 +116,7 @@ fn parse_level(s: &str) -> Result<ReasoningLevel, String> {
 }
 
 fn usage(msg: impl Into<String>) -> Outcome {
-    let s = msg.into();
-    let flat = if s.contains('\n') {
-        s.replace('\n', " ")
-    } else {
-        s
-    };
-    Outcome::UsageError(flat)
+    Outcome::usage_error(msg.into())
 }
 
 /// Pull a value-arg or report `<flag> requires a value`.
@@ -406,17 +400,17 @@ fn sha256_prefix(input: &str, hex_chars: usize) -> String {
 fn run_session(args: Args) -> Outcome {
     let repo_root = match discover_repo_root() {
         Ok(p) => p,
-        Err(e) => return Outcome::BinaryError(e),
+        Err(e) => return Outcome::binary_error(e),
     };
     let repo_id = match compute_repo_id(&repo_root) {
         Ok(id) => id,
-        Err(e) => return Outcome::BinaryError(format!("compute repo id: {e}")),
+        Err(e) => return Outcome::binary_error(format!("compute repo id: {e}")),
     };
 
     let codex_target = if args.side_effect.is_none() {
         match resolve_codex_target(&args.target, &repo_root) {
             Ok(target) => Some(target),
-            Err(e) => return Outcome::BinaryError(e),
+            Err(e) => return Outcome::binary_error(e),
         }
     } else {
         None
@@ -432,7 +426,7 @@ fn run_session(args: Args) -> Outcome {
         now: None,
     }) {
         Ok(pair) => pair,
-        Err(e) => return Outcome::BinaryError(format!("recorder open: {e}")),
+        Err(e) => return Outcome::binary_error(format!("recorder open: {e}")),
     };
 
     if let Some(side_effect) = args.side_effect.clone() {
@@ -508,7 +502,7 @@ fn apply_side_effect(
                 to.as_str()
             )),
             Ok(None) => log_idle(format!("at ladder edge ({}); no advance", from.as_str())),
-            Err(e) => Outcome::BinaryError(format!("recorder advance: {e}")),
+            Err(e) => Outcome::binary_error(format!("recorder advance: {e}")),
         },
         SideEffect::DropLevel => match recorder.drop_level() {
             Ok(Some(to)) => log_idle(format!(
@@ -517,7 +511,7 @@ fn apply_side_effect(
                 to.as_str()
             )),
             Ok(None) => log_idle(format!("at floor ({}); no drop", from.as_str())),
-            Err(e) => Outcome::BinaryError(format!("recorder drop: {e}")),
+            Err(e) => Outcome::binary_error(format!("recorder drop: {e}")),
         },
         SideEffect::RestartFromFloor => match recorder.restart_from_floor() {
             Ok(to) => log_idle(format!(
@@ -525,7 +519,7 @@ fn apply_side_effect(
                 from.as_str(),
                 to.as_str()
             )),
-            Err(e) => Outcome::BinaryError(format!("recorder restart: {e}")),
+            Err(e) => Outcome::binary_error(format!("recorder restart: {e}")),
         },
         SideEffect::MarkRetroClean => apply_mark_retro_clean(recorder, ceiling, from),
         SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(recorder, from, reason),
@@ -545,7 +539,7 @@ fn apply_mark_retro_clean(
     current: ReasoningLevel,
 ) -> Outcome {
     if let Err(e) = recorder.record_outcome(LevelOutcome::Clean { level: current }) {
-        return Outcome::BinaryError(format!("recorder record-outcome: {e}"));
+        return Outcome::binary_error(format!("recorder record-outcome: {e}"));
     }
     if current == ceiling {
         let _ = writeln!(
@@ -565,7 +559,7 @@ fn apply_mark_retro_clean(
             "retrospective clean at {}; ladder edge xhigh reached, no advance",
             current.as_str()
         )),
-        Err(e) => Outcome::BinaryError(format!("recorder advance: {e}")),
+        Err(e) => Outcome::binary_error(format!("recorder advance: {e}")),
     }
 }
 
@@ -578,7 +572,7 @@ fn apply_mark_retro_changes(
         level: current,
         reason: reason.clone(),
     }) {
-        return Outcome::BinaryError(format!("recorder record-outcome: {e}"));
+        return Outcome::binary_error(format!("recorder record-outcome: {e}"));
     }
     match recorder.restart_from_floor() {
         Ok(to) => log_idle(format!(
@@ -587,7 +581,7 @@ fn apply_mark_retro_changes(
             reason,
             to.as_str()
         )),
-        Err(e) => Outcome::BinaryError(format!("recorder restart: {e}")),
+        Err(e) => Outcome::binary_error(format!("recorder restart: {e}")),
     }
 }
 
@@ -597,7 +591,7 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: ReasoningLevel) -
         level: current,
         issue_count,
     }) {
-        return Outcome::BinaryError(format!("recorder record-outcome: {e}"));
+        return Outcome::binary_error(format!("recorder record-outcome: {e}"));
     }
     match recorder.drop_level() {
         Ok(Some(to)) => log_idle(format!(
@@ -613,9 +607,9 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: ReasoningLevel) -
                 issue_count,
                 batch
             )),
-            Err(e) => Outcome::BinaryError(format!("recorder next-batch: {e}")),
+            Err(e) => Outcome::binary_error(format!("recorder next-batch: {e}")),
         },
-        Err(e) => Outcome::BinaryError(format!("recorder drop: {e}")),
+        Err(e) => Outcome::binary_error(format!("recorder drop: {e}")),
     }
 }
 

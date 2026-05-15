@@ -48,7 +48,7 @@
 //! the per-PR `Outcome` discipline: stderr for triage, `$?` for
 //! dispatch, plus the new stdout channel for structured records.
 
-use ooda_core::ExitCode;
+use ooda_core::{ExitCode, SingleLineString};
 use serde::Serialize;
 
 use crate::ids::{PullRequestNumber, RepoSlug};
@@ -67,8 +67,9 @@ pub struct ProcessOutcome {
 /// (UsageError) or from the suite spawn loop (Bundle).
 #[derive(Debug, Serialize)]
 pub enum MultiOutcome {
-    /// Parser-time failure; no PRs ran.
-    UsageError(String),
+    /// Parser-time failure; no PRs ran. [`SingleLineString`]
+    /// enforces the no-newlines stderr-header invariant.
+    UsageError(SingleLineString),
     /// All PRs reached a halt state (terminal, handoff, stuck, or
     /// per-PR BinaryError). The `Vec` is in input order; suite
     /// invariants (`|bundle| ≥ 1`, distinct `(slug, pr)` pairs) hold

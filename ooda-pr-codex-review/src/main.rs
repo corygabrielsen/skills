@@ -288,13 +288,7 @@ fn parse_args() -> Result<Args, Outcome> {
 }
 
 fn usage(msg: &str) -> Outcome {
-    // Newline-strip per SKILL.md UsageError invariant.
-    let flat = if msg.contains('\n') {
-        msg.replace('\n', " ")
-    } else {
-        msg.to_string()
-    };
-    Outcome::UsageError(flat)
+    Outcome::usage_error(msg)
 }
 
 fn main() -> ExitCode {
@@ -311,8 +305,7 @@ fn main() -> ExitCode {
             }) {
                 Ok(r) => r,
                 Err(e) => {
-                    let msg = flatten(format!("recorder: {e}"));
-                    return finish(Outcome::BinaryError(msg), None);
+                    return finish(Outcome::binary_error(format!("recorder: {e}")), None);
                 }
             };
             recorder.install_process_recorder();
@@ -360,7 +353,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         }
         Err(e) => {
             recorder.record_observe_end(1, Err(e.to_string()));
-            return Outcome::BinaryError(flatten(format!("observe: {e}")));
+            return Outcome::binary_error(format!("observe: {e}"));
         }
     };
     if obs.stack_root_branch != obs.pr_view.base_ref_name {
@@ -474,9 +467,9 @@ fn maybe_fetch_codex(
         head_sha,
     ) {
         Ok(o) => Ok(Some(o)),
-        Err(e) => Err(Outcome::BinaryError(flatten(format!(
+        Err(e) => Err(Outcome::binary_error(format!(
             "observe (codex review): {e}"
-        )))),
+        ))),
     }
 }
 
@@ -496,14 +489,14 @@ fn build_codex_act_context(
     }
     let repo_root = match discover_repo_root() {
         Ok(p) => p,
-        Err(e) => return Err(Outcome::BinaryError(flatten(format!("repo root: {e}")))),
+        Err(e) => return Err(Outcome::binary_error(format!("repo root: {e}"))),
     };
     let codex_pr_root = recorder.pr_root().join("codex");
     if let Err(e) = std::fs::create_dir_all(&codex_pr_root) {
-        return Err(Outcome::BinaryError(flatten(format!(
+        return Err(Outcome::binary_error(format!(
             "create codex pr_root {}: {e}",
             codex_pr_root.display()
-        ))));
+        )));
     }
     let lock_path = codex_pr_root.join(".lock");
     let lock = match std::fs::File::options()
@@ -514,17 +507,17 @@ fn build_codex_act_context(
     {
         Ok(f) => f,
         Err(e) => {
-            return Err(Outcome::BinaryError(flatten(format!(
+            return Err(Outcome::binary_error(format!(
                 "open codex .lock at {}: {e}",
                 lock_path.display()
-            ))));
+            )));
         }
     };
     if let Err(e) = lock.try_lock() {
-        return Err(Outcome::BinaryError(flatten(format!(
+        return Err(Outcome::binary_error(format!(
             "another invocation holds the codex review lock at {} ({e}); concurrent ooda-pr-codex-review runs against the same PR with codex enabled are not supported — wait for the prior run to exit, or use --state-root to isolate",
             lock_path.display()
-        ))));
+        )));
     }
     Ok(Some(CodexActContext {
         codex_bin: args.codex_review_bin.clone(),
@@ -588,7 +581,10 @@ fn post_result_line(
         // gh's stderr, so a multi-line error would otherwise break the
         // implied one-line-per-comment-event contract documented in
         // SKILL.md.
-        Err(e) => Some(format!("{prefix}: {}", flatten(e.to_string()))),
+        Err(e) => Some(format!(
+            "{prefix}: {}",
+            ooda_core::SingleLineString::new(e.to_string())
+        )),
     }
 }
 
@@ -782,14 +778,6 @@ fn format_duration(d: Duration) -> String {
         } else {
             format!("{m}m{s}s")
         }
-    }
-}
-
-fn flatten(s: String) -> String {
-    if s.contains('\n') {
-        s.replace('\n', " ")
-    } else {
-        s
     }
 }
 

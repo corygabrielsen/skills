@@ -9,9 +9,60 @@
 //! [`HaltReason::exit_code`]) so the taxonomy and its IPC encoding
 //! share one source of truth.
 
-use crate::action::{Action, HandoffAction};
+use crate::action::{Action, ActionEffect, HandoffAction};
 use crate::exit_code::ExitCode;
 use serde::Serialize;
+
+/// Project an [`Action<K>`] onto a [`Decision<K>`] using its
+/// `effect` field. The four `ActionEffect` variants partition the
+/// action space into "loop drives it" (`Full`/`Wait` → `Execute`)
+/// and "external resolver needed" (`Agent`/`Human` → `Halt` with a
+/// [`HandoffAction`] projection). The handoff projection lifts the
+/// prompt to a top-level field so decorator sites can reach it
+/// without pattern-matching past an impossible-by-construction arm.
+pub fn classify<K>(action: Action<K>) -> Decision<K> {
+    let Action {
+        kind,
+        effect,
+        target_effect,
+        urgency,
+        blocker,
+    } = action;
+    match effect {
+        ActionEffect::Full { log } => Decision::Execute(Action {
+            kind,
+            effect: ActionEffect::Full { log },
+            target_effect,
+            urgency,
+            blocker,
+        }),
+        ActionEffect::Wait { interval, log } => Decision::Execute(Action {
+            kind,
+            effect: ActionEffect::Wait { interval, log },
+            target_effect,
+            urgency,
+            blocker,
+        }),
+        ActionEffect::Agent { prompt } => {
+            Decision::Halt(DecisionHalt::AgentNeeded(HandoffAction {
+                kind,
+                prompt,
+                target_effect,
+                urgency,
+                blocker,
+            }))
+        }
+        ActionEffect::Human { prompt } => {
+            Decision::Halt(DecisionHalt::HumanNeeded(HandoffAction {
+                kind,
+                prompt,
+                target_effect,
+                urgency,
+                blocker,
+            }))
+        }
+    }
+}
 
 /// What the loop should do next. Returned by `decide()`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -218,6 +269,59 @@ mod tests {
             HaltReason::Decision(DecisionHalt::AgentNeeded(dummy_handoff())).exit_code(),
             ExitCode::HandoffAgent
         );
+    }
+
+    fn dummy_with_effect(effect: ActionEffect) -> Action<K> {
+        Action {
+            kind: K,
+            effect,
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingFix,
+            blocker: BlockerKey::tag("t"),
+        }
+    }
+
+    #[test]
+    fn classify_full_yields_execute() {
+        let d = classify(dummy_with_effect(ActionEffect::Full { log: "x".into() }));
+        assert!(matches!(
+            d,
+            Decision::Execute(Action {
+                effect: ActionEffect::Full { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn classify_wait_yields_execute() {
+        let d = classify(dummy_with_effect(ActionEffect::Wait {
+            interval: crate::PollingInterval::from_secs(30),
+            log: "x".into(),
+        }));
+        assert!(matches!(
+            d,
+            Decision::Execute(Action {
+                effect: ActionEffect::Wait { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn classify_agent_yields_agent_handoff() {
+        let d = classify(dummy_with_effect(ActionEffect::Agent {
+            prompt: HandoffPrompt::new("p"),
+        }));
+        assert!(matches!(d, Decision::Halt(DecisionHalt::AgentNeeded(_))));
+    }
+
+    #[test]
+    fn classify_human_yields_human_handoff() {
+        let d = classify(dummy_with_effect(ActionEffect::Human {
+            prompt: HandoffPrompt::new("p"),
+        }));
+        assert!(matches!(d, Decision::Halt(DecisionHalt::HumanNeeded(_))));
     }
 
     #[test]

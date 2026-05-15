@@ -18,13 +18,13 @@ mod state;
 use crate::observe::github::pr_view::{PrState, TerminalState};
 use crate::orient::OrientedState;
 
-use action::{Action, ActionEffect, TargetEffect};
+use action::{Action, TargetEffect};
 use decision::{Decision, DecisionHalt, Terminal};
 
-// `Urgency` is referenced only by tests in this module; suppress the
-// unused-import lint by keeping the use behind cfg(test).
+// `ActionEffect` and `Urgency` are referenced only by tests in this
+// module; gate the imports to suppress the unused-import lint.
 #[cfg(test)]
-use action::Urgency;
+use action::{ActionEffect, Urgency};
 
 pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState) -> Decision {
     // PrState::Terminal(_) is the single arm that catches both
@@ -44,57 +44,7 @@ pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState
         return Decision::Halt(DecisionHalt::Success);
     };
 
-    classify(top)
-}
-
-fn classify(action: Action) -> Decision {
-    // The four `ActionEffect` variants partition the action space
-    // into "loop drives it" (Full/Wait → Execute) and "external
-    // resolver needed" (Agent/Human → Halt). Handoff variants
-    // project to `HandoffAction` here so the prompt becomes a
-    // top-level field of the halt's payload — no
-    // `match action.effect` needed at decorator sites.
-    let action::Action {
-        kind,
-        effect,
-        target_effect,
-        urgency,
-        blocker,
-    } = action;
-    match effect {
-        ActionEffect::Full { log } => Decision::Execute(action::Action {
-            kind,
-            effect: ActionEffect::Full { log },
-            target_effect,
-            urgency,
-            blocker,
-        }),
-        ActionEffect::Wait { interval, log } => Decision::Execute(action::Action {
-            kind,
-            effect: ActionEffect::Wait { interval, log },
-            target_effect,
-            urgency,
-            blocker,
-        }),
-        ActionEffect::Agent { prompt } => {
-            Decision::Halt(DecisionHalt::AgentNeeded(ooda_core::HandoffAction {
-                kind,
-                prompt,
-                target_effect,
-                urgency,
-                blocker,
-            }))
-        }
-        ActionEffect::Human { prompt } => {
-            Decision::Halt(DecisionHalt::HumanNeeded(ooda_core::HandoffAction {
-                kind,
-                prompt,
-                target_effect,
-                urgency,
-                blocker,
-            }))
-        }
-    }
+    ooda_core::classify(top)
 }
 
 /// Generate ranked candidate actions across all axes.

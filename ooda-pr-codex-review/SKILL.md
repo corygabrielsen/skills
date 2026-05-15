@@ -17,16 +17,32 @@ args:
   - name: --trace PATH
     description: Also append the compact trace to PATH. Always-on state is written even when this is omitted.
   - name: --codex-review-ceiling LVL
-    description: "Enable the local codex review axis with reasoning ceiling LVL ∈ {off, low, medium, high, xhigh}. Default off — codex review disabled, behavior matches /ooda-pr exactly. Reserved for upcoming milestones; today the flag parses but has no semantic effect."
+    description: "Enable the local codex review axis with reasoning ceiling LVL ∈ {off, low, medium, high, xhigh}. Default off — codex axis disabled, behavior matches /ooda-pr exactly. When non-off, codex batches stream alongside the PR loop and gate merge until the ladder is satisfied at ceiling."
+  - name: --codex-review-floor LVL
+    description: "Starting rung of the codex review ladder. Default low. Must be ≤ --codex-review-ceiling when ceiling is set. Inert when ceiling is off."
+  - name: --codex-review-n N
+    description: "Parallel `codex review` subprocesses per batch. Default 3, must be ≥ 1. Inert when ceiling is off."
+  - name: --codex-review-bin PATH
+    description: "Path to the `codex` binary. Default `codex` (PATH lookup). Inert when ceiling is off."
   - name: -h, --help
     description: Print usage to stdout and exit 0. The only invocation that writes to stdout.
 ---
 
 # /ooda-pr-codex-review
 
-Drives one PR through observe → orient → decide → act. Each
-invocation returns one `Outcome`; the caller dispatches on the
-exit code alone.
+Drives one PR through observe → orient → decide → act — optionally
+running local `codex review` as a sixth orient axis on the same
+OODA tick. Each invocation returns one `Outcome`; the caller
+dispatches on the exit code alone.
+
+When `--codex-review-ceiling off` (the default) the codex axis is
+inert and behavior is bit-equivalent to `/ooda-pr`. When enabled,
+codex review's per-level batches stream alongside the PR loop's
+existing waits, contribute candidates into the same `Urgency`
+ladder, and structurally gate merge (no approval / merge while
+the codex ladder has unresolved levels). The recorder shares the
+PR state-root with `/ooda-pr`, so running either skill on the
+same PR walks the same per-PR ledger.
 
 ## Names
 
@@ -172,13 +188,109 @@ exit code (typically 101 for compile error) and ooda-pr does
 not execute — treat such codes as `BinaryError`-equivalent
 (see catch-all).
 
-| Flag                | Meaning                                                                                                                                                                                                                                                                                                     |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-iter N`      | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                        |
-| `--status-comment`  | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                            |
-| `--state-root PATH` | Override the always-on state root. Default resolution is `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then `~/.local/state/ooda-pr`, then the platform temp directory. State is keyed by GitHub repo+PR, not by checkout path.                                                                    |
-| `--trace PATH`      | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 6). Later trace writes are best-effort and do not change the Outcome. |
-| `-h`, `--help`      | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                       |
+| Flag                         | Meaning                                                                                                                                                                                                                                                                                                     |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--max-iter N`               | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                        |
+| `--status-comment`           | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                            |
+| `--state-root PATH`          | Override the always-on state root. Default resolution is `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then `~/.local/state/ooda-pr`, then the platform temp directory. State is keyed by GitHub repo+PR, not by checkout path.                                                                    |
+| `--trace PATH`               | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 6). Later trace writes are best-effort and do not change the Outcome. |
+| `--codex-review-ceiling LVL` | Enable codex review with reasoning ceiling LVL ∈ `{off, low, medium, high, xhigh}`. Default `off` — codex axis disabled, behavior is bit-equivalent to `/ooda-pr`. When set to a non-off level, the codex axis runs in parallel with the PR loop's other axes.                                              |
+| `--codex-review-floor LVL`   | Starting rung of the codex ladder. Default `low`. Must be ≤ `--codex-review-ceiling` when ceiling is set; otherwise `UsageError`. Inert when ceiling is `off`.                                                                                                                                              |
+| `--codex-review-n N`         | Parallel `codex review` subprocesses per batch. Default 3, must be ≥ 1. Inert when ceiling is `off`.                                                                                                                                                                                                        |
+| `--codex-review-bin PATH`    | Path to the `codex` binary. Default `codex` (PATH lookup). Inert when ceiling is `off`.                                                                                                                                                                                                                     |
+| `-h`, `--help`               | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                       |
+
+## Codex review axis
+
+When `--codex-review-ceiling != off`, observe gains a sixth axis
+that scans the local filesystem for in-flight codex review
+batches. Orient projects this into a `CodexReviewReport` whose
+`status` is one of:
+
+| Status            | Meaning                                                                                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `Spawn { level }` | No batch at this level for the current head SHA — runner emits `RunCodexReviewBatch`.                                                     |
+| `Await { level }` | Batch is streaming — runner emits `AwaitCodexReviewBatch` (Wait 30s).                                                                     |
+| `Address { … }`   | Batch completed with issues — handoff with verdict bodies in the prompt.                                                                  |
+| `LadderSatisfied` | Every level from floor to ceiling is `Complete { all-clean }` for the current head SHA — axis emits no candidates, PR is free to advance. |
+
+`current_level` is derived: walk floor → ceiling, find the first
+level that isn't `Complete { all-clean }` for the current head SHA.
+This makes ladder climbing implicit — no per-level "advance" action
+is needed because a clean batch at level N means orient picks
+level N+1 next iteration.
+
+### New `ActionKind` variants
+
+| Variant                                 | Automation  | Urgency        | Effect                                                                                                 |
+| --------------------------------------- | ----------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+| `RunCodexReviewBatch{level, n}`         | `Full`      | `Critical`     | Spawn `n` codex subprocesses; write `head_sha.txt`; return immediately. Stamped with current head SHA. |
+| `AwaitCodexReviewBatch{level, pending}` | `Wait{30s}` | `BlockingWait` | Sleep + re-observe; interleaves with PR's own waits.                                                   |
+| `AddressCodexReviewBatch{level, count}` | `Agent`     | `BlockingFix`  | `HandoffAgent` with the verdict bodies bundled into the prompt (per-slot, deduped via `Urgency` sort). |
+
+`Critical` urgency on `RunCodexReviewBatch` preempts everything
+else — when the codex axis has work to spawn, it goes first.
+`BlockingWait` on `AwaitCodexReviewBatch` competes with
+`WaitForCi`/`WaitForCopilotReview` etc., so the two pipelines'
+waits naturally serialize through the same Urgency sort.
+`BlockingFix` on `AddressCodexReviewBatch` competes with
+`AddressThreads` / `FixCi` — codex issues get the same priority
+class as PR review thread issues.
+
+### Head-SHA-keyed batch directories
+
+Each batch lives under
+`<pr_root>/codex/levels/<L>/<head_sha[:12]>/`, stamped with
+`head_sha.txt`. When a fix-agent pushes a commit and the next
+iteration observes a new `head_ref_oid`, prior batches survive on
+disk as cache but are ignored by orient (different short-SHA → no
+matching batch dir → `BatchState::NotStarted` → fresh spawn at
+the same level). This is the entire mechanism for "stale codex
+verdicts after a push".
+
+### Recorder layout (codex sub-tree)
+
+```text
+<state-root>/github.com/<owner>/<repo>/prs/<pr>/codex/
+  .lock                        advisory flock; held for the run's lifetime
+  levels/<L>/<head_sha[:12]>/
+    head_sha.txt               stamped on spawn; gates scan_batch
+    <L>-1.log                  stdout/stderr of codex review subprocess
+    <L>-1.exit                 exit status when child finished
+    <L>-2.log
+    <L>-2.exit
+    ...
+```
+
+The PR-side recorder layout under `<pr_root>/` is unchanged from
+`/ooda-pr`; the codex axis adds only the `codex/` subtree.
+
+### Concurrency
+
+The codex axis acquires an advisory `flock(2)` on
+`<pr_root>/codex/.lock` at startup (when ceiling != off).
+Concurrent `ooda-pr-codex-review` runs against the same PR with
+codex enabled return `BinaryError(WouldBlock)` rather than racing
+on batch dirs / `head_sha.txt`. The lock is FD-tied and releases
+on process exit (including SIGKILL — the kernel closes the FD).
+Stale `.lock` files from crashed processes never block subsequent
+runs. The PR-side ledger is already append-safe (`events.jsonl`
+under `O_APPEND`) and last-writer-wins for `latest/*` — no lock
+needed there.
+
+### Resolving codex spawn errors
+
+Codex subprocess failures classify as `BinaryError` (exit 6):
+
+| Failure mode                                         | Trigger                                                                                                                                 |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `codex review` binary missing                        | `--codex-review-bin` points to a nonexistent path, or the default `codex` is not on PATH; pre-flighted before spawn for absolute paths. |
+| codex subprocess exited non-zero                     | Detected by observe (`<L>-<slot>.exit` file with non-zero status); surfaces as `BinaryError` on the next iteration's observe.           |
+| codex exited 0 without a verdict marker / empty body | Detected by observe; surfaces as `BinaryError` (would otherwise loop forever waiting for the verdict).                                  |
+
+The orchestrator should treat exit 6 from a codex-enabled
+invocation as triage-only: do not auto-retry; inspect the
+`<L>-<slot>.log` referenced in the BinaryError message.
 
 ## Always-On State
 

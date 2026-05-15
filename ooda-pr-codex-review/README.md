@@ -12,7 +12,7 @@ and exit-code taxonomy see `SKILL.md`. For implementation see `src/`.
 ```
 ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder ⊕ outcome
 
-run_loop : RepoSlug × PullRequestNumber × LoopConfig × Recorder × OnState
+run_loop : ActContext × LoopConfig × Recorder × OnState
         → Result⟨HaltReason, LoopError⟩
 
 main : Argv → Outcome → ExitCode
@@ -44,6 +44,7 @@ Timestamp        := chrono::DateTime⟨Utc⟩                   (Copy, Ord on in
 BlockerKey       := { String | non-empty }                  (parse: Result, tag: pub(crate) infallible)
 Urgency          := total enum { Critical < BlockingFix < BlockingWait
                                  < BlockingHuman < Advancing < Hygiene }
+ReasoningLevel   := total enum { Low < Medium < High < Xhigh }  (codex review ladder rungs)
 ```
 
 ### Composition law
@@ -134,6 +135,38 @@ first-error fail-fast. Terminal short-circuit:
 `state ∈ {Merged, Closed} → terminal_observations(pr_view)` skips
 auxiliary endpoints whose base may have been deleted post-merge.
 
+### Codex review observation (axis-gated)
+
+```
+fetch_all : Path × ReasoningLevel × ReasoningLevel × u32 × HeadSha
+          → io::Result⟨CodexObservations⟩
+
+CodexObservations =
+    levels   : Vec⟨CodexLevelObservation⟩       (ladder slice [floor, ceiling])
+  × expected : u32                              (= --codex-review-n)
+  × head_sha : String                           (current PR head)
+  × floor    : ReasoningLevel
+  × ceiling  : ReasoningLevel
+
+CodexLevelObservation =
+    level       : ReasoningLevel
+  × batch_state : BatchState
+  × batch_dir   : PathBuf                        (= <pr_root>/codex/levels/<L>/<sha[:12]>/)
+
+BatchState =
+    NotStarted                                   (no batch_dir, or head_sha.txt missing/mismatched)
+  ⊕ Running { total: u32, completed: u32 }
+  ⊕ Complete { verdicts: Vec⟨VerdictRecord⟩ }
+
+VerdictRecord = slot: u32 × body: String × class: VerdictClass
+VerdictClass  = Clean ⊕ HasIssues
+```
+
+Pure filesystem read. Head-SHA gate: `<batch_dir>/head_sha.txt`
+content must match the PR's `pr_view.head_ref_oid`; mismatch or
+absent file is reported as `NotStarted` so the runner re-spawns at
+the current head.
+
 ---
 
 ## O — Orient
@@ -141,20 +174,25 @@ auxiliary endpoints whose base may have been deleted post-merge.
 Boundary: typed observations → per-axis reports. Pure, no I/O.
 
 ```
-orient : GitHubObservations × Option⟨Timestamp⟩ → OrientedState
+orient : GitHubObservations × Option⟨CodexObservations⟩ × Option⟨Timestamp⟩ → OrientedState
 
 OrientedState =
-    ci       : CiSummary                   (always-present)
-  × state    : PullRequestState            (always-present)
-  × reviews  : ReviewSummary               (always-present)
-  × copilot  : Option⟨CopilotReport⟩       (config-gated; None ⟺ no copilot ruleset)
-  × cursor   : Option⟨CursorReport⟩        (activity-gated; None ⟺ no rounds, no check)
+    ci           : CiSummary                  (always-present)
+  × state        : PullRequestState           (always-present)
+  × reviews      : ReviewSummary              (always-present)
+  × copilot      : Option⟨CopilotReport⟩      (config-gated; None ⟺ no copilot ruleset)
+  × cursor       : Option⟨CursorReport⟩       (activity-gated; None ⟺ no rounds, no check)
+  × threads      : Vec⟨ReviewThread⟩          (always-present; empty ≡ none)
+  × codex_review : Option⟨CodexReviewReport⟩  (flag-gated; None ⟺ --codex-review-ceiling off)
 ```
 
 **Asymmetric optionality is the soundness anchor.** Always-present
 axes have empty/zero states; `Option`-gated axes structurally
 distinguish _unconfigured_ from _configured-but-dormant_. The old
 combined-score approach conflated these and produced false halts.
+`codex_review` extends the same pattern: `None` is structurally
+distinct from "configured but ladder satisfied" (which is encoded
+as `Some(CodexReviewReport { status: LadderSatisfied, .. })`).
 
 ### Per-axis algebra
 
@@ -212,7 +250,28 @@ CursorTier   = Bronze ⊕ Silver ⊕ Gold ⊕ Platinum
                to prevent accidental cross-bot comparison)
 
 CursorReport ≅ CopilotReport (same skeleton, atomic-review state machine)
+
+CodexReviewReport =
+    status            : CodexReviewStatus
+  × floor             : ReasoningLevel
+  × ceiling           : ReasoningLevel
+  × head_sha          : String
+  × expected          : u32
+  × current_batch_dir : PathBuf
+  × current_level     : ReasoningLevel
+
+CodexReviewStatus =
+    Spawn   { level: ReasoningLevel }
+  ⊕ Await   { level: ReasoningLevel, total: u32, completed: u32 }
+  ⊕ Address { level: ReasoningLevel, verdicts: Vec⟨VerdictRecord⟩ }
+  ⊕ LadderSatisfied                              (every level in [floor, ceiling] is Complete + all-clean)
 ```
+
+`current_level` is the first level from the floor whose batch
+isn't `Complete { all-clean }` for the current head SHA. Ladder
+climbing is implicit — a clean batch at level N means the next
+iteration's orient picks level N+1 without any explicit
+"AdvanceLevel" action.
 
 ---
 
@@ -244,7 +303,7 @@ witness loop-only halts (`Stalled`, `CapReached`).
 
 ```
 Action =
-    kind          : ActionKind     (sum over 22 variants)
+    kind          : ActionKind     (sum over 25 variants — 22 PR-side + 3 codex review)
   × automation    : Automation     (who runs it)
   × target_effect : TargetEffect   (Blocks ⊕ Advances ⊕ Neutral)
   × urgency       : Urgency        (total-ordered tier)
@@ -258,7 +317,7 @@ Automation =
   ⊕ Human
 ```
 
-### `ActionKind` taxonomy (22 variants — the funnel basins, all payloads typed)
+### `ActionKind` taxonomy (25 variants — the funnel basins, all payloads typed)
 
 ```
                 ┌─ FixCi{check_name: CheckName}
@@ -282,7 +341,25 @@ Automation =
 
    Pending  ┌─ WaitForBotReview{reviewers: Vec⟨GitHubLogin⟩}    ← bots only
    review.  └─ WaitForHumanReview{reviewers: Vec⟨Reviewer⟩}     ← user|team sum
+
+   Codex    ┌─ RunCodexReviewBatch{level, n}                    Full,  Critical
+   review   ├─ AwaitCodexReviewBatch{level, pending}            Wait,  BlockingWait
+   axis     └─ AddressCodexReviewBatch{level, count}            Agent, BlockingFix
+            (LadderSatisfied emits no candidate — axis goes silent
+             once every level in [floor, ceiling] is clean)
 ```
+
+**Codex review axis Urgency mapping rationale.**
+`RunCodexReviewBatch` is `Critical`/`Full` so the axis preempts
+PR-side waits whenever it has work to spawn — free progress beats
+passive polling. `AwaitCodexReviewBatch` shares the `BlockingWait`
+tier with `WaitForCi`/`WaitForCopilotReview`, so codex's poll
+cycles serialize with the PR loop's other polls via the same
+Urgency sort. `AddressCodexReviewBatch` shares `BlockingFix` with
+`AddressThreads`/`FixCi` — codex issues get the same priority
+class as PR review thread issues. The `Address` description bundles
+the per-slot verdict bodies so the dispatched agent sees the
+actual issues in its prompt without a second filesystem read.
 
 ### The `decide` predicate
 
@@ -354,18 +431,22 @@ HaltReason =                                ⟶ exit_code()
   ⊕ Stalled(Action)                         ⟶ 1
   ⊕ CapReached(Action)                      ⟶ 2
 
-run_loop(slug, pr, cfg, on_state) =
+run_loop(ctx, cfg, on_state) =
     last_non_wait := None       -- feeds the stall comparator
     last_attempted := None      -- feeds CapReached's diagnostic
     for i in 1..=cfg.max_iterations:
-        obs      := fetch_all(slug, pr)?              -- LoopError::Observe
-        oriented := orient(obs, None)
-        decision := decide(oriented, obs.pr_view.state)
+        obs       := fetch_all(ctx.slug, ctx.pr)?           -- LoopError::Observe
+        codex_obs := if ctx.codex.is_some() && cfg.codex_review.is_some():
+                         refresh ctx.codex.head_sha + base_branch from obs.pr_view
+                         fetch_codex(...)?                  -- LoopError::CodexObserve
+                     else: None
+        oriented  := orient(obs, codex_obs, None)
+        decision  := decide(oriented, obs.pr_view.state)
         on_state(i, oriented, decision)
         case decision of
             Halt(h)    → return Decision(h)
             Execute(a) → if same_action_repeated(last_non_wait, a) return Stalled(a)
-                         act(a, slug, pr)?            -- LoopError::Act
+                         act(a, ctx)?                       -- LoopError::Act
                          last_attempted := Some(a)
                          if a.automation ≠ Wait :  last_non_wait := Some(a)
     return CapReached(last_attempted.unwrap())     -- always Some when --max-iter ≥ 1
@@ -479,9 +560,20 @@ do not leak internal data shapes.
        1:1 variant→exit-code at the binary boundary. $? alone is
        sufficient for caller dispatch; no two variants share a code.
 
-[O1] OrientedState.copilot = None  ⟺  no copilot ruleset configured
-     OrientedState.cursor  = None  ⟺  no cursor activity observed
+[O1] OrientedState.copilot      = None  ⟺  no copilot ruleset configured
+     OrientedState.cursor       = None  ⟺  no cursor activity observed
+     OrientedState.codex_review = None  ⟺  --codex-review-ceiling off
        Absence of signal is structurally distinct from low signal.
+       The codex_review axis extends the same pattern: None ≠ "axis
+       enabled but ladder satisfied" (which is encoded as
+       Some(report { status: LadderSatisfied })).
+
+[O2] CodexObservations.head_sha = ph
+     ∧ batch_dir/head_sha.txt content ≠ ph
+       ⇒ scan_batch reports NotStarted.
+       Stale-batch invalidation is structural: a pushed fix changes
+       the PR head, the per-batch stamp no longer matches, and the
+       next iteration emits a fresh RunCodexReviewBatch.
 
 [D1] candidates(o) = ∅  ⟺  Halt(Success)
        Halt is a predicate over the candidate set, not a scalar.

@@ -76,11 +76,11 @@ the binary boundary (`Outcome`) re-encodes it as a single 1:1
 variant→exit-code mapping for caller dispatch on `$?` alone.
 
 ```
-Decision::exit_code()  ≡  match { Execute → 4, Halt(h) → h.exit_code() }    (internal, used by inspect)
+Decision::exit_code()  ≡  match { Execute → 2, Halt(h) → h.exit_code() }    (internal, used by inspect)
 HaltReason::exit_code()≡  match { Decision(h) → h.exit_code(),
-                                  Stalled(_) → 1, CapReached(_) → 2 }      (internal, used by loop)
+                                  Stalled(_) → 6, CapReached(_) → 7 }      (internal, used by loop)
 DecisionHalt::exit_code() ≡ match { Success | Terminal → 0,
-                                    HumanNeeded → 3, AgentNeeded → 5 }       (shared)
+                                    HumanNeeded → 3, AgentNeeded → 4 }       (shared)
 Outcome::exit_code()   ≡  see Outcome section below                          (boundary, 1:1)
 ```
 
@@ -311,7 +311,7 @@ Decision =
 DecisionHalt ⊂ HaltReason                  ⟶ exit_code()
     Success                                 ⟶ 0
   ⊕ Terminal(Terminal)                      ⟶ 0
-  ⊕ AgentNeeded(Action)                     ⟶ 5
+  ⊕ AgentNeeded(Action)                     ⟶ 4
   ⊕ HumanNeeded(Action)                     ⟶ 3
 
 Terminal = Merged ⊕ Closed
@@ -450,8 +450,8 @@ LoopError  = Observe(GhError) ⊕ Act(ActError)
 
 HaltReason =                                ⟶ exit_code()
     Decision(DecisionHalt)                  ⟶ delegate
-  ⊕ Stalled(Action)                         ⟶ 1
-  ⊕ CapReached(Action)                      ⟶ 2
+  ⊕ Stalled(Action)                         ⟶ 6
+  ⊕ CapReached(Action)                      ⟶ 7
 
 run_loop(ctx, cfg, on_state) =
     last_non_wait := None       -- feeds the stall comparator
@@ -495,21 +495,23 @@ invocation with **one** exit code. `Outcome` is the boundary type.
 ```
 Outcome =                                              ⟶ exit_code()  stderr
     DoneSucceeded                                      ⟶ 0            "DoneMerged"
-  ⊕ StuckRepeated(Action)                              ⟶ 1            "StuckRepeated: ..."
-  ⊕ StuckCapReached(Action)                            ⟶ 2            "StuckCapReached: ..."
+  ⊕ Paused                                             ⟶ 1            "Paused"
+  ⊕ WouldAdvance(Action)                               ⟶ 2            "WouldAdvance: ..."    (inspect-only)
   ⊕ HandoffHuman(Action)                               ⟶ 3            "HandoffHuman: ..."
-  ⊕ WouldAdvance(Action)                               ⟶ 4            "WouldAdvance: ..."    (inspect-only)
-  ⊕ HandoffAgent(Action)                               ⟶ 5            "HandoffAgent: ..."
-  ⊕ BinaryError(String)                                ⟶ 6            "BinaryError: ..."
-  ⊕ Paused                                             ⟶ 7            "Paused"
-  ⊕ DoneAborted                                        ⟶ 8            "DoneClosed"
+  ⊕ HandoffAgent(Action)                               ⟶ 4            "HandoffAgent: ..."
+  ⊕ DoneAborted                                        ⟶ 5            "DoneClosed"
+  ⊕ StuckRepeated(Action)                              ⟶ 6            "StuckRepeated: ..."
+  ⊕ StuckCapReached(Action)                            ⟶ 7            "StuckCapReached: ..."
   ⊕ UsageError(String)                                 ⟶ 64           "UsageError: ..."
+  ⊕ BinaryError(String)                                ⟶ 70           "BinaryError: ..."
+  -- reserved: 130 (SIGINT), 143 (SIGTERM) — kernel-synthesized
 ```
 
 **1:1 variant→exit-code.** Each variant has a unique code; `$?`
-alone is sufficient for caller dispatch. Codes 9–63 are reserved
-for future variants; codes ≥64 follow BSD `sysexits` starting at
-`UsageError = 64`.
+alone is sufficient for caller dispatch. Codes `8–63` and
+`65–69` are deliberately unassigned. New error categories
+should adopt the appropriate BSD `sysexits.h` code rather than
+squat on the low range.
 
 ### Boundary functors
 
@@ -575,7 +577,7 @@ do not leak internal data shapes.
        Render code is structurally incapable of witnessing loop-only halts.
 
 [H2] ∀h : HaltReason, ∀d : Decision.
-       d.exit_code() = match d { Halt(h) → h.exit_code(); Execute → 4 }
+       d.exit_code() = match d { Halt(h) → h.exit_code(); Execute → 2 }
        Single source of truth for the internal IPC encoding.
 
 [H3] ∀o : Outcome. |{c : ℕ | ∃o', o'.exit_code() = c ∧ same_variant(o, o')}| = 1

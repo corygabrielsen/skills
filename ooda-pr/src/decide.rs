@@ -15,7 +15,7 @@ pub mod decision;
 mod reviews;
 mod state;
 
-use crate::observe::github::pr_view::PrState;
+use crate::observe::github::pr_view::{PrState, TerminalState};
 use crate::orient::OrientedState;
 
 use action::{Action, Automation, TargetEffect};
@@ -44,9 +44,16 @@ pub fn decide(oriented: &OrientedState, lifecycle: PrState) -> Decision {
 }
 
 pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState) -> Decision {
+    // PrState::Terminal(_) is the single arm that catches both
+    // merged-and-done and closed-without-merge — the inner
+    // TerminalState picks the boundary halt's Succeeded/Aborted.
     match lifecycle {
-        PrState::Merged => return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)),
-        PrState::Closed => return Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)),
+        PrState::Terminal(TerminalState::Merged) => {
+            return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
+        }
+        PrState::Terminal(TerminalState::Closed) => {
+            return Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
+        }
         PrState::Open => {}
     }
 

@@ -80,13 +80,13 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                     automation: Automation::Agent,
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Advancing,
-                    payload: ooda_core::ActionPayload::Prompt(
-                        ooda_core::HandoffPrompt::from_legacy_text(format!(
+                    payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
+                        format!(
                             "Copilot flagged {}. Investigate and push fixes for any \
                          that are real — the next review may clear them.",
                             crate::text::count(suppressed as usize, "low-confidence finding"),
-                        )),
-                    ),
+                        ),
+                    )),
                     blocker: BlockerKey::tag("copilot_tier_silver"),
                 });
             }

@@ -362,9 +362,9 @@ mod tests {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                "line one\nline two\nline three",
-            )),
+            payload: ooda_core::ActionPayload::Prompt(
+                ooda_core::HandoffPrompt::new("line one").with_paragraph("line two\nline three"),
+            ),
             blocker: crate::ids::BlockerKey::tag("rebase-needed"),
         };
         let r = render(&o, &Decision::Execute(action));

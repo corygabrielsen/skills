@@ -126,26 +126,34 @@ impl HandoffPrompt {
         }
     }
 
-    /// Build a prompt from a legacy free-form text body (the
-    /// `String` form prompts used before this type was introduced).
-    /// Splits on the first newline: line 1 becomes the `headline`
-    /// (newlines flattened to spaces by `SingleLineString`), the
-    /// rest — if any — becomes a single `Paragraph` section. Used
-    /// to migrate existing prompt builders without rewriting their
-    /// string-assembly internals.
-    pub fn from_legacy_text(text: impl Into<String>) -> Self {
-        let text = text.into();
-        match text.split_once('\n') {
-            Some((head, rest)) => {
-                let mut p = HandoffPrompt::new(head.to_string());
-                let rest = rest.trim_start_matches('\n');
-                if !rest.is_empty() {
-                    p.push_paragraph(rest);
-                }
-                p
-            }
-            None => HandoffPrompt::new(text),
-        }
+    /// Chainable form of [`Self::push_paragraph`] — for prompt
+    /// builders that assemble a [`HandoffPrompt`] in expression
+    /// position (struct-literal field, function return).
+    pub fn with_paragraph(mut self, text: impl Into<String>) -> Self {
+        self.push_paragraph(text);
+        self
+    }
+
+    /// Chainable form of [`Self::push_numbered_list`].
+    pub fn with_numbered_list(mut self, items: NonEmpty<SingleLineString>) -> Self {
+        self.push_numbered_list(items);
+        self
+    }
+
+    /// Chainable form of [`Self::push_witnesses`].
+    pub fn with_witnesses(mut self, items: NonEmpty<Witness>) -> Self {
+        self.push_witnesses(items);
+        self
+    }
+
+    /// Chainable form of [`Self::push_context_line`].
+    pub fn with_context_line(
+        mut self,
+        key: impl Into<SingleLineString>,
+        value: impl Into<SingleLineString>,
+    ) -> Self {
+        self.push_context_line(key, value);
+        self
     }
 }
 

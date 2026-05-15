@@ -46,9 +46,10 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                format!("Shorten title ({} chars, max 50)", state.title_len),
-            )),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
+                "Shorten title ({} chars, max 50)",
+                state.title_len
+            ))),
             blocker: BlockerKey::tag("title_too_long"),
         });
     }
@@ -74,7 +75,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 rebase_description("Rebase to resolve merge conflicts", state),
             )),
             blocker: BlockerKey::tag("merge_conflict"),
@@ -85,7 +86,7 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 rebase_description("Rebase onto the latest base branch", state),
             )),
             blocker: BlockerKey::tag("behind_base"),
@@ -134,7 +135,7 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 "GitHub reports BLOCKED but no modeled axis explains the blockage \
                  — likely an unmodeled merge requirement (deployment protection, signed \
                  commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
@@ -186,7 +187,7 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 "Add a content label (bug or enhancement)",
             )),
             blocker: BlockerKey::tag("no_content_label"),
@@ -198,7 +199,7 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 "Assign the PR (default: author)",
             )),
             blocker: BlockerKey::tag("no_assignee"),
@@ -221,12 +222,10 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                format!(
-                    "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
-                    missing.join(", ")
-                ),
-            )),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
+                "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
+                missing.join(", ")
+            ))),
             blocker: BlockerKey::tag("incomplete_description"),
         });
     }

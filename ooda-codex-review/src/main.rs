@@ -634,14 +634,12 @@ fn mk_handoff_human_test_failed(level: ReasoningLevel, details: String) -> Outco
         automation: Automation::Human,
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
-        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-            format!(
-                "Tests failed after addressing review batch at level {}. \
+        payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
+            "Tests failed after addressing review batch at level {}. \
              Surface to a human for triage. Details: {}",
-                level.as_str(),
-                details
-            ),
-        )),
+            level.as_str(),
+            details
+        ))),
         blocker: BlockerKey::tag("address-failed"),
     };
     Outcome::HandoffHuman(Box::new(action))

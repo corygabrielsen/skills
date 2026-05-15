@@ -35,9 +35,10 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                format!("Fix failing check: {}", f.name),
-            )),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
+                "Fix failing check: {}",
+                f.name
+            ))),
             blocker: BlockerKey::tag(format!("ci_fail: {}", f.name)),
         });
     }
@@ -60,11 +61,7 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             .map(|f| format!("- Advisory \"{}\" failed", f.name))
             .collect();
         let quoted: Vec<String> = blocked.iter().map(|n| format!("\"{n}\"")).collect();
-        let mut desc = vec![format!(
-            "CI waiting on {}. Concurrent state:",
-            quoted.join(", ")
-        )];
-        desc.extend(advisory_lines);
+        let headline = format!("CI waiting on {}. Concurrent state:", quoted.join(", "));
         let blocker_list = join_names(&blocked);
         out.push(Action {
             kind: ActionKind::TriageWait {
@@ -73,9 +70,9 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                desc.join("\n"),
-            )),
+            payload: ooda_core::ActionPayload::Prompt(
+                ooda_core::HandoffPrompt::new(headline).with_paragraph(advisory_lines.join("\n")),
+            ),
             blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
         });
     } else {

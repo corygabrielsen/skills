@@ -31,7 +31,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         .collect();
 
     if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads) {
-        let description = address_threads_description(&unresolved_threads);
+        let prompt = address_threads_prompt(&unresolved_threads);
         out.push(Action {
             kind: ActionKind::AddressThreads {
                 threads: unresolved_threads,
@@ -39,9 +39,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                description,
-            )),
+            payload: ooda_core::ActionPayload::Prompt(prompt),
             // Stable key — the action carries the witness; the
             // blocker remains a fixed tag so 3→2 progress doesn't
             // mask as stall. Live and Outdated threads share this
@@ -72,9 +70,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                format!("Waiting on human review from {names}"),
-            )),
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
+                "Waiting on human review from {names}"
+            ))),
             blocker: BlockerKey::tag(format!("pending_human_review: {names}")),
         });
     }
@@ -102,7 +100,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
+            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
                 "Request or self-approve",
             )),
             blocker: BlockerKey::tag("not_approved"),
@@ -132,9 +130,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             automation: Automation::Agent,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::from_legacy_text(
-                address_change_request_description(),
-            )),
+            payload: ooda_core::ActionPayload::Prompt(address_change_request_prompt()),
             blocker: BlockerKey::tag("changes_requested_summary"),
         });
     }
@@ -142,31 +138,37 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     out
 }
 
-fn address_change_request_description() -> String {
-    "Address summary-only change-request review (no inline threads). \
-     Read the latest CHANGES_REQUESTED review body via `gh pr view \
-     --json reviews` and address the requested changes. \
-     For each issue, think deeply about the entire class of issue, in \
-     general, and solve the general form of the issue across all relevant \
-     code. This ensures the entire category of each issue is solved in \
-     general."
-        .into()
+fn address_change_request_prompt() -> ooda_core::HandoffPrompt {
+    ooda_core::HandoffPrompt::new(
+        "Address summary-only change-request review (no inline threads). \
+         Read the latest CHANGES_REQUESTED review body via `gh pr view \
+         --json reviews` and address the requested changes. \
+         For each issue, think deeply about the entire class of issue, in \
+         general, and solve the general form of the issue across all relevant \
+         code. This ensures the entire category of each issue is solved in \
+         general.",
+    )
 }
 
-/// Build the address_threads prompt with the threads themselves
+/// Build the AddressThreads prompt with the threads themselves
 /// inlined as witnesses. Structure:
 ///
-/// 1. Headline count, with a Live/Outdated breakdown when the set
-///    is mixed.
-/// 2. Per-author breakdown.
-/// 3. Numbered threads with location, optional `[outdated]` tag,
-///    `thread_id` (for the resolve mutation), and full body.
-/// 4. The generalization directive (class-of-issue) plus the
-///    verify-then-act-or-resolve directive for outdated threads.
+/// * `headline` — count, with a Live/Outdated breakdown when the
+///   set is mixed.
+/// * Paragraph — per-author breakdown.
+/// * Witnesses — one per thread; label = numbered location +
+///   `[outdated]` tag + `thread_id`; body = quoted comment lines.
+/// * Paragraph — class-of-issue generalization directive.
+/// * Paragraph (optional) — verify-then-act-or-resolve directive
+///   for the outdated subset.
+/// * Paragraph — `resolveReviewThread` GraphQL template plus
+///   idempotency note.
 ///
 /// The actor receives the prompt material directly — no second
 /// `gh api graphql` round-trip required to discover what to fix.
-fn address_threads_description(threads: &[ReviewThread]) -> String {
+fn address_threads_prompt(threads: &[ReviewThread]) -> ooda_core::HandoffPrompt {
+    use ooda_core::{HandoffPrompt, NonEmpty as NE, SingleLineString, Witness};
+
     let outdated_count = threads
         .iter()
         .filter(|t| t.state == ThreadState::Outdated)
@@ -191,7 +193,8 @@ fn address_threads_description(threads: &[ReviewThread]) -> String {
             crate::text::count(threads.len(), "unresolved review thread"),
         )
     };
-    let mut parts: Vec<String> = vec![headline];
+
+    let mut prompt = HandoffPrompt::new(headline);
 
     let by_author = count_by_author(threads);
     if !by_author.is_empty() {
@@ -199,43 +202,51 @@ fn address_threads_description(threads: &[ReviewThread]) -> String {
             .iter()
             .map(|(author, count)| format!("{}: {}", author, crate::text::count(*count, "issue")))
             .collect();
-        parts.push(format!("{}.", bits.join(" · ")));
+        prompt.push_paragraph(format!("{}.", bits.join(" · ")));
     }
 
-    parts.push(String::new());
-    for (i, t) in threads.iter().enumerate() {
-        let tag = match t.state {
-            ThreadState::Outdated => "    [outdated]",
-            // Live and Resolved both render without a tag; Resolved
-            // is structurally excluded by the caller's filter, so
-            // only Live reaches this arm.
-            _ => "",
-        };
-        parts.push(format!(
-            "{}. {} @ {}{}    thread_id: {}",
-            i + 1,
-            t.author,
-            t.location,
-            tag,
-            t.id,
-        ));
-        for line in t.body.lines() {
-            parts.push(format!("   > {line}"));
-        }
-        parts.push(String::new());
-    }
+    let witnesses: Vec<Witness> = threads
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let tag = match t.state {
+                ThreadState::Outdated => "    [outdated]",
+                // Live and Resolved both render without a tag;
+                // Resolved is excluded by the caller's filter.
+                _ => "",
+            };
+            let label = SingleLineString::new(format!(
+                "{}. {} @ {}{}    thread_id: {}",
+                i + 1,
+                t.author,
+                t.location,
+                tag,
+                t.id,
+            ));
+            let body = t
+                .body
+                .lines()
+                .map(|line| format!("   > {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Witness { label, body }
+        })
+        .collect();
+    // `threads` is non-empty by the caller's filter; expressing
+    // that here without a panic would require threading
+    // `NonEmpty<ReviewThread>` through the signature. Caller
+    // contract is sufficient.
+    prompt.push_witnesses(NE::try_from_vec(witnesses).expect("threads is non-empty by caller"));
 
-    parts.push(
+    prompt.push_paragraph(
         "For each issue, think deeply about the entire class of issue, in \
          general, and solve the general form of the issue across all relevant \
          code. This ensures the entire category of each issue is solved in \
-         general."
-            .into(),
+         general.",
     );
 
     if outdated_count > 0 {
-        parts.push(String::new());
-        parts.push(
+        prompt.push_paragraph(
             "For threads marked [outdated]: GitHub's `isOutdated` flag is \
              positional, not content-relevance — the diff hunk that anchored \
              the thread has moved (typically due to a refactor or rebase), \
@@ -245,30 +256,21 @@ fn address_threads_description(threads: &[ReviewThread]) -> String {
              near the original `path:line` after a small refactor; sometimes \
              elsewhere) and decide whether the feedback still applies. If it \
              does, address it as you would a live thread. If it does not, \
-             resolve the thread with a brief reply explaining why."
-                .into(),
+             resolve the thread with a brief reply explaining why.",
         );
     }
 
-    parts.push(String::new());
-    parts.push(
+    prompt.push_paragraph(
         "After addressing (or judging not-applicable) each thread, mark it \
-         resolved on GitHub:"
-            .into(),
-    );
-    parts.push(
-        "  gh api graphql -f query='mutation { resolveReviewThread(input: \
-         { threadId: \"<thread_id>\" }) { thread { id } } }'"
-            .into(),
-    );
-    parts.push(
-        "(Substitute the per-thread `thread_id` shown in each entry above. \
+         resolved on GitHub:\n  \
+         gh api graphql -f query='mutation { resolveReviewThread(input: \
+         { threadId: \"<thread_id>\" }) { thread { id } } }'\n\
+         (Substitute the per-thread `thread_id` shown in each entry above. \
          The mutation is idempotent — already-resolved threads succeed as a \
-         no-op.)"
-            .into(),
+         no-op.)",
     );
 
-    parts.join("\n")
+    prompt
 }
 
 /// Group threads by author preserving first-seen order. Linear scan
@@ -351,8 +353,8 @@ mod tests {
             reviews,
             copilot: None,
             cursor: None,
-            threads,
             codex_review: None,
+            threads,
         }
     }
 

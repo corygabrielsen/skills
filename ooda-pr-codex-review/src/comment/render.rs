@@ -104,6 +104,10 @@ fn action_payload_tag(kind: &crate::decide::action::ActionKind) -> String {
         ActionKind::WaitForBotReview { reviewers } => join_display(reviewers),
         ActionKind::WaitForHumanReview { reviewers } => join_display(reviewers),
         ActionKind::ShortenTitle { current_len } => current_len.to_string(),
+        // Scope is in the dedup key so a Wait for graphql-primary
+        // doesn't re-post the same comment when the next iteration
+        // hits secondary instead.
+        ActionKind::WaitForRateLimit { scope } => scope.name().into(),
         // No payload that affects the rendered comment.
         _ => String::new(),
     }

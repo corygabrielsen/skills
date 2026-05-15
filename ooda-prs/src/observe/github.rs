@@ -17,6 +17,7 @@ pub mod stack_root;
 use std::thread;
 
 use crate::ids::{PullRequestNumber, RepoSlug};
+use ooda_core::RateLimitHit;
 use serde::Serialize;
 
 use branch_protection::{
@@ -36,6 +37,17 @@ use review_threads::{
 use reviews::{PullRequestReview, fetch_pr_reviews};
 use rulesets::CopilotCodeReviewParams;
 use stack_root::resolve_stack_root;
+
+/// Successful outcome of [`fetch_all`]. Either a full observation
+/// bundle (the loop proceeds to orient/decide) or a [`RateLimitHit`]
+/// (the runner emits a `WaitForRateLimit` and re-observes after the
+/// scope's retry window). [`GhError`] is reserved for non-recoverable
+/// failures: spawn errors, parse errors, real non-2xx responses.
+#[derive(Debug, Clone, Serialize)]
+pub enum FetchOutcome {
+    Observations(Box<GitHubObservations>),
+    RateLimited(RateLimitHit),
+}
 
 /// Full PR-scoped observation bundle from GitHub. Produced by
 /// [`fetch_all`]; consumed by the orient stage.
@@ -77,14 +89,30 @@ pub struct GitHubObservations {
 ///      instead of decide()'s documented `Halt::Terminal`.
 ///   3. Parallel aux fetch — the remaining nine calls fan out
 ///      concurrently. Fail-fast on the first error.
-pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<GitHubObservations, GhError> {
-    let pr_view = fetch_pr_view(slug, pr)?;
+pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome, GhError> {
+    /// Promote `GhError::RateLimited` to early-return
+    /// `Ok(FetchOutcome::RateLimited)`. Real errors propagate.
+    macro_rules! try_fetch {
+        ($e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(GhError::RateLimited(hit)) => {
+                    return Ok(FetchOutcome::RateLimited(hit));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+    }
+
+    let pr_view = try_fetch!(fetch_pr_view(slug, pr));
     if matches!(pr_view.state, PrState::Terminal(_)) {
-        return Ok(terminal_observations(pr_view));
+        return Ok(FetchOutcome::Observations(Box::new(terminal_observations(
+            pr_view,
+        ))));
     }
     // Branch rules and protection live at the protected root, not
     // at intermediate stack branches. Resolve before fanning out.
-    let stack_root_branch = resolve_stack_root(slug, &pr_view.base_ref_name)?;
+    let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pr_view.base_ref_name));
     let root_for_threads = stack_root_branch.clone();
 
     thread::scope(|s| {
@@ -99,27 +127,31 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<GitHubObserva
         let h_prot = s.spawn(move || fetch_branch_protection_required_checks(slug, root));
         let h_copilot_cfg = s.spawn(move || fetch_copilot_config(slug, root));
 
-        Ok(GitHubObservations {
+        Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pr_view,
-            checks: h_checks.join().expect("fetch_pr_checks panicked")?,
-            reviews: h_reviews.join().expect("fetch_pr_reviews panicked")?,
-            review_threads_page: h_threads
-                .join()
-                .expect("fetch_review_threads_page panicked")?,
-            issue_events: h_events.join().expect("fetch_issue_events panicked")?,
-            issue_comments: h_comments.join().expect("fetch_issue_comments panicked")?,
-            requested_reviewers: h_reqrev
-                .join()
-                .expect("fetch_requested_reviewers panicked")?,
-            branch_rules: h_rules.join().expect("fetch_branch_rules panicked")?,
-            branch_protection: h_prot
-                .join()
-                .expect("fetch_branch_protection_required_checks panicked")?,
-            copilot_config: h_copilot_cfg
-                .join()
-                .expect("fetch_copilot_config panicked")?,
+            checks: try_fetch!(h_checks.join().expect("fetch_pr_checks panicked")),
+            reviews: try_fetch!(h_reviews.join().expect("fetch_pr_reviews panicked")),
+            review_threads_page: try_fetch!(
+                h_threads
+                    .join()
+                    .expect("fetch_review_threads_page panicked")
+            ),
+            issue_events: try_fetch!(h_events.join().expect("fetch_issue_events panicked")),
+            issue_comments: try_fetch!(h_comments.join().expect("fetch_issue_comments panicked")),
+            requested_reviewers: try_fetch!(
+                h_reqrev.join().expect("fetch_requested_reviewers panicked")
+            ),
+            branch_rules: try_fetch!(h_rules.join().expect("fetch_branch_rules panicked")),
+            branch_protection: try_fetch!(
+                h_prot
+                    .join()
+                    .expect("fetch_branch_protection_required_checks panicked")
+            ),
+            copilot_config: try_fetch!(
+                h_copilot_cfg.join().expect("fetch_copilot_config panicked")
+            ),
             stack_root_branch,
-        })
+        })))
     })
 }
 

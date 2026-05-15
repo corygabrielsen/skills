@@ -7,14 +7,40 @@
 //! domain newtypes (`CheckName`, `GitHubLogin`) so a "right name in
 //! the wrong position" bug is a compile error.
 
-use crate::ids::{CheckName, GitHubLogin, Reviewer};
+use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
 use crate::orient::thread::ReviewThread;
 pub use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
+use ooda_core::{RateLimitHit, RateLimitScope};
 use serde::Serialize;
 
 /// PR-domain `Action`. Concrete instantiation of the generic
 /// [`ooda_core::Action`] over this binary's [`ActionKind`].
 pub type Action = ooda_core::Action<ActionKind>;
+
+/// Synthesize the action the runner executes when observe surfaces a
+/// rate-limit hit. The action's effect is a [`ActionEffect::Wait`]
+/// for the scope's `retry_after` — `act()` sleeps that duration and
+/// the next iteration re-observes from fresh state. Urgency is
+/// `Critical` because no other axis can produce useful work while
+/// throttled; the blocker tag is the scope name so the recorder's
+/// stall key separates rate-limit waits from other Waits.
+pub fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
+    let log = format!(
+        "rate-limited on {}; sleeping {}s",
+        hit.scope.name(),
+        hit.retry_after.as_duration().as_secs(),
+    );
+    Action {
+        kind: ActionKind::WaitForRateLimit { scope: hit.scope },
+        effect: ActionEffect::Wait {
+            interval: hit.retry_after,
+            log,
+        },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Critical,
+        blocker: BlockerKey::tag(hit.scope.name()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ActionKind {
@@ -93,6 +119,16 @@ pub enum ActionKind {
         reviewers: NonEmpty<Reviewer>,
     },
 
+    // ── Rate limits ──
+    /// GitHub returned a rate-limit response from one of its quota
+    /// buckets. The runner sleeps `retry_after` (carried on the
+    /// `ActionEffect::Wait`) and re-observes from a clean state on
+    /// the next iteration. Scope is preserved so the JSONL record
+    /// and status comment identify which bucket fired.
+    WaitForRateLimit {
+        scope: RateLimitScope,
+    },
+
     // ── Codex review axis ──
     /// Spawn `n` `codex review` subprocesses at the given reasoning
     /// level against the PR's current head. Full automation; the
@@ -153,9 +189,70 @@ impl ActionKindName for ActionKind {
             Self::WaitForCursorReview => "WaitForCursorReview",
             Self::WaitForBotReview { .. } => "WaitForBotReview",
             Self::WaitForHumanReview { .. } => "WaitForHumanReview",
+            Self::WaitForRateLimit { .. } => "WaitForRateLimit",
             Self::RunCodexReviewBatch { .. } => "RunCodexReviewBatch",
             Self::AwaitCodexReviewBatch { .. } => "AwaitCodexReviewBatch",
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ooda_core::PollingInterval;
+
+    /// Hand-maintained sample list of every [`RateLimitScope`]
+    /// variant. The match in `rate_limit_action_round_trips_scope`
+    /// is compile-checked exhaustive, so adding a new scope variant
+    /// fails to compile until both this sample list and that match
+    /// are updated.
+    fn rate_limit_scope_samples() -> Vec<RateLimitScope> {
+        vec![
+            RateLimitScope::GitHubGraphqlPrimary,
+            RateLimitScope::GitHubRestPrimary,
+            RateLimitScope::GitHubSecondary,
+        ]
+    }
+
+    #[test]
+    fn rate_limit_action_round_trips_scope() {
+        for scope in rate_limit_scope_samples() {
+            let hit = RateLimitHit {
+                scope,
+                retry_after: PollingInterval::from_secs(60),
+            };
+            let action = rate_limit_wait_action(hit);
+            // Compile-checked: every scope must route through this
+            // match. Adding a variant breaks both this and ooda-core's
+            // own exhaustive-match-as-contract test.
+            match scope {
+                RateLimitScope::GitHubGraphqlPrimary
+                | RateLimitScope::GitHubRestPrimary
+                | RateLimitScope::GitHubSecondary => {}
+            }
+            assert!(matches!(action.kind, ActionKind::WaitForRateLimit { .. }));
+            assert!(matches!(action.effect, ActionEffect::Wait { .. }));
+            assert_eq!(action.urgency, Urgency::Critical);
+            assert_eq!(action.target_effect, TargetEffect::Blocks);
+            // Blocker tag mirrors the scope so a primary-vs-secondary
+            // rate-limit produces a distinct stall key.
+            assert_eq!(action.blocker.as_str(), scope.name());
+        }
+    }
+
+    #[test]
+    fn rate_limit_action_log_mentions_scope_and_duration() {
+        let hit = RateLimitHit {
+            scope: RateLimitScope::GitHubGraphqlPrimary,
+            retry_after: PollingInterval::from_secs(120),
+        };
+        let action = rate_limit_wait_action(hit);
+        let ActionEffect::Wait { log, interval } = &action.effect else {
+            panic!("expected Wait effect");
+        };
+        assert!(log.contains("github/graphql/primary"), "log: {log}");
+        assert!(log.contains("120"), "log: {log}");
+        assert_eq!(*interval, hit.retry_after);
     }
 }

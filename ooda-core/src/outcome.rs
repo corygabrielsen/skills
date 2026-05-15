@@ -147,7 +147,7 @@ fn decision_halt_to_outcome<K>(halt: DecisionHalt<K>) -> Outcome<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Action, Automation, TargetEffect, Urgency};
+    use crate::action::{Action, ActionEffect, TargetEffect, Urgency};
     use crate::blocker::BlockerKey;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -156,10 +156,9 @@ mod tests {
     fn dummy() -> Action<K> {
         Action {
             kind: K,
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: crate::ActionPayload::Logged("x".into()),
             blocker: BlockerKey::tag("t"),
         }
     }

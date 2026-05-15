@@ -12,7 +12,7 @@
 //! `HaltReason::exit_code()`.
 
 use crate::act::{ActContext, ActError, act};
-use crate::decide::action::{Action, Automation};
+use crate::decide::action::Action;
 use crate::decide::decision::{Decision, HaltReason};
 use crate::decide::{candidates, decide_from_candidates};
 use crate::ids::ReasoningLevel;
@@ -156,7 +156,7 @@ pub fn run_loop(
                 if last_non_wait_key.as_ref() == Some(&current_key) {
                     return Ok(HaltReason::Stalled(action));
                 }
-                let is_wait = matches!(action.automation, Automation::Wait { .. });
+                let is_wait = action.effect.is_wait();
                 recorder.record_action_start(iter, &action);
                 if is_wait {
                     recorder.record_wait_start(iter, &action);

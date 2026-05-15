@@ -15,7 +15,7 @@
 //! Full/Wait. Agent/Human halts return up to the caller.
 
 use crate::act::{ActContext, ActError, act};
-use crate::decide::action::{Action, Automation, ReasoningLevel};
+use crate::decide::action::{Action, ReasoningLevel};
 use crate::decide::decide;
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{RepoId, ReviewTarget};
@@ -94,7 +94,7 @@ pub fn run_loop(
                 if last_non_wait_key.as_ref() == Some(&current_key) {
                     return Ok(HaltReason::Stalled(action));
                 }
-                let is_wait = matches!(action.automation, Automation::Wait { .. });
+                let is_wait = action.effect.is_wait();
                 act(&action, ctx).map_err(LoopError::Act)?;
                 last_attempted = Some(action);
                 if !is_wait {

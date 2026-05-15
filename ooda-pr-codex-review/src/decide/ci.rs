@@ -11,7 +11,7 @@
 //! qualify — those have concrete advancement actions in their
 //! own axis candidate generators.
 
-use super::action::{Action, ActionKind, Automation, NonEmpty, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
 use crate::ids::{BlockerKey, CheckName};
 use crate::orient::ci::CiSummary;
 
@@ -32,13 +32,11 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             kind: ActionKind::FixCi {
                 check_name: f.name.clone(),
             },
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new(format!("Fix failing check: {}", f.name)),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-                "Fix failing check: {}",
-                f.name
-            ))),
             blocker: BlockerKey::tag(format!("ci_fail: {}", f.name)),
         });
     }
@@ -67,12 +65,12 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             kind: ActionKind::TriageWait {
                 blocked_checks: blocked,
             },
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new(headline)
+                    .with_paragraph(advisory_lines.join("\n")),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(
-                ooda_core::HandoffPrompt::new(headline).with_paragraph(advisory_lines.join("\n")),
-            ),
             blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
         });
     } else {
@@ -80,15 +78,15 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             let blocker_list = join_names(&names);
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
-                automation: Automation::Wait {
+                effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(60),
+                    log: format!(
+                        "Wait for {}",
+                        crate::text::count(ci.required.pending(), "pending check"),
+                    ),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                payload: ooda_core::ActionPayload::Logged(format!(
-                    "Wait for {}",
-                    crate::text::count(ci.required.pending(), "pending check"),
-                )),
                 blocker: BlockerKey::tag(format!("ci_pending: {blocker_list}")),
             });
         }
@@ -96,15 +94,15 @@ pub fn candidates(ci: &CiSummary) -> Vec<Action> {
             let blocker_list = join_names(&names);
             out.push(Action {
                 kind: ActionKind::WaitForCi { pending: names },
-                automation: Automation::Wait {
+                effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(60),
+                    log: format!(
+                        "{} not started: {blocker_list}",
+                        crate::text::count(ci.missing(), "required check"),
+                    ),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                payload: ooda_core::ActionPayload::Logged(format!(
-                    "{} not started: {blocker_list}",
-                    crate::text::count(ci.missing(), "required check"),
-                )),
                 blocker: BlockerKey::tag(format!("ci_missing: {blocker_list}")),
             });
         }
@@ -152,7 +150,7 @@ mod tests {
         let cs = candidates(&ci);
         assert_eq!(cs.len(), 2);
         assert!(matches!(cs[0].kind, ActionKind::FixCi { .. }));
-        assert_eq!(cs[0].automation, Automation::Agent);
+        assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
     }
 
     #[test]
@@ -162,7 +160,7 @@ mod tests {
         let cs = candidates(&ci);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::WaitForCi { .. }));
-        assert!(matches!(cs[0].automation, Automation::Wait { .. }));
+        assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
     }
 
     #[test]

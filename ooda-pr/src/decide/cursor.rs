@@ -9,21 +9,19 @@ use crate::ids::BlockerKey;
 
 use crate::orient::cursor::{CursorActivity, CursorReport};
 
-use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 pub fn candidates(report: &CursorReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     if matches!(report.activity, CursorActivity::Reviewing) {
         out.push(Action {
             kind: ActionKind::WaitForCursorReview,
-            automation: Automation::Wait {
+            effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(60),
+                log: "Waiting for Cursor Bugbot to finish reviewing".into(),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            payload: ooda_core::ActionPayload::Logged(
-                "Waiting for Cursor Bugbot to finish reviewing".into(),
-            ),
             blocker: BlockerKey::tag("cursor_reviewing"),
         });
     }
@@ -74,7 +72,7 @@ mod tests {
         let cs = candidates(&report(CursorActivity::Reviewing, CursorTier::Silver));
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::WaitForCursorReview));
-        assert!(matches!(cs[0].automation, Automation::Wait { .. }));
+        assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
     }
 
     #[test]

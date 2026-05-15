@@ -19,7 +19,7 @@ use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::decide::action::{Action, ActionKind, Automation, ReasoningLevel};
+use crate::decide::action::{Action, ActionEffect, ActionKind, ReasoningLevel};
 use crate::ids::ReviewTarget;
 
 /// Per-invocation environment for `act`. Stable across all
@@ -86,13 +86,15 @@ impl std::error::Error for ActError {
 /// dispatch to handler functions; Agent/Human are an invariant
 /// violation (decide should have halted instead of executing).
 pub fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
-    match action.automation {
-        Automation::Wait { interval } => {
+    match &action.effect {
+        ActionEffect::Wait { interval, .. } => {
             std::thread::sleep(interval.as_duration());
             Ok(())
         }
-        Automation::Full => dispatch_full(action, ctx),
-        Automation::Agent | Automation::Human => Err(ActError::UnsupportedAutomation),
+        ActionEffect::Full { .. } => dispatch_full(action, ctx),
+        ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
+            Err(ActError::UnsupportedAutomation)
+        }
     }
 }
 
@@ -322,10 +324,11 @@ mod tests {
             kind: ActionKind::Retrospective {
                 level: ReasoningLevel::Low,
             },
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("n/a"),
+            },
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new("n/a")),
             blocker: crate::ids::BlockerKey::tag("retro:low"),
         };
         let ctx = ActContext {
@@ -362,10 +365,9 @@ mod tests {
                 level: ReasoningLevel::Low,
                 n: 2,
             },
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: "n/a".into() },
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::Critical,
-            payload: ooda_core::ActionPayload::Logged("n/a".into()),
             blocker: crate::ids::BlockerKey::tag("runreviews:low"),
         };
 

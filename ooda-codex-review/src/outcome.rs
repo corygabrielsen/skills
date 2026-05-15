@@ -39,7 +39,7 @@ impl From<LoopError> for Outcome {
 mod tests {
     use super::*;
     use crate::decide::action::{
-        Action, ActionKind, Automation, ReasoningLevel, TargetEffect, Urgency,
+        Action, ActionEffect, ActionKind, ReasoningLevel, TargetEffect, Urgency,
     };
     use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
     use crate::ids::BlockerKey;
@@ -50,10 +50,9 @@ mod tests {
                 level: ReasoningLevel::Low,
                 n: 3,
             },
-            automation: Automation::Full,
+            effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Advances,
             urgency: Urgency::Critical,
-            payload: ooda_core::ActionPayload::Logged("test".into()),
             blocker: BlockerKey::tag("not-started"),
         }
     }

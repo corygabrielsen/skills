@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
-use crate::decide::action::{Action, ActionKind, Automation};
+use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, ReasoningLevel, RepoSlug};
 use crate::observe::codex::batch_dir as codex_batch_dir;
 use crate::observe::github::gh::{GhError, gh_run};
@@ -112,13 +112,15 @@ pub struct ActContext {
 /// Execute (or wait for) one action. Returns Ok on success;
 /// caller's loop re-iterates after this returns.
 pub fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
-    match action.automation {
-        Automation::Full => run_full(&action.kind, ctx),
-        Automation::Wait { interval } => {
+    match &action.effect {
+        ActionEffect::Full { .. } => run_full(&action.kind, ctx),
+        ActionEffect::Wait { interval, .. } => {
             thread::sleep(interval.as_duration());
             Ok(())
         }
-        Automation::Agent | Automation::Human => Err(ActError::UnsupportedAutomation),
+        ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
+            Err(ActError::UnsupportedAutomation)
+        }
     }
 }
 

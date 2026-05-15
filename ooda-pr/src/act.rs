@@ -6,7 +6,7 @@
 
 use std::thread;
 
-use crate::decide::action::{Action, ActionKind, Automation};
+use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
 use crate::orient::copilot::COPILOT_REVIEWER_LOGIN;
@@ -46,13 +46,15 @@ impl From<GhError> for ActError {
 /// Execute (or wait for) one action. Returns Ok on success;
 /// caller's loop re-iterates after this returns.
 pub fn act(action: &Action, slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), ActError> {
-    match action.automation {
-        Automation::Full => run_full(&action.kind, slug, pr),
-        Automation::Wait { interval } => {
+    match &action.effect {
+        ActionEffect::Full { .. } => run_full(&action.kind, slug, pr),
+        ActionEffect::Wait { interval, .. } => {
             thread::sleep(interval.as_duration());
             Ok(())
         }
-        Automation::Agent | Automation::Human => Err(ActError::UnsupportedAutomation),
+        ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
+            Err(ActError::UnsupportedAutomation)
+        }
     }
 }
 

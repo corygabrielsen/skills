@@ -19,7 +19,7 @@ mod state;
 use crate::observe::github::pr_view::{PrState, TerminalState};
 use crate::orient::OrientedState;
 
-use action::{Action, Automation, TargetEffect};
+use action::{Action, ActionEffect, TargetEffect};
 use decision::{Decision, DecisionHalt, Terminal};
 
 // `Urgency` is referenced only by tests in this module; suppress the
@@ -63,10 +63,14 @@ pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState
 }
 
 fn classify(action: Action) -> Decision {
-    match action.automation {
-        Automation::Full | Automation::Wait { .. } => Decision::Execute(action),
-        Automation::Agent => Decision::Halt(DecisionHalt::AgentNeeded(action)),
-        Automation::Human => Decision::Halt(DecisionHalt::HumanNeeded(action)),
+    // Match on a borrow of `effect` so we can move `action` into the
+    // resulting variant. The four `ActionEffect` variants partition
+    // the action space into "loop drives it" (Full/Wait → Execute)
+    // and "external resolver needed" (Agent/Human → Halt).
+    match &action.effect {
+        ActionEffect::Full { .. } | ActionEffect::Wait { .. } => Decision::Execute(action),
+        ActionEffect::Agent { .. } => Decision::Halt(DecisionHalt::AgentNeeded(action)),
+        ActionEffect::Human { .. } => Decision::Halt(DecisionHalt::HumanNeeded(action)),
     }
 }
 
@@ -149,10 +153,11 @@ mod tests {
     fn act(name: &str, urgency: Urgency) -> Action {
         Action {
             kind: ActionKind::RequestApproval,
-            automation: Automation::Human,
+            effect: ActionEffect::Human {
+                prompt: ooda_core::HandoffPrompt::new(name),
+            },
             target_effect: TargetEffect::Blocks,
             urgency,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(name)),
             blocker: BlockerKey::tag(name),
         }
     }

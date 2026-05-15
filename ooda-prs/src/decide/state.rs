@@ -7,7 +7,7 @@ use crate::ids::BlockerKey;
 use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
 use crate::orient::state::PullRequestState;
 
-use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 /// Mechanical merge blockers — must clear for the PR to be
 /// mergeable at all. Emitted by decide before review/bot axes.
@@ -21,20 +21,22 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
     if state.draft {
         out.push(Action {
             kind: ActionKind::MarkReady,
-            automation: Automation::Full,
+            effect: ActionEffect::Full {
+                log: "Mark PR as ready for review".into(),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
-            payload: ooda_core::ActionPayload::Logged("Mark PR as ready for review".into()),
             blocker: BlockerKey::tag("draft"),
         });
     }
     if state.wip {
         out.push(Action {
             kind: ActionKind::RemoveWipLabel,
-            automation: Automation::Full,
+            effect: ActionEffect::Full {
+                log: "Remove \"work in progress\" label".into(),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
-            payload: ooda_core::ActionPayload::Logged("Remove \"work in progress\" label".into()),
             blocker: BlockerKey::tag("wip_label"),
         });
     }
@@ -43,13 +45,14 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
             kind: ActionKind::ShortenTitle {
                 current_len: state.title_len as u32,
             },
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new(format!(
+                    "Shorten title ({} chars, max 50)",
+                    state.title_len
+                )),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-                "Shorten title ({} chars, max 50)",
-                state.title_len
-            ))),
             blocker: BlockerKey::tag("title_too_long"),
         });
     }
@@ -59,36 +62,38 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
     if state.conflict == Mergeable::Unknown {
         out.push(Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait {
+            effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
+                log: "GitHub is still computing mergeability — wait and re-observe".into(),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            payload: ooda_core::ActionPayload::Logged(
-                "GitHub is still computing mergeability — wait and re-observe".into(),
-            ),
             blocker: BlockerKey::tag("mergeability_unknown"),
         });
     } else if state.conflict == Mergeable::Conflicting {
         out.push(Action {
             kind: ActionKind::Rebase,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new(rebase_description(
+                    "Rebase to resolve merge conflicts",
+                    state,
+                )),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                rebase_description("Rebase to resolve merge conflicts", state),
-            )),
             blocker: BlockerKey::tag("merge_conflict"),
         });
     } else if state.behind {
         out.push(Action {
             kind: ActionKind::Rebase,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new(rebase_description(
+                    "Rebase onto the latest base branch",
+                    state,
+                )),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                rebase_description("Rebase onto the latest base branch", state),
-            )),
             blocker: BlockerKey::tag("behind_base"),
         });
     }
@@ -132,39 +137,36 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
     match state.merge_state_status {
         MergeStateStatus::Blocked => vec![Action {
             kind: ActionKind::ResolveMergePolicy,
-            automation: Automation::Human,
+            effect: ActionEffect::Human {
+                prompt: ooda_core::HandoffPrompt::new(
+                    "GitHub reports BLOCKED but no modeled axis explains the blockage \
+                     — likely an unmodeled merge requirement (deployment protection, signed \
+                     commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
+                     the specific gate.",
+                ),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                "GitHub reports BLOCKED but no modeled axis explains the blockage \
-                 — likely an unmodeled merge requirement (deployment protection, signed \
-                 commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
-                 the specific gate.",
-            )),
             blocker: BlockerKey::tag("merge_blocked_unmodeled"),
         }],
         MergeStateStatus::HasHooks => vec![Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait {
+            effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
+                log: "Commit hooks are still running — wait and re-observe".into(),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            payload: ooda_core::ActionPayload::Logged(
-                "Commit hooks are still running — wait and re-observe".into(),
-            ),
             blocker: BlockerKey::tag("merge_state_has_hooks"),
         }],
         MergeStateStatus::Unknown => vec![Action {
             kind: ActionKind::WaitForMergeability,
-            automation: Automation::Wait {
+            effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
+                log: "GitHub is still computing merge state — wait and re-observe".into(),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            payload: ooda_core::ActionPayload::Logged(
-                "GitHub is still computing merge state — wait and re-observe".into(),
-            ),
             blocker: BlockerKey::tag("merge_state_unknown"),
         }],
         // Clean / Behind / Dirty / Draft / Unstable / HasHooks
@@ -184,24 +186,22 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
     if !state.content_label {
         out.push(Action {
             kind: ActionKind::AddContentLabel,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("Add a content label (bug or enhancement)"),
+            },
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                "Add a content label (bug or enhancement)",
-            )),
             blocker: BlockerKey::tag("no_content_label"),
         });
     }
     if state.assignees == 0 {
         out.push(Action {
             kind: ActionKind::AddAssignee,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("Assign the PR (default: author)"),
+            },
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                "Assign the PR (default: author)",
-            )),
             blocker: BlockerKey::tag("no_assignee"),
         });
     }
@@ -219,13 +219,14 @@ pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
         .collect();
         out.push(Action {
             kind: ActionKind::AddDescription,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new(format!(
+                    "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
+                    missing.join(", ")
+                )),
+            },
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::Hygiene,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-                "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
-                missing.join(", ")
-            ))),
             blocker: BlockerKey::tag("incomplete_description"),
         });
     }
@@ -273,7 +274,7 @@ mod tests {
         s.conflict = Mergeable::Conflicting;
         let cs = blocking_candidates(&s);
         assert!(matches!(cs[0].kind, ActionKind::Rebase));
-        assert_eq!(cs[0].automation, Automation::Agent);
+        assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
     }
 
     #[test]
@@ -283,7 +284,7 @@ mod tests {
         let cs = blocking_candidates(&s);
         let mark = cs.iter().find(|a| matches!(a.kind, ActionKind::MarkReady));
         assert!(mark.is_some());
-        assert_eq!(mark.unwrap().automation, Automation::Full);
+        assert!(matches!(mark.unwrap().effect, ActionEffect::Full { .. }));
     }
 
     #[test]
@@ -309,7 +310,7 @@ mod tests {
         let cs = fallback_merge_state_blocker(&s);
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::ResolveMergePolicy));
-        assert_eq!(cs[0].automation, Automation::Human);
+        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
         assert_eq!(cs[0].target_effect, TargetEffect::Blocks);
     }
 
@@ -322,7 +323,7 @@ mod tests {
             let cs = fallback_merge_state_blocker(&s);
             assert_eq!(cs.len(), 1, "expected emit for {status:?}");
             assert!(matches!(cs[0].kind, ActionKind::WaitForMergeability));
-            assert!(matches!(cs[0].automation, Automation::Wait { .. }));
+            assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
         }
     }
 

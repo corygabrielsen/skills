@@ -1,7 +1,7 @@
 //! Action shapes — the concrete operations decide can prescribe
 //! for the codex-review domain.
 //!
-//! [`Action`], [`Automation`], [`TargetEffect`], [`Urgency`] are
+//! [`Action`], [`ActionEffect`], [`TargetEffect`], [`Urgency`] are
 //! re-exported from [`ooda_core`] — the cross-binary spine. This
 //! module owns the per-binary [`ActionKind`] enum (the codex-review
 //! domain's action variants), its [`ActionKindName`] impl, and the
@@ -19,7 +19,7 @@
 //!   - `RequestCriteriaRefinement` — reserved human halt for any
 //!     future review-criteria flow.
 
-pub use ooda_core::{ActionKindName, Automation, TargetEffect, Urgency};
+pub use ooda_core::{ActionEffect, ActionKindName, TargetEffect, Urgency};
 use serde::Serialize;
 
 /// Codex-review-domain `Action`. Concrete instantiation of the

@@ -5,7 +5,7 @@ use crate::ids::BlockerKey;
 
 use crate::orient::copilot::{CopilotActivity, CopilotReport, CopilotTier};
 
-use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 pub fn candidates(report: &CopilotReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
@@ -17,28 +17,24 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
         CopilotActivity::Requested { .. } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotAck,
-                automation: Automation::Wait {
+                effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(15),
+                    log: "Waiting for Copilot to start reviewing".into(),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                payload: ooda_core::ActionPayload::Logged(
-                    "Waiting for Copilot to start reviewing".into(),
-                ),
                 blocker: BlockerKey::tag("copilot_not_acked"),
             });
         }
         CopilotActivity::Working { .. } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotReview,
-                automation: Automation::Wait {
+                effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(60),
+                    log: "Waiting for Copilot to finish reviewing".into(),
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                payload: ooda_core::ActionPayload::Logged(
-                    "Waiting for Copilot to finish reviewing".into(),
-                ),
                 blocker: BlockerKey::tag("copilot_reviewing"),
             });
         }
@@ -68,25 +64,23 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                 };
                 out.push(Action {
                     kind: ActionKind::RerequestCopilot,
-                    automation: Automation::Full,
+                    effect: ActionEffect::Full { log: desc },
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Critical,
-                    payload: ooda_core::ActionPayload::Logged(desc),
                     blocker: BlockerKey::tag(format!("copilot_tier_{}", report.tier.slug())),
                 });
             } else if report.tier == CopilotTier::Silver && suppressed > 0 {
                 out.push(Action {
                     kind: ActionKind::AddressCopilotSuppressed { count: suppressed },
-                    automation: Automation::Agent,
-                    target_effect: TargetEffect::Advances,
-                    urgency: Urgency::Advancing,
-                    payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                        format!(
+                    effect: ActionEffect::Agent {
+                        prompt: ooda_core::HandoffPrompt::new(format!(
                             "Copilot flagged {}. Investigate and push fixes for any \
                          that are real — the next review may clear them.",
                             crate::text::count(suppressed as usize, "low-confidence finding"),
-                        ),
-                    )),
+                        )),
+                    },
+                    target_effect: TargetEffect::Advances,
+                    urgency: Urgency::Advancing,
                     blocker: BlockerKey::tag("copilot_tier_silver"),
                 });
             }
@@ -162,7 +156,7 @@ mod tests {
         );
         let cs = candidates(&r);
         assert!(matches!(cs[0].kind, ActionKind::WaitForCopilotAck));
-        assert!(matches!(cs[0].automation, Automation::Wait { .. }));
+        assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
     }
 
     #[test]
@@ -190,7 +184,7 @@ mod tests {
         );
         let cs = candidates(&r);
         assert!(matches!(cs[0].kind, ActionKind::RerequestCopilot));
-        assert_eq!(cs[0].automation, Automation::Full);
+        assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
     }
 
     #[test]
@@ -208,7 +202,7 @@ mod tests {
             cs[0].kind,
             ActionKind::AddressCopilotSuppressed { count: 2 }
         ));
-        assert_eq!(cs[0].automation, Automation::Agent);
+        assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
     }
 
     #[test]

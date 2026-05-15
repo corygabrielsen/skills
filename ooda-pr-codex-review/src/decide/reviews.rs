@@ -7,7 +7,7 @@ use crate::observe::github::pr_view::ReviewDecision;
 use crate::orient::OrientedState;
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
-use super::action::{Action, ActionKind, Automation, NonEmpty, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
 
 /// Comma-join a slice of any `Display` for human-readable rendering.
 fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
@@ -36,10 +36,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
             kind: ActionKind::AddressThreads {
                 threads: unresolved_threads,
             },
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent { prompt },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(prompt),
             // Stable key — the action carries the witness; the
             // blocker remains a fixed tag so 3→2 progress doesn't
             // mask as stall. Live and Outdated threads share this
@@ -53,12 +52,12 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         let names = join_display(&bots);
         out.push(Action {
             kind: ActionKind::WaitForBotReview { reviewers: bots },
-            automation: Automation::Wait {
+            effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(60),
+                log: format!("Wait for bot review from {names}"),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            payload: ooda_core::ActionPayload::Logged(format!("Wait for bot review from {names}")),
             blocker: BlockerKey::tag(format!("pending_bot_review: {names}")),
         });
     }
@@ -67,12 +66,13 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         let names = join_display(&humans);
         out.push(Action {
             kind: ActionKind::WaitForHumanReview { reviewers: humans },
-            automation: Automation::Human,
+            effect: ActionEffect::Human {
+                prompt: ooda_core::HandoffPrompt::new(format!(
+                    "Waiting on human review from {names}"
+                )),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(format!(
-                "Waiting on human review from {names}"
-            ))),
             blocker: BlockerKey::tag(format!("pending_human_review: {names}")),
         });
     }
@@ -97,12 +97,11 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     if needs_approval && ci_clean && threads_clean {
         out.push(Action {
             kind: ActionKind::RequestApproval,
-            automation: Automation::Human,
+            effect: ActionEffect::Human {
+                prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            payload: ooda_core::ActionPayload::Prompt(ooda_core::HandoffPrompt::new(
-                "Request or self-approve",
-            )),
             blocker: BlockerKey::tag("not_approved"),
         });
     }
@@ -127,10 +126,11 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     if changes_requested && threads_clean && no_pending_re_review {
         out.push(Action {
             kind: ActionKind::AddressChangeRequest,
-            automation: Automation::Agent,
+            effect: ActionEffect::Agent {
+                prompt: address_change_request_prompt(),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            payload: ooda_core::ActionPayload::Prompt(address_change_request_prompt()),
             blocker: BlockerKey::tag("changes_requested_summary"),
         });
     }
@@ -411,7 +411,7 @@ mod tests {
             }
             other => panic!("expected AddressThreads, got {other:?}"),
         }
-        assert_eq!(cs[0].automation, Automation::Agent);
+        assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
     }
 
     #[test]
@@ -452,7 +452,7 @@ mod tests {
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
             .expect("AddressThreads must fire on outdated unresolved threads");
-        assert_eq!(action.automation, Automation::Agent);
+        assert!(matches!(action.effect, ActionEffect::Agent { .. }));
     }
 
     #[test]
@@ -522,7 +522,7 @@ mod tests {
             .iter()
             .find(|a| matches!(a.kind, ActionKind::WaitForHumanReview { .. }))
             .unwrap();
-        assert_eq!(h.automation, Automation::Human);
+        assert!(matches!(h.effect, ActionEffect::Human { .. }));
     }
 
     #[test]
@@ -610,7 +610,7 @@ mod tests {
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
             .unwrap();
-        assert_eq!(action.automation, Automation::Agent);
+        assert!(matches!(action.effect, ActionEffect::Agent { .. }));
         assert_eq!(action.target_effect, TargetEffect::Blocks);
         assert_eq!(action.blocker.as_str(), "changes_requested_summary");
     }

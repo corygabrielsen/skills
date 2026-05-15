@@ -36,7 +36,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Options:\n  --max-iter N                  loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment              post a status comment on the PR each iteration (deduped)\n  --state-root PATH             write always-on harness state under PATH\n  --trace PATH                  also append the compact trace to PATH\n  --codex-review-ceiling LVL    enable codex review with ceiling LVL: off|low|medium|high|xhigh (default off — codex review disabled)\n  --codex-review-floor LVL      codex review starting rung: low|medium|high|xhigh (default low; must be ≤ ceiling)\n  --codex-review-n N            codex review parallel reviewers per level (default 3, must be ≥ 1)\n  --codex-review-bin PATH       path to the codex binary (default codex, PATH lookup)\n  -h, --help                    show this help and exit\n\
          \n\
-         Exit codes (Outcome variants — see SKILL.md for the full taxonomy):\n  0 DoneMerged    1 StuckRepeated    2 StuckCapReached    3 HandoffHuman\n  4 WouldAdvance  5 HandoffAgent     6 BinaryError        7 Paused\n  8 DoneClosed    64 UsageError"
+         Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneMerged       1 Paused             2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent     5 DoneClosed         6 StuckRepeated     7 StuckCapReached\n  64 UsageError      70 BinaryError       (130 SIGINT, 143 SIGTERM reserved)"
     );
 }
 

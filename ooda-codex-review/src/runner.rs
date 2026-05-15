@@ -77,7 +77,8 @@ pub fn run_loop(
     mut observe: impl FnMut(&RepoId, &ReviewTarget) -> Result<CodexObservations, String>,
     mut on_state: impl FnMut(u32, &OrientedState, &Decision),
 ) -> Result<HaltReason, LoopError> {
-    let mut last_non_wait: Option<Action> = None;
+    let mut last_non_wait_key: Option<ooda_core::StallKey<crate::decide::action::ActionKind>> =
+        None;
     let mut last_attempted: Option<Action> = None;
 
     for iter in 1..=config.max_iterations {
@@ -89,14 +90,15 @@ pub fn run_loop(
         match decision {
             Decision::Halt(halt) => return Ok(HaltReason::Decision(halt)),
             Decision::Execute(action) => {
-                if same_action_repeated(last_non_wait.as_ref(), &action) {
+                let current_key = action.stall_key();
+                if last_non_wait_key.as_ref() == Some(&current_key) {
                     return Ok(HaltReason::Stalled(action));
                 }
                 let is_wait = matches!(action.automation, Automation::Wait { .. });
                 act(&action, ctx).map_err(LoopError::Act)?;
-                last_attempted = Some(action.clone());
+                last_attempted = Some(action);
                 if !is_wait {
-                    last_non_wait = Some(action);
+                    last_non_wait_key = Some(current_key);
                 }
             }
         }
@@ -105,8 +107,4 @@ pub fn run_loop(
     Ok(HaltReason::CapReached(last_attempted.expect(
         "CapReached requires --max-iter ≥ 1 and one Execute iteration",
     )))
-}
-
-fn same_action_repeated(prev: Option<&Action>, current: &Action) -> bool {
-    prev.is_some_and(|p| p.kind == current.kind && p.blocker == current.blocker)
 }

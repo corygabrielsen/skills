@@ -65,16 +65,19 @@ pub fn run_loop(
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<HaltReason, LoopError> {
     // Two trackers, two purposes:
-    //   * `last_non_wait`: feeds the stall comparator. Polling
+    //   * `last_non_wait_key`: feeds the stall comparator. Polling
     //     (Wait) is expected to repeat — only same-(kind, blocker)
     //     non-Wait actions firing twice in a row trip Stalled.
-    //     Storing only non-Wait actions makes "Wait is invisible
-    //     to stall detection" structural rather than checked at
-    //     comparison time.
+    //     Storing only non-Wait keys makes "Wait is invisible to
+    //     stall detection" structural rather than checked at
+    //     comparison time. The StallKey<K> newtype makes the
+    //     "compare on (kind, blocker)" rule the type, not a
+    //     comment.
     //   * `last_attempted`: feeds CapReached's diagnostic payload.
     //     Includes Wait actions — "we ran out of cap while waiting
     //     for CI" is a useful triage signal.
-    let mut last_non_wait: Option<Action> = None;
+    let mut last_non_wait_key: Option<ooda_core::StallKey<crate::decide::action::ActionKind>> =
+        None;
     let mut last_attempted: Option<Action> = None;
 
     for iter in 1..=config.max_iterations {
@@ -101,8 +104,11 @@ pub fn run_loop(
                 // Stall check BEFORE act so a side-effecting Full
                 // action (e.g. RerequestCopilot) doesn't fire twice
                 // when GitHub's eventual consistency hasn't surfaced
-                // the previous call yet.
-                if same_action_repeated(last_non_wait.as_ref(), &action) {
+                // the previous call yet. Comparison is on the
+                // typed StallKey<K> — equality of (kind, blocker)
+                // alone IS the stall test.
+                let current_key = action.stall_key();
+                if last_non_wait_key.as_ref() == Some(&current_key) {
                     return Ok(HaltReason::Stalled(action));
                 }
                 let is_wait = matches!(action.automation, Automation::Wait { .. });
@@ -120,9 +126,9 @@ pub fn run_loop(
                     act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
                 );
                 act_result.map_err(LoopError::Act)?;
-                last_attempted = Some(action.clone());
+                last_attempted = Some(action);
                 if !is_wait {
-                    last_non_wait = Some(action);
+                    last_non_wait_key = Some(current_key);
                 }
             }
         }
@@ -136,13 +142,4 @@ pub fn run_loop(
     Ok(HaltReason::CapReached(last_attempted.expect(
         "CapReached requires --max-iter ≥ 1 and one Execute iteration",
     )))
-}
-
-fn same_action_repeated(prev: Option<&Action>, current: &Action) -> bool {
-    // `prev` is structurally non-Wait (runner skips Wait actions
-    // when assigning last_action). So we compare directly without
-    // a current=Wait gate. A Wait current vs non-Wait prev cannot
-    // satisfy kind equality (kinds are partitioned by automation
-    // intent), so the comparison naturally returns false.
-    prev.is_some_and(|p| p.kind == current.kind && p.blocker == current.blocker)
 }

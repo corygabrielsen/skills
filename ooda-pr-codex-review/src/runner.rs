@@ -109,24 +109,15 @@ pub fn run_loop(
         };
 
         // Refresh the codex side of the act context with this
-        // iteration's head SHA so RunCodexReviewBatch spawns under
-        // the correct batch directory + writes head_sha.txt
-        // consistently with what observe just read.
+        // iteration's head SHA and base branch so RunCodexReviewBatch
+        // spawns under the correct batch directory, writes
+        // head_sha.txt consistently with what observe just read, and
+        // points `codex review --base` at the PR's actual base.
         let codex_obs: Option<CodexObservations> = if let (Some(codex_cfg), Some(codex_ctx)) =
             (config.codex_review.as_ref(), ctx.codex.as_mut())
         {
             codex_ctx.head_sha = obs.pr_view.head_ref_oid.as_str().to_string();
-            // Tell the spawned `codex review` subprocess which base
-            // branch to diff against (the PR's base from gh).
-            // SAFETY: we are single-threaded inside run_loop and
-            // mutate this env var only at iteration boundaries; the
-            // process-wide write is fine for our spawn semantics
-            // because the spawn synchronously reads the env when it
-            // builds the child Command, then the next iteration
-            // refreshes it before the next spawn.
-            unsafe {
-                std::env::set_var("CODEX_REVIEW_BASE", obs.pr_view.base_ref_name.as_str());
-            }
+            codex_ctx.base_branch = obs.pr_view.base_ref_name.as_str().to_string();
             let codex_pr_root = codex_ctx.codex_pr_root.clone();
             let head_sha = codex_ctx.head_sha.clone();
             let expected = codex_ctx.n;

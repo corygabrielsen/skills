@@ -465,8 +465,11 @@ fn maybe_fetch_codex(
 
 /// Build the codex-review side of the `ActContext`. Returns `Ok(None)`
 /// when the axis is disabled; otherwise discovers the repo root via
-/// `git rev-parse --show-toplevel` and bundles the spawn-time data
-/// for the runner to refresh with the per-iteration head SHA.
+/// `git rev-parse --show-toplevel`, acquires an advisory `flock` on
+/// `<codex_pr_root>/.lock` (so concurrent invocations against the
+/// same PR don't race on batch dirs / head_sha.txt), and bundles
+/// the spawn-time data for the runner to refresh with the
+/// per-iteration head SHA + base branch.
 fn build_codex_act_context(
     args: &Args,
     recorder: &Recorder,
@@ -479,15 +482,45 @@ fn build_codex_act_context(
         Err(e) => return Err(Outcome::BinaryError(flatten(format!("repo root: {e}")))),
     };
     let codex_pr_root = recorder.pr_root().join("codex");
+    if let Err(e) = std::fs::create_dir_all(&codex_pr_root) {
+        return Err(Outcome::BinaryError(flatten(format!(
+            "create codex pr_root {}: {e}",
+            codex_pr_root.display()
+        ))));
+    }
+    let lock_path = codex_pr_root.join(".lock");
+    let lock = match std::fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(Outcome::BinaryError(flatten(format!(
+                "open codex .lock at {}: {e}",
+                lock_path.display()
+            ))));
+        }
+    };
+    if let Err(e) = lock.try_lock() {
+        return Err(Outcome::BinaryError(flatten(format!(
+            "another invocation holds the codex review lock at {} ({e}); concurrent ooda-pr-codex-review runs against the same PR with codex enabled are not supported — wait for the prior run to exit, or use --state-root to isolate",
+            lock_path.display()
+        ))));
+    }
     Ok(Some(CodexActContext {
         codex_bin: args.codex_review_bin.clone(),
         repo_root,
         codex_pr_root,
         n: args.codex_review_n,
-        // head_sha is refreshed by the runner each iteration; a
-        // placeholder here keeps the field non-Option and avoids
-        // threading an Option through the spawn path.
+        // head_sha and base_branch are refreshed by the runner each
+        // iteration; placeholders here keep the fields non-Option
+        // and avoid threading Option through the spawn path. Inspect
+        // mode never spawns codex so it does not need these.
         head_sha: String::new(),
+        base_branch: String::new(),
+        _lock: lock,
     }))
 }
 

@@ -68,10 +68,20 @@ impl From<GhError> for ActError {
 }
 
 /// Codex review side of [`ActContext`]. Static per invocation
-/// except `head_sha`, which the runner refreshes from each
-/// iteration's observe so the batch directory naming and the
-/// `head_sha.txt` stamp track the PR's head.
-#[derive(Debug, Clone)]
+/// except `head_sha` and `base_branch`, which the runner refreshes
+/// from each iteration's observe so the batch directory naming and
+/// the `head_sha.txt` stamp track the PR's head, and the spawned
+/// `codex review --base <base>` argv stays consistent with what
+/// the PR's `pr_view.base_ref_name` reports.
+///
+/// `_lock` is an advisory `flock(2)` on `<codex_pr_root>/.lock`
+/// held for the duration of the invocation; concurrent
+/// `ooda-pr-codex-review` runs against the same PR with codex
+/// enabled would otherwise race on batch directory writes and the
+/// `head_sha.txt` stamps. The lock is FD-tied, so it releases on
+/// process exit even on SIGKILL — stale `.lock` files from crashed
+/// processes never block subsequent runs.
+#[derive(Debug)]
 pub struct CodexActContext {
     pub codex_bin: PathBuf,
     pub repo_root: PathBuf,
@@ -82,10 +92,17 @@ pub struct CodexActContext {
     /// PR head SHA observed this iteration. Drives the batch dir
     /// (one batch tree per head SHA — stale heads survive as cache).
     pub head_sha: String,
+    /// PR base branch observed this iteration. Passed verbatim to
+    /// `codex review --base <branch>` so the review diffs the local
+    /// worktree against the PR's GitHub-recorded base.
+    pub base_branch: String,
+    /// Advisory lock file handle. Held for the invocation's
+    /// lifetime; releases on FD close (process exit).
+    pub _lock: std::fs::File,
 }
 
 /// Per-iteration act-stage context.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ActContext {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
@@ -160,7 +177,7 @@ fn spawn_codex_review_batch(
         });
     }
 
-    let codex_args = build_codex_args(level);
+    let codex_args = build_codex_args(level, &codex.base_branch);
 
     for slot in 1..=n {
         let log_path = dir.join(format!("{}-{slot}.log", level.as_str()));
@@ -192,18 +209,13 @@ fn spawn_codex_review_batch(
 /// Build the `codex review --base <PR base>` argv. The runner runs
 /// the unified binary against a PR whose head is checked out locally,
 /// so the `--base` selection drives codex to review the diff between
-/// the current worktree and the PR's base branch.
-fn build_codex_args(level: ReasoningLevel) -> Vec<OsString> {
-    // The runner caller passes `--base <branch>` via the CodexActContext
-    // when the underlying repo's PR base is known. For now we read it
-    // from a `CODEX_REVIEW_BASE` env var fallback to keep the spawn
-    // self-contained; the caller is responsible for setting it before
-    // act() runs the spawn.
-    let base = std::env::var("CODEX_REVIEW_BASE").unwrap_or_else(|_| "HEAD~1".to_string());
+/// the current worktree and the PR's base branch (typed payload from
+/// [`CodexActContext::base_branch`], refreshed each iteration).
+fn build_codex_args(level: ReasoningLevel, base_branch: &str) -> Vec<OsString> {
     vec![
         OsString::from("review"),
         OsString::from("--base"),
-        OsString::from(base),
+        OsString::from(base_branch),
         OsString::from("-c"),
         OsString::from(format!("model_reasoning_effort=\"{}\"", level.as_str())),
     ]
@@ -230,4 +242,34 @@ fn build_logged_codex_command(
 
 fn should_preflight_path(path: &Path) -> bool {
     path.is_absolute() || path.components().count() > 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_codex_args_renders_review_base_and_reasoning() {
+        let args = build_codex_args(ReasoningLevel::Low, "main");
+        let strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+        assert_eq!(
+            strs,
+            vec![
+                "review",
+                "--base",
+                "main",
+                "-c",
+                "model_reasoning_effort=\"low\"",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_codex_args_passes_high_reasoning() {
+        let args = build_codex_args(ReasoningLevel::Xhigh, "feature/release");
+        let s = args.last().unwrap().to_str().unwrap();
+        assert_eq!(s, "model_reasoning_effort=\"xhigh\"");
+        let base_pos = args.iter().position(|a| a == "--base").unwrap();
+        assert_eq!(args[base_pos + 1], "feature/release");
+    }
 }

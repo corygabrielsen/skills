@@ -66,6 +66,57 @@ pub struct RateLimitHit {
     pub retry_after: PollingInterval,
 }
 
+/// Per-bucket counters from a rate-limit snapshot. Matches the shape
+/// GitHub returns under each entry of `GET /rate_limit`'s `resources`
+/// object: `{ "limit": …, "remaining": …, "reset": <unix-epoch-sec> }`.
+/// `reset_at_epoch` is unix epoch seconds, matching the wire form, so
+/// deserialization is direct and no clock-domain conversion happens
+/// at the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketState {
+    pub remaining: u32,
+    pub limit: u32,
+    pub reset_at_epoch: u64,
+}
+
+/// Snapshot of remaining GitHub quota across the buckets we use.
+/// Fetched via `GET /rate_limit` — that endpoint does **not** count
+/// against quota and returns every bucket counter in one response.
+/// Surfacing the snapshot into observations gives the loop visibility
+/// into how close it is to throttling; today nothing acts on it beyond
+/// recorder logging.
+///
+/// # Future concepts (named, not implemented)
+///
+/// **`BucketBias`** would name per-iteration routing advice
+/// (e.g. `PreferRest` / `PreferGraphql` / `Throttled`) computed
+/// from this snapshot, used to route fetches between REST and
+/// GraphQL whenever a fetcher exists in both forms.
+///
+/// **Iterations-of-headroom** is the comparison unit the routing
+/// algorithm should use, not raw remaining points: `remaining /
+/// estimated_calls_per_iteration`. Raw points understate urgency
+/// for high-volume buckets and overstate it for low-volume ones —
+/// 500 REST remaining at 9 calls/iter is ~55 iters of headroom,
+/// while 500 GraphQL remaining at 1 call/iter is ~500 iters.
+///
+/// **Cost-model caveat:** GraphQL is not cheaper per-point than
+/// REST — it bills proportional to nodes returned, often more
+/// than the REST calls it would replace. The only structural win
+/// of "bias to GraphQL when REST is hot" is that the two buckets
+/// are *separate 5000/hr quotas*; it is not a free lunch in
+/// aggregate consumption.
+///
+/// Today neither concept is wired: the defensive `WaitForRateLimit`
+/// axis (driven by [`RateLimitHit`]) catches actual throttling, and
+/// recorder logs of this struct will tell us whether preemptive
+/// routing is ever actually warranted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitBudget {
+    pub graphql: BucketState,
+    pub rest: BucketState,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +182,46 @@ mod tests {
         let json = serde_json::to_string(&hit).unwrap();
         let back: RateLimitHit = serde_json::from_str(&json).unwrap();
         assert_eq!(back, hit);
+    }
+
+    #[test]
+    fn budget_serde_roundtrip() {
+        let budget = RateLimitBudget {
+            graphql: BucketState {
+                remaining: 4500,
+                limit: 5000,
+                reset_at_epoch: 1_700_000_000,
+            },
+            rest: BucketState {
+                remaining: 4900,
+                limit: 5000,
+                reset_at_epoch: 1_700_000_000,
+            },
+        };
+        let json = serde_json::to_string(&budget).unwrap();
+        let back: RateLimitBudget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, budget);
+    }
+
+    /// `BucketState` deserializes from the exact shape GitHub's
+    /// `/rate_limit` endpoint emits per bucket. Locking this here
+    /// catches any field renaming before the observe layer would.
+    #[test]
+    fn bucket_state_parses_github_wire_shape() {
+        let wire = r#"{"limit":5000,"remaining":4999,"reset":1372700873}"#;
+        // GitHub uses `"reset"`, our field is `reset_at_epoch`.
+        // Document that the binary-side fetcher is responsible for
+        // the rename — `BucketState` itself uses our internal name.
+        // If GitHub ever exposed `reset_at_epoch` directly we'd
+        // deserialize it raw; for now the fetcher does the mapping.
+        let internal_wire = r#"{"limit":5000,"remaining":4999,"reset_at_epoch":1372700873}"#;
+        let s: BucketState = serde_json::from_str(internal_wire).unwrap();
+        assert_eq!(s.remaining, 4999);
+        assert_eq!(s.limit, 5000);
+        assert_eq!(s.reset_at_epoch, 1_372_700_873);
+        // GitHub's raw wire form does NOT parse directly — the
+        // fetcher must rename. Assert that to make the contract
+        // explicit.
+        assert!(serde_json::from_str::<BucketState>(wire).is_err());
     }
 }

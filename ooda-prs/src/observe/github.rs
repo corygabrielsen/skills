@@ -8,6 +8,7 @@ pub mod copilot_config;
 pub mod gh;
 pub mod issue_events;
 pub mod pr_view;
+pub mod rate_limit;
 pub mod requested_reviewers;
 pub mod review_threads;
 pub mod reviews;
@@ -17,7 +18,7 @@ pub mod stack_root;
 use std::thread;
 
 use crate::ids::{PullRequestNumber, RepoSlug};
-use ooda_core::RateLimitHit;
+use ooda_core::{RateLimitBudget, RateLimitHit};
 use serde::Serialize;
 
 use branch_protection::{
@@ -30,6 +31,7 @@ use copilot_config::fetch_copilot_config;
 use gh::GhError;
 use issue_events::{IssueEvent, fetch_issue_events};
 use pr_view::{PrState, PullRequestView, fetch_pr_view};
+use rate_limit::fetch_rate_limit_budget;
 use requested_reviewers::{RequestedReviewers, fetch_requested_reviewers};
 use review_threads::{
     ReviewThreadsResponse, empty_review_threads_response, fetch_all_review_threads,
@@ -74,6 +76,12 @@ pub struct GitHubObservations {
     /// rule. Resolved by walking ruleset summaries + details during
     /// fetch_all.
     pub copilot_config: Option<CopilotCodeReviewParams>,
+    /// Snapshot of remaining GitHub quota across the buckets the
+    /// loop uses. Fetched via the free `/rate_limit` endpoint; today
+    /// nothing acts on this beyond the recorder's per-iteration log.
+    /// See [`ooda_core::RateLimitBudget`] for the named-but-unimplemented
+    /// routing concepts.
+    pub rate_limit_budget: RateLimitBudget,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -106,8 +114,12 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
 
     let pr_view = try_fetch!(fetch_pr_view(slug, pr));
     if matches!(pr_view.state, PrState::Terminal(_)) {
+        // Terminal PRs still get a budget snapshot — the recorder
+        // sees one final per-iteration row before the loop halts.
+        let rate_limit_budget = try_fetch!(fetch_rate_limit_budget());
         return Ok(FetchOutcome::Observations(Box::new(terminal_observations(
             pr_view,
+            rate_limit_budget,
         ))));
     }
     // Branch rules and protection live at the protected root, not
@@ -126,6 +138,10 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
         let h_rules = s.spawn(move || fetch_branch_rules(slug, root));
         let h_prot = s.spawn(move || fetch_branch_protection_required_checks(slug, root));
         let h_copilot_cfg = s.spawn(move || fetch_copilot_config(slug, root));
+        // `/rate_limit` does not count against quota; fan it in
+        // alongside the others so the snapshot is roughly
+        // coincident with the rest of the observation bundle.
+        let h_rate_limit = s.spawn(fetch_rate_limit_budget);
 
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pr_view,
@@ -151,6 +167,11 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
                 h_copilot_cfg.join().expect("fetch_copilot_config panicked")
             ),
             stack_root_branch,
+            rate_limit_budget: try_fetch!(
+                h_rate_limit
+                    .join()
+                    .expect("fetch_rate_limit_budget panicked")
+            ),
         })))
     })
 }
@@ -160,7 +181,10 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
 /// empty aux fields, so semantic correctness is preserved while
 /// avoiding the deleted-base-branch 404 that the auxiliary
 /// fetches would otherwise hit.
-fn terminal_observations(pr_view: PullRequestView) -> GitHubObservations {
+fn terminal_observations(
+    pr_view: PullRequestView,
+    rate_limit_budget: RateLimitBudget,
+) -> GitHubObservations {
     let stack_root_branch = pr_view.base_ref_name.clone();
     GitHubObservations {
         pr_view,
@@ -174,5 +198,6 @@ fn terminal_observations(pr_view: PullRequestView) -> GitHubObservations {
         branch_protection: None,
         stack_root_branch,
         copilot_config: None,
+        rate_limit_budget,
     }
 }

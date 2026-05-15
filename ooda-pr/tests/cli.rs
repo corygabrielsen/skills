@@ -305,7 +305,7 @@ fn inspect_after_flag_is_allowed() {
     // and fails at observe (network/auth). We accept both as long
     // as the inspect-placement check itself didn't reject.
     assert!(
-        code == 6 || code == 64,
+        code == 70 || code == 64,
         "unexpected exit {code}; stderr: {stderr}"
     );
     if code == 64 {
@@ -340,7 +340,7 @@ fn state_root_records_even_when_observe_fails() {
 
     let code = out.status.code().expect("no exit code");
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert_eq!(code, 6, "stderr: {stderr}");
+    assert_eq!(code, 70, "stderr: {stderr}");
     assert!(stderr.starts_with("BinaryError: observe:"));
 
     let pr_root = state_root.join("github.com/owner/repo/prs/1");

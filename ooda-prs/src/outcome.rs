@@ -45,17 +45,39 @@ mod tests {
     }
 
     #[test]
-    fn exit_codes_match_spec() {
-        assert_eq!(Outcome::DoneSucceeded.exit_code(), 0);
-        assert_eq!(Outcome::StuckRepeated(dummy_action()).exit_code(), 1);
-        assert_eq!(Outcome::StuckCapReached(dummy_action()).exit_code(), 2);
-        assert_eq!(Outcome::HandoffHuman(dummy_action()).exit_code(), 3);
-        assert_eq!(Outcome::WouldAdvance(dummy_action()).exit_code(), 4);
-        assert_eq!(Outcome::HandoffAgent(dummy_action()).exit_code(), 5);
-        assert_eq!(Outcome::BinaryError("oops".into()).exit_code(), 6);
-        assert_eq!(Outcome::Paused.exit_code(), 7);
-        assert_eq!(Outcome::DoneAborted.exit_code(), 8);
-        assert_eq!(Outcome::UsageError("bad".into()).exit_code(), 64);
+    fn outcome_maps_to_matching_exit_code_variant() {
+        use ooda_core::ExitCode;
+        assert_eq!(Outcome::DoneSucceeded.exit_code(), ExitCode::DoneSucceeded);
+        assert_eq!(Outcome::Paused.exit_code(), ExitCode::Paused);
+        assert_eq!(
+            Outcome::WouldAdvance(dummy_action()).exit_code(),
+            ExitCode::WouldAdvance
+        );
+        assert_eq!(
+            Outcome::HandoffHuman(dummy_action()).exit_code(),
+            ExitCode::HandoffHuman
+        );
+        assert_eq!(
+            Outcome::HandoffAgent(dummy_action()).exit_code(),
+            ExitCode::HandoffAgent
+        );
+        assert_eq!(Outcome::DoneAborted.exit_code(), ExitCode::DoneAborted);
+        assert_eq!(
+            Outcome::StuckRepeated(dummy_action()).exit_code(),
+            ExitCode::StuckRepeated
+        );
+        assert_eq!(
+            Outcome::StuckCapReached(dummy_action()).exit_code(),
+            ExitCode::StuckCapReached
+        );
+        assert_eq!(
+            Outcome::UsageError("bad".into()).exit_code(),
+            ExitCode::UsageError
+        );
+        assert_eq!(
+            Outcome::BinaryError("oops".into()).exit_code(),
+            ExitCode::BinaryError
+        );
     }
 
     #[test]

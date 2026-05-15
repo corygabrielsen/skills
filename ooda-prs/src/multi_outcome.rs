@@ -48,6 +48,7 @@
 //! the per-PR `Outcome` discipline: stderr for triage, `$?` for
 //! dispatch, plus the new stdout channel for structured records.
 
+use ooda_core::ExitCode;
 use serde::Serialize;
 
 use crate::ids::{PullRequestNumber, RepoSlug};
@@ -77,56 +78,58 @@ pub enum MultiOutcome {
 
 impl MultiOutcome {
     /// Aggregate exit-code projection. See module-level docs for the
-    /// priority table.
-    pub fn exit_code(&self) -> u8 {
+    /// priority table. Returns an [`ExitCode`] (re-exported from
+    /// `ooda-core`) so the numeric values live in one place.
+    pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::UsageError(_) => 64,
+            Self::UsageError(_) => ExitCode::UsageError,
             Self::Bundle(prs) => bundle_exit_code(prs),
         }
     }
 }
 
-fn bundle_exit_code(prs: &[ProcessOutcome]) -> u8 {
+fn bundle_exit_code(prs: &[ProcessOutcome]) -> ExitCode {
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::BinaryError(_)))
     {
-        return 6;
+        return ExitCode::BinaryError;
     }
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::HandoffAgent(_)))
     {
-        return 5;
+        return ExitCode::HandoffAgent;
     }
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::HandoffHuman(_)))
     {
-        return 3;
+        return ExitCode::HandoffHuman;
     }
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::StuckCapReached(_)))
     {
-        return 2;
+        return ExitCode::StuckCapReached;
     }
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::StuckRepeated(_)))
     {
-        return 1;
+        return ExitCode::StuckRepeated;
     }
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::WouldAdvance(_)))
     {
-        return 4;
+        return ExitCode::WouldAdvance;
     }
     // Remaining variants — DoneSucceeded, DoneAborted, Paused — are
     // non-actionable terminal states at the suite level. Collapse
-    // to 0; per-PR records on stdout disambiguate.
-    0
+    // to DoneSucceeded (exit 0); per-PR records on stdout
+    // disambiguate.
+    ExitCode::DoneSucceeded
 }
 
 #[cfg(test)]
@@ -165,7 +168,7 @@ mod tests {
     #[test]
     fn usage_error_maps_to_64() {
         let m = MultiOutcome::UsageError("bad invocation".into());
-        assert_eq!(m.exit_code(), 64);
+        assert_eq!(m.exit_code(), ExitCode::UsageError);
     }
 
     #[test]
@@ -174,7 +177,7 @@ mod tests {
         // but `exit_code` is total — define the value rather than
         // panicking.
         let m = MultiOutcome::Bundle(vec![]);
-        assert_eq!(m.exit_code(), 0);
+        assert_eq!(m.exit_code(), ExitCode::DoneSucceeded);
     }
 
     #[test]
@@ -183,7 +186,7 @@ mod tests {
             record("a/b", 1, Outcome::DoneSucceeded),
             record("a/b", 2, Outcome::DoneSucceeded),
         ]);
-        assert_eq!(m.exit_code(), 0);
+        assert_eq!(m.exit_code(), ExitCode::DoneSucceeded);
     }
 
     #[test]
@@ -195,7 +198,7 @@ mod tests {
             record("a/b", 2, Outcome::DoneAborted),
             record("a/b", 3, Outcome::Paused),
         ]);
-        assert_eq!(m.exit_code(), 0);
+        assert_eq!(m.exit_code(), ExitCode::DoneSucceeded);
     }
 
     #[test]
@@ -205,7 +208,7 @@ mod tests {
             1,
             Outcome::WouldAdvance(dummy_action()),
         )]);
-        assert_eq!(m.exit_code(), 4);
+        assert_eq!(m.exit_code(), ExitCode::WouldAdvance);
     }
 
     #[test]
@@ -215,7 +218,7 @@ mod tests {
             1,
             Outcome::StuckRepeated(dummy_action()),
         )]);
-        assert_eq!(m.exit_code(), 1);
+        assert_eq!(m.exit_code(), ExitCode::StuckRepeated);
     }
 
     #[test]
@@ -225,7 +228,7 @@ mod tests {
             1,
             Outcome::StuckCapReached(dummy_action()),
         )]);
-        assert_eq!(m.exit_code(), 2);
+        assert_eq!(m.exit_code(), ExitCode::StuckCapReached);
     }
 
     #[test]
@@ -235,7 +238,7 @@ mod tests {
             1,
             Outcome::HandoffHuman(dummy_action()),
         )]);
-        assert_eq!(m.exit_code(), 3);
+        assert_eq!(m.exit_code(), ExitCode::HandoffHuman);
     }
 
     #[test]
@@ -245,13 +248,13 @@ mod tests {
             1,
             Outcome::HandoffAgent(dummy_action()),
         )]);
-        assert_eq!(m.exit_code(), 5);
+        assert_eq!(m.exit_code(), ExitCode::HandoffAgent);
     }
 
     #[test]
     fn binary_error_alone_is_6() {
         let m = MultiOutcome::Bundle(vec![record("a/b", 1, Outcome::BinaryError("oops".into()))]);
-        assert_eq!(m.exit_code(), 6);
+        assert_eq!(m.exit_code(), ExitCode::BinaryError);
     }
 
     #[test]
@@ -260,7 +263,7 @@ mod tests {
             record("a/b", 1, Outcome::HandoffAgent(dummy_action())),
             record("a/b", 2, Outcome::BinaryError("oops".into())),
         ]);
-        assert_eq!(m.exit_code(), 6);
+        assert_eq!(m.exit_code(), ExitCode::BinaryError);
     }
 
     #[test]
@@ -269,7 +272,7 @@ mod tests {
             record("a/b", 1, Outcome::HandoffHuman(dummy_action())),
             record("a/b", 2, Outcome::HandoffAgent(dummy_action())),
         ]);
-        assert_eq!(m.exit_code(), 5);
+        assert_eq!(m.exit_code(), ExitCode::HandoffAgent);
     }
 
     #[test]
@@ -278,7 +281,7 @@ mod tests {
             record("a/b", 1, Outcome::StuckCapReached(dummy_action())),
             record("a/b", 2, Outcome::HandoffHuman(dummy_action())),
         ]);
-        assert_eq!(m.exit_code(), 3);
+        assert_eq!(m.exit_code(), ExitCode::HandoffHuman);
     }
 
     #[test]
@@ -287,7 +290,7 @@ mod tests {
             record("a/b", 1, Outcome::StuckRepeated(dummy_action())),
             record("a/b", 2, Outcome::StuckCapReached(dummy_action())),
         ]);
-        assert_eq!(m.exit_code(), 2);
+        assert_eq!(m.exit_code(), ExitCode::StuckCapReached);
     }
 
     #[test]
@@ -296,7 +299,7 @@ mod tests {
             record("a/b", 1, Outcome::WouldAdvance(dummy_action())),
             record("a/b", 2, Outcome::StuckRepeated(dummy_action())),
         ]);
-        assert_eq!(m.exit_code(), 1);
+        assert_eq!(m.exit_code(), ExitCode::StuckRepeated);
     }
 
     #[test]
@@ -305,7 +308,7 @@ mod tests {
             record("a/b", 1, Outcome::DoneSucceeded),
             record("a/b", 2, Outcome::WouldAdvance(dummy_action())),
         ]);
-        assert_eq!(m.exit_code(), 4);
+        assert_eq!(m.exit_code(), ExitCode::WouldAdvance);
     }
 
     #[test]
@@ -322,6 +325,6 @@ mod tests {
             record("a/b", 8, Outcome::HandoffAgent(dummy_action())),
             record("a/b", 9, Outcome::BinaryError("e".into())),
         ]);
-        assert_eq!(m.exit_code(), 6);
+        assert_eq!(m.exit_code(), ExitCode::BinaryError);
     }
 }

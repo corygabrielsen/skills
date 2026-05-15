@@ -178,7 +178,7 @@ fn missing_codex_binary_surfaces_as_binary_error() {
         "--max-iter",
         "1",
     ]);
-    assert_eq!(code, 6, "stderr={stderr}");
+    assert_eq!(code, 70, "stderr={stderr}");
     assert!(first_line(&stderr).starts_with("BinaryError: "));
     let _ = std::fs::remove_dir_all(&state_root);
 }
@@ -226,7 +226,7 @@ Review comment: src/foo.rs:42\\nSQL injection detected.\\n'\n",
     let code = out.status.code().expect("no exit code");
     let stderr = String::from_utf8(out.stderr).unwrap();
 
-    assert_eq!(code, 5, "expected HandoffAgent (5); stderr={stderr}");
+    assert_eq!(code, 4, "expected HandoffAgent (4); stderr={stderr}");
     assert_eq!(first_line(&stderr), "HandoffAgent: AddressBatch");
     assert!(stderr.contains("Verify and address"), "stderr: {stderr}");
 
@@ -274,7 +274,7 @@ fn end_to_end_with_fake_codex_clean_below_ceiling_halts_on_retro() {
     let code = out.status.code().expect("no exit code");
     let stderr = String::from_utf8(out.stderr).unwrap();
 
-    assert_eq!(code, 5, "expected HandoffAgent (5); stderr={stderr}");
+    assert_eq!(code, 4, "expected HandoffAgent (4); stderr={stderr}");
     assert_eq!(first_line(&stderr), "HandoffAgent: Retrospective");
 
     let _ = std::fs::remove_dir_all(&state_root);
@@ -444,7 +444,7 @@ fn codex_usage_error_exit_file_surfaces_as_binary_error() {
     let code = out.status.code().expect("no exit code");
     let stderr = String::from_utf8(out.stderr).unwrap();
 
-    assert_eq!(code, 6, "expected BinaryError (6); stderr={stderr}");
+    assert_eq!(code, 70, "expected BinaryError (70); stderr={stderr}");
     assert!(stderr.contains("slot 1 exited 2"), "stderr: {stderr}");
 
     let _ = std::fs::remove_dir_all(&state_root);
@@ -521,7 +521,7 @@ fn mark_retro_clean_below_ceiling_advances_and_idles() {
         state_root.to_str().unwrap(),
         "--mark-retro-clean",
     ]);
-    assert_eq!(code, 7, "expected Idle"); // Idle = 7
+    assert_eq!(code, 1, "expected Idle"); // Idle = 1
     assert!(stdout.contains("advanced to medium"), "stdout: {stdout:?}");
 
     let _ = std::fs::remove_dir_all(&state_root);
@@ -590,7 +590,7 @@ Review comment: src/foo.rs:42\\nRegression detected.\\n'\n",
         "10",
     ]);
     let seed_out = seed.output().expect("spawn");
-    assert_eq!(seed_out.status.code().unwrap(), 5);
+    assert_eq!(seed_out.status.code().unwrap(), 4);
 
     let (code, stdout, stderr) = run(&[
         "--uncommitted",
@@ -598,7 +598,7 @@ Review comment: src/foo.rs:42\\nRegression detected.\\n'\n",
         state_root.to_str().unwrap(),
         "--mark-address-passed",
     ]);
-    assert_eq!(code, 7, "stderr={stderr}");
+    assert_eq!(code, 1, "stderr={stderr}");
     assert!(stdout.contains("advanced to batch 2"), "stdout: {stdout:?}");
 
     let _ = std::fs::remove_dir_all(&state_root);

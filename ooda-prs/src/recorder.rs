@@ -22,6 +22,7 @@ use crate::decide::action::Action;
 use crate::decide::decision::Decision;
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::outcome::Outcome;
+use ooda_core::ExitCode;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -490,7 +491,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_outcome(&self, outcome: &Outcome, code: u8) {
+    pub fn record_outcome(&self, outcome: &Outcome, code: ExitCode) {
         self.best_effort(|inner| {
             let artifact =
                 inner.write_json_artifact(None, "outcome.json", outcome, "application/json")?;
@@ -1061,7 +1062,7 @@ fn action_projection(action: &Action) -> Value {
     })
 }
 
-fn outcome_summary(outcome: &Outcome, code: u8) -> String {
+fn outcome_summary(outcome: &Outcome, code: ExitCode) -> String {
     format!("{outcome:?} exit={code}")
 }
 
@@ -1107,7 +1108,7 @@ mod tests {
         })
         .unwrap();
 
-        recorder.record_outcome(&Outcome::Paused, 7);
+        recorder.record_outcome(&Outcome::Paused, ExitCode::Paused);
 
         let pr_root = recorder.pr_root();
         let outcome = fs::read(pr_root.join("latest/outcome.json")).unwrap();

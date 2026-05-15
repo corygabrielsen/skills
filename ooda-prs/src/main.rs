@@ -501,18 +501,29 @@ fn run_inspect(
         let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(1));
         log_post_result("comment", true, r, Some(recorder));
     }
-    Outcome::from(decision)
+    let snapshot = HandoffSnapshot {
+        oriented: oriented.clone(),
+        head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
+        base_branch: obs.pr_view.base_ref_name.to_string(),
+    };
+    decorate_handoff_human(Outcome::from(decision), slug, pr, Some(&snapshot))
 }
 
 fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Recorder) -> Outcome {
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
+    let mut snapshot: Option<HandoffSnapshot> = None;
     let on_state = |i: u32,
                     obs: &observe::github::GitHubObservations,
                     oriented: &orient::OrientedState,
                     candidate_actions: &[decide::action::Action],
                     d: &Decision| {
+        snapshot = Some(HandoffSnapshot {
+            oriented: oriented.clone(),
+            head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
+            base_branch: obs.pr_view.base_ref_name.to_string(),
+        });
         recorder.set_iteration(Some(i));
         recorder.record_iteration(i, obs, oriented, candidate_actions, d);
         let line = iteration_line(i, d);
@@ -529,10 +540,11 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
             log_post_result(&format!("[iter {i}] comment"), false, r, Some(recorder));
         }
     };
-    match run_loop(slug, pr, cfg, recorder, on_state) {
+    let outcome = match run_loop(slug, pr, cfg, recorder, on_state) {
         Ok(reason) => Outcome::from(reason),
         Err(e) => Outcome::from(e),
-    }
+    };
+    decorate_handoff_human(outcome, slug, pr, snapshot.as_ref())
 }
 
 fn log_post_result(
@@ -603,6 +615,75 @@ fn halt_action(halt: &DecisionHalt) -> Option<&decide::action::Action> {
     }
 }
 
+/// Snapshot of the per-iteration state that the human-handoff
+/// decorator needs after `run_loop` returns. Captured from the last
+/// `on_state` callback so the post-loop decorator can render the PR
+/// link + a short situational summary without re-observing.
+#[derive(Debug, Clone)]
+struct HandoffSnapshot {
+    oriented: orient::OrientedState,
+    head_short: String,
+    base_branch: String,
+}
+
+fn pr_url(slug: &RepoSlug, pr: PullRequestNumber) -> String {
+    format!("https://github.com/{slug}/pull/{pr}")
+}
+
+/// Build the multi-line context block appended to `HandoffHuman`
+/// prompts: PR URL + one-line snapshot per axis the human typically
+/// needs to triage (branch, CI, reviews). Computed from
+/// already-observed state — no extra fetches.
+fn human_handoff_context(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    snapshot: Option<&HandoffSnapshot>,
+    blocker: &ids::BlockerKey,
+) -> String {
+    let mut lines = vec![format!("PR: {}", pr_url(slug, pr))];
+    lines.push(format!("Blocker: {blocker}"));
+    if let Some(snap) = snapshot {
+        lines.push(format!(
+            "Branch: {} ← {}",
+            snap.base_branch, snap.head_short
+        ));
+        let req = &snap.oriented.ci.required;
+        lines.push(format!(
+            "CI: {} pass / {} failed / {} pending (required)",
+            req.pass,
+            req.fail(),
+            req.pending()
+        ));
+        let r = &snap.oriented.reviews;
+        lines.push(format!(
+            "Reviews: {} unresolved thread(s) / {} pending bot / {} pending human",
+            r.threads_unresolved,
+            r.pending_reviews.bots.len(),
+            r.pending_reviews.humans.len()
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Append a PR-context block to `HandoffHuman` prompts so the
+/// stderr handoff is usable on its own — no tab-juggling. Pass-
+/// through for every other `Outcome` variant.
+fn decorate_handoff_human(
+    outcome: Outcome,
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    snapshot: Option<&HandoffSnapshot>,
+) -> Outcome {
+    match outcome {
+        Outcome::HandoffHuman(mut action) => {
+            let context = human_handoff_context(slug, pr, snapshot, &action.blocker);
+            action.description = format!("{}\n\n{}", action.description.trim_end(), context);
+            Outcome::HandoffHuman(action)
+        }
+        other => other,
+    }
+}
+
 /// Render the suite-level `MultiOutcome` as JSONL on stdout. One
 /// record per PR (Bundle case); empty stdout for `UsageError` (parse
 /// failures emit nothing on stdout — the `$? = 64` and stderr usage
@@ -632,6 +713,9 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
     let mut obj: Map<String, Value> = Map::new();
     obj.insert("slug".into(), json!(po.slug.to_string()));
     obj.insert("pr".into(), json!(po.pr.get()));
+    // Always include a deep link so harnesses don't have to
+    // re-derive it from slug + pr per record.
+    obj.insert("pr_url".into(), json!(pr_url(&po.slug, po.pr)));
     obj.insert("outcome".into(), json!(outcome_variant_name(&po.outcome)));
     obj.insert("exit".into(), json!(po.outcome.exit_code()));
     match &po.outcome {
@@ -938,6 +1022,72 @@ mod tests {
         assert_eq!(v["exit"], 0);
         assert!(v.get("action").is_none());
         assert!(v.get("prompt").is_none());
+    }
+
+    #[test]
+    fn jsonl_records_include_pr_url() {
+        // Every variant's record carries pr_url so harnesses can
+        // deep-link without re-deriving from slug + pr.
+        for outcome in [
+            Outcome::DoneMerged,
+            Outcome::DoneClosed,
+            Outcome::Paused,
+            Outcome::StuckRepeated(action("x")),
+            Outcome::StuckCapReached(action("x")),
+            Outcome::HandoffAgent(action("x")),
+            Outcome::HandoffHuman(action("x")),
+            Outcome::WouldAdvance(action("x")),
+            Outcome::BinaryError("boom".into()),
+        ] {
+            let r = per_pr_jsonl_record(&po("acme/widget", 42, outcome));
+            let v = parse_record(&r);
+            assert_eq!(
+                v["pr_url"], "https://github.com/acme/widget/pull/42",
+                "missing pr_url in {r}"
+            );
+        }
+    }
+
+    #[test]
+    fn decorate_handoff_human_appends_pr_link_and_blocker() {
+        use crate::decide::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+        use crate::ids::BlockerKey;
+        let a = Action {
+            kind: ActionKind::RequestApproval,
+            automation: Automation::Human,
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingHuman,
+            description: "Request or self-approve".into(),
+            blocker: BlockerKey::tag("not_approved"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(Outcome::HandoffHuman(a), &slug, pr, None);
+        let Outcome::HandoffHuman(a) = decorated else {
+            panic!("expected HandoffHuman");
+        };
+        assert!(
+            a.description
+                .contains("PR: https://github.com/acme/widget/pull/42"),
+            "decoration: {}",
+            a.description
+        );
+        assert!(a.description.contains("Blocker: not_approved"));
+        assert!(a.description.starts_with("Request or self-approve"));
+    }
+
+    #[test]
+    fn decorate_handoff_human_passes_through_other_variants() {
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("1").unwrap();
+        assert!(matches!(
+            decorate_handoff_human(Outcome::DoneMerged, &slug, pr, None),
+            Outcome::DoneMerged
+        ));
+        assert!(matches!(
+            decorate_handoff_human(Outcome::Paused, &slug, pr, None),
+            Outcome::Paused
+        ));
     }
 
     #[test]

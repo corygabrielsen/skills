@@ -273,18 +273,34 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         let r = comment::post::post_if_changed(&args.slug, args.pr, &rendered, recorder, Some(1));
         log_post_result("comment", true, r, Some(recorder));
     }
-    Outcome::from(decision)
+    let snapshot = HandoffSnapshot {
+        oriented: oriented.clone(),
+        head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
+        base_branch: obs.pr_view.base_ref_name.to_string(),
+    };
+    decorate_handoff_human(
+        Outcome::from(decision),
+        &args.slug,
+        args.pr,
+        Some(&snapshot),
+    )
 }
 
 fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
+    let mut snapshot: Option<HandoffSnapshot> = None;
     let on_state = |i: u32,
                     obs: &observe::github::GitHubObservations,
                     oriented: &orient::OrientedState,
                     candidate_actions: &[decide::action::Action],
                     d: &Decision| {
+        snapshot = Some(HandoffSnapshot {
+            oriented: oriented.clone(),
+            head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
+            base_branch: obs.pr_view.base_ref_name.to_string(),
+        });
         recorder.set_iteration(Some(i));
         recorder.record_iteration(i, obs, oriented, candidate_actions, d);
         let line = iteration_line(i, d);
@@ -302,10 +318,11 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
             log_post_result(&format!("[iter {i}] comment"), false, r, Some(recorder));
         }
     };
-    match run_loop(&args.slug, args.pr, cfg, recorder, on_state) {
+    let outcome = match run_loop(&args.slug, args.pr, cfg, recorder, on_state) {
         Ok(reason) => Outcome::from(reason),
         Err(e) => Outcome::from(e),
-    }
+    };
+    decorate_handoff_human(outcome, &args.slug, args.pr, snapshot.as_ref())
 }
 
 fn log_post_result(
@@ -373,6 +390,71 @@ fn halt_action(halt: &DecisionHalt) -> Option<&decide::action::Action> {
     match halt {
         DecisionHalt::AgentNeeded(action) | DecisionHalt::HumanNeeded(action) => Some(action),
         DecisionHalt::Success | DecisionHalt::Terminal(_) => None,
+    }
+}
+
+/// Snapshot of the per-iteration state that the human-handoff
+/// decorator needs after `run_loop` returns. Captured from the last
+/// `on_state` callback so the post-loop decorator can render the PR
+/// link + a short situational summary without re-observing.
+#[derive(Debug, Clone)]
+struct HandoffSnapshot {
+    oriented: orient::OrientedState,
+    head_short: String,
+    base_branch: String,
+}
+
+/// Build the multi-line context block appended to `HandoffHuman`
+/// prompts: PR URL + one-line snapshot per axis the human typically
+/// needs to triage (branch, CI, reviews). Computed from
+/// already-observed state — no extra fetches.
+fn human_handoff_context(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    snapshot: Option<&HandoffSnapshot>,
+    blocker: &ids::BlockerKey,
+) -> String {
+    let mut lines = vec![format!("PR: https://github.com/{slug}/pull/{pr}")];
+    lines.push(format!("Blocker: {blocker}"));
+    if let Some(snap) = snapshot {
+        lines.push(format!(
+            "Branch: {} ← {}",
+            snap.base_branch, snap.head_short
+        ));
+        let req = &snap.oriented.ci.required;
+        lines.push(format!(
+            "CI: {} pass / {} failed / {} pending (required)",
+            req.pass,
+            req.fail(),
+            req.pending()
+        ));
+        let r = &snap.oriented.reviews;
+        lines.push(format!(
+            "Reviews: {} unresolved thread(s) / {} pending bot / {} pending human",
+            r.threads_unresolved,
+            r.pending_reviews.bots.len(),
+            r.pending_reviews.humans.len()
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Append a PR-context block to `HandoffHuman` prompts so the
+/// stderr handoff is usable on its own — no tab-juggling. Pass-
+/// through for every other `Outcome` variant.
+fn decorate_handoff_human(
+    outcome: Outcome,
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    snapshot: Option<&HandoffSnapshot>,
+) -> Outcome {
+    match outcome {
+        Outcome::HandoffHuman(mut action) => {
+            let context = human_handoff_context(slug, pr, snapshot, &action.blocker);
+            action.description = format!("{}\n\n{}", action.description.trim_end(), context);
+            Outcome::HandoffHuman(action)
+        }
+        other => other,
     }
 }
 
@@ -594,6 +676,48 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("HandoffAgent: Rebase\n"));
         assert!(s.contains("\n  prompt: Rebase onto base\n"));
+    }
+
+    #[test]
+    fn decorate_handoff_human_appends_pr_link_and_blocker() {
+        let action = decide::action::Action {
+            kind: decide::action::ActionKind::RequestApproval,
+            automation: Automation::Human,
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            description: "Request or self-approve".into(),
+            blocker: ids::BlockerKey::tag("not_approved"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(Outcome::HandoffHuman(action), &slug, pr, None);
+        let Outcome::HandoffHuman(action) = decorated else {
+            panic!("expected HandoffHuman");
+        };
+        assert!(
+            action
+                .description
+                .contains("PR: https://github.com/acme/widget/pull/42"),
+            "decoration: {}",
+            action.description
+        );
+        assert!(
+            action.description.contains("Blocker: not_approved"),
+            "decoration: {}",
+            action.description
+        );
+        // Original prompt content is preserved.
+        assert!(action.description.starts_with("Request or self-approve"));
+    }
+
+    #[test]
+    fn decorate_handoff_human_passes_through_other_variants() {
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("1").unwrap();
+        let outcome = decorate_handoff_human(Outcome::DoneMerged, &slug, pr, None);
+        assert!(matches!(outcome, Outcome::DoneMerged));
+        let outcome = decorate_handoff_human(Outcome::Paused, &slug, pr, None);
+        assert!(matches!(outcome, Outcome::Paused));
     }
 
     #[test]

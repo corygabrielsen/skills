@@ -43,7 +43,7 @@ pub mod stall_key;
 
 pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};
-pub use decision::{Decision, DecisionHalt, HaltReason, Terminal};
+pub use decision::{Decision, DecisionHalt, HaltReason, Terminal, classify};
 pub use exit_code::ExitCode;
 pub use handoff_prompt::{ContextLine, HandoffPrompt, PromptSection, Witness};
 pub use non_empty::NonEmpty;

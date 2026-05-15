@@ -8,7 +8,7 @@ use crate::observe::github::pr_view::ReviewDecision;
 use crate::orient::OrientedState;
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
-use super::action::{Action, ActionKind, Automation, TargetEffect, Urgency};
+use super::action::{Action, ActionKind, Automation, NonEmpty, TargetEffect, Urgency};
 
 /// Comma-join a slice of any `Display` for human-readable rendering.
 fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
@@ -31,7 +31,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         .cloned()
         .collect();
 
-    if !unresolved_threads.is_empty() {
+    if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads) {
         let description = address_threads_description(&unresolved_threads);
         out.push(Action {
             kind: ActionKind::AddressThreads {
@@ -50,12 +50,10 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         });
     }
 
-    if !reviews.pending_reviews.bots.is_empty() {
-        let names = join_display(&reviews.pending_reviews.bots);
+    if let Some(bots) = NonEmpty::try_from_vec(reviews.pending_reviews.bots.clone()) {
+        let names = join_display(&bots);
         out.push(Action {
-            kind: ActionKind::WaitForBotReview {
-                reviewers: reviews.pending_reviews.bots.clone(),
-            },
+            kind: ActionKind::WaitForBotReview { reviewers: bots },
             automation: Automation::Wait {
                 interval: Duration::from_secs(60),
             },
@@ -66,12 +64,10 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         });
     }
 
-    if !reviews.pending_reviews.humans.is_empty() {
-        let names = join_display(&reviews.pending_reviews.humans);
+    if let Some(humans) = NonEmpty::try_from_vec(reviews.pending_reviews.humans.clone()) {
+        let names = join_display(&humans);
         out.push(Action {
-            kind: ActionKind::WaitForHumanReview {
-                reviewers: reviews.pending_reviews.humans.clone(),
-            },
+            kind: ActionKind::WaitForHumanReview { reviewers: humans },
             automation: Automation::Human,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,

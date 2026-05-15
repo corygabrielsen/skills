@@ -2,21 +2,18 @@
 //!
 //! [`Action`], [`Automation`], [`TargetEffect`], [`Urgency`] are
 //! re-exported from [`ooda_core`] — the cross-binary spine. This
-//! module owns the per-binary [`ActionKind`] enum (the merged PR +
-//! codex-review domain's action variants) and its
-//! [`ActionKindName`] impl. Payloads use domain newtypes
-//! (`CheckName`, `GitHubLogin`) rather than `String` — promotes a
-//! class of "right name in the wrong position" bugs into compile
-//! errors.
+//! module owns the per-binary [`ActionKind`] enum (the PR domain's
+//! action variants) and its [`ActionKindName`] impl. Payloads use
+//! domain newtypes (`CheckName`, `GitHubLogin`) so a "right name in
+//! the wrong position" bug is a compile error.
 
 use crate::ids::{CheckName, GitHubLogin, Reviewer};
 use crate::orient::thread::ReviewThread;
-pub use ooda_core::{ActionKindName, Automation, TargetEffect, Urgency};
+pub use ooda_core::{ActionKindName, Automation, NonEmpty, TargetEffect, Urgency};
 use serde::Serialize;
 
-/// PR-plus-codex-review-domain `Action`. Concrete instantiation of
-/// the generic [`ooda_core::Action`] over this binary's
-/// [`ActionKind`].
+/// PR-domain `Action`. Concrete instantiation of the generic
+/// [`ooda_core::Action`] over this binary's [`ActionKind`].
 pub type Action = ooda_core::Action<ActionKind>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,13 +23,13 @@ pub enum ActionKind {
         check_name: CheckName,
     },
     WaitForCi {
-        pending: Vec<CheckName>,
+        pending: NonEmpty<CheckName>,
     },
     /// CI is blocked on a fan-in (e.g. Mergeability) AND something
     /// genuinely ambiguous is co-occurring (advisory failure). Hand
     /// to an agent to triage.
     TriageWait {
-        blocked_checks: Vec<CheckName>,
+        blocked_checks: NonEmpty<CheckName>,
     },
 
     // ── Reviews ──
@@ -44,7 +41,7 @@ pub enum ActionKind {
     /// projection, not a stored field. (See feedback memory:
     /// "witness, not cardinality.")
     AddressThreads {
-        threads: Vec<ReviewThread>,
+        threads: NonEmpty<ReviewThread>,
     },
     /// GitHub reports `CHANGES_REQUESTED` but no inline review threads
     /// exist (summary-only change request, or threads resolved without
@@ -88,12 +85,12 @@ pub enum ActionKind {
     // ── Pending reviewers ──
     /// Bot reviewers always have logins (no `Team` variant).
     WaitForBotReview {
-        reviewers: Vec<GitHubLogin>,
+        reviewers: NonEmpty<GitHubLogin>,
     },
     /// Human reviewers may be a user OR a team — preserve the
     /// distinction at the type level.
     WaitForHumanReview {
-        reviewers: Vec<Reviewer>,
+        reviewers: NonEmpty<Reviewer>,
     },
 
     // ── Codex review axis ──
@@ -124,7 +121,8 @@ impl ActionKind {
     /// `Debug` form, with any payload (`{ ... }` or `(...)`)
     /// stripped. Used for the `<ActionKind>` placeholder in the
     /// SKILL.md stderr contract: caller-stable identity, no
-    /// payload noise.
+    /// payload noise (which would expose internal data shapes
+    /// and break the single-line invariant).
     pub fn name(&self) -> &'static str {
         ActionKindName::name(self)
     }

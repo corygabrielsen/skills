@@ -9,7 +9,7 @@
 
 use crate::ids::{CheckName, GitHubLogin, Reviewer};
 use crate::orient::thread::ReviewThread;
-pub use ooda_core::{ActionKindName, Automation, TargetEffect, Urgency};
+pub use ooda_core::{ActionKindName, Automation, NonEmpty, TargetEffect, Urgency};
 use serde::Serialize;
 
 /// PR-domain `Action`. Concrete instantiation of the generic
@@ -23,13 +23,13 @@ pub enum ActionKind {
         check_name: CheckName,
     },
     WaitForCi {
-        pending: Vec<CheckName>,
+        pending: NonEmpty<CheckName>,
     },
     /// CI is blocked on a fan-in (e.g. Mergeability) AND something
     /// genuinely ambiguous is co-occurring (advisory failure). Hand
     /// to an agent to triage.
     TriageWait {
-        blocked_checks: Vec<CheckName>,
+        blocked_checks: NonEmpty<CheckName>,
     },
 
     // ── Reviews ──
@@ -41,7 +41,7 @@ pub enum ActionKind {
     /// projection, not a stored field. (See feedback memory:
     /// "witness, not cardinality.")
     AddressThreads {
-        threads: Vec<ReviewThread>,
+        threads: NonEmpty<ReviewThread>,
     },
     /// GitHub reports `CHANGES_REQUESTED` but no inline review threads
     /// exist (summary-only change request, or threads resolved without
@@ -85,12 +85,12 @@ pub enum ActionKind {
     // ── Pending reviewers ──
     /// Bot reviewers always have logins (no `Team` variant).
     WaitForBotReview {
-        reviewers: Vec<GitHubLogin>,
+        reviewers: NonEmpty<GitHubLogin>,
     },
     /// Human reviewers may be a user OR a team — preserve the
     /// distinction at the type level.
     WaitForHumanReview {
-        reviewers: Vec<Reviewer>,
+        reviewers: NonEmpty<Reviewer>,
     },
 }
 

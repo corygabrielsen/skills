@@ -1,13 +1,12 @@
 //! Action shapes — the concrete operations decide can prescribe
 //! for the codex-review domain.
 //!
-//! Each action carries:
-//!   * `kind`: a typed enum variant naming the action and its payload
-//!   * `automation`: who executes (us, an agent, a human, just wait)
-//!   * `target_effect`: how this action changes batch/level state
-//!   * `description`: human-readable prompt material for handoff
-//!   * `urgency`: declared sort priority
-//!   * `blocker`: stable iteration key for stall detection
+//! [`Action`], [`Automation`], [`TargetEffect`], [`Urgency`] are
+//! re-exported from [`ooda_core`] — the cross-binary spine. This
+//! module owns the per-binary [`ActionKind`] enum (the codex-review
+//! domain's action variants), its [`ActionKindName`] impl, and the
+//! [`ReasoningLevel`] ladder type referenced by several action
+//! payloads.
 //!
 //! Domain notes:
 //!   - `RunReviews` / `AwaitReviews` / `ParseVerdicts` — the
@@ -20,84 +19,12 @@
 //!   - `RequestCriteriaRefinement` — reserved human halt for any
 //!     future review-criteria flow.
 
-use std::time::Duration;
-
+pub use ooda_core::{ActionKindName, Automation, TargetEffect, Urgency};
 use serde::Serialize;
 
-use crate::ids::BlockerKey;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Action {
-    pub kind: ActionKind,
-    pub automation: Automation,
-    pub target_effect: TargetEffect,
-    pub urgency: Urgency,
-    /// Human-readable. For agent handoff actions, this is the prompt.
-    pub description: String,
-    /// Stable iteration key — runner detects stalls by comparing
-    /// (kind, blocker) against the prior iteration. The
-    /// [`BlockerKey`] newtype prevents accidental confusion with
-    /// `description` (also `String`-shaped) and documents the
-    /// invariant that the value MUST NOT embed varying counts or
-    /// other progress markers.
-    pub blocker: BlockerKey,
-}
-
-/// Sort order for candidate actions. Lower variants are higher
-/// priority. Codex-domain urgency: pipeline progress (Critical)
-/// beats agent handoffs (BlockingFix) beats human handoffs
-/// (BlockingHuman); polling waits sort below active work; tests
-/// sort below state transitions; hygiene sorts last.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub enum Urgency {
-    /// Pipeline-advancing Full actions: RunReviews,
-    /// ParseVerdicts, AdvanceLevel, DropLevel, RestartFromFloor,
-    /// RunTests. Free progress; never halt.
-    Critical,
-    /// Active Agent handoffs that fix or synthesize:
-    /// AddressBatch, Retrospective.
-    BlockingFix,
-    /// Polling Wait: AwaitReviews. Loop sleeps and re-observes.
-    BlockingWait,
-    /// Human handoff: RequestCriteriaRefinement.
-    BlockingHuman,
-    /// Reserved for future advancing actions.
-    Advancing,
-    /// Reserved for future hygiene actions.
-    Hygiene,
-}
-
-/// What dispatches the action. `Wait` carries the poll cadence so
-/// "Wait without a sleep duration" is unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum Automation {
-    /// We have the exact command and run it directly.
-    Full,
-    /// Hand off to an agent with the description as prompt.
-    Agent,
-    /// Wait for an external signal (codex subprocess completion)
-    /// — poll after `interval` and re-iterate. `Duration` (not
-    /// `u32`) so future backoff/jitter compose without changing
-    /// the type.
-    Wait {
-        #[serde(skip)]
-        interval: Duration,
-    },
-    /// Halt and surface to a human — only they can resolve.
-    Human,
-}
-
-/// What dispatching this action would do to the batch/level state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum TargetEffect {
-    /// Action is the path past a current blocker.
-    Blocks,
-    /// Action moves the loop forward one step (most pipeline
-    /// actions in this domain).
-    Advances,
-    /// Action is informational; no state-machine impact.
-    Neutral,
-}
+/// Codex-review-domain `Action`. Concrete instantiation of the
+/// generic [`ooda_core::Action`] over this binary's [`ActionKind`].
+pub type Action = ooda_core::Action<ActionKind>;
 
 /// Reasoning effort level passed to `codex review` via
 /// `-c model_reasoning_effort=<level>`.
@@ -217,6 +144,12 @@ impl ActionKind {
     /// SKILL.md stderr contract: caller-stable identity, no
     /// payload noise.
     pub fn name(&self) -> &'static str {
+        ActionKindName::name(self)
+    }
+}
+
+impl ActionKindName for ActionKind {
+    fn name(&self) -> &'static str {
         match self {
             Self::RunReviews { .. } => "RunReviews",
             Self::AwaitReviews { .. } => "AwaitReviews",

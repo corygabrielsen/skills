@@ -536,7 +536,7 @@ fn apply_side_effect(
 
 fn log_idle(msg: String) -> Outcome {
     let _ = writeln!(std::io::stdout(), "{msg}");
-    Outcome::Idle
+    Outcome::Paused
 }
 
 fn apply_mark_retro_clean(
@@ -553,7 +553,7 @@ fn apply_mark_retro_clean(
             "retrospective clean at ceiling ({}); fixed point reached",
             current.as_str()
         );
-        return Outcome::DoneFixedPoint;
+        return Outcome::DoneSucceeded;
     }
     match recorder.advance_level() {
         Ok(Some(to)) => log_idle(format!(
@@ -666,7 +666,7 @@ fn main() -> ExitCode {
 /// variants.
 fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
     match oc {
-        Outcome::DoneFixedPoint => {
+        Outcome::DoneSucceeded => {
             let _ = writeln!(out, "DoneFixedPoint");
         }
         Outcome::StuckRepeated(action) => {
@@ -699,7 +699,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         Outcome::BinaryError(msg) => {
             let _ = writeln!(out, "BinaryError: {msg}");
         }
-        Outcome::Idle => {
+        Outcome::Paused => {
             let _ = writeln!(out, "Idle");
         }
         Outcome::DoneAborted => {

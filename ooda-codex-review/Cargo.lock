@@ -239,10 +239,18 @@ name = "ooda-codex-review"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ooda-core",
  "serde",
  "serde_json",
  "sha2",
  "zstd",
+]
+
+[[package]]
+name = "ooda-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

@@ -178,62 +178,6 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
     }
 }
 
-/// Metadata hygiene — non-blocking but worth fixing. Emitted last
-/// so any blocking or advancing work runs first.
-pub fn hygiene_candidates(state: &PullRequestState) -> Vec<Action> {
-    let mut out: Vec<Action> = Vec::new();
-
-    if !state.content_label {
-        out.push(Action {
-            kind: ActionKind::AddContentLabel,
-            effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new("Add a content label (bug or enhancement)"),
-            },
-            target_effect: TargetEffect::Neutral,
-            urgency: Urgency::Hygiene,
-            blocker: BlockerKey::tag("no_content_label"),
-        });
-    }
-    if state.assignees == 0 {
-        out.push(Action {
-            kind: ActionKind::AddAssignee,
-            effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new("Assign the PR (default: author)"),
-            },
-            target_effect: TargetEffect::Neutral,
-            urgency: Urgency::Hygiene,
-            blocker: BlockerKey::tag("no_assignee"),
-        });
-    }
-    // Fire when ANY of {body present, Summary heading, Test plan
-    // heading} is missing. orient_state computes all three; emitting
-    // only on `!body` ignored two of the three signals.
-    if !state.body || !state.summary || !state.test_plan {
-        let missing: Vec<&str> = [
-            (!state.body).then_some("body"),
-            (!state.summary).then_some("Summary"),
-            (!state.test_plan).then_some("Test plan"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        out.push(Action {
-            kind: ActionKind::AddDescription,
-            effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new(format!(
-                    "PR description missing: {}. Add `## Summary` and `## Test plan` sections.",
-                    missing.join(", ")
-                )),
-            },
-            target_effect: TargetEffect::Neutral,
-            urgency: Urgency::Hygiene,
-            blocker: BlockerKey::tag("incomplete_description"),
-        });
-    }
-
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +209,6 @@ mod tests {
     #[test]
     fn clean_state_yields_no_candidates() {
         assert!(blocking_candidates(&clean()).is_empty());
-        assert!(hygiene_candidates(&clean()).is_empty());
     }
 
     #[test]
@@ -288,17 +231,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_metadata_lives_in_hygiene_not_blocking() {
+    fn missing_metadata_does_not_block() {
         let mut s = clean();
         s.content_label = false;
         s.assignees = 0;
         s.body = false;
         assert!(blocking_candidates(&s).is_empty());
-        let cs = hygiene_candidates(&s);
-        for a in &cs {
-            assert_eq!(a.target_effect, TargetEffect::Neutral);
-        }
-        assert_eq!(cs.len(), 3);
     }
 
     // ─── property tests for the class invariant ─────────────────────

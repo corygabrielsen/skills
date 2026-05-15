@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! ooda-codex-review — anti-DRY copy of /ooda-pr retargeted at
 //! `codex review`. Drives n parallel reviews per reasoning level,
 //! halts for AddressBatch/Retrospective handoffs to the outer
@@ -16,7 +14,6 @@ mod orient;
 mod outcome;
 mod recorder;
 mod runner;
-mod text;
 
 use act::ActContext;
 use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};

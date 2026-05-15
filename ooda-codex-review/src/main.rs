@@ -55,8 +55,8 @@ struct Args {
     target: ReviewTarget,
     level: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
-    n: u32,
-    max_iter: u32,
+    n: std::num::NonZeroU32,
+    max_iter: std::num::NonZeroU32,
     state_root: PathBuf,
     codex_bin: PathBuf,
     fresh: bool,
@@ -127,7 +127,7 @@ fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<Str
         .ok_or_else(|| usage(format!("{flag} requires a value")))
 }
 
-fn parse_positive_u32(flag: &str, raw: &str) -> Result<u32, Outcome> {
+fn parse_positive_u32(flag: &str, raw: &str) -> Result<std::num::NonZeroU32, Outcome> {
     if raw.starts_with('-') {
         return Err(usage(format!(
             "{flag} must be ≥ 1; got negative value: {raw}"
@@ -136,10 +136,7 @@ fn parse_positive_u32(flag: &str, raw: &str) -> Result<u32, Outcome> {
     let n: u32 = raw
         .parse()
         .map_err(|_| usage(format!("{flag}: not an integer: {raw}")))?;
-    if n == 0 {
-        return Err(usage(format!("{flag} must be ≥ 1; got 0")));
-    }
-    Ok(n)
+    std::num::NonZeroU32::new(n).ok_or_else(|| usage(format!("{flag} must be ≥ 1; got 0")))
 }
 
 fn parse_args() -> Result<Args, Outcome> {
@@ -151,8 +148,8 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut target: Option<ReviewTarget> = None;
     let mut level = CodexReasoningLevel::Low;
     let mut ceiling = CodexReasoningLevel::Xhigh;
-    let mut n: u32 = 3;
-    let mut max_iter: u32 = 50;
+    let mut n: std::num::NonZeroU32 = std::num::NonZeroU32::new(3).expect("3 is non-zero");
+    let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut state_root: Option<PathBuf> = None;
     let mut codex_bin: PathBuf = PathBuf::from("codex");
     let mut fresh = false;
@@ -423,7 +420,7 @@ fn run_session(args: Args) -> Outcome {
         repo_id: repo_id.clone(),
         target: args.target.clone(),
         start_level: args.level,
-        batch_size: args.n,
+        batch_size: args.n.get(),
         fresh: args.fresh,
         now: None,
     }) {
@@ -446,7 +443,7 @@ fn run_session(args: Args) -> Outcome {
     };
 
     let level = current_level;
-    let n = args.n;
+    let n = args.n.get();
     let observe_target = args.target.clone();
     let observe_repo_id = repo_id.clone();
     let observe = move |_r: &RepoId, _t: &ReviewTarget| {

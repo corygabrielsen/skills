@@ -58,7 +58,7 @@ struct Args {
     /// in input order. Each pair is driven by its own `run_loop`
     /// (sequentially in this stage; parallelized later).
     suite: Vec<(RepoSlug, PullRequestNumber)>,
-    max_iter: u32,
+    max_iter: std::num::NonZeroU32,
     status_comment: bool,
     state_root: Option<PathBuf>,
     trace: Option<PathBuf>,
@@ -84,7 +84,7 @@ fn parse_args() -> Result<Args, Outcome> {
     }
 
     let mut mode = Mode::Loop;
-    let mut max_iter: u32 = 50;
+    let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
     let mut trace: Option<PathBuf> = None;
@@ -124,8 +124,9 @@ fn parse_args() -> Result<Args, Outcome> {
                 };
                 // Distinguish three rejection cases for actionable error
                 // messages: negative (sign-prefix check), non-numeric
-                // (parse failure of remaining cases), and zero (validated
-                // after parse).
+                // (parse failure), and zero (parsed but invalid).
+                // The validated value flows out as `NonZeroU32` so the
+                // runner's "iter 1 always runs" invariant is structural.
                 if v.starts_with('-') {
                     return Err(usage(&format!(
                         "--max-iter must be ≥ 1; got negative value: {v}"
@@ -134,9 +135,9 @@ fn parse_args() -> Result<Args, Outcome> {
                 let Ok(n) = v.parse::<u32>() else {
                     return Err(usage(&format!("--max-iter: not an integer: {v}")));
                 };
-                if n == 0 {
+                let Some(n) = std::num::NonZeroU32::new(n) else {
                     return Err(usage("--max-iter must be ≥ 1; got 0"));
-                }
+                };
                 max_iter = n;
             }
             "--trace" => {

@@ -76,7 +76,7 @@ struct Args {
 /// anywhere (including after a malformed `--max-iter` etc.), usage
 /// is printed to stdout and the process exits 0. This matches the
 /// SKILL.md promise that `--help` is honored regardless of position.
-fn parse_args() -> Result<Args, Outcome> {
+fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
     // Pre-scan: --help wins over any other parse failure.
     if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
         print_usage(&mut std::io::stdout());
@@ -219,7 +219,9 @@ fn parse_args() -> Result<Args, Outcome> {
 ///
 /// Errors map to `Outcome::UsageError` so the parser path stays
 /// total-over-Argv.
-fn parse_suite(positional: &[String]) -> Result<Vec<(RepoSlug, PullRequestNumber)>, Outcome> {
+fn parse_suite(
+    positional: &[String],
+) -> Result<Vec<(RepoSlug, PullRequestNumber)>, ooda_core::SingleLineString> {
     if positional.is_empty() {
         return Err(usage(
             "no PRs specified; expected <owner/repo>? <pr>+ (',' <owner/repo>? <pr>+)*",
@@ -311,8 +313,14 @@ fn infer_cwd_slug() -> Result<RepoSlug, String> {
     RepoSlug::parse(trimmed).map_err(|e| format!("cwd slug parse from gh stdout {trimmed:?}: {e}"))
 }
 
-fn usage(msg: &str) -> Outcome {
-    Outcome::usage_error(msg)
+/// Construct a parser-stage usage diagnostic. Typed as
+/// `SingleLineString` (not `Outcome`) so `parse_args` can return
+/// `Result<Args, SingleLineString>` — the call site lifts the
+/// message into both `Outcome::UsageError` (for stderr) and
+/// `MultiOutcome::UsageError` (for the suite-level exit code)
+/// without a runtime `unreachable!()` on a `match Outcome`.
+fn usage(msg: &str) -> ooda_core::SingleLineString {
+    msg.into()
 }
 
 fn main() -> ExitCode {
@@ -376,21 +384,17 @@ fn main() -> ExitCode {
             }
             multi
         }
-        Err(usage_outcome) => {
-            // Render the UsageError variant block to stderr (header
-            // + usage text) before exiting. The parser path's typed
-            // `Outcome::UsageError` carries the diagnostic; we lift
-            // it to the suite boundary as `MultiOutcome::UsageError`
-            // for exit-code symmetry, but keep the existing
-            // `render_outcome` formatting on stderr.
-            render_outcome(&mut std::io::stderr(), &usage_outcome);
-            let msg = match &usage_outcome {
-                Outcome::UsageError(s) => s.clone(),
-                _ => unreachable!(
-                    "parse_args returns Outcome::UsageError on the Err path; got {usage_outcome:?}"
-                ),
-            };
-            MultiOutcome::UsageError(msg)
+        Err(usage_msg) => {
+            // `parse_args` returns the diagnostic message directly
+            // (typed `SingleLineString`); lift it into the per-binary
+            // `Outcome::UsageError` for stderr formatting and into
+            // `MultiOutcome::UsageError` for the suite-level exit
+            // code. No `match` on `Outcome` is needed — the
+            // structural narrowing eliminates the prior
+            // `unreachable!()`.
+            let outcome: Outcome = Outcome::UsageError(usage_msg.clone());
+            render_outcome(&mut std::io::stderr(), &outcome);
+            MultiOutcome::UsageError(usage_msg)
         }
     };
     ExitCode::from(multi.exit_code())

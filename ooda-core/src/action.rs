@@ -41,6 +41,32 @@ pub struct Action<K> {
     pub blocker: BlockerKey,
 }
 
+/// The handoff projection of an [`Action`] — the payload of
+/// `Outcome::HandoffAgent` / `Outcome::HandoffHuman` and
+/// `DecisionHalt::AgentNeeded` / `HumanNeeded`.
+///
+/// Structurally, this is `Action<K>` with the `effect` field
+/// replaced by a direct `prompt: HandoffPrompt`. The Agent-vs-
+/// Human distinction is conveyed by which enum variant wraps
+/// the value (`HandoffAgent` vs `HandoffHuman`); the inner
+/// shape itself doesn't carry the distinction.
+///
+/// Replacing `Action<K>`'s `effect` with `prompt` makes "this
+/// halt variant carries a prompt" structurally true — there's
+/// no `match` on a sum type to discriminate Logged-vs-Prompt or
+/// Full/Wait/Agent/Human. Decorators that previously had to
+/// `match action.effect { Human { prompt } => prompt, _ =>
+/// unreachable!() }` now just access `handoff_action.prompt`
+/// directly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HandoffAction<K> {
+    pub kind: K,
+    pub prompt: HandoffPrompt,
+    pub target_effect: TargetEffect,
+    pub urgency: Urgency,
+    pub blocker: BlockerKey,
+}
+
 /// What dispatches the action AND the human-readable payload that
 /// goes with it. The four variants are the diagonal of the
 /// Cartesian product `Automation × Payload` — the only reachable

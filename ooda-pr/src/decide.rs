@@ -65,14 +65,52 @@ pub(crate) fn decide_from_candidates(candidates: Vec<Action>, lifecycle: PrState
 }
 
 fn classify(action: Action) -> Decision {
-    // Match on a borrow of `effect` so we can move `action` into the
-    // resulting variant. The four `ActionEffect` variants partition
-    // the action space into "loop drives it" (Full/Wait → Execute)
-    // and "external resolver needed" (Agent/Human → Halt).
-    match &action.effect {
-        ActionEffect::Full { .. } | ActionEffect::Wait { .. } => Decision::Execute(action),
-        ActionEffect::Agent { .. } => Decision::Halt(DecisionHalt::AgentNeeded(action)),
-        ActionEffect::Human { .. } => Decision::Halt(DecisionHalt::HumanNeeded(action)),
+    // The four `ActionEffect` variants partition the action space
+    // into "loop drives it" (Full/Wait → Execute) and "external
+    // resolver needed" (Agent/Human → Halt). Handoff variants
+    // project to `HandoffAction` here so the prompt becomes a
+    // top-level field of the halt's payload — no
+    // `match action.effect` needed at decorator sites.
+    let action::Action {
+        kind,
+        effect,
+        target_effect,
+        urgency,
+        blocker,
+    } = action;
+    match effect {
+        ActionEffect::Full { log } => Decision::Execute(action::Action {
+            kind,
+            effect: ActionEffect::Full { log },
+            target_effect,
+            urgency,
+            blocker,
+        }),
+        ActionEffect::Wait { interval, log } => Decision::Execute(action::Action {
+            kind,
+            effect: ActionEffect::Wait { interval, log },
+            target_effect,
+            urgency,
+            blocker,
+        }),
+        ActionEffect::Agent { prompt } => {
+            Decision::Halt(DecisionHalt::AgentNeeded(ooda_core::HandoffAction {
+                kind,
+                prompt,
+                target_effect,
+                urgency,
+                blocker,
+            }))
+        }
+        ActionEffect::Human { prompt } => {
+            Decision::Halt(DecisionHalt::HumanNeeded(ooda_core::HandoffAction {
+                kind,
+                prompt,
+                target_effect,
+                urgency,
+                blocker,
+            }))
+        }
     }
 }
 

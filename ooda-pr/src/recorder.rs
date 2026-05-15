@@ -290,14 +290,31 @@ impl Recorder {
 
             inner.copy_latest("state.json", &oriented_ref)?;
             inner.copy_latest("decision.json", &decision_ref)?;
-            if let Some(action) = decision_action(decision) {
-                let action_ref = inner.write_json_artifact(
+            // Serialize whichever payload the decision carries
+            // (Action for Execute / Stuck-equivalents; HandoffAction
+            // for AgentNeeded/HumanNeeded). Both implement Serialize
+            // with their own schema; downstream tooling discriminates
+            // by the surrounding decision-projection record.
+            let action_ref = match decision {
+                Decision::Execute(action) => Some(inner.write_json_artifact(
                     Some(iteration),
                     "action.json",
                     action,
                     "application/json",
-                )?;
-                inner.copy_latest("action.json", &action_ref)?;
+                )?),
+                Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(handoff))
+                | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(handoff)) => {
+                    Some(inner.write_json_artifact(
+                        Some(iteration),
+                        "action.json",
+                        handoff,
+                        "application/json",
+                    )?)
+                }
+                Decision::Halt(_) => None,
+            };
+            if let Some(action_ref) = &action_ref {
+                inner.copy_latest("action.json", action_ref)?;
             } else {
                 inner.remove_latest("action.json")?;
             }
@@ -716,11 +733,11 @@ impl Inner {
     }
 
     fn write_blockers_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
-        let body = match decision_action(decision) {
-            Some(action) => format!(
+        let body = match decision_payload(decision) {
+            Some(p) => format!(
                 "# Blockers\n\n- `{}` via `{}`\n",
-                action.blocker,
-                action.kind.name()
+                p.blocker(),
+                p.kind_name()
             ),
             None => "# Blockers\n\nNo current blocker.\n".to_string(),
         };
@@ -729,13 +746,13 @@ impl Inner {
     }
 
     fn write_next_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
-        let body = match decision_action(decision) {
-            Some(action) => format!(
-                "# Next\n\n{}\n\n- action: `{}`\n- effect: `{:?}`\n- blocker: `{}`\n",
-                action.rendered_payload(),
-                action.kind.name(),
-                action.effect,
-                action.blocker,
+        let body = match decision_payload(decision) {
+            Some(p) => format!(
+                "# Next\n\n{}\n\n- action: `{}`\n- effect: `{}`\n- blocker: `{}`\n",
+                p.rendered(),
+                p.kind_name(),
+                p.effect_debug(),
+                p.blocker(),
             ),
             None => "# Next\n\nNo action selected.\n".to_string(),
         };
@@ -963,12 +980,56 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-fn decision_action(decision: &Decision) -> Option<&Action> {
+/// Projection over a `Decision`'s carried payload. `Execute` and
+/// the stall/cap halts carry full `Action`s; the handoff halts
+/// carry `HandoffAction`s (a typed projection that drops the
+/// `effect` field and hoists `prompt` to the top level). Callers
+/// that only need the cross-cutting fields (kind, blocker) use
+/// `as_kind_and_blocker`; renderers that need the
+/// payload-specific bits match the variants.
+enum DecisionPayload<'a> {
+    Mechanical(&'a Action),
+    Handoff(&'a ooda_core::HandoffAction<crate::decide::action::ActionKind>),
+}
+
+impl<'a> DecisionPayload<'a> {
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Mechanical(a) => a.kind.name(),
+            Self::Handoff(h) => h.kind.name(),
+        }
+    }
+    fn blocker(&self) -> &ooda_core::BlockerKey {
+        match self {
+            Self::Mechanical(a) => &a.blocker,
+            Self::Handoff(h) => &h.blocker,
+        }
+    }
+    fn rendered(&self) -> String {
+        match self {
+            Self::Mechanical(a) => a.rendered_payload(),
+            Self::Handoff(h) => h.prompt.to_string(),
+        }
+    }
+    /// Debug-form "effect" string — for Mechanical it's the
+    /// `ActionEffect` Debug; for Handoff there's no effect, so we
+    /// surface the handoff automation kind based on the halt
+    /// variant. Callers that need precise discrimination should
+    /// match the underlying `Decision::Halt(DecisionHalt::*)`.
+    fn effect_debug(&self) -> String {
+        match self {
+            Self::Mechanical(a) => format!("{:?}", a.effect),
+            Self::Handoff(_) => "Handoff".to_string(),
+        }
+    }
+}
+
+fn decision_payload(decision: &Decision) -> Option<DecisionPayload<'_>> {
     match decision {
-        Decision::Execute(action) => Some(action),
-        Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(action))
-        | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(action)) => {
-            Some(action)
+        Decision::Execute(a) => Some(DecisionPayload::Mechanical(a)),
+        Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(h))
+        | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(h)) => {
+            Some(DecisionPayload::Handoff(h))
         }
         Decision::Halt(_) => None,
     }
@@ -982,11 +1043,11 @@ fn decision_summary(decision: &Decision) -> String {
             crate::decide::decision::DecisionHalt::Terminal(t) => {
                 format!("halt terminal {t:?}")
             }
-            crate::decide::decision::DecisionHalt::AgentNeeded(action) => {
-                format!("handoff agent {}", action_summary(action))
+            crate::decide::decision::DecisionHalt::AgentNeeded(handoff) => {
+                format!("handoff agent {}", handoff_action_summary(handoff))
             }
-            crate::decide::decision::DecisionHalt::HumanNeeded(action) => {
-                format!("handoff human {}", action_summary(action))
+            crate::decide::decision::DecisionHalt::HumanNeeded(handoff) => {
+                format!("handoff human {}", handoff_action_summary(handoff))
             }
         },
     }
@@ -1005,15 +1066,15 @@ fn decision_projection(decision: &Decision) -> Value {
             crate::decide::decision::DecisionHalt::Terminal(t) => {
                 json!({ "type": "halt", "halt": "terminal", "terminal": format!("{t:?}") })
             }
-            crate::decide::decision::DecisionHalt::AgentNeeded(action) => json!({
+            crate::decide::decision::DecisionHalt::AgentNeeded(handoff) => json!({
                 "type": "halt",
                 "halt": "agent_needed",
-                "action": action_projection(action),
+                "action": handoff_action_projection(handoff),
             }),
-            crate::decide::decision::DecisionHalt::HumanNeeded(action) => json!({
+            crate::decide::decision::DecisionHalt::HumanNeeded(handoff) => json!({
                 "type": "halt",
                 "halt": "human_needed",
-                "action": action_projection(action),
+                "action": handoff_action_projection(handoff),
             }),
         },
     }
@@ -1035,6 +1096,24 @@ fn action_projection(action: &Action) -> Value {
         "urgency": format!("{:?}", action.urgency),
         "blocker": action.blocker.to_string(),
         "effect": &action.effect,
+    })
+}
+
+fn handoff_action_summary(
+    handoff: &ooda_core::HandoffAction<crate::decide::action::ActionKind>,
+) -> String {
+    format!("{} blocker: {}", handoff.kind.name(), handoff.blocker,)
+}
+
+fn handoff_action_projection(
+    handoff: &ooda_core::HandoffAction<crate::decide::action::ActionKind>,
+) -> Value {
+    json!({
+        "kind": handoff.kind.name(),
+        "target_effect": format!("{:?}", handoff.target_effect),
+        "urgency": format!("{:?}", handoff.urgency),
+        "blocker": handoff.blocker.to_string(),
+        "prompt": &handoff.prompt,
     })
 }
 

@@ -16,7 +16,7 @@
 //! Argument-parse and main-routine variants (`UsageError`,
 //! `Paused`, `DoneClosed`) are constructed directly.
 
-use crate::action::Action;
+use crate::action::{Action, HandoffAction};
 use crate::decision::{Decision, DecisionHalt, HaltReason, Terminal};
 use crate::exit_code::ExitCode;
 use crate::single_line_string::SingleLineString;
@@ -44,15 +44,17 @@ pub enum Outcome<K> {
     /// [`Self::StuckRepeated`].
     StuckCapReached(Box<Action<K>>),
     /// Decide selected an action requiring a human. Carries the
-    /// action; `act` did not run. Boxed; see [`Self::StuckRepeated`].
-    HandoffHuman(Box<Action<K>>),
+    /// handoff projection; `act` did not run. Boxed; see
+    /// [`Self::StuckRepeated`].
+    HandoffHuman(Box<HandoffAction<K>>),
     /// Inspect-only. Decide selected an `Execute(action)`; the loop
     /// would have run it, inspect halts before acting. Boxed; see
     /// [`Self::StuckRepeated`].
     WouldAdvance(Box<Action<K>>),
     /// Decide selected an action requiring an agent. Carries the
-    /// action; `act` did not run. Boxed; see [`Self::StuckRepeated`].
-    HandoffAgent(Box<Action<K>>),
+    /// handoff projection; `act` did not run. Boxed; see
+    /// [`Self::StuckRepeated`].
+    HandoffAgent(Box<HandoffAction<K>>),
     /// Caught external failure (subprocess, network, IO). The
     /// [`SingleLineString`] payload is for human triage; the
     /// no-newlines invariant is enforced by the type so the
@@ -163,6 +165,16 @@ mod tests {
         }
     }
 
+    fn dummy_handoff() -> crate::action::HandoffAction<K> {
+        crate::action::HandoffAction {
+            kind: K,
+            prompt: crate::handoff_prompt::HandoffPrompt::new("h"),
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingHuman,
+            blocker: BlockerKey::tag("t"),
+        }
+    }
+
     #[test]
     fn outcome_maps_to_matching_exit_code_variant() {
         assert_eq!(
@@ -175,11 +187,11 @@ mod tests {
             ExitCode::WouldAdvance
         );
         assert_eq!(
-            Outcome::HandoffHuman(Box::new(dummy())).exit_code(),
+            Outcome::HandoffHuman(Box::new(dummy_handoff())).exit_code(),
             ExitCode::HandoffHuman
         );
         assert_eq!(
-            Outcome::HandoffAgent(Box::new(dummy())).exit_code(),
+            Outcome::HandoffAgent(Box::new(dummy_handoff())).exit_code(),
             ExitCode::HandoffAgent
         );
         assert_eq!(Outcome::<K>::DoneAborted.exit_code(), ExitCode::DoneAborted);
@@ -228,11 +240,15 @@ mod tests {
     #[test]
     fn halt_reason_maps_handoffs() {
         assert!(matches!(
-            Outcome::<K>::from(HaltReason::Decision(DecisionHalt::AgentNeeded(dummy()))),
+            Outcome::<K>::from(HaltReason::Decision(DecisionHalt::AgentNeeded(
+                dummy_handoff()
+            ))),
             Outcome::HandoffAgent(_)
         ));
         assert!(matches!(
-            Outcome::<K>::from(HaltReason::Decision(DecisionHalt::HumanNeeded(dummy()))),
+            Outcome::<K>::from(HaltReason::Decision(DecisionHalt::HumanNeeded(
+                dummy_handoff()
+            ))),
             Outcome::HandoffHuman(_)
         ));
     }
@@ -306,15 +322,24 @@ mod tests {
 
     fn outcome_serialization_golden(o: &Outcome<K>) -> serde_json::Value {
         use serde_json::json;
-        // The Action payload for every variant that carries one is
-        // the same dummy() — only the OUTER tag/wrapping shape
-        // differs across variants. dummy_action_json captures that
-        // canonical inner shape so the variant goldens stay short.
+        // Mechanical variants (Stuck*, WouldAdvance) carry a full
+        // `Action` with an `effect` field; handoff variants carry a
+        // `HandoffAction` with a top-level `prompt` field instead
+        // (the prompt is a direct member, not nested inside an
+        // `ActionEffect` enum). These two inner shapes capture the
+        // canonical serde output so the variant goldens stay short.
         let dummy_action_json = json!({
             "kind": null,
             "effect": {"Full": {"log": "x"}},
             "target_effect": "Blocks",
             "urgency": "BlockingFix",
+            "blocker": "t",
+        });
+        let dummy_handoff_json = json!({
+            "kind": null,
+            "prompt": {"headline": "h", "sections": []},
+            "target_effect": "Blocks",
+            "urgency": "BlockingHuman",
             "blocker": "t",
         });
         match o {
@@ -328,8 +353,8 @@ mod tests {
             Outcome::StuckRepeated(_) => json!({"StuckRepeated": dummy_action_json}),
             Outcome::StuckCapReached(_) => json!({"StuckCapReached": dummy_action_json}),
             Outcome::WouldAdvance(_) => json!({"WouldAdvance": dummy_action_json}),
-            Outcome::HandoffHuman(_) => json!({"HandoffHuman": dummy_action_json}),
-            Outcome::HandoffAgent(_) => json!({"HandoffAgent": dummy_action_json}),
+            Outcome::HandoffHuman(_) => json!({"HandoffHuman": dummy_handoff_json}),
+            Outcome::HandoffAgent(_) => json!({"HandoffAgent": dummy_handoff_json}),
             // Tuple variants wrapping a SingleLineString serialize
             // as `{"VariantName": "msg"}` — SingleLineString
             // serializes transparently as a String.
@@ -349,8 +374,8 @@ mod tests {
             Outcome::StuckRepeated(Box::new(dummy())),
             Outcome::StuckCapReached(Box::new(dummy())),
             Outcome::WouldAdvance(Box::new(dummy())),
-            Outcome::HandoffHuman(Box::new(dummy())),
-            Outcome::HandoffAgent(Box::new(dummy())),
+            Outcome::HandoffHuman(Box::new(dummy_handoff())),
+            Outcome::HandoffAgent(Box::new(dummy_handoff())),
             Outcome::BinaryError("err".into()),
             Outcome::UsageError("bad flag".into()),
         ]

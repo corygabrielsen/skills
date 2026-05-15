@@ -157,6 +157,16 @@ mod tests {
         }
     }
 
+    fn dummy_handoff() -> ooda_core::HandoffAction<ActionKind> {
+        ooda_core::HandoffAction {
+            kind: ActionKind::RequestApproval,
+            prompt: ooda_core::HandoffPrompt::new("h"),
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingHuman,
+            blocker: BlockerKey::tag("not-approved"),
+        }
+    }
+
     fn record(s: &str, n: u64, o: Outcome) -> ProcessOutcome {
         ProcessOutcome {
             slug: slug(s),
@@ -236,7 +246,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::HandoffHuman(Box::new(dummy_action())),
+            Outcome::HandoffHuman(Box::new(dummy_handoff())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::HandoffHuman);
     }
@@ -246,7 +256,7 @@ mod tests {
         let m = MultiOutcome::Bundle(vec![record(
             "a/b",
             1,
-            Outcome::HandoffAgent(Box::new(dummy_action())),
+            Outcome::HandoffAgent(Box::new(dummy_handoff())),
         )]);
         assert_eq!(m.exit_code(), ExitCode::HandoffAgent);
     }
@@ -260,7 +270,7 @@ mod tests {
     #[test]
     fn binary_error_beats_handoff_agent() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::HandoffAgent(Box::new(dummy_action()))),
+            record("a/b", 1, Outcome::HandoffAgent(Box::new(dummy_handoff()))),
             record("a/b", 2, Outcome::BinaryError("oops".into())),
         ]);
         assert_eq!(m.exit_code(), ExitCode::BinaryError);
@@ -269,8 +279,8 @@ mod tests {
     #[test]
     fn handoff_agent_beats_handoff_human() {
         let m = MultiOutcome::Bundle(vec![
-            record("a/b", 1, Outcome::HandoffHuman(Box::new(dummy_action()))),
-            record("a/b", 2, Outcome::HandoffAgent(Box::new(dummy_action()))),
+            record("a/b", 1, Outcome::HandoffHuman(Box::new(dummy_handoff()))),
+            record("a/b", 2, Outcome::HandoffAgent(Box::new(dummy_handoff()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::HandoffAgent);
     }
@@ -279,7 +289,7 @@ mod tests {
     fn handoff_human_beats_stuck_cap_reached() {
         let m = MultiOutcome::Bundle(vec![
             record("a/b", 1, Outcome::StuckCapReached(Box::new(dummy_action()))),
-            record("a/b", 2, Outcome::HandoffHuman(Box::new(dummy_action()))),
+            record("a/b", 2, Outcome::HandoffHuman(Box::new(dummy_handoff()))),
         ]);
         assert_eq!(m.exit_code(), ExitCode::HandoffHuman);
     }
@@ -321,8 +331,8 @@ mod tests {
             record("a/b", 4, Outcome::WouldAdvance(Box::new(dummy_action()))),
             record("a/b", 5, Outcome::StuckRepeated(Box::new(dummy_action()))),
             record("a/b", 6, Outcome::StuckCapReached(Box::new(dummy_action()))),
-            record("a/b", 7, Outcome::HandoffHuman(Box::new(dummy_action()))),
-            record("a/b", 8, Outcome::HandoffAgent(Box::new(dummy_action()))),
+            record("a/b", 7, Outcome::HandoffHuman(Box::new(dummy_handoff()))),
+            record("a/b", 8, Outcome::HandoffAgent(Box::new(dummy_handoff()))),
             record("a/b", 9, Outcome::BinaryError("e".into())),
         ]);
         assert_eq!(m.exit_code(), ExitCode::BinaryError);

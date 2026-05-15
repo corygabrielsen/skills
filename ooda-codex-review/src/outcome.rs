@@ -57,6 +57,16 @@ mod tests {
         }
     }
 
+    fn dummy_handoff() -> ooda_core::HandoffAction<ActionKind> {
+        ooda_core::HandoffAction {
+            kind: ActionKind::TestsFailedTriage,
+            prompt: ooda_core::HandoffPrompt::new("h"),
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingHuman,
+            blocker: BlockerKey::tag("address-failed"),
+        }
+    }
+
     #[test]
     fn outcome_maps_to_matching_exit_code_variant() {
         use ooda_core::ExitCode;
@@ -67,11 +77,11 @@ mod tests {
             ExitCode::WouldAdvance
         );
         assert_eq!(
-            Outcome::HandoffHuman(Box::new(dummy_action())).exit_code(),
+            Outcome::HandoffHuman(Box::new(dummy_handoff())).exit_code(),
             ExitCode::HandoffHuman
         );
         assert_eq!(
-            Outcome::HandoffAgent(Box::new(dummy_action())).exit_code(),
+            Outcome::HandoffAgent(Box::new(dummy_handoff())).exit_code(),
             ExitCode::HandoffAgent
         );
         assert_eq!(Outcome::DoneAborted.exit_code(), ExitCode::DoneAborted);
@@ -121,13 +131,13 @@ mod tests {
     fn halt_reason_maps_handoffs() {
         assert!(matches!(
             Outcome::from(HaltReason::Decision(DecisionHalt::AgentNeeded(
-                dummy_action()
+                dummy_handoff()
             ))),
             Outcome::HandoffAgent(_)
         ));
         assert!(matches!(
             Outcome::from(HaltReason::Decision(DecisionHalt::HumanNeeded(
-                dummy_action()
+                dummy_handoff()
             ))),
             Outcome::HandoffHuman(_)
         ));

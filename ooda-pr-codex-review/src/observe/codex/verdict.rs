@@ -3,13 +3,22 @@
 //!
 //! `codex review` streams interleaved `thinking`/`exec`/`codex`
 //! blocks. The actual review result is the LAST block whose first
-//! line is `codex` (exact match — not a substring).
+//! line is `codex` (exact match — not a substring). The polling
+//! protocol uses the presence of that marker line to detect
+//! completion (loop-codex-review/SKILL.md → "Reading Review
+//! Results").
 
 use serde::Serialize;
 
 /// Extract the verdict block — everything after the LAST line that
 /// is exactly `codex` (no surrounding whitespace, no suffix).
-/// Returns `None` when the marker is absent.
+/// Returns `None` when the marker is absent (review still streaming
+/// thinking/exec output).
+///
+/// Mirrors the reference `awk` from loop-codex-review SKILL.md:
+/// `awk '/^codex$/{found=1; block=""; next} found{block=block $0
+/// "\n"} END{printf "%s", block}'` — last marker wins, body is
+/// everything after it.
 pub fn extract_verdict(log: &str) -> Option<String> {
     let mut after_last_marker: Option<usize> = None;
     let mut offset = 0usize;
@@ -27,13 +36,17 @@ pub fn extract_verdict(log: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VerdictClass {
+    /// Empty body or "No issues found" — the review is clean.
     Clean,
+    /// Body contains issue descriptions; needs an AddressBatch
+    /// halt to verify and fix.
     HasIssues,
 }
 
 /// Classify an extracted verdict body. Conservative: anything not
 /// recognized as an explicit "clean" phrasing is treated as
-/// has-issues.
+/// has-issues. The decide layer can defer to LLM disambiguation
+/// when the heuristic returns the wrong answer (rare in practice).
 pub fn classify(verdict: &str) -> VerdictClass {
     let body = verdict.trim();
     if body.is_empty() {
@@ -55,8 +68,16 @@ pub fn classify(verdict: &str) -> VerdictClass {
         || normalized.contains("did not identify any")
         || normalized.contains("did not find actionable")
         || normalized.contains("did not find correctness")
+        || normalized.contains("i found no correctness issues")
+        || normalized.contains("no prioritized, actionable correctness issues")
+        || normalized.contains("no prioritized, actionable correctness issue")
+        || normalized.contains("no discrete, actionable correctness issues")
+        || normalized.contains("no discrete, actionable correctness issue")
+        || normalized.contains("no discrete correctness")
         || normalized.contains("no discrete regression")
         || normalized.contains("no discrete correctness issues")
+        || normalized.contains("appear to preserve existing restart")
+        || (normalized.contains("appears to preserve") && normalized.contains("checks pass"))
         || normalized.contains("without introducing regressions")
         || normalized.contains("without introducing an obvious")
         || normalized.contains("without introducing an evident")
@@ -79,6 +100,7 @@ fn has_issue_markers(normalized: &str) -> bool {
         || normalized.contains("\n[p")
         || normalized.starts_with("[p")
         || normalized.contains(" but ")
+        || normalized.contains(" however ")
 }
 
 #[cfg(test)]
@@ -104,14 +126,76 @@ mod tests {
     }
 
     #[test]
+    fn extract_does_not_match_codex_substring() {
+        let log = "codex review running\nfoo\ncodex starting\n";
+        assert_eq!(extract_verdict(log), None);
+    }
+
+    #[test]
+    fn extract_does_not_match_indented_codex() {
+        let log = "  codex\ncodex too\n";
+        assert_eq!(extract_verdict(log), None);
+    }
+
+    #[test]
+    fn extract_handles_marker_without_trailing_newline() {
+        let log = "thinking\ncodex";
+        assert_eq!(extract_verdict(log).as_deref(), Some(""));
+    }
+
+    #[test]
     fn classify_empty_is_clean() {
         assert_eq!(classify(""), VerdictClass::Clean);
+        assert_eq!(classify("   \n\t  "), VerdictClass::Clean);
     }
 
     #[test]
     fn classify_explicit_no_issues_phrasings_are_clean() {
         assert_eq!(classify("No issues found"), VerdictClass::Clean);
+        assert_eq!(classify("\nNo issues found.\n"), VerdictClass::Clean);
+        assert_eq!(classify("NO ISSUES"), VerdictClass::Clean);
         assert_eq!(classify("Looks good."), VerdictClass::Clean);
+    }
+
+    #[test]
+    fn classify_review_comment_is_has_issues() {
+        let body = "Review comment: src/foo.rs:42\nUse a parameterized query.\n";
+        assert_eq!(classify(body), VerdictClass::HasIssues);
+    }
+
+    #[test]
+    fn classify_long_body_with_clean_phrase_is_has_issues() {
+        let body = "Earlier passes returned no issues found, but this iteration\n\
+                    src/foo.rs:42 — null deref possible\n";
+        assert_eq!(classify(body), VerdictClass::HasIssues);
+    }
+
+    #[test]
+    fn classify_common_long_clean_phrasings_are_clean() {
+        assert_eq!(
+            classify("I did not find any discrete regressions in this change."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("No actionable findings. The patch looks consistent."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("I did not identify any correctness issues."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("No actionable correctness issues were found in the diff."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The TypeScript replacement appears to preserve the simultaneous deploy workflow \
+                 and the supporting workflow/docs updates are consistent. TypeScript compilation \
+                 and formatting checks pass for the changed scripts."
+            ),
+            VerdictClass::Clean
+        );
     }
 
     #[test]
@@ -175,10 +259,51 @@ mod tests {
     }
 
     #[test]
-    fn classify_review_comment_is_has_issues() {
+    fn classify_clean_no_discrete_issue_phrasings_are_clean() {
         assert_eq!(
-            classify("Review comment: src/foo.rs:42\nUse a parameterized query.\n"),
-            VerdictClass::HasIssues
+            classify(
+                "I found no discrete correctness, safety, or integration issues introduced by this diff. The new deploy log streaming path preserves SSM fallback behavior and the TypeScript changes typecheck under the repository lint command."
+            ),
+            VerdictClass::Clean
         );
+        assert_eq!(
+            classify(
+                "I found no discrete, actionable correctness issues in the diff. The new deploy-log streaming path preserves the existing SSM fallback behavior and the TypeScript/shell changes appear consistent with the existing deployment flow."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "No prioritized, actionable correctness issues were found in the diff against master. The shell and TypeScript changes compile/parse cleanly and the deploy log fallback paths appear consistent with existing behavior."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "I found no correctness issues in the diff. The changes type-check, lint, and tests pass locally."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes appear to preserve existing restart/convergence behavior while adding deploy log streaming with SSM fallback and non-blocking CloudWatch configuration updates."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_phrase_with_review_markers_is_has_issues() {
+        let body = "I did not find any broad architectural concern.\n\
+                    Full review comments:\n\
+                    - [P2] Keep the retry timeout bounded";
+        assert_eq!(classify(body), VerdictClass::HasIssues);
+    }
+
+    #[test]
+    fn classify_preserve_phrase_with_contrast_marker_is_has_issues() {
+        let body = "The TypeScript replacement appears to preserve the deploy workflow. \
+                    However, the external health check now exits before restoring state.";
+        assert_eq!(classify(body), VerdictClass::HasIssues);
     }
 }

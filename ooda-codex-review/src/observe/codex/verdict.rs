@@ -66,8 +66,25 @@ pub fn classify(verdict: &str) -> VerdictClass {
         || normalized.contains("did not find any")
         || normalized.contains("didn't find any")
         || normalized.contains("did not identify any")
+        || normalized.contains("did not find actionable")
+        || normalized.contains("did not find correctness")
+        || normalized.contains("i found no correctness issues")
+        || normalized.contains("no prioritized, actionable correctness issues")
+        || normalized.contains("no prioritized, actionable correctness issue")
+        || normalized.contains("no discrete, actionable correctness issues")
+        || normalized.contains("no discrete, actionable correctness issue")
+        || normalized.contains("no discrete correctness")
         || normalized.contains("no discrete regression")
         || normalized.contains("no discrete correctness issues")
+        || normalized.contains("appear to preserve existing restart")
+        || (normalized.contains("appears to preserve") && normalized.contains("checks pass"))
+        || normalized.contains("without introducing regressions")
+        || normalized.contains("without introducing an obvious")
+        || normalized.contains("without introducing an evident")
+        || normalized.contains("without introducing any evident")
+        || normalized.contains("without introducing observable")
+        || normalized.contains("without introducing observable breakage")
+        || normalized.contains("without introducing observable regressions")
     {
         VerdictClass::Clean
     } else {
@@ -83,6 +100,7 @@ fn has_issue_markers(normalized: &str) -> bool {
         || normalized.contains("\n[p")
         || normalized.starts_with("[p")
         || normalized.contains(" but ")
+        || normalized.contains(" however ")
 }
 
 #[cfg(test)]
@@ -170,6 +188,108 @@ mod tests {
             classify("No actionable correctness issues were found in the diff."),
             VerdictClass::Clean
         );
+        assert_eq!(
+            classify(
+                "The TypeScript replacement appears to preserve the simultaneous deploy workflow \
+                 and the supporting workflow/docs updates are consistent. TypeScript compilation \
+                 and formatting checks pass for the changed scripts."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_observable_regression_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "The changes add the required CloudWatch Logs permission and safely improve SSM output visibility without introducing observable breakage. Type checking and tests pass."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the required CloudWatch Logs describe permission and safely surface SSM output without introducing observable regressions. Lint and tests pass for the modified repository."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the missing CloudWatch Logs permission and safely surface SSM output without introducing observable correctness regressions. Type checking passed for the GitHub scripts, and I did not find actionable bugs in the diff."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_evident_regression_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "The changes add the missing CloudWatch Logs permission and make SSM output handling safer and more observable without introducing regressions in the reviewed paths. TypeScript checking for the GitHub scripts passes."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the required CloudWatch Logs permission and make SSM/CloudWatch output safer and more useful without introducing an evident functional regression. Type checking, formatting, and diff checks pass for the touched files."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes add the needed CloudWatch Logs permission and safely surface fallback SSM output without introducing any evident correctness, security, or maintainability regressions. TypeScript compilation for the GitHub scripts succeeds."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The diff adds the missing CloudWatch Logs permission and safely falls back to terminal SSM output without introducing an obvious correctness or integration regression."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_did_not_find_issue_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "The changes are narrowly scoped to adding the required CloudWatch Logs permission and safely surfacing fallback SSM output. I did not find correctness, security, or operational issues introduced by the patch."
+            ),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_no_discrete_issue_phrasings_are_clean() {
+        assert_eq!(
+            classify(
+                "I found no discrete correctness, safety, or integration issues introduced by this diff. The new deploy log streaming path preserves SSM fallback behavior and the TypeScript changes typecheck under the repository lint command."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "I found no discrete, actionable correctness issues in the diff. The new deploy-log streaming path preserves the existing SSM fallback behavior and the TypeScript/shell changes appear consistent with the existing deployment flow."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "No prioritized, actionable correctness issues were found in the diff against master. The shell and TypeScript changes compile/parse cleanly and the deploy log fallback paths appear consistent with existing behavior."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "I found no correctness issues in the diff. The changes type-check, lint, and tests pass locally."
+            ),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify(
+                "The changes appear to preserve existing restart/convergence behavior while adding deploy log streaming with SSM fallback and non-blocking CloudWatch configuration updates."
+            ),
+            VerdictClass::Clean
+        );
     }
 
     #[test]
@@ -177,6 +297,13 @@ mod tests {
         let body = "I did not find any broad architectural concern.\n\
                     Full review comments:\n\
                     - [P2] Keep the retry timeout bounded";
+        assert_eq!(classify(body), VerdictClass::HasIssues);
+    }
+
+    #[test]
+    fn classify_preserve_phrase_with_contrast_marker_is_has_issues() {
+        let body = "The TypeScript replacement appears to preserve the deploy workflow. \
+                    However, the external health check now exits before restoring state.";
         assert_eq!(classify(body), VerdictClass::HasIssues);
     }
 }

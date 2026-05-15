@@ -370,4 +370,104 @@ mod tests {
         let low_again = mk_run_reviews(ReasoningLevel::Low, 5);
         assert_eq!(low.blocker, low_again.blocker);
     }
+
+    // ─── property test for the class invariant ──────────────────────
+    //
+    // Class invariant for `decide`: every `BatchState` variant has a
+    // deterministic outcome in the baseline state (below ceiling,
+    // all-clean verdicts in Complete). The exhaustive match in
+    // `expected_decide_behavior` is the contract. Adding a new
+    // `BatchState` variant fails to compile here until the new arm
+    // is added — which forces a decision about which Action the new
+    // state maps to.
+    //
+    // Sub-cases for Complete (at-ceiling → Terminal::Succeeded,
+    // has-issues → AddressBatch) are exercised by the scenario
+    // tests above; this property test pins the per-variant baseline.
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum DecideBaselineBehavior {
+        /// `Execute(RunReviews)` — the loop spawns the batch.
+        ExecuteRunReviews,
+        /// `Execute(AwaitReviews)` — the loop polls in-flight reviews.
+        ExecuteAwaitReviews,
+        /// `Halt(AgentNeeded(Retrospective))` — below ceiling with
+        /// all verdicts clean: hand off to retrospective synthesis.
+        HaltRetrospective,
+    }
+
+    fn expected_decide_behavior(batch_state: &BatchState) -> DecideBaselineBehavior {
+        match batch_state {
+            BatchState::NotStarted => DecideBaselineBehavior::ExecuteRunReviews,
+            BatchState::Running { .. } => DecideBaselineBehavior::ExecuteAwaitReviews,
+            // Baseline: all-clean verdicts. The has-issues sub-case
+            // is exercised by `complete_with_issues_halts_for_address_batch`.
+            BatchState::Complete { .. } => DecideBaselineBehavior::HaltRetrospective,
+        }
+    }
+
+    fn all_batch_states() -> Vec<BatchState> {
+        vec![
+            BatchState::NotStarted,
+            BatchState::Running {
+                total: 3,
+                completed: 1,
+            },
+            BatchState::Complete {
+                verdicts: vec![
+                    record(1, VerdictClass::Clean),
+                    record(2, VerdictClass::Clean),
+                    record(3, VerdictClass::Clean),
+                ],
+            },
+        ]
+    }
+
+    fn observed_decide_behavior(d: &Decision) -> DecideBaselineBehavior {
+        match d {
+            Decision::Execute(action) => match &action.kind {
+                ActionKind::RunReviews { .. } => DecideBaselineBehavior::ExecuteRunReviews,
+                ActionKind::AwaitReviews { .. } => DecideBaselineBehavior::ExecuteAwaitReviews,
+                other => {
+                    panic!("decide emitted unexpected Execute kind in baseline: {other:?}")
+                }
+            },
+            Decision::Halt(DecisionHalt::AgentNeeded(action)) => match &action.kind {
+                ActionKind::Retrospective { .. } => DecideBaselineBehavior::HaltRetrospective,
+                other => {
+                    panic!("decide emitted unexpected AgentNeeded kind in baseline: {other:?}",)
+                }
+            },
+            other => panic!("decide emitted unexpected Decision in baseline: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_property_holds_for_every_batch_state() {
+        let states = all_batch_states();
+        assert_eq!(
+            states.len(),
+            3,
+            "`all_batch_states` must include one sample per \
+             `BatchState` variant; adding a new variant requires \
+             adding both an arm in `expected_decide_behavior` AND a \
+             sample here.",
+        );
+        for batch_state in states {
+            // Below ceiling so the Complete-all-clean case lands on
+            // Retrospective, not Terminal::Succeeded.
+            let o = oriented_with_ceiling(
+                batch_state.clone(),
+                ReasoningLevel::Low,
+                ReasoningLevel::Xhigh,
+                3,
+            );
+            let actual = observed_decide_behavior(&decide(&o));
+            let expected = expected_decide_behavior(&batch_state);
+            assert_eq!(
+                actual, expected,
+                "decide contract violated for batch_state = {batch_state:?}",
+            );
+        }
+    }
 }

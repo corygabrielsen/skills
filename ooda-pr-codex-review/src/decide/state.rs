@@ -301,50 +301,113 @@ mod tests {
         assert_eq!(cs.len(), 3);
     }
 
-    #[test]
-    fn fallback_emits_human_handoff_for_blocked_merge_state() {
-        // BLOCKED with all modeled axes clean = unmodeled policy
-        // gate (deployment protection, signed commits, etc.).
-        let mut s = clean();
-        s.merge_state_status = MergeStateStatus::Blocked;
-        let cs = fallback_merge_state_blocker(&s);
-        assert_eq!(cs.len(), 1);
-        assert!(matches!(cs[0].kind, ActionKind::ResolveMergePolicy));
-        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
-        assert_eq!(cs[0].target_effect, TargetEffect::Blocks);
+    // ─── property tests for the class invariant ─────────────────────
+    //
+    // Class invariant from `fallback_merge_state_blocker`'s docs:
+    // "Every non-Clean `mergeStateStatus` must be represented" —
+    // either by another axis (Behind/Dirty/Draft/Unstable) or by the
+    // fallback itself (Blocked/HasHooks/Unknown). Clean is the only
+    // status that produces no candidate.
+    //
+    // The exhaustive match in `expected_fallback_behavior` is the
+    // contract. Adding a new `MergeStateStatus` variant fails to
+    // compile here until the new arm is added, which forces an
+    // explicit decision about which axis handles it. The sample
+    // list is length-sentineled so a forgotten sample also fails
+    // loudly.
+
+    /// What `fallback_merge_state_blocker` is contracted to emit for
+    /// a given `MergeStateStatus`. The two `Empty` cases are
+    /// distinguished only by intent (commented inline) — both must
+    /// produce zero candidates.
+    #[derive(Debug, PartialEq, Eq)]
+    enum FallbackBehavior {
+        /// Either Clean (mergeable, no blocker) or handled by another
+        /// axis (state.behind → Rebase; state.conflict → Rebase;
+        /// state.draft → MarkReady; Unstable → advisory CI surface).
+        Empty,
+        /// `Blocked` — unmodeled merge policy (deployment protection,
+        /// signed commits, custom ruleset). Hand off to a human.
+        EmitHumanResolveMergePolicy,
+        /// Transient — wait and re-observe.
+        EmitWaitForMergeability,
     }
 
-    #[test]
-    fn fallback_emits_wait_for_transient_merge_states() {
-        // HasHooks and Unknown are transient — wait, don't halt.
-        for status in [MergeStateStatus::HasHooks, MergeStateStatus::Unknown] {
-            let mut s = clean();
-            s.merge_state_status = status;
-            let cs = fallback_merge_state_blocker(&s);
-            assert_eq!(cs.len(), 1, "expected emit for {status:?}");
-            assert!(matches!(cs[0].kind, ActionKind::WaitForMergeability));
-            assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
+    /// Exhaustive over `MergeStateStatus`. The compiler enforces
+    /// that every variant has an explicit axis assignment.
+    fn expected_fallback_behavior(status: MergeStateStatus) -> FallbackBehavior {
+        match status {
+            // Clean: mergeable, no candidate needed.
+            MergeStateStatus::Clean => FallbackBehavior::Empty,
+            // Behind / Dirty / Draft: another axis fires
+            // (state.behind, Mergeable::Conflicting, state.draft).
+            MergeStateStatus::Behind => FallbackBehavior::Empty,
+            MergeStateStatus::Dirty => FallbackBehavior::Empty,
+            MergeStateStatus::Draft => FallbackBehavior::Empty,
+            // Unstable: advisory CI surface, not a hard block.
+            MergeStateStatus::Unstable => FallbackBehavior::Empty,
+            // Blocked: unmodeled merge requirement → human triage.
+            MergeStateStatus::Blocked => FallbackBehavior::EmitHumanResolveMergePolicy,
+            // Transient states: wait for GitHub to finish computing.
+            MergeStateStatus::HasHooks => FallbackBehavior::EmitWaitForMergeability,
+            MergeStateStatus::Unknown => FallbackBehavior::EmitWaitForMergeability,
+        }
+    }
+
+    fn all_merge_state_statuses() -> Vec<MergeStateStatus> {
+        vec![
+            MergeStateStatus::Behind,
+            MergeStateStatus::Blocked,
+            MergeStateStatus::Clean,
+            MergeStateStatus::Dirty,
+            MergeStateStatus::Draft,
+            MergeStateStatus::HasHooks,
+            MergeStateStatus::Unstable,
+            MergeStateStatus::Unknown,
+        ]
+    }
+
+    fn observed_fallback_behavior(state: &PullRequestState) -> FallbackBehavior {
+        let cs = fallback_merge_state_blocker(state);
+        match cs.as_slice() {
+            [] => FallbackBehavior::Empty,
+            [a] => match (&a.kind, &a.effect) {
+                (ActionKind::ResolveMergePolicy, ActionEffect::Human { .. }) => {
+                    FallbackBehavior::EmitHumanResolveMergePolicy
+                }
+                (ActionKind::WaitForMergeability, ActionEffect::Wait { .. }) => {
+                    FallbackBehavior::EmitWaitForMergeability
+                }
+                (kind, effect) => {
+                    panic!("fallback emitted unexpected (kind, effect): {kind:?}, {effect:?}",)
+                }
+            },
+            multi => panic!(
+                "fallback emitted {} candidates; expected 0 or 1",
+                multi.len()
+            ),
         }
     }
 
     #[test]
-    fn fallback_no_op_for_clean_and_handled_merge_states() {
-        // Clean is non-blocking. Behind, Dirty, Draft, Unstable
-        // are handled by other axes (state.behind, Mergeable
-        // ::Conflicting, state.draft, advisory CI). The fallback
-        // must NOT double-emit for any of them.
-        for status in [
-            MergeStateStatus::Clean,
-            MergeStateStatus::Behind,
-            MergeStateStatus::Dirty,
-            MergeStateStatus::Draft,
-            MergeStateStatus::Unstable,
-        ] {
+    fn fallback_property_holds_for_every_merge_state_status() {
+        let statuses = all_merge_state_statuses();
+        assert_eq!(
+            statuses.len(),
+            8,
+            "`all_merge_state_statuses` must include one sample per \
+             `MergeStateStatus` variant; adding a new variant requires \
+             adding both an arm in `expected_fallback_behavior` AND a \
+             sample here.",
+        );
+        for status in statuses {
             let mut s = clean();
             s.merge_state_status = status;
-            assert!(
-                fallback_merge_state_blocker(&s).is_empty(),
-                "fallback must not fire for {status:?}"
+            let actual = observed_fallback_behavior(&s);
+            let expected = expected_fallback_behavior(status);
+            assert_eq!(
+                actual, expected,
+                "fallback_merge_state_blocker contract violated for {status:?}",
             );
         }
     }

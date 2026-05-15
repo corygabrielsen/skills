@@ -83,4 +83,85 @@ mod tests {
         ));
         assert!(cs.is_empty());
     }
+
+    // ─── property test for the class invariant ──────────────────────
+    //
+    // The cursor axis's class invariant: every `CursorActivity`
+    // variant has a deterministic candidate-set fingerprint. Only
+    // `Reviewing` emits a candidate (the WaitForCursorReview); all
+    // other states are silent — Idle and Clean by intent, Reviewed
+    // because Cursor has no rerequest API (tier advancement
+    // requires a code push, which the agent does independently).
+    //
+    // The exhaustive match in `expected_cursor_axis_behavior` is
+    // the contract. Adding a new `CursorActivity` variant fails to
+    // compile here until the new arm is added.
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CursorAxisBehavior {
+        NoCandidate,
+        EmitWaitForReview,
+    }
+
+    fn expected_cursor_axis_behavior(activity: &CursorActivity) -> CursorAxisBehavior {
+        match activity {
+            // No Cursor activity recorded yet — nothing to wait on.
+            CursorActivity::Idle => CursorAxisBehavior::NoCandidate,
+            // A review is mid-flight — wait for it to finish.
+            CursorActivity::Reviewing => CursorAxisBehavior::EmitWaitForReview,
+            // Bugbot has reviewed; no rerequest API exists, so the
+            // axis stays silent. Tier advancement requires the agent
+            // to push code, which fires Bugbot automatically.
+            CursorActivity::Reviewed { .. } => CursorAxisBehavior::NoCandidate,
+            // Cursor reports a clean review with no findings.
+            CursorActivity::Clean => CursorAxisBehavior::NoCandidate,
+        }
+    }
+
+    fn all_cursor_activities() -> Vec<CursorActivity> {
+        vec![
+            CursorActivity::Idle,
+            CursorActivity::Reviewing,
+            CursorActivity::Reviewed { latest: round() },
+            CursorActivity::Clean,
+        ]
+    }
+
+    fn observed_cursor_axis_behavior(cs: &[Action]) -> CursorAxisBehavior {
+        match cs {
+            [] => CursorAxisBehavior::NoCandidate,
+            [a] if matches!(a.kind, ActionKind::WaitForCursorReview)
+                && matches!(a.effect, ActionEffect::Wait { .. }) =>
+            {
+                CursorAxisBehavior::EmitWaitForReview
+            }
+            multi => panic!(
+                "cursor axis emitted unexpected candidate set ({} items): {multi:?}",
+                multi.len()
+            ),
+        }
+    }
+
+    #[test]
+    fn cursor_axis_property_holds_for_every_activity() {
+        let activities = all_cursor_activities();
+        assert_eq!(
+            activities.len(),
+            4,
+            "`all_cursor_activities` must include one sample per \
+             `CursorActivity` variant; adding a new variant requires \
+             adding both an arm in `expected_cursor_axis_behavior` AND \
+             a sample here.",
+        );
+        for activity in activities {
+            let r = report(activity.clone(), CursorTier::Bronze);
+            let cs = candidates(&r);
+            let actual = observed_cursor_axis_behavior(&cs);
+            let expected = expected_cursor_axis_behavior(&activity);
+            assert_eq!(
+                actual, expected,
+                "cursor-axis contract violated for activity = {activity:?}",
+            );
+        }
+    }
 }

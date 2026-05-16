@@ -19,12 +19,12 @@
 //!   - `RequestCriteriaRefinement` — reserved human halt for any
 //!     future review-criteria flow.
 
-pub use ooda_core::{ActionEffect, ActionKindName, TargetEffect, Urgency};
+pub(crate) use ooda_core::{ActionEffect, ActionKindName, TargetEffect, Urgency};
 use serde::Serialize;
 
 /// Codex-review-domain `Action`. Concrete instantiation of the
 /// generic [`ooda_core::Action`] over this binary's [`ActionKind`].
-pub type Action = ooda_core::Action<ActionKind>;
+pub(crate) type Action = ooda_core::Action<ActionKind>;
 
 /// Reasoning effort level passed to `codex review` via
 /// `-c model_reasoning_effort=<level>`.

@@ -27,7 +27,7 @@ use super::gh::{GhError, encode_path_segment, gh_json};
 /// base*, not the tip of base, so they describe exactly the work a
 /// rebase would replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct MergeBaseDelta {
+pub(crate) struct MergeBaseDelta {
     /// Count of commits on base since the merge base.
     pub commits_behind: u32,
     /// Count of commits on the branch since the merge base.
@@ -103,7 +103,7 @@ struct CompareFileWire {
 /// approximate `master_files` as empty and `conflict_surface` falls
 /// back to empty as well. This is the rare path; the typical path
 /// returns the per-commit file list inline.
-pub fn fetch_merge_base_delta(
+pub(crate) fn fetch_merge_base_delta(
     slug: &RepoSlug,
     base: &BranchName,
     head: &GitCommitSha,

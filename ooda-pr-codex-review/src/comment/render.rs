@@ -37,7 +37,7 @@ fn tier_emoji(slug: &str) -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Rendered {
+pub(crate) struct Rendered {
     pub body: String,
     /// Stable key for dedup. Identical decisions on identical state
     /// produce identical keys, regardless of when the snapshot is
@@ -60,7 +60,7 @@ pub struct Rendered {
 /// tag plus decision-blocker tag. Iteration is intentionally
 /// absent — every iteration would otherwise force a re-post even
 /// when nothing structural changed.
-pub fn render(
+pub(crate) fn render(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     iteration: Option<u32>,

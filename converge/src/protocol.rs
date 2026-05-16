@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// `blocker_split.structural`. Everything else is passed through to
 /// hooks and exit.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FitnessReport {
+pub(crate) struct FitnessReport {
     pub score: f64,
     pub target: f64,
     pub actions: Vec<Action>,
@@ -45,7 +45,7 @@ pub struct FitnessReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Action {
+pub(crate) struct Action {
     pub kind: String,
     pub description: String,
     pub automation: Automation,
@@ -65,7 +65,7 @@ pub struct Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Automation {
+pub(crate) enum Automation {
     Full,
     Agent,
     Wait,
@@ -74,14 +74,14 @@ pub enum Automation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TargetEffect {
+pub(crate) enum TargetEffect {
     Advances,
     Blocks,
     Neutral,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlockerSplit {
+pub(crate) struct BlockerSplit {
     #[serde(default)]
     pub agent: Vec<String>,
     #[serde(default)]
@@ -91,12 +91,12 @@ pub struct BlockerSplit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Terminal {
+pub(crate) struct Terminal {
     pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AxisLine {
+pub(crate) struct AxisLine {
     pub name: String,
     pub emoji: String,
     pub summary: String,

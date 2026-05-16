@@ -30,7 +30,7 @@ const SCHEMA_VERSION: u32 = 1;
 static PROCESS_RECORDER: OnceLock<Mutex<Option<Recorder>>> = OnceLock::new();
 
 #[derive(Debug)]
-pub enum RecorderError {
+pub(crate) enum RecorderError {
     Io(io::Error),
     Json(serde_json::Error),
 }
@@ -60,7 +60,7 @@ impl From<serde_json::Error> for RecorderError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunMode {
+pub(crate) enum RunMode {
     Loop,
     Inspect,
 }
@@ -75,7 +75,7 @@ impl std::fmt::Display for RunMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecorderConfig {
+pub(crate) struct RecorderConfig {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
     pub mode: RunMode,
@@ -86,7 +86,7 @@ pub struct RecorderConfig {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ArtifactRef {
+pub(crate) struct ArtifactRef {
     pub path: String,
     pub blob: String,
     pub sha256: String,
@@ -95,7 +95,7 @@ pub struct ArtifactRef {
 }
 
 #[derive(Clone)]
-pub struct Recorder {
+pub(crate) struct Recorder {
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -174,7 +174,7 @@ struct EventRange {
 }
 
 impl Recorder {
-    pub fn open(cfg: RecorderConfig) -> Result<Self, RecorderError> {
+    pub(crate) fn open(cfg: RecorderConfig) -> Result<Self, RecorderError> {
         let state_root =
             ooda_core::state_root::resolve_ooda_pr_state_root(cfg.state_root.as_deref());
         let pr_root = pull_request_root(&state_root, &cfg.slug, cfg.pr);
@@ -220,30 +220,30 @@ impl Recorder {
         Ok(recorder)
     }
 
-    pub fn install_process_recorder(&self) {
+    pub(crate) fn install_process_recorder(&self) {
         let cell = PROCESS_RECORDER.get_or_init(|| Mutex::new(None));
         if let Ok(mut slot) = cell.lock() {
             *slot = Some(self.clone());
         }
     }
 
-    pub fn set_iteration(&self, iteration: Option<u32>) {
+    pub(crate) fn set_iteration(&self, iteration: Option<u32>) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.current_iteration = iteration;
         }
     }
 
-    pub fn pull_request_root(&self) -> PathBuf {
+    pub(crate) fn pull_request_root(&self) -> PathBuf {
         self.with_inner(|inner| inner.pr_root.clone())
             .unwrap_or_default()
     }
 
-    pub fn dedup_path(&self) -> PathBuf {
+    pub(crate) fn dedup_path(&self) -> PathBuf {
         self.with_inner(|inner| inner.pr_root.join("status-comment").join("dedup.json"))
             .unwrap_or_default()
     }
 
-    pub fn write_trace_line(&self, line: &str) {
+    pub(crate) fn write_trace_line(&self, line: &str) {
         self.best_effort(|inner| {
             writeln!(inner.trace_md, "{line}")?;
             if let Some(file) = inner.legacy_trace.as_mut() {
@@ -253,7 +253,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_iteration<TObs>(
+    pub(crate) fn record_iteration<TObs>(
         &self,
         iteration: u32,
         observations: &TObs,
@@ -358,7 +358,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_observe_start(&self, iteration: u32) {
+    pub(crate) fn record_observe_start(&self, iteration: u32) {
         self.best_effort(|inner| {
             inner.append_event(
                 Some(iteration),
@@ -370,7 +370,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_observe_end(&self, iteration: u32, result: Result<(), String>) {
+    pub(crate) fn record_observe_end(&self, iteration: u32, result: Result<(), String>) {
         self.best_effort(|inner| {
             let success = result.is_ok();
             let error = result.err();
@@ -392,7 +392,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_status_comment_rendered<T: Serialize>(
+    pub(crate) fn record_status_comment_rendered<T: Serialize>(
         &self,
         iteration: Option<u32>,
         rendered: &T,
@@ -415,7 +415,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_status_comment_result<T: Serialize>(
+    pub(crate) fn record_status_comment_result<T: Serialize>(
         &self,
         iteration: Option<u32>,
         result: &T,
@@ -438,7 +438,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_action_start(&self, iteration: u32, action: &Action) {
+    pub(crate) fn record_action_start(&self, iteration: u32, action: &Action) {
         self.best_effort(|inner| {
             inner.append_event(
                 Some(iteration),
@@ -450,7 +450,12 @@ impl Recorder {
         });
     }
 
-    pub fn record_action_end(&self, iteration: u32, action: &Action, result: Result<(), String>) {
+    pub(crate) fn record_action_end(
+        &self,
+        iteration: u32,
+        action: &Action,
+        result: Result<(), String>,
+    ) {
         self.best_effort(|inner| {
             let success = result.is_ok();
             let error = result.err();
@@ -480,7 +485,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_wait_start(&self, iteration: u32, action: &Action) {
+    pub(crate) fn record_wait_start(&self, iteration: u32, action: &Action) {
         self.best_effort(|inner| {
             inner.append_event(
                 Some(iteration),
@@ -492,7 +497,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_wait_end(&self, iteration: u32, action: &Action) {
+    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action) {
         self.best_effort(|inner| {
             inner.append_event(
                 Some(iteration),
@@ -504,7 +509,7 @@ impl Recorder {
         });
     }
 
-    pub fn record_outcome(&self, outcome: &Outcome, code: ExitCode) {
+    pub(crate) fn record_outcome(&self, outcome: &Outcome, code: ExitCode) {
         self.best_effort(|inner| {
             let artifact =
                 inner.write_json_artifact(None, "outcome.json", outcome, "application/json")?;
@@ -763,7 +768,7 @@ impl Inner {
     }
 }
 
-pub struct ToolCallGuard {
+pub(crate) struct ToolCallGuard {
     recorder: Recorder,
     call_id: String,
     program: String,
@@ -773,7 +778,7 @@ pub struct ToolCallGuard {
     iteration: Option<u32>,
 }
 
-pub fn tool_call_started(program: &str, args: &[&str]) -> Option<ToolCallGuard> {
+pub(crate) fn tool_call_started(program: &str, args: &[&str]) -> Option<ToolCallGuard> {
     let recorder = process_recorder()?;
     let (call_id, iteration) = next_tool_call_id_locked(&recorder)?;
     let args_v: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
@@ -807,7 +812,7 @@ pub fn tool_call_started(program: &str, args: &[&str]) -> Option<ToolCallGuard> 
 }
 
 impl ToolCallGuard {
-    pub fn finish_output(self, output: &Output) {
+    pub(crate) fn finish_output(self, output: &Output) {
         let duration_ms = self.started.elapsed().as_millis();
         self.recorder.best_effort(|inner| {
             let base = format!("tool-calls/{}", self.call_id);
@@ -861,7 +866,7 @@ impl ToolCallGuard {
         });
     }
 
-    pub fn finish_spawn_error(self, err: &io::Error) {
+    pub(crate) fn finish_spawn_error(self, err: &io::Error) {
         let duration_ms = self.started.elapsed().as_millis();
         self.recorder.best_effort(|inner| {
             let base = format!("tool-calls/{}", self.call_id);

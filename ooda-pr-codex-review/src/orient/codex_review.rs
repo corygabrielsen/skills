@@ -22,7 +22,7 @@ use crate::observe::codex::{BatchState, CodexLevelObservation, CodexObservations
 /// review state machine: spawn → poll → address → climb.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CodexReviewStatus {
+pub(crate) enum CodexReviewStatus {
     /// `current_level` has no in-flight batch for the current head
     /// SHA — runner should spawn `RunCodexReviewBatch`.
     Spawn { level: CodexReasoningLevel },
@@ -45,7 +45,7 @@ pub enum CodexReviewStatus {
 /// Per-PR codex review report. `status` drives decide; the other
 /// fields are diagnostic context for renderers and recorders.
 #[derive(Debug, Clone, Serialize)]
-pub struct CodexReviewReport {
+pub(crate) struct CodexReviewReport {
     pub status: CodexReviewStatus,
     pub floor: CodexReasoningLevel,
     pub ceiling: CodexReasoningLevel,
@@ -59,7 +59,7 @@ pub struct CodexReviewReport {
 }
 
 /// Project a `CodexObservations` into the orient axis.
-pub fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport {
+pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport {
     // Find the first level from the floor whose batch isn't already
     // complete-and-clean for the current head SHA.
     let mut current_level_observation: Option<&CodexLevelObservation> = None;

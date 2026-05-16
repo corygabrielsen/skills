@@ -2,4 +2,4 @@
 //! sources. No interpretation — downstream stages decide what the
 //! signals mean.
 
-pub mod github;
+pub(crate) mod github;

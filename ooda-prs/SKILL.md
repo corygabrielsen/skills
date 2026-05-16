@@ -398,7 +398,7 @@ memory.
                       write); concurrent external readers may
                       observe a torn or empty file briefly. Final
                       content after all workers register is the
-                      complete in-memory `Vec<PrPointer>`.
+                      complete in-memory `Vec<PullRequestPointer>`.
   outcome.json     -- schema_version, suite_id, finished_at,
                       exit_code, multi_outcome
   trace.md         -- Written at open: a SINGLE-line banner

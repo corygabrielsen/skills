@@ -20,7 +20,7 @@ use crate::session::now_iso;
 const MAX_POLLS_PER_ITER: u32 = 20;
 const POST_FULL_REOBSERVE_MS: u64 = 15_000;
 
-pub struct ConvergeOpts {
+pub(crate) struct ConvergeOpts {
     pub fitness_argv: Vec<String>,
     pub max_iter: u32,
     pub session_id: String,
@@ -127,7 +127,7 @@ fn make_halt(
 // (observe, classify, dispatch, repeat). Splitting into helpers would
 // shred the loop invariants across files.
 #[allow(clippy::too_many_lines)]
-pub fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport, String> {
+pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport, String> {
     let mut session = Session::open(&opts.session_id)?;
 
     let mut hook = opts

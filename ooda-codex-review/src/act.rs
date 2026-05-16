@@ -25,7 +25,7 @@ use crate::ids::ReviewTarget;
 /// Per-invocation environment for `act`. Stable across all
 /// iterations of a single `run_loop` call.
 #[derive(Debug, Clone)]
-pub struct ActContext {
+pub(crate) struct ActContext {
     /// Directory where per-slot log files (`<level>-<slot>.log`)
     /// are written.
     pub batch_dir: PathBuf,
@@ -85,7 +85,7 @@ impl std::error::Error for ActError {
 /// Dispatch one action against `ctx`. Wait sleeps; Full kinds
 /// dispatch to handler functions; Agent/Human are an invariant
 /// violation (decide should have halted instead of executing).
-pub fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
+pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Wait { interval, .. } => {
             std::thread::sleep(interval.as_duration());
@@ -167,7 +167,7 @@ fn spawn_codex_reviews(
 
 /// Build the `codex review` argv for the given target and reasoning
 /// level. Pure — no I/O. Public for unit tests.
-pub fn build_codex_args(
+pub(crate) fn build_codex_args(
     level: CodexReasoningLevel,
     target: &ReviewTarget,
 ) -> Result<Vec<OsString>, ActError> {
@@ -202,7 +202,7 @@ pub fn build_codex_args(
 /// Runtime spawning uses [`build_logged_codex_command`] so observe
 /// can see child exit status after this process returns.
 #[cfg(test)]
-pub fn build_codex_command(
+pub(crate) fn build_codex_command(
     codex_bin: &std::path::Path,
     level: CodexReasoningLevel,
     target: &ReviewTarget,

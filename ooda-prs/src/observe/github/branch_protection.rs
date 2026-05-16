@@ -15,7 +15,7 @@ use super::gh::{GhError, encode_path_segment, gh_json};
 /// `Ok(None)` when the endpoint returns 404 (no classic protection
 /// configured — a normal, non-error state). `branch` is URL-encoded
 /// so names with `/` resolve to one path segment.
-pub fn fetch_branch_protection_required_checks(
+pub(crate) fn fetch_branch_protection_required_checks(
     slug: &RepoSlug,
     branch: &str,
 ) -> Result<Option<BranchProtectionRequiredStatusChecks>, GhError> {
@@ -31,13 +31,13 @@ pub fn fetch_branch_protection_required_checks(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct BranchProtectionRequiredStatusChecks {
+pub(crate) struct BranchProtectionRequiredStatusChecks {
     #[serde(default)]
     pub checks: Vec<BranchProtectionCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct BranchProtectionCheck {
+pub(crate) struct BranchProtectionCheck {
     pub context: CheckName,
     /// Null when the check has no registered GitHub App (e.g. status
     /// posted without app integration).

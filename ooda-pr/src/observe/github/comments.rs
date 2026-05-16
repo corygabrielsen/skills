@@ -23,7 +23,7 @@ const COMMENT_JQ: &str =
     r#"[.[] | {id, user: {login: (.user.login // "[deleted]")}, body, created_at, html_url}]"#;
 
 /// Fetch issue-level comments on a PR (not inline review comments).
-pub fn fetch_issue_comments(
+pub(crate) fn fetch_issue_comments(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<IssueComment>, GhError> {
@@ -32,7 +32,7 @@ pub fn fetch_issue_comments(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct IssueComment {
+pub(crate) struct IssueComment {
     pub id: u64,
     pub user: CommentUser,
     /// `#[serde(default)]` so pre-existing fixtures (which omit
@@ -52,7 +52,7 @@ fn default_timestamp() -> Timestamp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CommentUser {
+pub(crate) struct CommentUser {
     pub login: GitHubLogin,
 }
 

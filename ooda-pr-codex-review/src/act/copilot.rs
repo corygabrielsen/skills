@@ -10,7 +10,7 @@ use crate::orient::copilot::COPILOT_REVIEWER_LOGIN;
 /// health-remediation path (`symptom = Some(_)`); the side effect is
 /// identical — the symptom only travels in the action's blocker tag
 /// so the stall comparator separates the cases.
-pub fn rerequest_copilot(slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), GhError> {
+pub(super) fn rerequest_copilot(slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), GhError> {
     let path = format!("repos/{slug}/pulls/{pr}/requested_reviewers");
     let reviewer = format!("reviewers[]={COPILOT_REVIEWER_LOGIN}");
     gh_run(&["api", &path, "--method", "POST", "-f", &reviewer])

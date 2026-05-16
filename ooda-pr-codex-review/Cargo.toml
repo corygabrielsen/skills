@@ -15,5 +15,8 @@ zstd = "0.13"
 [dev-dependencies]
 tempfile = "3"
 
+[lints.rust]
+unreachable_pub = "warn"
+
 [lints.clippy]
 pedantic = "deny"

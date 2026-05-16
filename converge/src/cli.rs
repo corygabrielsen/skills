@@ -150,7 +150,7 @@ fn parse_args() -> ParsedArgs {
     }
 }
 
-pub fn run() -> i32 {
+pub(crate) fn run() -> i32 {
     let parsed = parse_args();
 
     let session_id = parsed.session_id.unwrap_or_else(|| {

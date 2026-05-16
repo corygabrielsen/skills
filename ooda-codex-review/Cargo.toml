@@ -14,5 +14,8 @@ zstd = "0.13"
 
 [dev-dependencies]
 
+[lints.rust]
+unreachable_pub = "warn"
+
 [lints.clippy]
 pedantic = "deny"

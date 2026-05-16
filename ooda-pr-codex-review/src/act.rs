@@ -11,11 +11,11 @@
 //! the spawn-time data (binary path, repo root, batch dir root,
 //! current head SHA).
 
-pub mod address_claude_review;
+pub(crate) mod address_claude_review;
 mod ci;
 mod copilot;
-pub mod review_docs;
-pub mod sync_pull_request_metadata;
+pub(crate) mod review_docs;
+pub(crate) mod sync_pull_request_metadata;
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -87,7 +87,7 @@ impl From<GhError> for ActError {
 /// process exit even on SIGKILL — stale `.lock` files from crashed
 /// processes never block subsequent runs.
 #[derive(Debug)]
-pub struct CodexActContext {
+pub(crate) struct CodexActContext {
     pub codex_bin: PathBuf,
     pub repo_root: PathBuf,
     /// `<state-root>/github.com/<owner>/<repo>/prs/<pr>/codex/`
@@ -108,7 +108,7 @@ pub struct CodexActContext {
 
 /// Per-iteration act-stage context.
 #[derive(Debug)]
-pub struct ActContext {
+pub(crate) struct ActContext {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
     pub codex: Option<CodexActContext>,
@@ -116,7 +116,7 @@ pub struct ActContext {
 
 /// Execute (or wait for) one action. Returns Ok on success;
 /// caller's loop re-iterates after this returns.
-pub fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
+pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => run_full(&action.kind, ctx),
         ActionEffect::Wait { interval, .. } => {

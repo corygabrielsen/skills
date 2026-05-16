@@ -20,7 +20,7 @@ use serde::Serialize;
 const TITLE_MAX_LEN: usize = 50;
 /// The label string both orient (detects) and act (removes) must
 /// agree on. Public so act/* can reference exactly the same value.
-pub const WIP_LABEL: &str = "work in progress";
+pub(crate) const WIP_LABEL: &str = "work in progress";
 const MERGE_WHEN_READY_LABEL: &str = "merge-when-ready";
 const CONTENT_LABELS: &[&str] = &["bug", "enhancement"];
 
@@ -28,7 +28,7 @@ const CONTENT_LABELS: &[&str] = &["bug", "enhancement"];
 // would obscure the GitHub API mapping.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PullRequestProjection {
+pub(crate) struct PullRequestProjection {
     pub conflict: Mergeable,
     pub draft: bool,
     pub wip: bool,
@@ -100,7 +100,7 @@ pub struct PullRequestProjection {
 /// target branch; `head_checks` is the observed check-run set on
 /// HEAD. Both seed the ruleset-derived projection fields consumed
 /// by the merge-state fallback prompt.
-pub fn orient_state(
+pub(crate) fn orient_state(
     pr: &PullRequestView,
     last_commit_at: Option<Timestamp>,
     stack_root: &BranchName,

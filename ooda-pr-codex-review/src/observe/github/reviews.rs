@@ -13,7 +13,7 @@ use super::gh::{GhError, gh_json_paginate};
 
 /// Fetch all reviews on a PR. `gh api --paginate` emits one JSON
 /// array per page; `gh_json_paginate` concatenates them.
-pub fn fetch_pull_request_reviews(
+pub(crate) fn fetch_pull_request_reviews(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<PullRequestReview>, GhError> {
@@ -22,7 +22,7 @@ pub fn fetch_pull_request_reviews(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct PullRequestReview {
+pub(crate) struct PullRequestReview {
     /// Null when the review's author has been deleted. Optional
     /// so observe doesn't abort on historical reviews — same
     /// pattern as `ThreadComment.author` and the comment-fetcher
@@ -46,13 +46,13 @@ pub struct PullRequestReview {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ReviewUser {
+pub(crate) struct ReviewUser {
     pub login: GitHubLogin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ReviewState {
+pub(crate) enum ReviewState {
     Approved,
     ChangesRequested,
     Commented,

@@ -12,7 +12,7 @@ use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug};
 use super::gh::{GhError, gh_json};
 
 /// Fetch currently-pending reviewer requests for a PR.
-pub fn fetch_requested_reviewers(
+pub(crate) fn fetch_requested_reviewers(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<RequestedReviewers, GhError> {
@@ -21,7 +21,7 @@ pub fn fetch_requested_reviewers(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
-pub struct RequestedReviewers {
+pub(crate) struct RequestedReviewers {
     #[serde(default)]
     pub users: Vec<RequestedUser>,
     #[serde(default)]
@@ -29,7 +29,7 @@ pub struct RequestedReviewers {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct RequestedUser {
+pub(crate) struct RequestedUser {
     pub login: GitHubLogin,
     /// `User`, `Bot`, `Organization`, or `Mannequin`.
     #[serde(rename = "type")]
@@ -37,7 +37,7 @@ pub struct RequestedUser {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum UserType {
+pub(crate) enum UserType {
     User,
     Bot,
     Organization,
@@ -45,7 +45,7 @@ pub enum UserType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct RequestedTeam {
+pub(crate) struct RequestedTeam {
     pub slug: String,
 }
 

@@ -36,7 +36,7 @@ struct StackParent {
 /// Walk down the stack from `start_branch` and return the ultimate
 /// base. For non-stacked PRs (start = master/main), returns
 /// `start_branch` unchanged without an API call.
-pub fn resolve_stack_root(
+pub(crate) fn resolve_stack_root(
     slug: &RepoSlug,
     start_branch: &BranchName,
 ) -> Result<BranchName, GhError> {

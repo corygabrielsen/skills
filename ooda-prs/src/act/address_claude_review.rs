@@ -23,7 +23,7 @@ use crate::ids::PullRequestNumber;
 /// the literal CLI invocation. `attest_path` is `Option` because the
 /// binary may run without `--state-root`.
 #[must_use]
-pub fn build_address_claude_review_prompt(
+pub(crate) fn build_address_claude_review_prompt(
     pr: PullRequestNumber,
     body_at: DateTime<Utc>,
     latest_claude_body: &str,

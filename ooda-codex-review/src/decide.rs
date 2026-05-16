@@ -1,6 +1,6 @@
 //! Decide stage: pure state machine over [`OrientedState`].
 //!
-//! Phase 6 covers the in-batch decisions only:
+//! In-batch decisions:
 //!
 //! ```text
 //! BatchState::NotStarted                  → Execute(RunReviews)
@@ -11,10 +11,10 @@
 //!
 //! Cross-iteration transitions — `AdvanceLevel`, `DropLevel`,
 //! `RestartFromFloor`, `RunTests` — fire from recorder-derived
-//! state and land in Phase 6b once the recorder is wired.
+//! state.
 
-pub mod action;
-pub mod decision;
+pub(crate) mod action;
+pub(crate) mod decision;
 
 use crate::ids::BlockerKey;
 use crate::observe::codex::VerdictClass;
@@ -45,7 +45,7 @@ fn await_interval() -> ooda_core::PollingInterval {
     ooda_core::PollingInterval::from_secs(secs)
 }
 
-pub fn decide(oriented: &OrientedState) -> Decision {
+pub(crate) fn decide(oriented: &OrientedState) -> Decision {
     let action = match &oriented.batch_state {
         BatchState::NotStarted => mk_run_reviews(oriented.current_level, oriented.expected),
         BatchState::Running { completed, .. } => {

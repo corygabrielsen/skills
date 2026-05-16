@@ -21,7 +21,7 @@ use crate::orient::cursor::{CursorActivity, CursorReport, InFlightHealth, Review
 
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
-pub fn candidates(report: &CursorReport) -> Vec<Action> {
+pub(super) fn candidates(report: &CursorReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     // Intentional exhaustive match per axis pattern; arms are kept
     // distinct for spec clarity even when several emit no candidate.

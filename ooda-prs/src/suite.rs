@@ -63,7 +63,7 @@ use crate::outcome::Outcome;
 ///
 /// Returns per-PR `ProcessOutcome`s in **input order**, so the
 /// caller's `MultiOutcome::Bundle` retains the operator's intent.
-pub fn drive_suite<F>(
+pub(crate) fn drive_suite<F>(
     suite: &[(RepoSlug, PullRequestNumber)],
     concurrency: Option<u32>,
     drive_one: F,

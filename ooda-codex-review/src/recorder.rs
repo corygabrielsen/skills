@@ -38,7 +38,7 @@ use crate::decide::action::CodexReasoningLevel;
 use crate::ids::{RepoId, ReviewMode, ReviewTarget};
 
 #[derive(Debug)]
-pub enum RecorderError {
+pub(crate) enum RecorderError {
     Io(io::Error),
     Serde(serde_json::Error),
 }
@@ -74,7 +74,7 @@ impl From<serde_json::Error> for RecorderError {
 }
 
 #[derive(Debug, Clone)]
-pub struct RecorderConfig {
+pub(crate) struct RecorderConfig {
     pub state_root: PathBuf,
     pub repo_id: RepoId,
     pub target: ReviewTarget,
@@ -104,7 +104,7 @@ pub struct RecorderConfig {
 ///   `advance_level`, `drop_level`, `restart_from_floor`.
 /// * `level_history` — append-only record of per-level outcomes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunManifest {
+pub(crate) struct RunManifest {
     pub run_id: String,
     pub repo_id: String,
     pub mode: ReviewMode,
@@ -130,7 +130,7 @@ pub struct RunManifest {
 /// batch had issues which were verified-and-fixed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LevelOutcome {
+pub(crate) enum LevelOutcome {
     Clean {
         level: CodexReasoningLevel,
     },
@@ -147,7 +147,7 @@ pub enum LevelOutcome {
 }
 
 #[derive(Debug)]
-pub struct Recorder {
+pub(crate) struct Recorder {
     target_root: PathBuf,
     current_run_dir: PathBuf,
     manifest: RunManifest,
@@ -161,7 +161,7 @@ pub struct Recorder {
 /// Outcome of `Recorder::open`'s resume probe. Surfaces *why* a
 /// fresh run was created so callers can log it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenMode {
+pub(crate) enum OpenMode {
     /// A new run directory was created (no prior `latest`, --fresh
     /// was set, or resume was rejected).
     Fresh(FreshReason),
@@ -172,7 +172,7 @@ pub enum OpenMode {
 
 /// Why `Recorder::open` chose Fresh over Resumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FreshReason {
+pub(crate) enum FreshReason {
     /// `cfg.fresh == true` — caller forced it.
     Forced,
     /// No `latest` pointer existed (first invocation for this
@@ -192,7 +192,7 @@ impl Recorder {
     /// Open a recorder for this invocation. Tries to resume the
     /// run referenced by `<target_root>/latest` when `cfg.fresh` is
     /// false; falls back to a fresh run otherwise.
-    pub fn open(cfg: &RecorderConfig) -> Result<(Self, OpenMode), RecorderError> {
+    pub(crate) fn open(cfg: &RecorderConfig) -> Result<(Self, OpenMode), RecorderError> {
         let target_root = compute_target_root(&cfg.state_root, &cfg.repo_id, &cfg.target);
         fs::create_dir_all(&target_root)?;
 
@@ -268,13 +268,13 @@ impl Recorder {
     /// Filesystem layout:
     /// `<target_root>/runs/<run-id>/levels/level-<L>/batch-<n>/`
     /// where `<L>` is `current_level` (the live ladder rung).
-    pub fn batch_dir(&self) -> PathBuf {
+    pub(crate) fn batch_dir(&self) -> PathBuf {
         self.level_dir(self.manifest.current_level)
             .join(format!("batch-{}", self.manifest.batch_number))
     }
 
     /// Record a per-level outcome and persist. Append-only.
-    pub fn record_outcome(&mut self, outcome: LevelOutcome) -> Result<(), RecorderError> {
+    pub(crate) fn record_outcome(&mut self, outcome: LevelOutcome) -> Result<(), RecorderError> {
         self.manifest.level_history.push(outcome);
         self.write_manifest()
     }
@@ -282,7 +282,7 @@ impl Recorder {
     /// Climb one rung. No-op + returns `None` at ceiling. Selects
     /// the next unused batch number at the destination level and
     /// persists.
-    pub fn advance_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
+    pub(crate) fn advance_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.higher() else {
             return Ok(None);
         };
@@ -295,7 +295,7 @@ impl Recorder {
     /// Drop one rung, clamped at `start_level` (the floor). No-op +
     /// returns `None` when already at floor. Selects the next unused
     /// batch number at the destination level and persists.
-    pub fn drop_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
+    pub(crate) fn drop_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.lower() else {
             return Ok(None);
         };
@@ -312,7 +312,7 @@ impl Recorder {
     /// Reset `current_level` to the floor (`start_level`) and
     /// persist. Used after a Retrospective surfaces architectural
     /// changes that invalidate prior per-level fixed points.
-    pub fn restart_from_floor(&mut self) -> Result<CodexReasoningLevel, RecorderError> {
+    pub(crate) fn restart_from_floor(&mut self) -> Result<CodexReasoningLevel, RecorderError> {
         self.manifest.current_level = self.manifest.start_level;
         self.manifest.batch_number = self.next_batch_number_for(self.manifest.start_level)?;
         self.write_manifest()?;
@@ -323,7 +323,7 @@ impl Recorder {
     /// Used after a floor-clamped address pass: there is no lower
     /// level to drop to, but the just-addressed batch must not be
     /// observed again.
-    pub fn start_next_batch_at_current_level(&mut self) -> Result<u32, RecorderError> {
+    pub(crate) fn start_next_batch_at_current_level(&mut self) -> Result<u32, RecorderError> {
         let next = self.next_batch_number_for(self.manifest.current_level)?;
         self.manifest.batch_number = next;
         self.write_manifest()?;
@@ -331,16 +331,16 @@ impl Recorder {
     }
 
     #[cfg(test)]
-    pub fn target_root(&self) -> &Path {
+    pub(crate) fn target_root(&self) -> &Path {
         &self.target_root
     }
 
     #[cfg(test)]
-    pub fn current_run_dir(&self) -> &Path {
+    pub(crate) fn current_run_dir(&self) -> &Path {
         &self.current_run_dir
     }
 
-    pub fn manifest(&self) -> &RunManifest {
+    pub(crate) fn manifest(&self) -> &RunManifest {
         &self.manifest
     }
 

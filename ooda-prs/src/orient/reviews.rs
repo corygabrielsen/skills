@@ -15,7 +15,7 @@ use crate::observe::github::reviews::{PullRequestReview, ReviewState};
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ReviewSummary {
+pub(crate) struct ReviewSummary {
     /// `None` means "no review policy on this branch" — distinct from
     /// `Some(ReviewRequired)` which means policy exists and is unmet.
     pub decision: Option<ReviewDecision>,
@@ -45,7 +45,7 @@ pub struct ReviewSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
-pub struct RequestedReviewerSet {
+pub(crate) struct RequestedReviewerSet {
     pub bots: Vec<GitHubLogin>,
     pub humans: Vec<Reviewer>,
 }
@@ -53,26 +53,26 @@ pub struct RequestedReviewerSet {
 impl RequestedReviewerSet {
     /// All reviewers concatenated (bots first, then humans), useful
     /// for "required reviewers: a, b, c" rendering.
-    pub fn all(&self) -> Vec<Reviewer> {
+    pub(crate) fn all(&self) -> Vec<Reviewer> {
         let mut out: Vec<Reviewer> = self.bots.iter().cloned().map(Reviewer::User).collect();
         out.extend(self.humans.iter().cloned());
         out
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.bots.is_empty() && self.humans.is_empty()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HumanReview {
+pub(crate) struct HumanReview {
     pub author: GitHubLogin,
     pub submitted_at: Option<Timestamp>,
     pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
-pub struct PendingReviews {
+pub(crate) struct PendingReviews {
     /// Bots always have logins (GraphQL Bot or User-with-`[bot]`-suffix).
     pub bots: Vec<GitHubLogin>,
     /// Humans may be users (logins) or teams (slugs).
@@ -80,13 +80,13 @@ pub struct PendingReviews {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BotReview {
+pub(crate) struct BotReview {
     pub user: GitHubLogin,
     pub state: ReviewState,
     pub submitted_at: Option<Timestamp>,
 }
 
-pub fn orient_reviews(
+pub(crate) fn orient_reviews(
     pr: &PullRequestView,
     threads: &ReviewThreadsResponse,
     comments: &[IssueComment],

@@ -77,7 +77,7 @@ impl fmt::Display for GitCommitSha {
 ///
 /// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
 /// constructor, and infallible `tag` live in the shared crate.
-pub use ooda_core::BlockerKey;
+pub(crate) use ooda_core::BlockerKey;
 
 // -- BranchName ------------------------------------------------------
 
@@ -228,7 +228,7 @@ impl fmt::Display for RepoId {
 /// Mutually exclusive with respect to one CLI invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ReviewMode {
+pub(crate) enum ReviewMode {
     /// `codex review --uncommitted` — working-tree changes vs HEAD.
     Uncommitted,
     /// `codex review --base <branch>` — current branch vs base.
@@ -242,7 +242,7 @@ pub enum ReviewMode {
 }
 
 impl ReviewMode {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Uncommitted => "uncommitted",
             Self::Base => "base",
@@ -261,7 +261,7 @@ impl fmt::Display for ReviewMode {
 /// The target value paired with a `ReviewMode`. `Uncommitted`
 /// carries no target; the others carry a domain-typed value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-pub enum ReviewTarget {
+pub(crate) enum ReviewTarget {
     Uncommitted,
     Base(BranchName),
     Commit(GitCommitSha),
@@ -269,7 +269,7 @@ pub enum ReviewTarget {
 }
 
 impl ReviewTarget {
-    pub fn mode(&self) -> ReviewMode {
+    pub(crate) fn mode(&self) -> ReviewMode {
         match self {
             Self::Uncommitted => ReviewMode::Uncommitted,
             Self::Base(_) => ReviewMode::Base,
@@ -280,7 +280,7 @@ impl ReviewTarget {
 
     /// Path-safe key for recorder layout. `<mode>/<value>` or just
     /// `<mode>` for Uncommitted.
-    pub fn path_key(&self) -> String {
+    pub(crate) fn path_key(&self) -> String {
         match self {
             Self::Uncommitted => "uncommitted".to_string(),
             Self::Base(b) => format!("base/{b}"),

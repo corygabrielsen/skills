@@ -16,7 +16,7 @@ use super::gh::{GhError, gh_json_paginate};
 
 /// Fetch PR timeline events. `gh api --paginate` emits one JSON
 /// array per page; `gh_json_paginate` concatenates them.
-pub fn fetch_issue_events(
+pub(crate) fn fetch_issue_events(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<IssueEvent>, GhError> {
@@ -25,7 +25,7 @@ pub fn fetch_issue_events(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct IssueEvent {
+pub(crate) struct IssueEvent {
     pub event: String,
     pub actor: Option<Actor>,
     /// Null for some system-originated events; REST will return `null`.
@@ -45,17 +45,17 @@ pub struct IssueEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Actor {
+pub(crate) struct Actor {
     pub login: GitHubLogin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct UserRef {
+pub(crate) struct UserRef {
     pub login: GitHubLogin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct TeamRef {
+pub(crate) struct TeamRef {
     pub slug: String,
 }
 
@@ -63,7 +63,7 @@ pub struct TeamRef {
 /// slug matters at the axis boundary; the rest of the app payload
 /// (id, `client_id`, owner, permissions) is ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct GitHubAppRef {
+pub(crate) struct GitHubAppRef {
     pub slug: String,
 }
 

@@ -20,7 +20,7 @@ const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
 // other fields); we deserialize the subset we consume below.
 
 /// Fetch PR metadata via `gh pr view`.
-pub fn fetch_pull_request_view(
+pub(crate) fn fetch_pull_request_view(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<PullRequestView, GhError> {
@@ -31,7 +31,7 @@ pub fn fetch_pull_request_view(
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PullRequestView {
+pub(crate) struct PullRequestView {
     pub title: String,
     pub number: PullRequestNumber,
     pub url: String,
@@ -69,7 +69,7 @@ pub struct PullRequestView {
 /// (`name`, `id`, `is_bot`) but the bot-class detection runs against
 /// the login slug, so we keep the wire model narrow.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct PullRequestAuthor {
+pub(crate) struct PullRequestAuthor {
     /// `gh pr view --json author` emits an empty string when the
     /// upstream user was deleted; deserialize it as `None` so the
     /// orient layer can treat "no author" identically to a missing
@@ -91,7 +91,7 @@ where
     }
 }
 
-pub use ooda_core::PullRequestState;
+pub(crate) use ooda_core::PullRequestState;
 
 // GraphQL's `Mergeable` enum has a variant literally named
 // `MERGEABLE`; mirroring that preserves 1:1 alignment with the
@@ -99,7 +99,7 @@ pub use ooda_core::PullRequestState;
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Mergeable {
+pub(crate) enum Mergeable {
     Mergeable,
     Conflicting,
     Unknown,
@@ -114,7 +114,7 @@ pub enum Mergeable {
 /// Same pattern as `CheckState::Unknown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum MergeStateStatus {
+pub(crate) enum MergeStateStatus {
     Behind,
     Blocked,
     Clean,
@@ -127,7 +127,7 @@ pub enum MergeStateStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ReviewDecision {
+pub(crate) enum ReviewDecision {
     Approved,
     ReviewRequired,
     ChangesRequested,
@@ -155,18 +155,18 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Label {
+pub(crate) struct Label {
     pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Assignee {
+pub(crate) struct Assignee {
     pub login: GitHubLogin,
 }
 
 /// Either a user (has `login`) or a team (has `name`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ReviewRequest {
+pub(crate) struct ReviewRequest {
     #[serde(default)]
     pub login: Option<GitHubLogin>,
     #[serde(default)]
@@ -175,7 +175,7 @@ pub struct ReviewRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Commit {
+pub(crate) struct Commit {
     pub oid: GitCommitSha,
     /// GraphQL's `committedDate` — when the commit was committed
     /// (distinct from `authoredDate`, which can predate it on

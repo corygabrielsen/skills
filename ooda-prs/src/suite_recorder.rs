@@ -50,7 +50,7 @@ use ooda_core::ExitCode;
 const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
-pub struct SuiteRecorderConfig {
+pub(crate) struct SuiteRecorderConfig {
     pub suite: Vec<(RepoSlug, PullRequestNumber)>,
     pub mode: RunMode,
     pub max_iter: std::num::NonZeroU32,
@@ -60,7 +60,7 @@ pub struct SuiteRecorderConfig {
 }
 
 #[derive(Clone)]
-pub struct SuiteRecorder {
+pub(crate) struct SuiteRecorder {
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -116,7 +116,7 @@ struct OutcomeFile<'a> {
 }
 
 impl SuiteRecorder {
-    pub fn open(cfg: &SuiteRecorderConfig) -> Result<Self, RecorderError> {
+    pub(crate) fn open(cfg: &SuiteRecorderConfig) -> Result<Self, RecorderError> {
         let state_root = resolve_state_root(cfg.state_root.as_deref());
         let now = Utc::now();
         let suite_id = make_run_id(now);
@@ -188,7 +188,12 @@ impl SuiteRecorder {
     /// Called from each worker thread after `Recorder::open`.
     /// Best-effort: file-write failures do not change the worker's
     /// behavior.
-    pub fn register_pull_request(&self, slug: &RepoSlug, pr: PullRequestNumber, run_id: &str) {
+    pub(crate) fn register_pull_request(
+        &self,
+        slug: &RepoSlug,
+        pr: PullRequestNumber,
+        run_id: &str,
+    ) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.pointers.push(PullRequestPointer {
                 slug: slug.to_string(),
@@ -201,7 +206,7 @@ impl SuiteRecorder {
 
     /// Final write: outcome.json + close the trace.md summary table.
     /// Called from the main thread after `thread::scope` joins.
-    pub fn record_outcome(&self, multi: &MultiOutcome, exit_code: ExitCode) {
+    pub(crate) fn record_outcome(&self, multi: &MultiOutcome, exit_code: ExitCode) {
         if let Ok(inner) = self.inner.lock() {
             let _ = inner.write_outcome(multi, exit_code);
             let _ = inner.write_trace_summary(multi, exit_code);
@@ -212,7 +217,7 @@ impl SuiteRecorder {
     /// tests; production code reaches the audit trail via the
     /// suite-id stamped into per-PR Recorder state.
     #[cfg(test)]
-    pub fn suite_root(&self) -> PathBuf {
+    pub(crate) fn suite_root(&self) -> PathBuf {
         self.inner
             .lock()
             .map(|inner| inner.suite_root.clone())

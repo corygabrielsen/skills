@@ -18,7 +18,7 @@ use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 // refactoring into helpers would split that 1:1 mapping across files
 // and harm the auditability the table provides.
 #[allow(clippy::too_many_lines)]
-pub fn candidates(report: &CopilotReport) -> Vec<Action> {
+pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
 
     match &report.activity {

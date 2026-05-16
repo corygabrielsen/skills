@@ -23,7 +23,7 @@ use crate::orient::pull_request_metadata::PullRequestMetadata;
 /// `--state-root`; the prompt then falls back to a placeholder
 /// invocation that asks the agent to supply the path.
 #[must_use]
-pub fn build_sync_pull_request_metadata_prompt(
+pub(crate) fn build_sync_pull_request_metadata_prompt(
     pr: PullRequestNumber,
     state: &PullRequestMetadata,
     attest_path: Option<&Path>,

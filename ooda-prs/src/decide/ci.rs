@@ -34,7 +34,7 @@ fn join_names(names: &[CheckName]) -> String {
         .join(", ")
 }
 
-pub fn candidates(report: &CiReport) -> Vec<Action> {
+pub(super) fn candidates(report: &CiReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     let summary = &report.summary;
 

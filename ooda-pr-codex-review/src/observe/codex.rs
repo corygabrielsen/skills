@@ -8,8 +8,8 @@
 //! (mismatched `head_sha.txt`) are reported as `NotStarted` so the
 //! runner re-spawns at the current PR head.
 
-pub mod batch;
-pub mod verdict;
+pub(crate) mod batch;
+pub(crate) mod verdict;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,14 +18,14 @@ use serde::Serialize;
 
 use crate::ids::CodexReasoningLevel;
 
-pub use batch::{BatchState, VerdictRecord};
-pub use verdict::VerdictClass;
+pub(crate) use batch::{BatchState, VerdictRecord};
+pub(crate) use verdict::VerdictClass;
 
 /// Per-level observation. The codex review axis observes one level
 /// per iteration — the current level — and reports its batch state.
 /// The ladder-climb logic lives in orient.
 #[derive(Debug, Clone, Serialize)]
-pub struct CodexLevelObservation {
+pub(crate) struct CodexLevelObservation {
     pub level: CodexReasoningLevel,
     pub batch_state: BatchState,
     pub batch_dir: PathBuf,
@@ -41,7 +41,7 @@ pub struct CodexLevelObservation {
 /// eliminates the orient layer's `.last().expect(...)` runtime
 /// panic.
 #[derive(Debug, Clone, Serialize)]
-pub struct CodexObservations {
+pub(crate) struct CodexObservations {
     pub levels: ooda_core::NonEmpty<CodexLevelObservation>,
     pub expected: u32,
     pub head_sha: String,
@@ -53,7 +53,11 @@ pub struct CodexObservations {
 /// `head_sha_short` is the first 12 chars of the head SHA so the
 /// path stays bounded and prior heads' batches survive on disk as
 /// cache (orient ignores them once head changes).
-pub fn batch_dir(pr_codex_root: &Path, level: CodexReasoningLevel, head_sha: &str) -> PathBuf {
+pub(crate) fn batch_dir(
+    pr_codex_root: &Path,
+    level: CodexReasoningLevel,
+    head_sha: &str,
+) -> PathBuf {
     let short = head_sha.get(..12).unwrap_or(head_sha);
     pr_codex_root
         .join("levels")
@@ -65,7 +69,7 @@ pub fn batch_dir(pr_codex_root: &Path, level: CodexReasoningLevel, head_sha: &st
 /// head SHA. Each level reports its own batch state; orient picks
 /// the highest already-clean prefix and emits an action for the
 /// next.
-pub fn fetch_all(
+pub(crate) fn fetch_all(
     pr_codex_root: &Path,
     floor: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
@@ -97,7 +101,7 @@ pub fn fetch_all(
 /// The inclusive level slice `[floor, ceiling]`. Always non-empty
 /// — the loop pushes `floor` unconditionally before any break, so
 /// even `floor == ceiling` yields a singleton.
-pub fn ladder_slice(
+pub(crate) fn ladder_slice(
     floor: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
 ) -> ooda_core::NonEmpty<CodexReasoningLevel> {

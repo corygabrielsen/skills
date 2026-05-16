@@ -45,7 +45,7 @@ use super::verdict::{self, VerdictClass};
 /// in from the observe layer's perspective.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BatchState {
+pub(crate) enum BatchState {
     /// No log files for this level yet — `RunCodexReviewBatch` has
     /// not been dispatched (or its spawn failed before any process
     /// created its log), OR a prior batch's `head_sha.txt` does not
@@ -66,7 +66,7 @@ pub enum BatchState {
 
 /// One reviewer's verdict within a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct VerdictRecord {
+pub(crate) struct VerdictRecord {
     /// 1-indexed slot within the batch (matches the `{n}` in
     /// `{level}-{n}.log`).
     pub slot: u32,
@@ -95,7 +95,7 @@ pub struct VerdictRecord {
 /// distinguish "review hasn't started" from "review crashed before
 /// its first log write". The orient/decide layer owns that
 /// interpretation; observe surfaces what's on disk.
-pub fn scan_batch(
+pub(crate) fn scan_batch(
     batch_dir: &Path,
     level: CodexReasoningLevel,
     expected: u32,

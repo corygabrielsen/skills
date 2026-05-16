@@ -116,7 +116,7 @@ pub(crate) fn classify_rate_limit(args: &[&str], stderr: &str) -> Option<RateLim
 }
 
 /// Run `gh <args>` and deserialize stdout as JSON into `T`.
-pub fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, GhError> {
+pub(crate) fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, GhError> {
     let output = run_raw(args)?;
     serde_json::from_slice(&output.stdout).map_err(GhError::Parse)
 }
@@ -126,7 +126,7 @@ pub fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, GhError> {
 /// rather than parsed as additional path components by `gh api`.
 /// Encodes the characters that have URL-syntax meaning; passes
 /// alphanumerics and the unreserved punctuation through.
-pub fn encode_path_segment(s: &str) -> String {
+pub(crate) fn encode_path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -150,7 +150,7 @@ pub fn encode_path_segment(s: &str) -> String {
 /// `gh_json` would only see the first page's JSON value and either
 /// truncate silently or fail with a trailing-data parse error on
 /// PRs busy enough to span pages.
-pub fn gh_json_paginate<T: DeserializeOwned>(args: &[&str]) -> Result<Vec<T>, GhError> {
+pub(crate) fn gh_json_paginate<T: DeserializeOwned>(args: &[&str]) -> Result<Vec<T>, GhError> {
     let output = run_raw(args)?;
     let mut out: Vec<T> = Vec::new();
     let stream = serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Vec<T>>();
@@ -174,7 +174,7 @@ pub fn gh_json_paginate<T: DeserializeOwned>(args: &[&str]) -> Result<Vec<T>, Gh
 /// All three conditions narrow the default to the documented case
 /// — a transient permission/API error with empty stdout still
 /// surfaces as `NonZero` rather than masking as empty data.
-pub fn gh_json_lenient<T: DeserializeOwned>(
+pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
     args: &[&str],
     empty_default: Option<(T, &str)>,
 ) -> Result<T, GhError> {
@@ -226,7 +226,7 @@ pub fn gh_json_lenient<T: DeserializeOwned>(
 /// Run `gh <args>` for side effects only — discard stdout.
 /// Used by act-stage Full actions (e.g. `gh pr ready`) where the
 /// outcome is the exit code, not the response body.
-pub fn gh_run(args: &[&str]) -> Result<(), GhError> {
+pub(crate) fn gh_run(args: &[&str]) -> Result<(), GhError> {
     run_raw(args).map(|_| ())
 }
 

@@ -97,7 +97,7 @@ Boundary: `gh` subprocess (REST + GraphQL) → typed Rust structs. Pure I/O.
 fetch_all : RepoSlug × PullRequestNumber → Result⟨GitHubObservations, GhError⟩
 
 GitHubObservations =
-    pr_view              : PullRequestView
+    pull_request_view              : PullRequestView
   × checks               : Vec⟨PullRequestCheck⟩
   × reviews              : Vec⟨PullRequestReview⟩
   × review_threads_page  : ReviewThreadsResponse
@@ -113,7 +113,7 @@ GitHubObservations =
 ### Per-endpoint shapes (key fields)
 
 ```
-PullRequestView     ::  state              : PrState (Open ⊕ Closed ⊕ Merged)
+PullRequestView     ::  state              : PullRequestState (Open ⊕ Closed ⊕ Merged)
                     ::  is_draft           : Bool
                     ::  mergeable          : Mergeable (Mergeable ⊕ Conflicting ⊕ Unknown)
                     ::  merge_state_status : MergeStateStatus
@@ -153,7 +153,7 @@ GhError =
 
 **Concurrency:** nine fetchers fan out under `thread::scope`;
 first-error fail-fast. Terminal short-circuit:
-`state ∈ {Merged, Closed} → terminal_observations(pr_view)` skips
+`state ∈ {Merged, Closed} → terminal_observations(pull_request_view)` skips
 auxiliary endpoints whose base may have been deleted post-merge.
 
 ---
@@ -240,10 +240,10 @@ CursorReport ≅ CopilotReport (same skeleton, atomic-review state machine)
 
 ## D — Decide
 
-Boundary: `OrientedState × PrState → Decision`. Pure, total.
+Boundary: `OrientedState × PullRequestState → Decision`. Pure, total.
 
 ```
-decide : OrientedState × PrState → Decision
+decide : OrientedState × PullRequestState → Decision
 
 Decision =
     Execute(Action)              (loop runs the action)
@@ -382,7 +382,7 @@ run_loop(slug, pr, cfg, on_state) =
     for i in 1..=cfg.max_iterations:
         obs      := fetch_all(slug, pr)?              -- LoopError::Observe
         oriented := orient(obs, None)
-        decision := decide(oriented, obs.pr_view.state)
+        decision := decide(oriented, obs.pull_request_view.state)
         on_state(i, oriented, decision)
         case decision of
             Halt(h)    → return Decision(h)

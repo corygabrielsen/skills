@@ -57,7 +57,7 @@ use crate::outcome::Outcome;
 /// Single-PR result inside a suite. Field order mirrors the input
 /// `(slug, pr)` pair plus the per-PR `Outcome` of driving it.
 #[derive(Debug, Serialize)]
-pub struct ProcessOutcome {
+pub(crate) struct ProcessOutcome {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
     pub outcome: Outcome,
@@ -66,7 +66,7 @@ pub struct ProcessOutcome {
 /// Suite-level binary boundary. Constructed in `main` from the parser
 /// (`UsageError`) or from the suite spawn loop (Bundle).
 #[derive(Debug, Serialize)]
-pub enum MultiOutcome {
+pub(crate) enum MultiOutcome {
     /// Parser-time failure; no PRs ran. [`SingleLineString`]
     /// enforces the no-newlines stderr-header invariant.
     UsageError(SingleLineString),
@@ -81,7 +81,7 @@ impl MultiOutcome {
     /// Aggregate exit-code projection. See module-level docs for the
     /// priority table. Returns an [`ExitCode`] (re-exported from
     /// `ooda-core`) so the numeric values live in one place.
-    pub fn exit_code(&self) -> ExitCode {
+    pub(crate) fn exit_code(&self) -> ExitCode {
         match self {
             Self::UsageError(_) => ExitCode::UsageError,
             Self::Bundle(prs) => bundle_exit_code(prs),

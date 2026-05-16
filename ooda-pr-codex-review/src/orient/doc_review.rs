@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::observe::github::doc_review_attest::DocReviewObservation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum DocReview {
+pub(crate) enum DocReview {
     Synced,
     Drift {
         attested_sha: String,
@@ -21,7 +21,7 @@ pub enum DocReview {
 
 /// Project a `DocReviewObservation` into the typed axis.
 #[must_use]
-pub fn orient_doc_review(obs: &DocReviewObservation) -> DocReview {
+pub(crate) fn orient_doc_review(obs: &DocReviewObservation) -> DocReview {
     match &obs.attestation {
         None => DocReview::NeverAttested,
         Some(att) if att.attested_sha == obs.head_sha.as_str() => DocReview::Synced,

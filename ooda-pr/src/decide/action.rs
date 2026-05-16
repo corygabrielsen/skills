@@ -12,13 +12,13 @@ use crate::observe::github::workflow_runs::WorkflowRunId;
 use crate::orient::ci::Symptom as CiSymptom;
 use crate::orient::copilot::Symptom;
 use crate::orient::thread::ReviewThread;
-pub use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
+pub(crate) use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
 use ooda_core::{RateLimitHit, RateLimitScope};
 use serde::Serialize;
 
 /// PR-domain `Action`. Concrete instantiation of the generic
 /// [`ooda_core::Action`] over this binary's [`ActionKind`].
-pub type Action = ooda_core::Action<ActionKind>;
+pub(crate) type Action = ooda_core::Action<ActionKind>;
 
 /// Payload for [`ActionKind::ReRunWorkflow`]: one degraded check
 /// with its workflow run handle (consumed by the act layer to issue
@@ -48,7 +48,7 @@ pub struct FailedCheckHandle {
 /// `Critical` because no other axis can produce useful work while
 /// throttled; the blocker tag is the scope name so the recorder's
 /// stall key separates rate-limit waits from other Waits.
-pub fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
+pub(crate) fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
     let log = format!(
         "rate-limited on {}; sleeping {}s",
         hit.scope.name(),

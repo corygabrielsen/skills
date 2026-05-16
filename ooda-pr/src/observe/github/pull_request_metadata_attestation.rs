@@ -34,7 +34,7 @@ const PULL_REQUEST_METADATA_FILE: &str = "pr_meta_attest.json";
 /// layer falls back to a path-free prompt that asks the agent to
 /// supply the state-root themselves.
 #[derive(Debug, Clone, Serialize)]
-pub struct PullRequestMetadataObservation {
+pub(crate) struct PullRequestMetadataObservation {
     pub attestation: Option<PullRequestMetadataAttestation>,
     pub head_sha: GitCommitSha,
     pub commits_behind: Option<usize>,
@@ -45,7 +45,7 @@ pub struct PullRequestMetadataObservation {
 /// writes to. Pulled out so the act-layer prompt composer can
 /// surface the same absolute path the agent must pass to the CLI.
 #[must_use]
-pub fn attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathBuf {
+pub(crate) fn attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathBuf {
     state_root
         .join(pr.to_string())
         .join(PULL_REQUEST_METADATA_FILE)
@@ -57,7 +57,7 @@ pub fn attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathB
 /// the observation degrades to "no attestation file possible" —
 /// orient classifies as `NeverAttested` and the dashboard surfaces
 /// the gap. No filesystem touch in that case.
-pub fn observe_pull_request_metadata(
+pub(crate) fn observe_pull_request_metadata(
     state_root: Option<&std::path::Path>,
     slug: &RepoSlug,
     pr: PullRequestNumber,

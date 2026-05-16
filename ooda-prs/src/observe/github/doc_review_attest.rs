@@ -19,7 +19,7 @@ use super::gh::{GhError, encode_path_segment, gh_json};
 const DOC_REVIEW_FILE: &str = "doc_review_attest.json";
 
 #[derive(Debug, Clone, Serialize)]
-pub struct DocReviewObservation {
+pub(crate) struct DocReviewObservation {
     pub attestation: Option<DocReviewAttestation>,
     pub head_sha: GitCommitSha,
     pub commits_behind: Option<usize>,
@@ -30,12 +30,15 @@ pub struct DocReviewObservation {
 /// act-layer prompt composer can surface the same absolute path the
 /// agent must pass to `ooda-attest doc-review`.
 #[must_use]
-pub fn doc_review_attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathBuf {
+pub(crate) fn doc_review_attest_path(
+    state_root: &std::path::Path,
+    pr: PullRequestNumber,
+) -> PathBuf {
     state_root.join(pr.to_string()).join(DOC_REVIEW_FILE)
 }
 
 /// Observe the doc-review attestation + drift against `head_sha`.
-pub fn observe_doc_review(
+pub(crate) fn observe_doc_review(
     state_root: Option<&std::path::Path>,
     slug: &RepoSlug,
     pr: PullRequestNumber,

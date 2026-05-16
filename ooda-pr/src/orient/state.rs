@@ -137,6 +137,7 @@ mod tests {
             assignees: vec![],
             review_requests: vec![],
             commits: vec![],
+            author: None,
         };
         overrides(&mut v);
         v

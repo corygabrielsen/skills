@@ -114,8 +114,10 @@ pub fn orient(
     let cursor = orient_cursor(
         &obs.reviews,
         &obs.review_threads_page,
-        &obs.checks,
+        &obs.cursor_status,
+        obs.pr_view.author.as_ref(),
         &obs.pr_view.head_ref_oid,
+        now,
     );
 
     let threads: Vec<ReviewThread> = obs

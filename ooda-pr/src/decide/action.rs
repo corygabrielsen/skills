@@ -161,6 +161,17 @@ pub enum ActionKind {
         count: u32,
     },
     WaitForCursorReview,
+    /// Cursor's check_suite is stalled past STALL_TIMEOUT on Cursor's
+    /// backend and there is no remediation API (posting a `cursor
+    /// review` comment does not unstick Cursor's own queue). Hand off
+    /// to a human; no side effect — decide emits this via
+    /// `ActionEffect::Human`, the runner translates to
+    /// `Outcome::HandoffHuman`, and the act layer never sees it.
+    /// Deliberately payload-free: Cursor has a single failure mode
+    /// (stalled suite), unlike Copilot's StartTimeout/ReviewTimeout
+    /// or CI's QueueTimeout/RunTimeout, so there is no Symptom to
+    /// carry.
+    EscalateCursorStalled,
 
     // ── Pending reviewers ──
     /// Bot reviewers always have logins (no `Team` variant).
@@ -222,6 +233,7 @@ impl ActionKindName for ActionKind {
             Self::WaitForCopilotReview => "WaitForCopilotReview",
             Self::AddressCopilotSuppressed { .. } => "AddressCopilotSuppressed",
             Self::WaitForCursorReview => "WaitForCursorReview",
+            Self::EscalateCursorStalled => "EscalateCursorStalled",
             Self::WaitForBotReview { .. } => "WaitForBotReview",
             Self::WaitForHumanReview { .. } => "WaitForHumanReview",
             Self::WaitForRateLimit { .. } => "WaitForRateLimit",

@@ -575,9 +575,10 @@ fn apply_mark_retro_changes(
     }
     match recorder.restart_from_floor() {
         Ok(to) => log_idle(&format!(
-            "retrospective surfaced changes at {} (\"{}\"); restarted from floor {}",
+            "retrospective surfaced changes at {} (\"{}\"); restarted from floor: {} -> {}",
             current.as_str(),
             reason,
+            current.as_str(),
             to.as_str()
         )),
         Err(e) => Outcome::binary_error(format!("recorder restart: {e}")),

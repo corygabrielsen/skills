@@ -329,33 +329,35 @@ pub(crate) fn orient_cursor(
 // ── Body parsing ─────────────────────────────────────────────────────
 
 /// Parse "found N potential issue(s)" from a Cursor review body.
+/// Digit-run after `found ` is the authoritative terminator;
+/// `" potential issue"` is no longer required as a delimiter (was
+/// brittle to wording shifts that placed other text between count
+/// and noun).
 pub(crate) fn parse_findings_count(body: &str) -> u32 {
-    let prefix = "found ";
-    let suffix = " potential issue";
-    let Some(start) = body.find(prefix) else {
+    let Some(start) = body.find("found ") else {
         return 0;
     };
-    let rest = &body[start + prefix.len()..];
-    let Some(end) = rest.find(suffix) else {
-        return 0;
-    };
-    rest[..end].trim().parse().unwrap_or(0)
+    let rest = &body[start + "found ".len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().unwrap_or(0)
 }
 
-/// Parse the next severity tag — `**High Severity**` etc. — in a
-/// thread comment body.
+/// Parse the first severity tag — `**High Severity**` etc. — in a
+/// thread comment body. Picks the severity whose literal appears
+/// earliest positionally in `body`; previous version found the
+/// first `**` then required the next `**` to close around
+/// `[High|Medium|Low] Severity`, which broke on any other bold
+/// span preceding the severity tag.
 fn parse_severity(body: &str) -> Option<Severity> {
-    let prefix = "**";
-    let suffix = " Severity**";
-    let start = body.find(prefix)? + prefix.len();
-    let rest = &body[start..];
-    let end = rest.find(suffix)?;
-    match rest[..end].trim() {
-        "High" => Some(Severity::High),
-        "Medium" => Some(Severity::Medium),
-        "Low" => Some(Severity::Low),
-        _ => None,
-    }
+    [
+        ("**High Severity**", Severity::High),
+        ("**Medium Severity**", Severity::Medium),
+        ("**Low Severity**", Severity::Low),
+    ]
+    .iter()
+    .filter_map(|(needle, sev)| body.find(needle).map(|pos| (pos, *sev)))
+    .min_by_key(|&(pos, _)| pos)
+    .map(|(_, sev)| sev)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1142,6 +1144,25 @@ mod tests {
     #[test]
     fn returns_zero_when_pattern_absent() {
         assert_eq!(parse_findings_count("everything looks great"), 0);
+    }
+
+    #[test]
+    fn parse_severity_finds_tag_after_leading_bold() {
+        // Regression: old parser took the first ** and required
+        // the closing ** to delimit the severity literal; a
+        // preceding bold span (e.g. "**Note:**") broke it.
+        assert_eq!(
+            parse_severity("**Note:** **High Severity** message"),
+            Some(Severity::High),
+        );
+    }
+
+    #[test]
+    fn parse_severity_picks_first_positionally() {
+        assert_eq!(
+            parse_severity("**Medium Severity** then **High Severity**"),
+            Some(Severity::Medium),
+        );
     }
 
     // ── tier transitions ──

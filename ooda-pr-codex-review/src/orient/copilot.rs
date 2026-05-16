@@ -298,25 +298,31 @@ fn copilot_reviewer_events(events: &[IssueEvent]) -> Vec<&IssueEvent> {
 /// Matches:
 ///   "generated N comment(s)" → visible = N
 ///   "generated no new comments" → visible = 0
-///   "Comments suppressed due to low confidence (N)" → suppressed = N
+///   "Comments suppressed due to low confidence (N…)" → suppressed = N
 pub(crate) fn parse_copilot_review_body(body: &str) -> (u32, u32) {
     let visible = if body.contains("generated no new comments") {
         0
     } else {
-        find_count(body, "generated ", " comment").unwrap_or(0)
+        find_count(body, "generated ").unwrap_or(0)
     };
-    let suppressed =
-        find_count(body, "Comments suppressed due to low confidence (", ")").unwrap_or(0);
+    let suppressed = find_count(body, "Comments suppressed due to low confidence (").unwrap_or(0);
     (visible, suppressed)
 }
 
-/// Find the first run of digits between `prefix` and `suffix` in
-/// `body`. Returns the parsed number, or None if no match.
-fn find_count(body: &str, prefix: &str, suffix: &str) -> Option<u32> {
+/// Find the leading run of ASCII digits immediately after `prefix`
+/// in `body`. Digit-run is the authoritative terminator — previous
+/// versions used `find(suffix)` which truncated mid-token if the
+/// body added a parenthesized clarifier (e.g. "(N of M)" → first
+/// `)` lands inside the count region).
+fn find_count(body: &str, prefix: &str) -> Option<u32> {
     let start = body.find(prefix)? + prefix.len();
     let rest = &body[start..];
-    let end = rest.find(suffix)?;
-    rest[..end].trim().parse().ok()
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
 }
 
 // ── Timeline + rounds ────────────────────────────────────────────────
@@ -1007,6 +1013,15 @@ mod tests {
         let (v, s) = parse_copilot_review_body("nothing matches here");
         assert_eq!(v, 0);
         assert_eq!(s, 0);
+    }
+    #[test]
+    fn parse_suppressed_with_nested_paren_still_extracts_count() {
+        // Regression: old find(suffix) returned at the inner `)`
+        // and parsed "5 of 12" → 0. Digit-run terminator avoids it.
+        let (_, s) = parse_copilot_review_body(
+            "generated 2 comments. Comments suppressed due to low confidence (5 of 12 hidden)",
+        );
+        assert_eq!(s, 5);
     }
 
     // ── orient_copilot returns None when disabled ──

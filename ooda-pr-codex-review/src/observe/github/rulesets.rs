@@ -113,6 +113,9 @@ pub fn ruleset_matches_branch(conditions: Option<&RulesetConditions>, branch: &s
 }
 
 fn ref_pattern_matches(pat: &str, qualified_ref: &str) -> bool {
+    // Intentional exhaustive match per GitHub's wildcard pattern
+    // vocabulary; arms are kept distinct for spec clarity.
+    #[allow(clippy::match_same_arms)]
     match pat {
         "~ALL" => true,
         "~DEFAULT_BRANCH" => true, // conservative: we don't know the default
@@ -212,7 +215,7 @@ mod tests {
     #[test]
     fn deserializes_non_copilot_detail() {
         let r: Ruleset = serde_json::from_str(DETAIL_FIXTURE).unwrap();
-        assert_eq!(r.id, 12663934);
+        assert_eq!(r.id, 12_663_934);
         assert_eq!(r.name, "Ban bare branch prefix names");
         assert_eq!(r.enforcement, RulesetEnforcement::Active);
         assert_eq!(r.rules.len(), 2);
@@ -255,7 +258,7 @@ mod tests {
             ("disabled", RulesetEnforcement::Disabled),
             ("evaluate", RulesetEnforcement::Evaluate),
         ] {
-            let json = format!(r#"{{"id":1,"name":"r","enforcement":"{s}","rules":[]}}"#,);
+            let json = format!(r#"{{"id":1,"name":"r","enforcement":"{s}","rules":[]}}"#);
             let r: Ruleset = serde_json::from_str(&json).unwrap();
             assert_eq!(r.enforcement, expected);
         }

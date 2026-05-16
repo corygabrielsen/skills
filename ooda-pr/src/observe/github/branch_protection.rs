@@ -59,7 +59,7 @@ mod tests {
             resp.checks[0].context.as_str(),
             "Graphite / mergeability_check"
         );
-        assert_eq!(resp.checks[0].app_id, Some(158384));
+        assert_eq!(resp.checks[0].app_id, Some(158_384));
         assert_eq!(resp.checks[1].context.as_str(), "Mergeability Check");
     }
 

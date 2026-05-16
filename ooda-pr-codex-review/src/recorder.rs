@@ -315,15 +315,15 @@ impl Recorder {
                     action,
                     "application/json",
                 )?),
-                Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(handoff))
-                | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(handoff)) => {
-                    Some(inner.write_json_artifact(
-                        Some(iteration),
-                        "action.json",
-                        handoff,
-                        "application/json",
-                    )?)
-                }
+                Decision::Halt(
+                    crate::decide::decision::DecisionHalt::AgentNeeded(handoff)
+                    | crate::decide::decision::DecisionHalt::HumanNeeded(handoff),
+                ) => Some(inner.write_json_artifact(
+                    Some(iteration),
+                    "action.json",
+                    handoff,
+                    "application/json",
+                )?),
                 Decision::Halt(_) => None,
             };
             if let Some(action_ref) = &action_ref {

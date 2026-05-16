@@ -99,6 +99,7 @@ pub enum ActionEffect {
 impl ActionEffect {
     /// Borrow the inner `HandoffPrompt` if this is a handoff
     /// variant. Returns `None` for `Full` / `Wait`.
+    #[must_use]
     pub fn prompt(&self) -> Option<&HandoffPrompt> {
         match self {
             Self::Agent { prompt } | Self::Human { prompt } => Some(prompt),
@@ -119,12 +120,14 @@ impl ActionEffect {
     /// `true` iff this is the `Wait` variant. Used by the runner's
     /// stall detector to skip the equality check on `Wait`
     /// iterations (polling for the same blocker isn't a stall).
+    #[must_use]
     pub fn is_wait(&self) -> bool {
         matches!(self, Self::Wait { .. })
     }
 
     /// `true` iff this effect requires halting the loop and
     /// handing off to an external actor (agent or human).
+    #[must_use]
     pub fn is_handoff(&self) -> bool {
         matches!(self, Self::Agent { .. } | Self::Human { .. })
     }
@@ -134,6 +137,7 @@ impl ActionEffect {
     /// (comment renderer, JSONL emission, stderr prompt block) use
     /// this; sites that match on structure (decorate_handoff_*) use
     /// [`Self::prompt_mut`].
+    #[must_use]
     pub fn rendered_message(&self) -> String {
         match self {
             Self::Full { log } | Self::Wait { log, .. } => log.clone(),
@@ -144,6 +148,7 @@ impl ActionEffect {
 
 impl<K> Action<K> {
     /// Convenience pass-through — same as `self.effect.rendered_message()`.
+    #[must_use]
     pub fn rendered_payload(&self) -> String {
         self.effect.rendered_message()
     }

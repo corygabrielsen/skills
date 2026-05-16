@@ -130,8 +130,9 @@ fn decision_blocker_tag(d: &Decision) -> String {
     // than threading a unification trait.
     let (kind, blocker) = match d {
         Decision::Execute(a) => (&a.kind, &a.blocker),
-        Decision::Halt(DecisionHalt::AgentNeeded(h))
-        | Decision::Halt(DecisionHalt::HumanNeeded(h)) => (&h.kind, &h.blocker),
+        Decision::Halt(DecisionHalt::AgentNeeded(h) | DecisionHalt::HumanNeeded(h)) => {
+            (&h.kind, &h.blocker)
+        }
         Decision::Halt(_) => return String::new(),
     };
     format!("{}|{}", blocker, action_payload_tag(kind))

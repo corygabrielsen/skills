@@ -27,6 +27,7 @@ use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
+use std::fmt::Write;
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -230,16 +231,11 @@ impl Dashboard {
 
         let mut out = String::new();
         out.push_str("# Next\n\n");
-        out.push_str(&format!(
-            "## Recommended ({})\n",
-            urgency_label(winner.urgency),
-        ));
-        out.push_str(&format!(
-            "{}: {}\n\n",
-            winner.action_name, winner.action_log
-        ));
-        out.push_str(&format!("- effect: `{}`\n", winner.effect_debug));
-        out.push_str(&format!("- blocker: `{}`\n", winner.blocker));
+        writeln!(out, "## Recommended ({})", urgency_label(winner.urgency))
+            .expect("write to String");
+        writeln!(out, "{}: {}\n", winner.action_name, winner.action_log).expect("write to String");
+        writeln!(out, "- effect: `{}`", winner.effect_debug).expect("write to String");
+        writeln!(out, "- blocker: `{}`", winner.blocker).expect("write to String");
 
         let mut by_tier = tiers(&self.candidates);
         // Drop the winner from its own tier — same urgency, but the
@@ -254,7 +250,7 @@ impl Dashboard {
         {
             out.push_str("\n## Also at this tier\n");
             for c in &top.candidates {
-                out.push_str(&format!("- {}: {}\n", c.action_name, c.action_log));
+                writeln!(out, "- {}: {}", c.action_name, c.action_log).expect("write to String");
             }
         }
 
@@ -263,9 +259,10 @@ impl Dashboard {
         if !lower.is_empty() {
             out.push_str("\n## Queued (lower urgency)\n");
             for bucket in lower {
-                out.push_str(&format!("\n### {}\n", urgency_label(bucket.urgency)));
+                writeln!(out, "\n### {}", urgency_label(bucket.urgency)).expect("write to String");
                 for c in &bucket.candidates {
-                    out.push_str(&format!("- {}: {}\n", c.action_name, c.action_log));
+                    writeln!(out, "- {}: {}", c.action_name, c.action_log)
+                        .expect("write to String");
                 }
             }
         }
@@ -273,19 +270,21 @@ impl Dashboard {
         if !self.signals.is_empty() {
             out.push_str("\n## Signals\n");
             for sig in &self.signals {
-                out.push_str(&format!(
-                    "- {}: {} {}\n",
+                writeln!(
+                    out,
+                    "- {}: {} {}",
                     sig.axis.as_str(),
                     sig.icon.glyph(),
                     sig.summary,
-                ));
+                )
+                .expect("write to String");
             }
         }
 
         if !self.blockers.is_empty() {
             out.push_str("\n## Blockers\n");
             for b in &self.blockers {
-                out.push_str(&format!("- `{}`: {}\n", b.tag, b.action_name));
+                writeln!(out, "- `{}`: {}", b.tag, b.action_name).expect("write to String");
             }
         }
 
@@ -311,12 +310,14 @@ impl Dashboard {
         };
 
         let mut out = String::new();
-        out.push_str(&format!(
-            "**Recommended ({}):** {}: {}\n",
+        writeln!(
+            out,
+            "**Recommended ({}):** {}: {}",
             urgency_label(winner.urgency),
             winner.action_name,
             winner.action_log,
-        ));
+        )
+        .expect("write to String");
 
         let mut by_tier = tiers(&self.candidates);
         if let Some(bucket) = by_tier.first_mut() {
@@ -329,7 +330,7 @@ impl Dashboard {
         {
             out.push_str("\n**Also at this tier:**\n");
             for c in &top.candidates {
-                out.push_str(&format!("- {}: {}\n", c.action_name, c.action_log));
+                writeln!(out, "- {}: {}", c.action_name, c.action_log).expect("write to String");
             }
         }
 
@@ -342,10 +343,8 @@ impl Dashboard {
             for bucket in lower {
                 let label = urgency_label(bucket.urgency);
                 for c in &bucket.candidates {
-                    out.push_str(&format!(
-                        "- _{label}_ — {}: {}\n",
-                        c.action_name, c.action_log,
-                    ));
+                    writeln!(out, "- _{label}_ — {}: {}", c.action_name, c.action_log,)
+                        .expect("write to String");
                 }
             }
         }
@@ -353,19 +352,21 @@ impl Dashboard {
         if !self.signals.is_empty() {
             out.push_str("\n**Signals:**\n");
             for sig in &self.signals {
-                out.push_str(&format!(
-                    "- {}: {} {}\n",
+                writeln!(
+                    out,
+                    "- {}: {} {}",
                     sig.axis.as_str(),
                     sig.icon.glyph(),
                     sig.summary,
-                ));
+                )
+                .expect("write to String");
             }
         }
 
         if !self.blockers.is_empty() {
             out.push_str("\n**Blockers:**\n");
             for b in &self.blockers {
-                out.push_str(&format!("- `{}` — {}\n", b.tag, b.action_name));
+                writeln!(out, "- `{}` — {}", b.tag, b.action_name).expect("write to String");
             }
         }
 
@@ -379,7 +380,7 @@ impl Dashboard {
         }
         let mut out = String::from("# Blockers\n\n");
         for b in &self.blockers {
-            out.push_str(&format!("- `{}`: {}\n", b.tag, b.action_name));
+            writeln!(out, "- `{}`: {}", b.tag, b.action_name).expect("write to String");
         }
         out
     }
@@ -1078,7 +1079,7 @@ mod tests {
             "{text}",
         );
         assert!(text.contains("ci:wait: WaitForCi"), "{text}");
-        assert!(text.contains("review:approval: RequestApproval"), "{text}",);
+        assert!(text.contains("review:approval: RequestApproval"), "{text}");
     }
 
     #[test]

@@ -432,7 +432,7 @@ mod tests {
             Decision::Halt(DecisionHalt::AgentNeeded(action)) => match &action.kind {
                 ActionKind::Retrospective { .. } => DecideBaselineBehavior::HaltRetrospective,
                 other => {
-                    panic!("decide emitted unexpected AgentNeeded kind in baseline: {other:?}",)
+                    panic!("decide emitted unexpected AgentNeeded kind in baseline: {other:?}")
                 }
             },
             other => panic!("decide emitted unexpected Decision in baseline: {other:?}"),

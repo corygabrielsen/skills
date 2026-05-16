@@ -42,6 +42,7 @@ impl RateLimitScope {
     /// schemas, JSONL records, and status comments. Distinct from
     /// `Debug` so renaming a variant doesn't silently change the
     /// wire format.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::GitHubGraphqlPrimary => "github/graphql/primary",

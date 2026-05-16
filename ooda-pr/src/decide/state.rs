@@ -587,6 +587,9 @@ mod tests {
     /// Exhaustive over `MergeStateStatus`. The compiler enforces
     /// that every variant has an explicit axis assignment.
     fn expected_fallback_behavior(status: MergeStateStatus) -> FallbackBehavior {
+        // Intentional exhaustive match per axis pattern; arms are
+        // duplicated for spec clarity.
+        #[allow(clippy::match_same_arms)]
         match status {
             // Clean: mergeable, no candidate needed.
             MergeStateStatus::Clean => FallbackBehavior::Empty,
@@ -630,7 +633,7 @@ mod tests {
                     FallbackBehavior::EmitWaitForMergeability
                 }
                 (kind, effect) => {
-                    panic!("fallback emitted unexpected (kind, effect): {kind:?}, {effect:?}",)
+                    panic!("fallback emitted unexpected (kind, effect): {kind:?}, {effect:?}")
                 }
             },
             multi => panic!(

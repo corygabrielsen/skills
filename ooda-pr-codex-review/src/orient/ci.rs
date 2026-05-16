@@ -300,7 +300,7 @@ fn build_summary(
         match observed.get(name.as_str()) {
             None => missing_names.push(name.clone()),
             Some(obs) => {
-                update_completed_at(&mut completed_at, &obs.completed_at);
+                update_completed_at(&mut completed_at, obs.completed_at.as_ref());
                 classify_into(&mut required, obs);
             }
         }
@@ -311,7 +311,7 @@ fn build_summary(
         if required_set.contains(c.name.as_str()) {
             continue;
         }
-        update_completed_at(&mut completed_at, &c.completed_at);
+        update_completed_at(&mut completed_at, c.completed_at.as_ref());
         classify_into(&mut advisory, c);
     }
 
@@ -345,7 +345,7 @@ fn classify_into(bucket: &mut CheckBucket, c: &PullRequestCheck) {
     }
 }
 
-fn update_completed_at(out: &mut Option<Timestamp>, candidate: &Option<Timestamp>) {
+fn update_completed_at(out: &mut Option<Timestamp>, candidate: Option<&Timestamp>) {
     let Some(c) = candidate else { return };
     match out {
         None => *out = Some(*c),

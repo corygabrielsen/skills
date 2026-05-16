@@ -129,24 +129,28 @@ impl HandoffPrompt {
     /// Chainable form of [`Self::push_paragraph`] — for prompt
     /// builders that assemble a [`HandoffPrompt`] in expression
     /// position (struct-literal field, function return).
+    #[must_use]
     pub fn with_paragraph(mut self, text: impl Into<String>) -> Self {
         self.push_paragraph(text);
         self
     }
 
     /// Chainable form of [`Self::push_numbered_list`].
+    #[must_use]
     pub fn with_numbered_list(mut self, items: NonEmpty<SingleLineString>) -> Self {
         self.push_numbered_list(items);
         self
     }
 
     /// Chainable form of [`Self::push_witnesses`].
+    #[must_use]
     pub fn with_witnesses(mut self, items: NonEmpty<Witness>) -> Self {
         self.push_witnesses(items);
         self
     }
 
     /// Chainable form of [`Self::push_context_line`].
+    #[must_use]
     pub fn with_context_line(
         mut self,
         key: impl Into<SingleLineString>,

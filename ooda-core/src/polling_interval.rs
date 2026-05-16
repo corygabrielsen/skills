@@ -41,6 +41,10 @@ impl std::error::Error for PollingIntervalError {}
 impl PollingInterval {
     /// Validating constructor. Returns `Err` on `Duration::ZERO`;
     /// otherwise wraps the input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PollingIntervalError`] if `d` is `Duration::ZERO`.
     pub fn try_from_duration(d: Duration) -> Result<Self, PollingIntervalError> {
         if d.is_zero() {
             Err(PollingIntervalError)
@@ -52,6 +56,11 @@ impl PollingInterval {
     /// Construct from whole seconds. `secs` must be non-zero;
     /// panics otherwise. Matches the existing call sites that all
     /// use `Duration::from_secs(N)` with N ≥ 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `secs == 0`.
+    #[must_use]
     pub fn from_secs(secs: u64) -> Self {
         assert!(secs > 0, "PollingInterval::from_secs requires secs > 0");
         Self(Duration::from_secs(secs))
@@ -59,6 +68,11 @@ impl PollingInterval {
 
     /// Construct from milliseconds. `millis` must be non-zero;
     /// panics otherwise.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `millis == 0`.
+    #[must_use]
     pub fn from_millis(millis: u64) -> Self {
         assert!(
             millis > 0,
@@ -70,6 +84,7 @@ impl PollingInterval {
     /// Borrow the underlying `Duration`. Use this when handing
     /// the value to a `std::thread::sleep` or other API expecting
     /// `Duration`.
+    #[must_use]
     pub const fn as_duration(self) -> Duration {
         self.0
     }

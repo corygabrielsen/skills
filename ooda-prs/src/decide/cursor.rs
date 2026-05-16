@@ -23,6 +23,9 @@ use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 pub fn candidates(report: &CursorReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
+    // Intentional exhaustive match per axis pattern; arms are kept
+    // distinct for spec clarity even when several emit no candidate.
+    #[allow(clippy::match_same_arms)]
     match &report.activity {
         CursorActivity::NotApplicable => {
             // Cursor not active in this repo. Nothing to do.
@@ -197,6 +200,9 @@ mod tests {
     }
 
     fn expected_cursor_axis_behavior(activity: &CursorActivity) -> CursorAxisBehavior {
+        // Intentional exhaustive match per axis pattern; arms are
+        // duplicated for spec clarity.
+        #[allow(clippy::match_same_arms)]
         match activity {
             CursorActivity::NotApplicable => CursorAxisBehavior::NoCandidate,
             CursorActivity::Skipped(_) => CursorAxisBehavior::NoCandidate,
@@ -235,7 +241,7 @@ mod tests {
                     CursorAxisBehavior::EmitEscalateStalled
                 }
                 (kind, effect) => {
-                    panic!("cursor axis emitted unexpected (kind, effect): {kind:?}, {effect:?}",)
+                    panic!("cursor axis emitted unexpected (kind, effect): {kind:?}, {effect:?}")
                 }
             },
             multi => panic!(

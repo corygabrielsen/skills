@@ -116,7 +116,7 @@ fn action_payload_tag(kind: &crate::decide::action::ActionKind) -> String {
 // ── per-axis lines ───────────────────────────────────────────────────
 
 fn ci_line(o: &OrientedState) -> String {
-    let ci = &o.ci;
+    let ci = &o.ci.summary;
     if ci.required.fail() > 0 {
         let names: Vec<String> = ci
             .required
@@ -295,17 +295,22 @@ mod tests {
     use crate::decide::decision::{Decision, DecisionHalt};
     use crate::ids::Timestamp;
     use crate::observe::github::pr_view::Mergeable;
-    use crate::orient::ci::{CheckBucket, CiSummary, FailedCheck};
+    use crate::orient::ci::{
+        CheckBucket, CiActivity, CiReport, CiSummary, FailedCheck, ResolvedState,
+    };
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestState;
 
     fn empty_oriented() -> OrientedState {
         OrientedState {
-            ci: CiSummary {
-                required: CheckBucket::default(),
-                missing_names: vec![],
-                completed_at: None,
-                advisory: CheckBucket::default(),
+            ci: CiReport {
+                summary: CiSummary {
+                    required: CheckBucket::default(),
+                    missing_names: vec![],
+                    completed_at: None,
+                    advisory: CheckBucket::default(),
+                },
+                activity: CiActivity::Resolved(ResolvedState::AllGreen),
             },
             state: PullRequestState {
                 conflict: Mergeable::Mergeable,
@@ -353,7 +358,7 @@ mod tests {
     #[test]
     fn ci_line_failure_lists_names() {
         let mut o = empty_oriented();
-        o.ci.required.failed = vec![FailedCheck {
+        o.ci.summary.required.failed = vec![FailedCheck {
             name: crate::ids::CheckName::parse("Lint").unwrap(),
             description: String::new(),
             link: String::new(),

@@ -16,16 +16,35 @@ const CHECK_FIELDS: &str = "name,state,description,link,completedAt";
 /// `gh pr checks`. Uses lenient parse:
 ///   - status 8 with valid JSON → checks still pending (parse it)
 ///   - status 1 with empty stdout → "no checks reported" → `vec![]`
+///
+/// Confound filter at the observe boundary: `action_required` is a
+/// GitHub Actions design state (manual approval pending), not a
+/// failure mode. It dominates per-day check noise from workflows
+/// like "AI: Claude Code" (50+/day per repo) and would mask as a
+/// terminal failure to the CI orient projection. Drop it here so no
+/// downstream stage has to special-case it.
+//
+// GitHub Actions emits `cancelled` for auto-cancel-by-concurrency
+// (PR superseded by a newer run on the same workflow) AND for
+// genuine outage-cancels. Distinguishing the two requires the
+// workflow_runs feed (cross-attempt visibility), not the
+// flattened-per-name `gh pr checks` rollup. v1 keeps the existing
+// cancelled→failed bucket; the workflow_runs feed grew exactly to
+// enable a later disposition tag without re-shaping this fetcher.
 pub fn fetch_pr_checks(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<PullRequestCheck>, GhError> {
     let slug_s = slug.to_string();
     let pr_s = pr.to_string();
-    gh_json_lenient(
+    let raw: Vec<PullRequestCheck> = gh_json_lenient(
         &["pr", "checks", &pr_s, "-R", &slug_s, "--json", CHECK_FIELDS],
         Some((vec![], "no checks reported")),
-    )
+    )?;
+    Ok(raw
+        .into_iter()
+        .filter(|c| c.state != CheckState::ActionRequired)
+        .collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -173,6 +192,35 @@ mod tests {
             r#"[{"name":"x","state":"MYSTERY","description":"","link":"","completedAt":""}]"#;
         let checks: Vec<PullRequestCheck> = serde_json::from_str(json).unwrap();
         assert_eq!(checks[0].state, CheckState::Unknown);
+    }
+
+    #[test]
+    fn action_required_filters_out_at_observe_boundary() {
+        // ACTION_REQUIRED is GHA's design state for manual approval —
+        // "AI: Claude Code" emits dozens per day per repo. Letting it
+        // reach orient would mask as a terminal failure (current
+        // classify_into routes it to the failed bucket). Filter at
+        // the boundary so the CI orient projection never sees it.
+        let json = r#"[
+            {"name":"a","state":"SUCCESS","description":"","link":"","completedAt":""},
+            {"name":"AI: Claude Code","state":"ACTION_REQUIRED","description":"","link":"","completedAt":""},
+            {"name":"b","state":"FAILURE","description":"","link":"","completedAt":""}
+        ]"#;
+        // Exercise the filter via the same path callers use: parse +
+        // filter, matching the body of `fetch_pr_checks` after the
+        // `gh_json_lenient` call. (We can't call fetch_pr_checks
+        // directly without spawning `gh`.)
+        let raw: Vec<PullRequestCheck> = serde_json::from_str(json).unwrap();
+        let filtered: Vec<PullRequestCheck> = raw
+            .into_iter()
+            .filter(|c| c.state != CheckState::ActionRequired)
+            .collect();
+        assert_eq!(filtered.len(), 2);
+        assert!(
+            !filtered
+                .iter()
+                .any(|c| c.state == CheckState::ActionRequired)
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::ids::Timestamp;
 use crate::observe::github::GitHubObservations;
 use serde::Serialize;
 
-use ci::CiSummary;
+use ci::CiReport;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
 use cursor::{CursorReport, orient_cursor};
 use reviews::ReviewSummary;
@@ -41,7 +41,7 @@ use thread::ReviewThread;
 /// per-axis `Option` makes the distinction unrepresentable.
 #[derive(Debug, Clone, Serialize)]
 pub struct OrientedState {
-    pub ci: CiSummary,
+    pub ci: CiReport,
     pub state: PullRequestState,
     pub reviews: ReviewSummary,
     /// `None` when Copilot is not configured for the repo (no
@@ -82,7 +82,14 @@ pub fn orient(
     // stacked under an open parent; treat it as advisory rather than
     // a required wait for those PRs so the loop halts `Paused` once
     // other work clears instead of cycling `WaitForCi` to the cap.
-    let ci = ci::orient_ci(&obs.checks, &required, pr_state.has_open_parent_pr);
+    let ci = ci::orient_ci(
+        &obs.checks,
+        &required,
+        pr_state.has_open_parent_pr,
+        &obs.workflow_runs,
+        &obs.pr_view.head_ref_oid,
+        now,
+    );
     let reviews = reviews::orient_reviews(
         &obs.pr_view,
         &obs.review_threads_page,

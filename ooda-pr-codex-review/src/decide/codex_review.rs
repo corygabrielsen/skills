@@ -64,7 +64,7 @@ fn mk_run(level: CodexReasoningLevel, n: u32) -> Action {
         },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Critical,
-        blocker: BlockerKey::tag(format!("codex_review_runbatch:{}", level.as_str())),
+        blocker: BlockerKey::typed("codex_review_runbatch", &level),
     }
 }
 
@@ -86,7 +86,7 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
         // candidate alongside the real one.
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingWait,
-        blocker: BlockerKey::tag(format!("codex_review_await:{}", level.as_str())),
+        blocker: BlockerKey::typed("codex_review_await", &level),
     }
 }
 
@@ -124,7 +124,7 @@ fn mk_address(
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        blocker: BlockerKey::tag(format!("codex_review_address:{}", level.as_str())),
+        blocker: BlockerKey::typed("codex_review_address", &level),
     }
 }
 

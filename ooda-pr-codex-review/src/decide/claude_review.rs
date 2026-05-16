@@ -45,7 +45,7 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::Hygiene,
-        blocker: BlockerKey::tag("claude_review_fresh"),
+        blocker: BlockerKey::from_static("claude_review_fresh"),
     }]
 }
 

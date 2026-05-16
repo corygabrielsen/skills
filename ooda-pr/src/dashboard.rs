@@ -663,7 +663,7 @@ mod tests {
             effect: ActionEffect::Full { log: log.into() },
             target_effect: TargetEffect::Blocks,
             urgency,
-            blocker: BlockerKey::tag(blocker),
+            blocker: BlockerKey::for_test(blocker),
         }
     }
 
@@ -706,7 +706,7 @@ mod tests {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("review:approval"),
+            blocker: BlockerKey::from_static("review:approval"),
         }
     }
 
@@ -1226,7 +1226,7 @@ mod tests {
             prompt: HandoffPrompt::new("approve"),
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("review:approval"),
+            blocker: BlockerKey::from_static("review:approval"),
         };
         let decision = Decision::Halt(DecisionHalt::HumanNeeded(handoff));
         let candidates = build_candidates(&[request_approval()], &decision);

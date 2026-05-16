@@ -123,7 +123,7 @@ mod tests {
             },
             target_effect: TargetEffect::Blocks,
             urgency,
-            blocker: BlockerKey::tag(name),
+            blocker: BlockerKey::for_test(name),
         }
     }
 

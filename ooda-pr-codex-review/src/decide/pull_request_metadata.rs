@@ -41,11 +41,11 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
         attest_path: attest_path.to_path_buf(),
     };
     let blocker = match oriented.pull_request_metadata {
-        PullRequestMetadata::Drift { .. } => BlockerKey::tag("pr_meta_drift"),
-        PullRequestMetadata::NeverAttested => BlockerKey::tag("pr_meta_never_attested"),
+        PullRequestMetadata::Drift { .. } => BlockerKey::from_static("pr_meta_drift"),
+        PullRequestMetadata::NeverAttested => BlockerKey::from_static("pr_meta_never_attested"),
         // Synced is filtered above; the match is exhaustive for
         // clippy, the arm is unreachable in practice.
-        PullRequestMetadata::Synced => BlockerKey::tag("pr_meta_synced"),
+        PullRequestMetadata::Synced => BlockerKey::from_static("pr_meta_synced"),
     };
     vec![Action {
         kind,

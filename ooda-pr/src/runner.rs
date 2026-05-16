@@ -274,7 +274,7 @@ mod tests {
             effect: ActionEffect::Full { log: "stub".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag(blocker),
+            blocker: BlockerKey::for_test(blocker),
         }
     }
 
@@ -287,7 +287,7 @@ mod tests {
             },
             target_effect: TargetEffect::Neutral,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag(blocker),
+            blocker: BlockerKey::for_test(blocker),
         }
     }
 

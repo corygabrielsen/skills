@@ -102,7 +102,7 @@ fn mk_run_reviews(level: CodexReasoningLevel, n: u32) -> Action {
         },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Critical,
-        blocker: BlockerKey::tag(format!("runreviews:{}", level.as_str())),
+        blocker: BlockerKey::typed("runreviews", &level),
     }
 }
 
@@ -118,7 +118,7 @@ fn mk_await_reviews(level: CodexReasoningLevel, pending: u32) -> Action {
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::BlockingWait,
-        blocker: BlockerKey::tag(format!("await:{}", level.as_str())),
+        blocker: BlockerKey::typed("await", &level),
     }
 }
 
@@ -135,7 +135,7 @@ fn mk_address_batch(level: CodexReasoningLevel, issue_count: u32) -> Action {
         },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        blocker: BlockerKey::tag(format!("address:{}", level.as_str())),
+        blocker: BlockerKey::typed("address", &level),
     }
 }
 
@@ -153,7 +153,7 @@ fn mk_retrospective(level: CodexReasoningLevel) -> Action {
         },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::BlockingFix,
-        blocker: BlockerKey::tag(format!("retro:{}", level.as_str())),
+        blocker: BlockerKey::typed("retro", &level),
     }
 }
 

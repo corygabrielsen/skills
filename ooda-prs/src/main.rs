@@ -990,7 +990,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("h"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingHuman,
-            blocker: ids::BlockerKey::tag(blocker),
+            blocker: ids::BlockerKey::for_test(blocker),
         }
     }
 
@@ -1000,7 +1000,7 @@ mod tests {
             effect: ActionEffect::Full { log: "x".into() },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag(blocker),
+            blocker: ids::BlockerKey::for_test(blocker),
         }
     }
 
@@ -1112,7 +1112,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Rebase onto base"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("rebase-needed"),
+            blocker: ids::BlockerKey::from_static("rebase-needed"),
         };
         let mut buf = Vec::new();
         render_outcome(&mut buf, &Outcome::HandoffAgent(Box::new(handoff)));
@@ -1131,7 +1131,7 @@ mod tests {
             },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingWait,
-            blocker: ids::BlockerKey::tag("waiting"),
+            blocker: ids::BlockerKey::from_static("waiting"),
         };
         let mut buf = Vec::new();
         render_outcome(&mut buf, &Outcome::WouldAdvance(Box::new(action)));
@@ -1262,14 +1262,14 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Address 2 unresolved review threads."),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("unresolved_threads"),
+            blocker: ids::BlockerKey::from_static("unresolved_threads"),
         };
         let handoff_human_action = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::Rebase,
             prompt: ooda_core::HandoffPrompt::new("Approve the PR."),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingHuman,
-            blocker: ids::BlockerKey::tag("pending_human_review: alice"),
+            blocker: ids::BlockerKey::from_static("pending_human_review: alice"),
         };
         vec![
             Outcome::DoneSucceeded,
@@ -1321,7 +1321,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("not_approved"),
+            blocker: BlockerKey::from_static("not_approved"),
         };
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
@@ -1364,7 +1364,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("behind_base"),
+            blocker: ids::BlockerKey::from_static("behind_base"),
         };
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
@@ -1503,7 +1503,7 @@ mod tests {
             },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("behind_base"),
+            blocker: ids::BlockerKey::from_static("behind_base"),
         }
     }
 
@@ -1514,7 +1514,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingHuman,
-            blocker: ids::BlockerKey::tag("not_approved"),
+            blocker: ids::BlockerKey::from_static("not_approved"),
         };
         let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
@@ -1558,7 +1558,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("behind_base"),
+            blocker: ids::BlockerKey::from_static("behind_base"),
         };
         let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
@@ -1599,7 +1599,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Address change request"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("changes_requested_summary"),
+            blocker: ids::BlockerKey::from_static("changes_requested_summary"),
         };
         let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
@@ -1634,7 +1634,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Address change request"),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
-            blocker: ids::BlockerKey::tag("changes_requested_summary"),
+            blocker: ids::BlockerKey::from_static("changes_requested_summary"),
         };
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("1").unwrap();

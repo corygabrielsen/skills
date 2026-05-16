@@ -44,7 +44,7 @@ pub(super) fn candidates(report: &CursorReport) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                blocker: BlockerKey::tag("cursor_reviewing"),
+                blocker: BlockerKey::from_static("cursor_reviewing"),
             });
         }
         CursorActivity::InFlight(InFlightHealth::Failed) => {
@@ -110,7 +110,7 @@ fn failed_escalation(report: &CursorReport) -> Action {
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
-        blocker: BlockerKey::tag("cursor_failed_stall"),
+        blocker: BlockerKey::from_static("cursor_failed_stall"),
     }
 }
 

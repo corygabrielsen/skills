@@ -334,7 +334,7 @@ mod tests {
             },
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            blocker: crate::ids::BlockerKey::tag("retro:low"),
+            blocker: crate::ids::BlockerKey::from_static("retro:low"),
         };
         let ctx = ActContext {
             batch_dir: PathBuf::from("/tmp/nope"),
@@ -373,7 +373,7 @@ mod tests {
             effect: ActionEffect::Full { log: "n/a".into() },
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::Critical,
-            blocker: crate::ids::BlockerKey::tag("runreviews:low"),
+            blocker: crate::ids::BlockerKey::from_static("runreviews:low"),
         };
 
         act(&action, &ctx).expect("spawn should succeed with /bin/true");

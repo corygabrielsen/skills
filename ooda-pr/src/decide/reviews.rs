@@ -46,7 +46,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             // mask as stall. Live and Outdated threads share this
             // tag because both require per-thread agent judgment;
             // the per-thread state is carried through in the prompt.
-            blocker: BlockerKey::tag("unresolved_threads"),
+            blocker: BlockerKey::from_static("unresolved_threads"),
         });
     }
 
@@ -62,7 +62,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             urgency: Urgency::BlockingWait,
             // Stable across iterations: gate is "≥1 pending bot
             // review". Reviewer list is on the action payload.
-            blocker: BlockerKey::tag("pending_bot_review"),
+            blocker: BlockerKey::from_static("pending_bot_review"),
         });
     }
 
@@ -79,7 +79,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             urgency: Urgency::BlockingHuman,
             // Stable across iterations: gate is "≥1 pending human
             // review". Reviewer list is on the action payload.
-            blocker: BlockerKey::tag("pending_human_review"),
+            blocker: BlockerKey::from_static("pending_human_review"),
         });
     }
 
@@ -108,7 +108,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("not_approved"),
+            blocker: BlockerKey::from_static("not_approved"),
         });
     }
 
@@ -139,7 +139,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("changes_requested_summary"),
+            blocker: BlockerKey::from_static("changes_requested_summary"),
         });
     }
 

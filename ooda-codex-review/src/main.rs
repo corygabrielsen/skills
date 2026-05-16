@@ -648,7 +648,7 @@ fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: &str) -> Ou
         )),
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
-        blocker: BlockerKey::tag("address-failed"),
+        blocker: BlockerKey::from_static("address-failed"),
     };
     Outcome::HandoffHuman(Box::new(handoff))
 }

@@ -62,7 +62,7 @@ pub(crate) fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
         },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Critical,
-        blocker: BlockerKey::tag(hit.scope.name()),
+        blocker: BlockerKey::from_static(hit.scope.name()),
     }
 }
 

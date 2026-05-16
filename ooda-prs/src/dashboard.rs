@@ -230,7 +230,7 @@ pub(crate) fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisS
             SignalIcon::Warn,
             format!(
                 "PR meta drifted {} since {}",
-                crate::text::count(*commits_behind, "commit"),
+                drift_commits(*commits_behind),
                 short_sha(attested_sha),
             ),
         ),
@@ -260,7 +260,7 @@ pub(crate) fn doc_review_signal(state: &DocReview) -> AxisSignal {
             SignalIcon::Warn,
             format!(
                 "doc review drifted {} since {}",
-                crate::text::count(*commits_behind, "commit"),
+                drift_commits(*commits_behind),
                 short_sha(attested_sha),
             ),
         ),
@@ -309,6 +309,17 @@ pub(crate) fn claude_review_signal(state: &ClaudeReview) -> AxisSignal {
 
 fn short_sha(sha: &str) -> String {
     sha.chars().take(7).collect()
+}
+
+/// Render a Drift `commits_behind` field. `None` means the
+/// `gh api compare` call failed (attested SHA pruned post-rebase,
+/// transport error, etc.) — drift still exists but the count is
+/// not available.
+fn drift_commits(commits_behind: Option<usize>) -> String {
+    match commits_behind {
+        Some(n) => crate::text::count(n, "commit"),
+        None => "unknown commits".into(),
+    }
 }
 
 /// Deduplicate by `BlockerKey` while preserving first-seen order.
@@ -1332,7 +1343,7 @@ mod tests {
         let sig = pull_request_metadata_signal(&PullRequestMetadata::Drift {
             attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
             head_sha: "9".repeat(40),
-            commits_behind: 4,
+            commits_behind: Some(4),
         });
         assert_eq!(sig.icon, SignalIcon::Warn);
         assert!(sig.summary.contains("4 commits"), "{}", sig.summary);
@@ -1361,7 +1372,7 @@ mod tests {
         let sig = doc_review_signal(&DocReview::Drift {
             attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
             head_sha: "9".repeat(40),
-            commits_behind: 4,
+            commits_behind: Some(4),
         });
         assert_eq!(sig.icon, SignalIcon::Warn);
         assert!(sig.summary.contains("4 commits"), "{}", sig.summary);

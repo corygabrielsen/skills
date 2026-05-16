@@ -14,7 +14,7 @@ pub(crate) enum DocReview {
     Drift {
         attested_sha: String,
         head_sha: String,
-        commits_behind: usize,
+        commits_behind: Option<usize>,
     },
     NeverAttested,
 }
@@ -28,7 +28,7 @@ pub(crate) fn orient_doc_review(obs: &DocReviewObservation) -> DocReview {
         Some(att) => DocReview::Drift {
             attested_sha: att.attested_sha.clone(),
             head_sha: obs.head_sha.as_str().to_string(),
-            commits_behind: obs.commits_behind.unwrap_or(0),
+            commits_behind: obs.commits_behind,
         },
     }
 }
@@ -90,13 +90,13 @@ mod tests {
             DocReview::Drift {
                 attested_sha: OTHER_SHA.to_string(),
                 head_sha: HEAD_SHA.to_string(),
-                commits_behind: 3,
+                commits_behind: Some(3),
             }
         );
     }
 
     #[test]
-    fn mismatched_sha_with_none_count_yields_drift_with_zero() {
+    fn mismatched_sha_with_none_count_preserves_unknown() {
         let obs = DocReviewObservation {
             attestation: Some(attestation(OTHER_SHA)),
             head_sha: head(),
@@ -104,7 +104,7 @@ mod tests {
             attest_path: None,
         };
         match orient_doc_review(&obs) {
-            DocReview::Drift { commits_behind, .. } => assert_eq!(commits_behind, 0),
+            DocReview::Drift { commits_behind, .. } => assert_eq!(commits_behind, None),
             other => panic!("expected Drift, got {other:?}"),
         }
     }
@@ -149,7 +149,7 @@ mod tests {
             } => {
                 assert_eq!(attested_sha, OTHER_SHA);
                 assert_eq!(head_sha, HEAD_SHA);
-                assert_eq!(commits_behind, 0);
+                assert_eq!(commits_behind, Some(0));
             }
             other => panic!("expected Drift, got {other:?}"),
         }

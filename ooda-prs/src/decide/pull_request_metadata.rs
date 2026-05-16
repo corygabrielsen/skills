@@ -150,7 +150,7 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .to_string(),
-            commits_behind: 2,
+            commits_behind: Some(2),
         }
     }
 

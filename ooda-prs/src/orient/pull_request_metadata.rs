@@ -4,9 +4,11 @@
 //! * `Synced` — an attestation exists AND its SHA equals HEAD.
 //! * `Drift { attested_sha, head_sha, commits_behind }` — an
 //!   attestation exists but its SHA differs from HEAD. The
-//!   `commits_behind` count comes from `gh api compare`; a failed
-//!   compare collapses to 0 (orient still classifies as Drift —
-//!   the SHA mismatch is the trigger, not the count).
+//!   `commits_behind` count comes from `gh api compare`;
+//!   `Some(n)` means n commits behind, `None` means the compare
+//!   failed (attested SHA pruned post-rebase, transport error,
+//!   etc.). Drift is the classification either way — the SHA
+//!   mismatch is the trigger, not the count.
 //! * `NeverAttested` — no attestation file was read (file absent,
 //!   malformed, or schema-version-mismatched all collapse here).
 //!
@@ -25,7 +27,7 @@ pub(crate) enum PullRequestMetadata {
     Drift {
         attested_sha: String,
         head_sha: String,
-        commits_behind: usize,
+        commits_behind: Option<usize>,
     },
     NeverAttested,
 }
@@ -41,7 +43,7 @@ pub(crate) fn orient_pull_request_metadata(
         Some(att) => PullRequestMetadata::Drift {
             attested_sha: att.attested_sha.clone(),
             head_sha: obs.head_sha.as_str().to_string(),
-            commits_behind: obs.commits_behind.unwrap_or(0),
+            commits_behind: obs.commits_behind,
         },
     }
 }
@@ -109,13 +111,13 @@ mod tests {
             PullRequestMetadata::Drift {
                 attested_sha: OTHER_SHA.to_string(),
                 head_sha: HEAD_SHA.to_string(),
-                commits_behind: 3,
+                commits_behind: Some(3),
             }
         );
     }
 
     #[test]
-    fn mismatched_sha_with_none_count_yields_drift_with_zero() {
+    fn mismatched_sha_with_none_count_preserves_unknown() {
         let obs = PullRequestMetadataObservation {
             attestation: Some(attestation(OTHER_SHA)),
             head_sha: head(),
@@ -123,7 +125,7 @@ mod tests {
             attest_path: None,
         };
         match orient_pull_request_metadata(&obs) {
-            PullRequestMetadata::Drift { commits_behind, .. } => assert_eq!(commits_behind, 0),
+            PullRequestMetadata::Drift { commits_behind, .. } => assert_eq!(commits_behind, None),
             other => panic!("expected Drift, got {other:?}"),
         }
     }
@@ -168,7 +170,7 @@ mod tests {
             } => {
                 assert_eq!(attested_sha, OTHER_SHA);
                 assert_eq!(head_sha, HEAD_SHA);
-                assert_eq!(commits_behind, 0);
+                assert_eq!(commits_behind, Some(0));
             }
             other => panic!("expected Drift, got {other:?}"),
         }

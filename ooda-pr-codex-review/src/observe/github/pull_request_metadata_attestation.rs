@@ -6,9 +6,11 @@
 //!      absent — a never-attested PR is a valid steady state).
 //!   2. If attested SHA differs from HEAD, query `gh api compare`
 //!      for the count of commits between the two. A failed compare
-//!      (e.g. attested SHA pruned post-rebase) projects to
-//!      `commits_behind = Some(0)`; the orient layer interprets a
-//!      non-empty mismatch with `Some(0)` as Drift, not Synced.
+//!      (e.g. attested SHA pruned post-rebase) preserves
+//!      `commits_behind = None`; the orient layer projects Drift
+//!      regardless (the SHA mismatch is the trigger, not the
+//!      count) but distinguishes "drift exists, count unknown"
+//!      from "drift exists, N commits behind."
 //!
 //! The attestation read NEVER fails the observe pass. Malformed
 //! files, version mismatches, and bad SHAs all collapse to
@@ -69,7 +71,7 @@ pub(crate) fn observe_pull_request_metadata(
         .and_then(|p| read_pull_request_metadata(p).ok().flatten());
     let commits_behind = match &attestation {
         Some(att) if att.attested_sha != head_sha.as_str() => {
-            Some(compare_ahead_by(slug, &att.attested_sha, head_sha).unwrap_or(0))
+            compare_ahead_by(slug, &att.attested_sha, head_sha)
         }
         _ => None,
     };

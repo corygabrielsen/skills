@@ -34,6 +34,14 @@ pub struct IssueEvent {
     pub requested_reviewer: Option<UserRef>,
     #[serde(default)]
     pub requested_team: Option<TeamRef>,
+    /// App that performed the event (when applicable). The `slug` is
+    /// the axis-boundary discriminator: two distinct GitHub Apps share
+    /// the "Copilot" identity — `copilot-pull-request-reviewer` (the
+    /// review path) and `copilot-swe-agent` (the coding-agent path) —
+    /// and emit the same event names. The copilot reviewer axis
+    /// filters by slug at its input boundary.
+    #[serde(default)]
+    pub performed_via_github_app: Option<GitHubAppRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -48,6 +56,14 @@ pub struct UserRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TeamRef {
+    pub slug: String,
+}
+
+/// Subset of REST's `performed_via_github_app` we consume. Only the
+/// slug matters at the axis boundary; the rest of the app payload
+/// (id, client_id, owner, permissions) is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct GitHubAppRef {
     pub slug: String,
 }
 

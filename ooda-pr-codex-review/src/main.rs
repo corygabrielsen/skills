@@ -24,7 +24,7 @@ use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};
-use runner::{CodexReviewConfig, LoopConfig, run_loop};
+use runner::{CodexReviewConfig, LoopConfig, current_timestamp, run_loop};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
@@ -390,7 +390,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         Ok(o) => o,
         Err(e) => return e,
     };
-    let oriented = orient(&obs, codex_obs.as_ref(), None);
+    let oriented = orient(&obs, codex_obs.as_ref(), None, current_timestamp());
     let candidate_actions = candidates(&oriented);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pr_view.state);
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);

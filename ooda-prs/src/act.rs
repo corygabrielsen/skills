@@ -4,12 +4,13 @@
 //! never reach act. Anything Action that arrives here is either
 //! Full (we run it) or Wait (we sleep next_poll_seconds and return).
 
+mod copilot;
+
 use std::thread;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
-use crate::orient::copilot::COPILOT_REVIEWER_LOGIN;
 use crate::orient::state::WIP_LABEL;
 
 #[derive(Debug)]
@@ -74,11 +75,7 @@ fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result
             "--remove-label",
             WIP_LABEL,
         ])?,
-        ActionKind::RerequestCopilot => {
-            let path = format!("repos/{slug}/pulls/{pr}/requested_reviewers");
-            let reviewer = format!("reviewers[]={COPILOT_REVIEWER_LOGIN}");
-            gh_run(&["api", &path, "--method", "POST", "-f", &reviewer])?;
-        }
+        ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(slug, pr)?,
         _ => return Err(ActError::UnsupportedAutomation),
     }
     Ok(())

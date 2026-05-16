@@ -281,9 +281,11 @@ mod tests {
             p.commits = vec![
                 Commit {
                     oid: GitCommitSha::parse(&"a".repeat(40)).unwrap(),
+                    committed_date: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
                 },
                 Commit {
                     oid: GitCommitSha::parse(&"b".repeat(40)).unwrap(),
+                    committed_date: Timestamp::parse("2026-04-23T11:00:00Z").unwrap(),
                 },
             ];
         });

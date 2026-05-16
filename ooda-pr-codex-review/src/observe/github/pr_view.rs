@@ -18,6 +18,9 @@ const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
      mergeStateStatus,headRefOid,baseRefName,updatedAt,closedAt,mergedAt,\
      labels,assignees,reviewRequests,reviewDecision,commits";
 
+// `commits` returns an object with `oid` and `committedDate` (among
+// other fields); we deserialize the subset we consume below.
+
 /// Fetch PR metadata via `gh pr view`.
 pub fn fetch_pr_view(slug: &RepoSlug, pr: PullRequestNumber) -> Result<PullRequestView, GhError> {
     let slug_s = slug.to_string();
@@ -134,8 +137,15 @@ pub struct ReviewRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Commit {
     pub oid: GitCommitSha,
+    /// GraphQL's `committedDate` — when the commit was committed
+    /// (distinct from `authoredDate`, which can predate it on
+    /// rebased / cherry-picked commits). Used by the copilot health
+    /// axis to map a review round back to the HEAD SHA in flight at
+    /// the time of the request.
+    pub committed_date: Timestamp,
 }
 
 #[cfg(test)]

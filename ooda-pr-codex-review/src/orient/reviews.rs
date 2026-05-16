@@ -356,6 +356,7 @@ mod tests {
             commit_id: GitCommitSha::parse(sha).unwrap(),
             submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
             body: String::new(),
+            html_url: String::new(),
         }
     }
 
@@ -365,6 +366,9 @@ mod tests {
             user: CommentUser {
                 login: GitHubLogin::parse(login).unwrap(),
             },
+            body: String::new(),
+            created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+            html_url: String::new(),
         }
     }
 
@@ -641,6 +645,7 @@ mod tests {
                 commit_id: GitCommitSha::parse(HEAD).unwrap(),
                 submitted_at: Some(Timestamp::parse("2026-04-20T10:00:00Z").unwrap()),
                 body: "old feedback".into(),
+                html_url: String::new(),
             },
             // Bot change request — must be ignored.
             PullRequestReview {
@@ -651,6 +656,7 @@ mod tests {
                 commit_id: GitCommitSha::parse(HEAD).unwrap(),
                 submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
                 body: "bot feedback".into(),
+                html_url: String::new(),
             },
             // Latest human change request — must win.
             PullRequestReview {
@@ -661,6 +667,7 @@ mod tests {
                 commit_id: GitCommitSha::parse(HEAD).unwrap(),
                 submitted_at: Some(Timestamp::parse("2026-04-22T10:00:00Z").unwrap()),
                 body: "newer feedback".into(),
+                html_url: String::new(),
             },
         ];
         let s = orient_reviews(
@@ -688,6 +695,7 @@ mod tests {
             commit_id: GitCommitSha::parse(HEAD).unwrap(),
             submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
             body: "bot feedback".into(),
+            html_url: String::new(),
         }];
         let s = orient_reviews(
             &pr(),

@@ -23,6 +23,7 @@ use crate::decide::decision::{Decision, DecisionHalt};
 use crate::ids::BlockerKey;
 use crate::orient::OrientedState;
 use crate::orient::ci::ci_signal;
+use crate::orient::claude_review::ClaudeReview;
 use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
 use crate::orient::doc_review::DocReview;
@@ -114,6 +115,7 @@ pub enum AxisName {
     Cursor,
     PullRequestMetadata,
     DocReview,
+    ClaudeReview,
 }
 
 impl AxisName {
@@ -124,6 +126,7 @@ impl AxisName {
             Self::Cursor => "cursor",
             Self::PullRequestMetadata => "pr_meta",
             Self::DocReview => "doc_review",
+            Self::ClaudeReview => "claude_review",
         }
     }
 }
@@ -208,6 +211,7 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
         &oriented.pull_request_metadata,
     ));
     out.push(doc_review_signal(&oriented.doc_review));
+    out.push(claude_review_signal(&oriented.claude_review));
     out
 }
 
@@ -267,6 +271,37 @@ pub fn doc_review_signal(state: &DocReview) -> AxisSignal {
     };
     AxisSignal {
         axis: AxisName::DocReview,
+        icon,
+        summary,
+    }
+}
+
+/// Project Claude-review state onto a dashboard signal. Three
+/// projections: `NoActivity` collapses to `NotApplicable` (Claude has
+/// not been requested on this PR — no review surface to grade);
+/// `Addressed` is an `Ok` quiet positive; `Fresh` is a `Warn` with
+/// the inline thread count.
+#[must_use]
+pub fn claude_review_signal(state: &ClaudeReview) -> AxisSignal {
+    let (icon, summary) = match state {
+        ClaudeReview::NoActivity => (
+            SignalIcon::NotApplicable,
+            "claude review not requested".to_string(),
+        ),
+        ClaudeReview::Addressed => (SignalIcon::Ok, "claude review addressed".to_string()),
+        ClaudeReview::Fresh {
+            inline_thread_count,
+            ..
+        } => (
+            SignalIcon::Warn,
+            format!(
+                "claude review fresh ({})",
+                crate::text::count(*inline_thread_count, "inline thread"),
+            ),
+        ),
+    };
+    AxisSignal {
+        axis: AxisName::ClaudeReview,
         icon,
         summary,
     }
@@ -1338,5 +1373,39 @@ mod tests {
         let sig = doc_review_signal(&DocReview::NeverAttested);
         assert_eq!(sig.icon, SignalIcon::Warn);
         assert!(sig.summary.contains("never attested"), "{}", sig.summary);
+    }
+
+    // ── ClaudeReview signal projection ─────────────────────────────
+
+    #[test]
+    fn claude_review_signal_no_activity_renders_not_applicable() {
+        let sig = claude_review_signal(&ClaudeReview::NoActivity);
+        assert_eq!(sig.icon, SignalIcon::NotApplicable);
+        assert_eq!(sig.axis, AxisName::ClaudeReview);
+        assert!(sig.summary.contains("not requested"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn claude_review_signal_addressed_renders_ok() {
+        let sig = claude_review_signal(&ClaudeReview::Addressed);
+        assert_eq!(sig.icon, SignalIcon::Ok);
+        assert!(sig.summary.contains("addressed"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn claude_review_signal_fresh_renders_warn_with_thread_count() {
+        let sig = claude_review_signal(&ClaudeReview::Fresh {
+            latest_claude_at: chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            latest_claude_body: String::new(),
+            latest_claude_url: String::new(),
+            inline_thread_count: 3,
+            attested_at: None,
+            head_sha: "a".repeat(40),
+        });
+        assert_eq!(sig.icon, SignalIcon::Warn);
+        assert!(sig.summary.contains("fresh"), "{}", sig.summary);
+        assert!(sig.summary.contains("3 inline threads"), "{}", sig.summary);
     }
 }

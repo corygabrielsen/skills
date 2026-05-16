@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug};
+use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json_paginate};
 
@@ -19,7 +19,8 @@ use super::gh::{GhError, gh_json_paginate};
 /// `user: null` for deleted accounts, which would otherwise make
 /// `GitHubLogin` deserialization (non-empty) fail and abort the
 /// whole observe phase.
-const COMMENT_JQ: &str = r#"[.[] | {id, user: {login: (.user.login // "[deleted]")}}]"#;
+const COMMENT_JQ: &str =
+    r#"[.[] | {id, user: {login: (.user.login // "[deleted]")}, body, created_at, html_url}]"#;
 
 /// Fetch issue-level comments on a PR (not inline review comments).
 pub fn fetch_issue_comments(
@@ -34,6 +35,20 @@ pub fn fetch_issue_comments(
 pub struct IssueComment {
     pub id: u64,
     pub user: CommentUser,
+    /// `#[serde(default)]` so pre-existing fixtures (which omit
+    /// `body` / `created_at` / `html_url`) deserialize as empty
+    /// strings / fallback timestamp. Used by the Claude-review axis
+    /// to surface the latest Claude issue comment as a `Witness`.
+    #[serde(default)]
+    pub body: String,
+    #[serde(default = "default_timestamp")]
+    pub created_at: Timestamp,
+    #[serde(default)]
+    pub html_url: String,
+}
+
+fn default_timestamp() -> Timestamp {
+    Timestamp::parse("1970-01-01T00:00:00Z").expect("epoch parses")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -63,10 +78,21 @@ mod tests {
             "node_id": "abc",
             "url": "https://example",
             "body": "hi",
+            "created_at": "2026-04-23T10:00:00Z",
+            "html_url": "https://github.com/o/r/pull/1#issuecomment-1",
             "user": {"login": "alice", "id": 123, "site_admin": false}
         }]"#;
         let comments: Vec<IssueComment> = serde_json::from_str(json).unwrap();
         assert_eq!(comments[0].id, 1);
         assert_eq!(comments[0].user.login.as_str(), "alice");
+        assert_eq!(comments[0].body, "hi");
+    }
+
+    #[test]
+    fn legacy_fixture_without_body_fields_still_deserializes() {
+        let json = r#"[{"id":1,"user":{"login":"alice"}}]"#;
+        let comments: Vec<IssueComment> = serde_json::from_str(json).unwrap();
+        assert_eq!(comments[0].body, "");
+        assert_eq!(comments[0].html_url, "");
     }
 }

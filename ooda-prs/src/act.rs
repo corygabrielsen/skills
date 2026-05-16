@@ -4,6 +4,7 @@
 //! never reach act. Anything Action that arrives here is either
 //! Full (we run it) or Wait (we sleep `next_poll_seconds` and return).
 
+pub mod address_claude_review;
 mod ci;
 mod copilot;
 pub mod review_docs;

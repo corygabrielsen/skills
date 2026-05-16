@@ -36,6 +36,13 @@ pub struct PullRequestReview {
     pub submitted_at: Option<Timestamp>,
     #[serde(default)]
     pub body: String,
+    /// Permalink to the review on GitHub. Optional / `#[serde(default)]`
+    /// so existing test fixtures (which omit it) deserialize without
+    /// breakage; production REST responses always populate it.
+    /// Surfaced by the Claude-review axis when the latest Claude
+    /// review submission is selected as the witness body.
+    #[serde(default)]
+    pub html_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

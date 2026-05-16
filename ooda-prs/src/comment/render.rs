@@ -18,6 +18,7 @@ use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::orient::OrientedState;
+use crate::orient::claude_review::ClaudeReview;
 use crate::orient::copilot::CopilotActivity;
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
@@ -85,13 +86,14 @@ pub fn render(
     let reviews = reviews_line(oriented);
     let pr_meta = pull_request_metadata_line(oriented);
     let doc_review = doc_review_line(oriented);
+    let claude_review = claude_review_line(oriented);
     // Dedup key omits the action description's prose so that count
     // changes ("3 unresolved" → "2 unresolved") within the same
     // structural state don't suppress posting. Includes the action's
     // blocker slug so two different agent-handoff actions on the
     // same axis state don't collapse to the same key.
     let dedup_key = format!(
-        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{doc_review}\n{}\n{}",
+        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{doc_review}\n{claude_review}\n{}\n{}",
         decision_kind_tag(decision),
         decision_blocker_tag(decision),
     );
@@ -307,6 +309,20 @@ fn doc_review_line(o: &OrientedState) -> String {
     }
 }
 
+fn claude_review_line(o: &OrientedState) -> String {
+    match &o.claude_review {
+        ClaudeReview::NoActivity => "— Claude review · not requested".into(),
+        ClaudeReview::Addressed => "✅ Claude review · addressed".into(),
+        ClaudeReview::Fresh {
+            inline_thread_count,
+            ..
+        } => format!(
+            "⚠ Claude review · fresh ({})",
+            crate::text::count(*inline_thread_count, "inline thread"),
+        ),
+    }
+}
+
 fn decision_kind_tag(d: &Decision) -> &'static str {
     match d {
         Decision::Execute(_) => "exec",
@@ -402,6 +418,8 @@ mod tests {
             attest_path: None,
             doc_review: crate::orient::doc_review::DocReview::NeverAttested,
             doc_review_attest_path: None,
+            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
+            claude_review_attest_path: None,
         }
     }
 
@@ -646,6 +664,39 @@ mod tests {
         let mut o = empty_oriented();
         o.doc_review = DocReview::NeverAttested;
         assert_eq!(doc_review_line(&o), "⚠ Doc review · never attested");
+    }
+
+    // ── claude_review_line ──
+
+    #[test]
+    fn claude_review_line_no_activity_renders_dash() {
+        let o = empty_oriented();
+        assert_eq!(claude_review_line(&o), "— Claude review · not requested");
+    }
+
+    #[test]
+    fn claude_review_line_addressed_renders_check() {
+        let mut o = empty_oriented();
+        o.claude_review = ClaudeReview::Addressed;
+        assert_eq!(claude_review_line(&o), "✅ Claude review · addressed");
+    }
+
+    #[test]
+    fn claude_review_line_fresh_renders_warn_with_thread_count() {
+        let mut o = empty_oriented();
+        o.claude_review = ClaudeReview::Fresh {
+            latest_claude_at: chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            latest_claude_body: String::new(),
+            latest_claude_url: String::new(),
+            inline_thread_count: 2,
+            attested_at: None,
+            head_sha: "a".repeat(40),
+        };
+        let line = claude_review_line(&o);
+        assert!(line.contains("Claude review · fresh"), "{line}");
+        assert!(line.contains("2 inline threads"), "{line}");
     }
 
     #[test]

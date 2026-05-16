@@ -128,6 +128,8 @@ mod tests {
             doc_review_attest_path: Some(std::path::PathBuf::from(
                 "/state/753/doc_review_attest.json",
             )),
+            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
+            claude_review_attest_path: None,
             codex_review: None,
         }
     }

@@ -3,6 +3,7 @@
 pub mod branch_protection;
 pub mod branch_rules;
 pub mod checks;
+pub mod claude_review_attest;
 pub mod comments;
 pub mod compare;
 pub mod copilot_config;
@@ -31,6 +32,7 @@ use branch_protection::{
 };
 use branch_rules::{BranchRule, fetch_branch_rules};
 use checks::{PullRequestCheck, fetch_pull_request_checks};
+use claude_review_attest::{ClaudeReviewObservation, observe_claude_review};
 use comments::{IssueComment, fetch_issue_comments};
 use compare::{MergeBaseDelta, fetch_merge_base_delta};
 use copilot_config::fetch_copilot_config;
@@ -125,6 +127,10 @@ pub struct GitHubObservations {
     /// Doc-review attestation snapshot. Same shape as
     /// `pull_request_metadata`; drives the `DocReview` orient axis.
     pub doc_review: DocReviewObservation,
+    /// Claude-review aggregation: attestation + Claude-authored
+    /// content across `reviews`, `issue_comments`, `review_threads_page`.
+    /// Drives the `ClaudeReview` orient axis.
+    pub claude_review: ClaudeReviewObservation,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -140,6 +146,7 @@ pub struct GitHubObservations {
 ///      instead of `decide()`'s documented `Halt::Terminal`.
 ///   3. Parallel aux fetch — the remaining nine calls fan out
 ///      concurrently. Fail-fast on the first error.
+#[allow(clippy::too_many_lines)]
 pub fn fetch_all(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -210,48 +217,72 @@ pub fn fetch_all(
             s.spawn(move || fetch_merge_base_delta(slug, &base_for_compare, &head_for_compare))
         };
 
+        let checks = try_fetch!(h_checks.join().expect("fetch_pull_request_checks panicked"));
+        let reviews_v = try_fetch!(
+            h_reviews
+                .join()
+                .expect("fetch_pull_request_reviews panicked")
+        );
+        let review_threads_page = try_fetch!(h_threads.join().expect("fetch_threads panicked"));
+        let issue_events = try_fetch!(h_events.join().expect("fetch_issue_events panicked"));
+        let issue_comments = try_fetch!(h_comments.join().expect("fetch_issue_comments panicked"));
+        let requested_reviewers = try_fetch!(h_reqrev.join().expect("fetch_reqrev panicked"));
+        let branch_rules = try_fetch!(h_rules.join().expect("fetch_branch_rules panicked"));
+        let branch_protection =
+            try_fetch!(h_prot.join().expect("fetch_branch_protection panicked"));
+        let copilot_config =
+            try_fetch!(h_copilot_cfg.join().expect("fetch_copilot_config panicked"));
+        let rate_limit_budget = try_fetch!(h_rate_limit.join().expect("fetch_rate_limit panicked"));
+        let workflow_runs = try_fetch!(
+            h_workflow_runs
+                .join()
+                .expect("fetch_workflow_runs panicked")
+        );
+        let cursor_status = try_fetch!(
+            h_cursor_status
+                .join()
+                .expect("fetch_cursor_status panicked")
+        );
+        // Compare endpoint 404s after a base-ref delete race —
+        // tolerate that case the same way `branch_protection`
+        // does (collapse to None), surface every other failure.
+        let merge_base_delta = match h_compare.join().expect("fetch_merge_base_delta panicked") {
+            Ok(delta) => Some(delta),
+            Err(GhError::NotFound) => None,
+            Err(GhError::RateLimited(hit)) => {
+                return Ok(FetchOutcome::RateLimited(hit));
+            }
+            Err(e) => return Err(e),
+        };
+
+        let claude_review = observe_claude_review(
+            state_root,
+            pr,
+            &head_sha,
+            &reviews_v,
+            &issue_comments,
+            &review_threads_page,
+        );
+
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pull_request_view,
-            checks: try_fetch!(h_checks.join().expect("fetch_pull_request_checks panicked")),
-            reviews: try_fetch!(
-                h_reviews
-                    .join()
-                    .expect("fetch_pull_request_reviews panicked")
-            ),
-            review_threads_page: try_fetch!(h_threads.join().expect("fetch_threads panicked")),
-            issue_events: try_fetch!(h_events.join().expect("fetch_issue_events panicked")),
-            issue_comments: try_fetch!(h_comments.join().expect("fetch_issue_comments panicked")),
-            requested_reviewers: try_fetch!(h_reqrev.join().expect("fetch_reqrev panicked")),
-            branch_rules: try_fetch!(h_rules.join().expect("fetch_branch_rules panicked")),
-            branch_protection: try_fetch!(h_prot.join().expect("fetch_branch_protection panicked")),
-            copilot_config: try_fetch!(
-                h_copilot_cfg.join().expect("fetch_copilot_config panicked")
-            ),
+            checks,
+            reviews: reviews_v,
+            review_threads_page,
+            issue_events,
+            issue_comments,
+            requested_reviewers,
+            branch_rules,
+            branch_protection,
+            copilot_config,
             stack_root_branch,
-            rate_limit_budget: try_fetch!(h_rate_limit.join().expect("fetch_rate_limit panicked")),
-            workflow_runs: try_fetch!(
-                h_workflow_runs
-                    .join()
-                    .expect("fetch_workflow_runs panicked")
-            ),
-            cursor_status: try_fetch!(
-                h_cursor_status
-                    .join()
-                    .expect("fetch_cursor_status panicked")
-            ),
-            // Compare endpoint 404s after a base-ref delete race —
-            // tolerate that case the same way `branch_protection`
-            // does (collapse to None), surface every other failure.
-            merge_base_delta: match h_compare.join().expect("fetch_merge_base_delta panicked") {
-                Ok(delta) => Some(delta),
-                Err(GhError::NotFound) => None,
-                Err(GhError::RateLimited(hit)) => {
-                    return Ok(FetchOutcome::RateLimited(hit));
-                }
-                Err(e) => return Err(e),
-            },
+            rate_limit_budget,
+            workflow_runs,
+            cursor_status,
+            merge_base_delta,
             pull_request_metadata,
             doc_review,
+            claude_review,
         })))
     })
 }
@@ -301,9 +332,19 @@ fn terminal_observations(
         },
         doc_review: DocReviewObservation {
             attestation: None,
+            head_sha: head_sha.clone(),
+            commits_behind: None,
+            attest_path: None,
+        },
+        claude_review: ClaudeReviewObservation {
+            attestation: None,
             head_sha,
             commits_behind: None,
             attest_path: None,
+            latest_claude_at: None,
+            latest_claude_body: None,
+            latest_claude_url: None,
+            inline_thread_count: 0,
         },
     }
 }

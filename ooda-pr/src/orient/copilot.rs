@@ -899,6 +899,7 @@ mod tests {
             commit_id: GitCommitSha::parse(sha).unwrap(),
             submitted_at: Some(ts(at)),
             body: body.into(),
+            html_url: String::new(),
         }
     }
     fn req_event(at: &str, login: &str) -> IssueEvent {

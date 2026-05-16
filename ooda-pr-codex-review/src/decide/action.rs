@@ -235,6 +235,16 @@ pub enum ActionKind {
     ReviewDocs {
         attest_path: std::path::PathBuf,
     },
+
+    // ── Claude review attestation ──
+    /// Claude has posted review content past the last attestation
+    /// (`Fresh`). Hand off to an agent to address the threads + body
+    /// and re-run `ooda-attest claude-review`. Distinct from the
+    /// SHA-based attestation axes: the trigger is *content* drift,
+    /// not HEAD-SHA drift.
+    AddressClaudeReview {
+        attest_path: std::path::PathBuf,
+    },
 }
 
 impl ActionKind {
@@ -284,6 +294,7 @@ impl ActionKindName for ActionKind {
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
             Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
             Self::ReviewDocs { .. } => "ReviewDocs",
+            Self::AddressClaudeReview { .. } => "AddressClaudeReview",
         }
     }
 }

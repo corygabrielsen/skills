@@ -110,17 +110,18 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        // The blocker tag combines the worst symptom (sorted) so a
-        // queue-timeout failure produces a distinct stall key from a
-        // run-timeout failure on the same check set.
-        let tag = format!("ci_failed: {names_csv}");
         let prompt = escalate_ci_failed_prompt(&failed_ne, summary, &names_csv);
         out.push(Action {
             kind: ActionKind::EscalateCiFailed { checks: failed_ne },
             effect: ActionEffect::Human { prompt },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag(tag),
+            // Stable across iterations: the gate is "at least one
+            // required check failed". Per-check details live on
+            // the action payload + handoff prompt. Stall-exempt by
+            // Human automation but invariant-violating to embed
+            // mutating names in the key.
+            blocker: BlockerKey::tag("ci_failed"),
         });
         return;
     }
@@ -137,11 +138,6 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
         })
         .collect();
     if let Some(degraded_ne) = NonEmpty::try_from_vec(degraded) {
-        let names_csv = degraded_ne
-            .iter()
-            .map(|c| c.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
         let symptom_tag = if degraded_ne
             .iter()
             .any(|c| matches!(c.symptom, Symptom::RunTimeout))
@@ -161,7 +157,11 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             effect: ActionEffect::Full { log },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag(format!("ci_degraded_{symptom_tag}: {names_csv}")),
+            // Stable across iterations: the gate is the
+            // (re-run-loop, symptom_class) tuple. Affected check
+            // names live on the action payload; the blocker key
+            // names the gate, not the current cohort.
+            blocker: BlockerKey::tag(format!("ci_degraded_{symptom_tag}")),
         });
         return;
     }
@@ -189,7 +189,6 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
         return;
     }
     if let Some(names) = NonEmpty::try_from_vec(pending_names.to_vec()) {
-        let blocker_list = join_names(&names);
         let pending_count = names.len();
         out.push(Action {
             kind: ActionKind::WaitForCi { pending: names },
@@ -202,7 +201,9 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag(format!("ci_pending: {blocker_list}")),
+            // Stable across iterations: gate is "≥1 required check
+            // pending". Cohort is on the action payload.
+            blocker: BlockerKey::tag("ci_pending"),
         });
     }
     if let Some(names) = NonEmpty::try_from_vec(summary.missing_names.clone()) {
@@ -219,7 +220,9 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag(format!("ci_missing: {blocker_list}")),
+            // Stable across iterations: gate is "≥1 required check
+            // missing". Cohort is on the action payload.
+            blocker: BlockerKey::tag("ci_missing"),
         });
     }
 }
@@ -240,7 +243,6 @@ fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<
         quoted.join(", "),
         crate::text::count(summary.advisory.failed.len(), "advisory check"),
     );
-    let blocker_list = join_names(&blocked);
     let prompt = triage_wait_prompt(headline, &summary.advisory.failed);
     out.push(Action {
         kind: ActionKind::TriageWait {
@@ -249,7 +251,12 @@ fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
+        // Stable across iterations: gate is "required blocked +
+        // advisory failed concurrent". Cohort is on the action
+        // payload. Agent automation reaches stall comparator, so
+        // a volatile key here would defeat the second-fire stall
+        // trip.
+        blocker: BlockerKey::tag("ci_triage"),
     });
 }
 

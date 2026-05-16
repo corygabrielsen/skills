@@ -41,6 +41,12 @@ last completed. Invoking the binary directly skips the rebuild
 and may serve a stale build relative to the current source
 tree.
 
+## Sibling binaries
+
+| Name          | Refers to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ooda-attest` | Companion CLI that writes PR-metadata attestation files (`<state-root>/<pr-id>/pr_meta_attest.json`). The `SyncPullRequestMetadata` handoff (exit 4) instructs the receiving agent to run it after updating the PR title, description, and labels. `--state-root` is optional; absent it, the same env-var chain `ooda-pr` uses (`$OODA_PR_STATE_HOME` → `$XDG_STATE_HOME/ooda-pr` → `$HOME/.local/state/ooda-pr` → `$TMPDIR/ooda-pr`) supplies the default. Run `ooda-attest --help` for the full surface. |
+
 ## Type spine
 
 Boundary types are defined in the `ooda-core` library crate

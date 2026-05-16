@@ -43,6 +43,7 @@ pub mod pull_request_state;
 pub mod rate_limit;
 pub mod single_line_string;
 pub mod stall_key;
+pub mod state_root;
 
 pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError};

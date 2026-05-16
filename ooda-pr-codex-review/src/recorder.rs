@@ -175,7 +175,8 @@ struct EventRange {
 
 impl Recorder {
     pub fn open(cfg: RecorderConfig) -> Result<Self, RecorderError> {
-        let state_root = resolve_state_root(cfg.state_root.as_deref());
+        let state_root =
+            ooda_core::state_root::resolve_ooda_pr_state_root(cfg.state_root.as_deref());
         let pr_root = pull_request_root(&state_root, &cfg.slug, cfg.pr);
         let now = Utc::now();
         let run_id = run_id(now);
@@ -922,31 +923,6 @@ fn write_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, bytes)
-}
-
-fn resolve_state_root(explicit: Option<&Path>) -> PathBuf {
-    if let Some(path) = explicit {
-        return path.to_path_buf();
-    }
-    if let Some(path) = nonempty_env_path("OODA_PR_STATE_HOME") {
-        return path;
-    }
-    if let Some(path) = nonempty_env_path("XDG_STATE_HOME") {
-        return path.join("ooda-pr");
-    }
-    if let Some(home) = nonempty_env_path("HOME") {
-        return home.join(".local").join("state").join("ooda-pr");
-    }
-    std::env::temp_dir().join("ooda-pr")
-}
-
-fn nonempty_env_path(name: &str) -> Option<PathBuf> {
-    let value = std::env::var_os(name)?;
-    if value.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(value))
-    }
 }
 
 fn pull_request_root(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf {

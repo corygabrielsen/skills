@@ -661,6 +661,7 @@ mod tests {
             commit_id: GitCommitSha::parse(sha).unwrap(),
             submitted_at: Some(ts(at)),
             body: body.into(),
+            html_url: String::new(),
         }
     }
     fn empty_status() -> CursorStatus {

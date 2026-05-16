@@ -5,6 +5,7 @@
 
 pub mod bot_threads;
 pub mod ci;
+pub mod claude_review;
 pub mod codex_review;
 pub mod copilot;
 pub mod cursor;
@@ -22,6 +23,7 @@ use crate::observe::github::compare::MergeBaseDelta;
 use serde::Serialize;
 
 use ci::CiReport;
+use claude_review::{ClaudeReview, orient_claude_review};
 pub use codex_review::CodexReviewReport;
 use codex_review::orient_codex_review;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
@@ -99,6 +101,15 @@ pub struct OrientedState {
     /// Absolute path of the doc-review attestation file the agent
     /// must rewrite. Mirrors `attest_path` for the doc-review axis.
     pub doc_review_attest_path: Option<std::path::PathBuf>,
+    /// Claude-review state. Diverges from the SHA-based attestation
+    /// axes — projects to `NoActivity` / `Addressed` / `Fresh` based
+    /// on Claude content drift past the attestation timestamp, not
+    /// HEAD SHA drift. Drives the `AddressClaudeReview` decide
+    /// candidate.
+    pub claude_review: ClaudeReview,
+    /// Absolute path of the Claude-review attestation file the agent
+    /// must rewrite. Mirrors `attest_path` for the Claude-review axis.
+    pub claude_review_attest_path: Option<std::path::PathBuf>,
 }
 
 /// Compose all axes from a single GitHub observation bundle plus
@@ -188,6 +199,8 @@ pub fn orient(
     let attest_path = obs.pull_request_metadata.attest_path.clone();
     let doc_review = orient_doc_review(&obs.doc_review);
     let doc_review_attest_path = obs.doc_review.attest_path.clone();
+    let claude_review = orient_claude_review(&obs.claude_review);
+    let claude_review_attest_path = obs.claude_review.attest_path.clone();
 
     OrientedState {
         ci,
@@ -202,5 +215,7 @@ pub fn orient(
         attest_path,
         doc_review,
         doc_review_attest_path,
+        claude_review,
+        claude_review_attest_path,
     }
 }

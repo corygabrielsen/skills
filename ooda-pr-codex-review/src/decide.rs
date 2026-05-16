@@ -9,6 +9,7 @@
 
 pub mod action;
 mod ci;
+mod claude_review;
 mod codex_review;
 mod copilot;
 mod cursor;
@@ -73,6 +74,7 @@ pub(crate) fn candidates(
     // sort settles it at the bottom.
     out.extend(pull_request_metadata::candidates(oriented, pr));
     out.extend(doc_review::candidates(oriented, pr));
+    out.extend(claude_review::candidates(oriented, pr));
     // Fallback merge-state blocker: only fires when NO axis can
     // already advance or unblock the PR. Catches unmodeled policy
     // gates (deployment protection, signed commits, custom

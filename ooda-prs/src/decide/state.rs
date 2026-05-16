@@ -379,6 +379,8 @@ mod tests {
             attest_path: None,
             doc_review: crate::orient::doc_review::DocReview::NeverAttested,
             doc_review_attest_path: None,
+            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
+            claude_review_attest_path: None,
         }
     }
 
@@ -400,6 +402,8 @@ mod tests {
             attest_path: None,
             doc_review: crate::orient::doc_review::DocReview::NeverAttested,
             doc_review_attest_path: None,
+            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
+            claude_review_attest_path: None,
         }
     }
 

@@ -28,6 +28,7 @@ MIRRORS=("ooda-prs" "ooda-pr-codex-review")
 # Keep this list in lock-step with the actual mirror set; add to it
 # whenever a new file gains "shared across PR-side binaries" status.
 STRICT_FILES=(
+    "src/act/address_claude_review.rs"
     "src/act/ci.rs"
     "src/act/copilot.rs"
     "src/act/review_docs.rs"
@@ -36,6 +37,7 @@ STRICT_FILES=(
     "src/comment.rs"
     "src/dashboard.rs"
     "src/decide/ci.rs"
+    "src/decide/claude_review.rs"
     "src/decide/copilot.rs"
     "src/decide/cursor.rs"
     "src/decide/doc_review.rs"
@@ -43,6 +45,7 @@ STRICT_FILES=(
     "src/observe/github/branch_protection.rs"
     "src/observe/github/branch_rules.rs"
     "src/observe/github/checks.rs"
+    "src/observe/github/claude_review_attest.rs"
     "src/observe/github/comments.rs"
     "src/observe/github/compare.rs"
     "src/observe/github/copilot_config.rs"
@@ -61,6 +64,7 @@ STRICT_FILES=(
     "src/observe/github/workflow_runs.rs"
     "src/orient/bot_threads.rs"
     "src/orient/ci.rs"
+    "src/orient/claude_review.rs"
     "src/orient/copilot.rs"
     "src/orient/cursor.rs"
     "src/orient/doc_review.rs"
@@ -83,6 +87,7 @@ declare -a ALLOWLIST_PATHS=(
     "ooda-pr-codex-review:src/decide/state.rs"
     "ooda-pr-codex-review:src/decide/pull_request_metadata.rs"
     "ooda-pr-codex-review:src/decide/doc_review.rs"
+    "ooda-pr-codex-review:src/decide/claude_review.rs"
     "ooda-pr-codex-review:src/comment/render.rs"
 )
 ALLOWLIST_PATTERN='codex_review: None,'

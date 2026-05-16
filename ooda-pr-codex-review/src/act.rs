@@ -11,6 +11,7 @@
 //! the spawn-time data (binary path, repo root, batch dir root,
 //! current head SHA).
 
+pub mod address_claude_review;
 mod ci;
 mod copilot;
 pub mod review_docs;

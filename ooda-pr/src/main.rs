@@ -14,6 +14,7 @@ mod recorder;
 mod runner;
 mod text;
 
+use dashboard::Dashboard;
 use decide::action::{ActionEffect, rate_limit_wait_action};
 use decide::candidates;
 use decide::decision::{Decision, DecisionHalt};
@@ -292,6 +293,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         oriented: oriented.clone(),
         head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
         base_branch: obs.pr_view.base_ref_name.to_string(),
+        dashboard: Dashboard::from_iteration(&oriented, &candidate_actions, &decision),
     };
     decorate_handoff_human(
         Outcome::from(decision),
@@ -315,6 +317,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
             oriented: oriented.clone(),
             head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
             base_branch: obs.pr_view.base_ref_name.to_string(),
+            dashboard: Dashboard::from_iteration(oriented, candidate_actions, d),
         });
         recorder.set_iteration(Some(i));
         recorder.record_iteration(i, obs, oriented, candidate_actions, d);
@@ -417,11 +420,18 @@ fn halt_blocker(halt: &DecisionHalt) -> Option<&ooda_core::BlockerKey> {
 /// decorator needs after `run_loop` returns. Captured from the last
 /// `on_state` callback so the post-loop decorator can render the PR
 /// link + a short situational summary without re-observing.
+///
+/// `dashboard` carries the Phase-B preamble payload (tier-grouped
+/// candidates, per-axis signals, blockers). Constructed at the
+/// boundary from the same `(oriented, candidates, decision)` triple
+/// the recorder uses — option (a) from the spec, kept just-in-time
+/// so no new thread is plumbed through the runner.
 #[derive(Debug, Clone)]
 struct HandoffSnapshot {
     oriented: orient::OrientedState,
     head_short: String,
     base_branch: String,
+    dashboard: Dashboard,
 }
 
 // Rebase is `HandoffAgent`, not `HandoffHuman` — `ActionEffect::Agent`
@@ -436,6 +446,18 @@ struct HandoffSnapshot {
 /// `HandoffHuman` and the `HandoffAgent` variants whose recipient
 /// also needs the situational frame. Pass-through for every other
 /// `Outcome` variant.
+///
+/// Two layers of decoration:
+/// * The dashboard preamble (Phase B) — universal across every
+///   `HandoffHuman` and `HandoffAgent` outcome. Prepended to the
+///   prompt's sections so the recipient sees tier-grouped
+///   candidates, per-axis signals, and blockers before the
+///   per-action body.
+/// * The per-action context block (5bf9c7c) — gated by the
+///   `agent_action_needs_context` allowlist. Appended via
+///   `push_handoff_context` after the existing prompt body so
+///   `HandoffHuman` and allowlisted `HandoffAgent` recipients pick
+///   up PR URL / branch / CI / reviews on the trailing edge.
 fn decorate_handoff_human(
     outcome: Outcome,
     slug: &RepoSlug,
@@ -444,15 +466,41 @@ fn decorate_handoff_human(
 ) -> Outcome {
     match outcome {
         Outcome::HandoffHuman(mut action) => {
+            prepend_dashboard_preamble(&mut action, snapshot);
             push_handoff_context(&mut action, slug, pr, snapshot);
             Outcome::HandoffHuman(action)
         }
-        Outcome::HandoffAgent(mut action) if agent_action_needs_context(&action.kind) => {
-            push_handoff_context(&mut action, slug, pr, snapshot);
+        Outcome::HandoffAgent(mut action) => {
+            prepend_dashboard_preamble(&mut action, snapshot);
+            if agent_action_needs_context(&action.kind) {
+                push_handoff_context(&mut action, slug, pr, snapshot);
+            }
             Outcome::HandoffAgent(action)
         }
         other => other,
     }
+}
+
+/// Prepend the dashboard preamble sections (tier-grouped
+/// candidates, per-axis signals, blockers) to the handoff prompt's
+/// sections vec. No-op when the snapshot is absent (e.g. usage
+/// errors that surface a synthetic handoff without ever entering
+/// the iteration loop) or when the dashboard projects no
+/// candidates (terminal halts already render an empty preamble).
+fn prepend_dashboard_preamble(
+    handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
+    snapshot: Option<&HandoffSnapshot>,
+) {
+    let Some(snap) = snapshot else {
+        return;
+    };
+    let preamble = snap.dashboard.render_handoff_preamble();
+    if preamble.is_empty() {
+        return;
+    }
+    let mut sections = preamble;
+    sections.extend(std::mem::take(&mut handoff.prompt.sections));
+    handoff.prompt.sections = sections;
 }
 
 /// `HandoffAgent` actions whose prompts benefit from the same
@@ -855,6 +903,231 @@ mod tests {
         let rendered = handoff.prompt.to_string();
         assert!(!rendered.contains("PR: https://"));
         assert!(!rendered.contains("Blocker:"));
+    }
+
+    // ── Phase B: dashboard preamble injection ─────────────────────
+
+    fn snapshot_with_dashboard(candidates: Vec<decide::action::Action>) -> HandoffSnapshot {
+        use dashboard::{Dashboard, RankedCandidate};
+        // Build a Dashboard directly from a candidate list — the
+        // boundary-time helper `Dashboard::from_iteration` requires
+        // a full `OrientedState` we don't need here. The decorator
+        // only consumes `render_handoff_preamble`, which walks the
+        // public fields.
+        let dashboard_candidates: Vec<RankedCandidate> = candidates
+            .iter()
+            .map(|a| RankedCandidate {
+                action_name: ooda_core::ActionKindName::name(&a.kind),
+                action_log: a.rendered_payload(),
+                effect_debug: format!("{:?}", a.effect),
+                urgency: a.urgency,
+                blocker: a.blocker.clone(),
+            })
+            .collect();
+        let blockers: Vec<dashboard::Blocker> = dashboard_candidates
+            .iter()
+            .map(|c| dashboard::Blocker {
+                tag: c.blocker.clone(),
+                action_name: c.action_name,
+            })
+            .collect();
+        let dashboard = Dashboard {
+            candidates: dashboard_candidates,
+            signals: Vec::new(),
+            blockers,
+        };
+        HandoffSnapshot {
+            oriented: stub_oriented(),
+            head_short: "abcdef0".into(),
+            base_branch: "master".into(),
+            dashboard,
+        }
+    }
+
+    fn stub_oriented() -> orient::OrientedState {
+        // The preamble decorator only reads `snapshot.dashboard`,
+        // but `push_handoff_context` reads ci.summary + reviews.
+        // A defaulted OrientedState satisfies both — the assertions
+        // in the decorator tests below pin on PR-context lines
+        // (which use the slug/pr passed in, not snapshot fields).
+        use crate::ids::Timestamp;
+        use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
+        use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
+        use crate::orient::reviews::{PendingReviews, ReviewSummary};
+        use crate::orient::state::PullRequestState;
+        orient::OrientedState {
+            ci: CiReport {
+                summary: CiSummary {
+                    required: CheckBucket::default(),
+                    missing_names: vec![],
+                    completed_at: None,
+                    advisory: CheckBucket::default(),
+                },
+                activity: CiActivity::Resolved(ResolvedState::AllGreen),
+            },
+            state: PullRequestState {
+                conflict: Mergeable::Mergeable,
+                draft: false,
+                wip: false,
+                title_len: 30,
+                title_ok: true,
+                body: true,
+                summary: true,
+                test_plan: true,
+                content_label: true,
+                assignees: 1,
+                reviewers: 1,
+                merge_when_ready: false,
+                commits: 1,
+                behind: false,
+                has_open_parent_pr: false,
+                merge_state_status: MergeStateStatus::Clean,
+                updated_at: Timestamp::parse("2024-01-01T00:00:00Z").unwrap(),
+                last_commit_at: None,
+            },
+            reviews: ReviewSummary {
+                decision: None,
+                threads_unresolved: 0,
+                threads_total: 0,
+                bot_comments: 0,
+                approvals_on_head: 0,
+                approvals_stale: 0,
+                pending_reviews: PendingReviews::default(),
+                bot_reviews: vec![],
+            },
+            copilot: None,
+            cursor: None,
+            threads: vec![],
+            merge_base_delta: None,
+        }
+    }
+
+    fn rebase_action() -> decide::action::Action {
+        decide::action::Action {
+            kind: decide::action::ActionKind::Rebase,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
+            },
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingFix,
+            blocker: ids::BlockerKey::tag("behind_base"),
+        }
+    }
+
+    #[test]
+    fn decorate_handoff_human_prepends_dashboard_preamble() {
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::RequestApproval,
+            prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            blocker: ids::BlockerKey::tag("not_approved"),
+        };
+        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(
+            Outcome::HandoffHuman(Box::new(handoff)),
+            &slug,
+            pr,
+            Some(&snap),
+        );
+        let Outcome::HandoffHuman(handoff) = decorated else {
+            panic!("expected HandoffHuman");
+        };
+        let rendered = handoff.prompt.to_string();
+        // Preamble appears before the trailing context block. The
+        // headline (per-action body's first line) still leads —
+        // sections render between headline and context.
+        assert!(
+            rendered.contains("Recommended (blocking fix): Rebase:"),
+            "preamble: {rendered}",
+        );
+        assert!(rendered.contains("[blocker: behind_base]"), "{rendered}");
+        assert!(rendered.contains("Blockers"), "{rendered}");
+        // The existing per-action context block from 5bf9c7c still
+        // lands at the trailing edge — preamble does not displace it.
+        assert!(
+            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            "trailing context: {rendered}",
+        );
+        assert!(rendered.contains("Blocker: not_approved"), "{rendered}");
+    }
+
+    #[test]
+    fn decorate_handoff_agent_rebase_gets_preamble_plus_existing_body() {
+        // The Phase-B preamble is universal; the 5bf9c7c per-action
+        // context block stays gated on the allowlist (Rebase opts
+        // in). Both layers coexist — preamble on top, context block
+        // on the bottom, original prompt headline in between.
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::Rebase,
+            prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingFix,
+            blocker: ids::BlockerKey::tag("behind_base"),
+        };
+        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(
+            Outcome::HandoffAgent(Box::new(handoff)),
+            &slug,
+            pr,
+            Some(&snap),
+        );
+        let Outcome::HandoffAgent(handoff) = decorated else {
+            panic!("expected HandoffAgent");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(
+            rendered.contains("Recommended (blocking fix): Rebase:"),
+            "preamble missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            "5bf9c7c context missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("Blocker: behind_base"),
+            "5bf9c7c blocker missing: {rendered}",
+        );
+        assert!(rendered.contains("Rebase onto the latest base branch"));
+    }
+
+    #[test]
+    fn decorate_handoff_agent_non_allowlisted_still_gets_preamble() {
+        // The preamble is universal — a HandoffAgent variant outside
+        // the per-action context allowlist still picks it up. This
+        // pins the "preamble is not gated by `agent_action_needs_context`"
+        // contract.
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::AddressChangeRequest,
+            prompt: ooda_core::HandoffPrompt::new("Address change request"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingFix,
+            blocker: ids::BlockerKey::tag("changes_requested_summary"),
+        };
+        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("1").unwrap();
+        let decorated = decorate_handoff_human(
+            Outcome::HandoffAgent(Box::new(handoff)),
+            &slug,
+            pr,
+            Some(&snap),
+        );
+        let Outcome::HandoffAgent(handoff) = decorated else {
+            panic!("expected HandoffAgent");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(
+            rendered.contains("Recommended (blocking fix): Rebase:"),
+            "preamble must apply to non-allowlisted: {rendered}",
+        );
+        // Per-action context still gated — no PR / Blocker lines.
+        assert!(!rendered.contains("PR: https://"), "{rendered}");
+        assert!(!rendered.contains("Blocker: behind_base"), "{rendered}");
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::orient::OrientedState;
 use crate::orient::ci::ci_signal;
 use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
-use ooda_core::{ActionKindName, Urgency};
+use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -303,6 +303,111 @@ impl Dashboard {
         }
         out
     }
+
+    /// Project the dashboard as a sequence of [`PromptSection`]s
+    /// suitable for prepending to an existing handoff prompt body.
+    /// The Phase-B preamble — universal across `HandoffAgent` and
+    /// `HandoffHuman` handoffs, layered on top of any per-action
+    /// context the existing decorator (5bf9c7c) appends.
+    ///
+    /// Section order mirrors `next.md`: recommended winner →
+    /// queued lower-tier groups → signals → blockers. Empty
+    /// sections are omitted — the same rule the on-disk surfaces
+    /// follow.
+    pub fn render_handoff_preamble(&self) -> Vec<PromptSection> {
+        let mut sections: Vec<PromptSection> = Vec::new();
+
+        let Some(winner) = self.candidates.first() else {
+            return sections;
+        };
+
+        sections.push(PromptSection::Paragraph(format!(
+            "Recommended ({}): {}: {} [blocker: {}]",
+            urgency_label(winner.urgency),
+            winner.action_name,
+            winner.action_log,
+            winner.blocker,
+        )));
+
+        let mut by_tier = tiers(&self.candidates);
+        if let Some(bucket) = by_tier.first_mut() {
+            bucket.candidates.remove(0);
+        }
+        // Same-tier alternatives — header paragraph then a numbered
+        // list of candidates. Two-section pairing keeps each
+        // candidate at a meaningful index ("1.", "2." …) without
+        // the header chewing position 1.
+        if let Some(top) = by_tier.first()
+            && !top.candidates.is_empty()
+        {
+            sections.push(PromptSection::Paragraph(format!(
+                "Also at this tier ({}):",
+                urgency_label(top.urgency),
+            )));
+            push_candidate_list(&mut sections, &top.candidates);
+        }
+
+        // Queued lower tiers — one header paragraph + numbered list
+        // pair per tier. The tier label is the only thing that
+        // varies between buckets.
+        for bucket in by_tier.iter().skip(1) {
+            sections.push(PromptSection::Paragraph(format!(
+                "Queued ({}):",
+                urgency_label(bucket.urgency),
+            )));
+            push_candidate_list(&mut sections, &bucket.candidates);
+        }
+
+        // Signals — header paragraph then numbered list of axis
+        // entries (axis name + icon glyph + summary).
+        if !self.signals.is_empty() {
+            sections.push(PromptSection::Paragraph("Signals:".to_string()));
+            let items: Vec<SingleLineString> = self
+                .signals
+                .iter()
+                .map(|s| {
+                    SingleLineString::new(format!(
+                        "{}: {} {}",
+                        s.axis.as_str(),
+                        s.icon.glyph(),
+                        s.summary,
+                    ))
+                })
+                .collect();
+            if let Some(list) = NonEmpty::try_from_vec(items) {
+                sections.push(PromptSection::NumberedList(list));
+            }
+        }
+
+        // Blockers — header paragraph then numbered list of `tag:
+        // action` lines, deduplicated upstream by `collect_blockers`.
+        if !self.blockers.is_empty() {
+            sections.push(PromptSection::Paragraph("Blockers:".to_string()));
+            let items: Vec<SingleLineString> = self
+                .blockers
+                .iter()
+                .map(|b| SingleLineString::new(format!("{}: {}", b.tag, b.action_name)))
+                .collect();
+            if let Some(list) = NonEmpty::try_from_vec(items) {
+                sections.push(PromptSection::NumberedList(list));
+            }
+        }
+
+        sections
+    }
+}
+
+/// Push a [`PromptSection::NumberedList`] of `<action>: <log>`
+/// lines for each candidate. No-op when the slice is empty (the
+/// caller already gated on emptiness for the section header).
+fn push_candidate_list(sections: &mut Vec<PromptSection>, candidates: &[&RankedCandidate]) {
+    let items: Vec<SingleLineString> = candidates
+        .iter()
+        .map(|c| SingleLineString::new(format!("{}: {}", c.action_name, c.action_log)))
+        .collect();
+    if let Some(list) = NonEmpty::try_from_vec(items) {
+        sections.push(PromptSection::NumberedList(list));
+    }
 }
 
 /// Tier bucket — one urgency level with its candidates in input
@@ -570,6 +675,169 @@ mod tests {
         let md = d.render_next_md();
         eprintln!("---- next.md sample ----\n{md}---- end ----");
         assert!(md.contains("## Recommended (critical)"));
+    }
+
+    // ── Snapshot tests for handoff preamble rendering ────────────
+
+    fn preamble_text(d: &Dashboard) -> String {
+        // Render via HandoffPrompt so the preamble flows through
+        // the same Display path the binary ships at runtime — any
+        // section-formatter drift surfaces here.
+        let mut p = HandoffPrompt::new("HEAD");
+        for s in d.render_handoff_preamble() {
+            p.sections.push(s);
+        }
+        p.to_string()
+    }
+
+    #[test]
+    fn preamble_empty_when_no_candidates() {
+        let d = Dashboard {
+            candidates: Vec::new(),
+            signals: Vec::new(),
+            blockers: Vec::new(),
+        };
+        assert!(d.render_handoff_preamble().is_empty());
+    }
+
+    #[test]
+    fn preamble_single_winner_alone() {
+        let d = dashboard_from_candidates(vec![rerequest_copilot()]);
+        let text = preamble_text(&d);
+        assert!(
+            text.contains("Recommended (critical): RerequestCopilot: rerequest copilot"),
+            "{text}",
+        );
+        assert!(text.contains("[blocker: copilot:rerequest]"), "{text}");
+        assert!(!text.contains("Also at this tier"), "{text}");
+        assert!(!text.contains("Queued"), "{text}");
+        assert!(!text.contains("Signals"), "{text}");
+        assert!(text.contains("Blockers"), "{text}");
+        assert!(
+            text.contains("copilot:rerequest: RerequestCopilot"),
+            "{text}",
+        );
+    }
+
+    #[test]
+    fn preamble_winner_with_same_tier_alternative() {
+        let other = act(
+            ActionKind::Rebase,
+            Urgency::Critical,
+            "state:rebase",
+            "rebase onto base",
+        );
+        let d = dashboard_from_candidates(vec![rerequest_copilot(), other]);
+        let text = preamble_text(&d);
+        assert!(text.contains("Recommended (critical)"), "{text}");
+        assert!(text.contains("Also at this tier (critical)"), "{text}");
+        assert!(text.contains("Rebase: rebase onto base"), "{text}");
+        assert!(!text.contains("Queued"), "{text}");
+    }
+
+    #[test]
+    fn preamble_winner_with_lower_tier_candidate() {
+        let d = dashboard_from_candidates(vec![rerequest_copilot(), wait_for_ci()]);
+        let text = preamble_text(&d);
+        assert!(text.contains("Recommended (critical)"), "{text}");
+        assert!(!text.contains("Also at this tier"), "{text}");
+        assert!(text.contains("Queued (blocking wait)"), "{text}");
+        assert!(text.contains("WaitForCi: wait for ci/build"), "{text}");
+    }
+
+    #[test]
+    fn preamble_demo_print_full_dashboard() {
+        // Visual-verification path — prints the preamble for a
+        // representative 3-candidate / 3-signal / 3-blocker state
+        // behind --nocapture. The assertion just pins the headline
+        // so the test stays meaningful in CI.
+        let signals = vec![
+            AxisSignal {
+                axis: AxisName::Copilot,
+                icon: SignalIcon::Warn,
+                summary: "request received but no review yet (degraded)".into(),
+            },
+            AxisSignal {
+                axis: AxisName::Ci,
+                icon: SignalIcon::InFlight,
+                summary: "2 checks pending (worst: healthy)".into(),
+            },
+            AxisSignal {
+                axis: AxisName::Cursor,
+                icon: SignalIcon::Ok,
+                summary: "no findings".into(),
+            },
+        ];
+        let candidates_v: Vec<RankedCandidate> =
+            [rerequest_copilot(), wait_for_ci(), request_approval()]
+                .iter()
+                .map(RankedCandidate::from_action)
+                .collect();
+        let blockers = collect_blockers(&candidates_v);
+        let d = Dashboard {
+            candidates: candidates_v,
+            signals,
+            blockers,
+        };
+        let mut p = HandoffPrompt::new("Rebase onto the latest base branch");
+        for s in d.render_handoff_preamble() {
+            p.sections.push(s);
+        }
+        eprintln!("---- preamble sample ----\n{p}\n---- end ----");
+        assert!(p.to_string().contains("Recommended (critical)"));
+    }
+
+    #[test]
+    fn preamble_all_signals_and_blockers_populated() {
+        let signals = vec![
+            AxisSignal {
+                axis: AxisName::Copilot,
+                icon: SignalIcon::Warn,
+                summary: "request received but no review yet (degraded)".into(),
+            },
+            AxisSignal {
+                axis: AxisName::Ci,
+                icon: SignalIcon::InFlight,
+                summary: "2 checks pending (worst: healthy)".into(),
+            },
+            AxisSignal {
+                axis: AxisName::Cursor,
+                icon: SignalIcon::Ok,
+                summary: "no findings".into(),
+            },
+        ];
+        let candidates_v: Vec<RankedCandidate> =
+            [rerequest_copilot(), wait_for_ci(), request_approval()]
+                .iter()
+                .map(RankedCandidate::from_action)
+                .collect();
+        let blockers = collect_blockers(&candidates_v);
+        let d = Dashboard {
+            candidates: candidates_v,
+            signals,
+            blockers,
+        };
+        let text = preamble_text(&d);
+        assert!(text.contains("Recommended (critical)"), "{text}");
+        assert!(text.contains("Queued (blocking wait)"), "{text}");
+        assert!(text.contains("Queued (blocking human)"), "{text}");
+        assert!(text.contains("Signals"), "{text}");
+        assert!(
+            text.contains("copilot: ! request received but no review yet (degraded)"),
+            "{text}",
+        );
+        assert!(
+            text.contains("ci: · 2 checks pending (worst: healthy)"),
+            "{text}",
+        );
+        assert!(text.contains("cursor: ✓ no findings"), "{text}");
+        assert!(text.contains("Blockers"), "{text}");
+        assert!(
+            text.contains("copilot:rerequest: RerequestCopilot"),
+            "{text}",
+        );
+        assert!(text.contains("ci:wait: WaitForCi"), "{text}");
+        assert!(text.contains("review:approval: RequestApproval"), "{text}",);
     }
 
     #[test]

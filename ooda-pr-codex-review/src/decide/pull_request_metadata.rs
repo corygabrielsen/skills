@@ -130,6 +130,8 @@ mod tests {
             merge_base_delta: None,
             pull_request_metadata,
             attest_path: Some(std::path::PathBuf::from("/state/753/pr_meta_attest.json")),
+            doc_review: crate::orient::doc_review::DocReview::Synced,
+            doc_review_attest_path: None,
             codex_review: None,
         }
     }

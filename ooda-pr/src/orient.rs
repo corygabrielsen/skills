@@ -7,6 +7,7 @@ pub mod bot_threads;
 pub mod ci;
 pub mod copilot;
 pub mod cursor;
+pub mod doc_review;
 pub mod pull_request_metadata;
 pub mod required_checks;
 pub mod reviews;
@@ -21,6 +22,7 @@ use serde::Serialize;
 use ci::CiReport;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
 use cursor::{CursorReport, orient_cursor};
+use doc_review::{DocReview, orient_doc_review};
 use pull_request_metadata::{PullRequestMetadata, orient_pull_request_metadata};
 use reviews::ReviewSummary;
 use state::PullRequestProjection;
@@ -79,6 +81,14 @@ pub struct OrientedState {
     /// the path. `None` when no `--state-root` was supplied to the
     /// binary.
     pub attest_path: Option<std::path::PathBuf>,
+    /// Doc-review sync state. Same shape as `pull_request_metadata`
+    /// but tracks an independent claim: an agent has reviewed the
+    /// full PR diff for doc and comment hygiene at this SHA. Drives
+    /// the `ReviewDocs` decide candidate.
+    pub doc_review: DocReview,
+    /// Absolute path of the doc-review attestation file the agent
+    /// must rewrite. Mirrors `attest_path` for the doc-review axis.
+    pub doc_review_attest_path: Option<std::path::PathBuf>,
 }
 
 /// Compose all axes from a single GitHub observation bundle.
@@ -157,6 +167,8 @@ pub fn orient(
 
     let pull_request_metadata = orient_pull_request_metadata(&obs.pull_request_metadata);
     let attest_path = obs.pull_request_metadata.attest_path.clone();
+    let doc_review = orient_doc_review(&obs.doc_review);
+    let doc_review_attest_path = obs.doc_review.attest_path.clone();
 
     OrientedState {
         ci,
@@ -168,5 +180,7 @@ pub fn orient(
         merge_base_delta: obs.merge_base_delta.clone(),
         pull_request_metadata,
         attest_path,
+        doc_review,
+        doc_review_attest_path,
     }
 }

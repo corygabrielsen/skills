@@ -226,6 +226,15 @@ pub enum ActionKind {
     SyncPullRequestMetadata {
         attest_path: std::path::PathBuf,
     },
+
+    // ── Doc review attestation ──
+    /// Doc / comment hygiene attestation is out of sync with HEAD
+    /// (Drift) or has never been recorded (`NeverAttested`). Hand off
+    /// to an agent to review the full PR diff and re-run
+    /// `ooda-attest doc-review`.
+    ReviewDocs {
+        attest_path: std::path::PathBuf,
+    },
 }
 
 impl ActionKind {
@@ -274,6 +283,7 @@ impl ActionKindName for ActionKind {
             Self::AwaitCodexReviewBatch { .. } => "AwaitCodexReviewBatch",
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
             Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
+            Self::ReviewDocs { .. } => "ReviewDocs",
         }
     }
 }

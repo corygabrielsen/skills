@@ -25,6 +25,7 @@ use crate::orient::OrientedState;
 use crate::orient::ci::ci_signal;
 use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
+use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
@@ -112,6 +113,7 @@ pub enum AxisName {
     Ci,
     Cursor,
     PullRequestMetadata,
+    DocReview,
 }
 
 impl AxisName {
@@ -121,6 +123,7 @@ impl AxisName {
             Self::Ci => "ci",
             Self::Cursor => "cursor",
             Self::PullRequestMetadata => "pr_meta",
+            Self::DocReview => "doc_review",
         }
     }
 }
@@ -204,6 +207,7 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
     out.push(pull_request_metadata_signal(
         &oriented.pull_request_metadata,
     ));
+    out.push(doc_review_signal(&oriented.doc_review));
     out
 }
 
@@ -233,6 +237,36 @@ pub fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisSignal {
     };
     AxisSignal {
         axis: AxisName::PullRequestMetadata,
+        icon,
+        summary,
+    }
+}
+
+/// Project doc-review state onto a dashboard signal. Same shape as
+/// `pull_request_metadata_signal`.
+#[must_use]
+pub fn doc_review_signal(state: &DocReview) -> AxisSignal {
+    let (icon, summary) = match state {
+        DocReview::Synced => (SignalIcon::Ok, "doc review synced".to_string()),
+        DocReview::Drift {
+            attested_sha,
+            commits_behind,
+            ..
+        } => (
+            SignalIcon::Warn,
+            format!(
+                "doc review drifted {} since {}",
+                crate::text::count(*commits_behind, "commit"),
+                short_sha(attested_sha),
+            ),
+        ),
+        DocReview::NeverAttested => (
+            SignalIcon::Warn,
+            "doc review never attested for this PR".to_string(),
+        ),
+    };
+    AxisSignal {
+        axis: AxisName::DocReview,
         icon,
         summary,
     }
@@ -1273,6 +1307,35 @@ mod tests {
     #[test]
     fn pull_request_metadata_signal_never_attested_renders_warn() {
         let sig = pull_request_metadata_signal(&PullRequestMetadata::NeverAttested);
+        assert_eq!(sig.icon, SignalIcon::Warn);
+        assert!(sig.summary.contains("never attested"), "{}", sig.summary);
+    }
+
+    // ── DocReview signal projection ─────────────────────────────────
+
+    #[test]
+    fn doc_review_signal_synced_renders_ok() {
+        let sig = doc_review_signal(&DocReview::Synced);
+        assert_eq!(sig.icon, SignalIcon::Ok);
+        assert_eq!(sig.axis, AxisName::DocReview);
+        assert!(sig.summary.contains("synced"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn doc_review_signal_drift_renders_warn_with_count_and_short_sha() {
+        let sig = doc_review_signal(&DocReview::Drift {
+            attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
+            head_sha: "9".repeat(40),
+            commits_behind: 4,
+        });
+        assert_eq!(sig.icon, SignalIcon::Warn);
+        assert!(sig.summary.contains("4 commits"), "{}", sig.summary);
+        assert!(sig.summary.contains("abcdef1"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn doc_review_signal_never_attested_renders_warn() {
+        let sig = doc_review_signal(&DocReview::NeverAttested);
         assert_eq!(sig.icon, SignalIcon::Warn);
         assert!(sig.summary.contains("never attested"), "{}", sig.summary);
     }

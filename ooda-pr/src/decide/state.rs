@@ -377,6 +377,8 @@ mod tests {
             pull_request_metadata:
                 crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
             attest_path: None,
+            doc_review: crate::orient::doc_review::DocReview::NeverAttested,
+            doc_review_attest_path: None,
         }
     }
 
@@ -396,6 +398,8 @@ mod tests {
             pull_request_metadata:
                 crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
             attest_path: None,
+            doc_review: crate::orient::doc_review::DocReview::NeverAttested,
+            doc_review_attest_path: None,
         }
     }
 

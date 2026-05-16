@@ -13,6 +13,7 @@
 
 mod ci;
 mod copilot;
+pub mod review_docs;
 pub mod sync_pull_request_metadata;
 
 use std::ffi::OsString;

@@ -19,6 +19,7 @@ use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::orient::OrientedState;
 use crate::orient::copilot::CopilotActivity;
+use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
 use serde::Serialize;
 
@@ -83,13 +84,14 @@ pub fn render(
     let cursor = cursor_line(oriented);
     let reviews = reviews_line(oriented);
     let pr_meta = pull_request_metadata_line(oriented);
+    let doc_review = doc_review_line(oriented);
     // Dedup key omits the action description's prose so that count
     // changes ("3 unresolved" → "2 unresolved") within the same
     // structural state don't suppress posting. Includes the action's
     // blocker slug so two different agent-handoff actions on the
     // same axis state don't collapse to the same key.
     let dedup_key = format!(
-        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{}\n{}",
+        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{doc_review}\n{}\n{}",
         decision_kind_tag(decision),
         decision_blocker_tag(decision),
     );
@@ -289,6 +291,22 @@ fn pull_request_metadata_line(o: &OrientedState) -> String {
     }
 }
 
+fn doc_review_line(o: &OrientedState) -> String {
+    match &o.doc_review {
+        DocReview::Synced => "✅ Doc review · synced".into(),
+        DocReview::Drift {
+            attested_sha,
+            commits_behind,
+            ..
+        } => format!(
+            "⚠ Doc review · drifted {} since {}",
+            crate::text::count(*commits_behind, "commit"),
+            attested_sha.chars().take(7).collect::<String>(),
+        ),
+        DocReview::NeverAttested => "⚠ Doc review · never attested".into(),
+    }
+}
+
 fn decision_kind_tag(d: &Decision) -> &'static str {
     match d {
         Decision::Execute(_) => "exec",
@@ -378,11 +396,13 @@ mod tests {
             },
             copilot: None,
             cursor: None,
-            codex_review: None,
             threads: vec![],
             merge_base_delta: None,
             pull_request_metadata: PullRequestMetadata::NeverAttested,
             attest_path: None,
+            doc_review: crate::orient::doc_review::DocReview::NeverAttested,
+            doc_review_attest_path: None,
+            codex_review: None,
         }
     }
 
@@ -598,6 +618,35 @@ mod tests {
         let mut o = empty_oriented();
         o.pull_request_metadata = PullRequestMetadata::NeverAttested;
         assert_eq!(pull_request_metadata_line(&o), "⚠ PR meta · never attested");
+    }
+
+    // ── doc_review_line ──
+
+    #[test]
+    fn doc_review_line_synced_renders_check() {
+        let mut o = empty_oriented();
+        o.doc_review = DocReview::Synced;
+        assert_eq!(doc_review_line(&o), "✅ Doc review · synced");
+    }
+
+    #[test]
+    fn doc_review_line_drift_includes_count_and_short_sha() {
+        let mut o = empty_oriented();
+        o.doc_review = DocReview::Drift {
+            attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
+            head_sha: "9".repeat(40),
+            commits_behind: 5,
+        };
+        let line = doc_review_line(&o);
+        assert!(line.contains("drifted 5 commits"), "{line}");
+        assert!(line.contains("abcdef1"), "{line}");
+    }
+
+    #[test]
+    fn doc_review_line_never_attested_renders_warn() {
+        let mut o = empty_oriented();
+        o.doc_review = DocReview::NeverAttested;
+        assert_eq!(doc_review_line(&o), "⚠ Doc review · never attested");
     }
 
     #[test]

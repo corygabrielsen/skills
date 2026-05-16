@@ -30,6 +30,7 @@ MIRRORS=("ooda-prs" "ooda-pr-codex-review")
 STRICT_FILES=(
     "src/act/ci.rs"
     "src/act/copilot.rs"
+    "src/act/review_docs.rs"
     "src/act/sync_pull_request_metadata.rs"
     "src/comment/post.rs"
     "src/comment.rs"
@@ -37,6 +38,7 @@ STRICT_FILES=(
     "src/decide/ci.rs"
     "src/decide/copilot.rs"
     "src/decide/cursor.rs"
+    "src/decide/doc_review.rs"
     "src/decide/pull_request_metadata.rs"
     "src/observe/github/branch_protection.rs"
     "src/observe/github/branch_rules.rs"
@@ -45,6 +47,7 @@ STRICT_FILES=(
     "src/observe/github/compare.rs"
     "src/observe/github/copilot_config.rs"
     "src/observe/github/cursor_status.rs"
+    "src/observe/github/doc_review_attest.rs"
     "src/observe/github/gh.rs"
     "src/observe/github/issue_events.rs"
     "src/observe/github/pull_request_metadata_attestation.rs"
@@ -60,6 +63,7 @@ STRICT_FILES=(
     "src/orient/ci.rs"
     "src/orient/copilot.rs"
     "src/orient/cursor.rs"
+    "src/orient/doc_review.rs"
     "src/orient/pull_request_metadata.rs"
     "src/orient/required_checks.rs"
     "src/orient/reviews.rs"
@@ -78,6 +82,7 @@ declare -a ALLOWLIST_PATHS=(
     "ooda-pr-codex-review:src/decide/reviews.rs"
     "ooda-pr-codex-review:src/decide/state.rs"
     "ooda-pr-codex-review:src/decide/pull_request_metadata.rs"
+    "ooda-pr-codex-review:src/decide/doc_review.rs"
     "ooda-pr-codex-review:src/comment/render.rs"
 )
 ALLOWLIST_PATTERN='codex_review: None,'

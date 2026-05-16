@@ -98,9 +98,6 @@ where
         return Err(PostError::Gh(e));
     }
 
-    if let Some(parent) = key_path.parent() {
-        fs::create_dir_all(parent).map_err(PostError::Hash)?;
-    }
     let dedup = DedupState {
         hash: key.clone(),
         dedup_key: rendered.dedup_key.clone(),
@@ -109,7 +106,11 @@ where
     let dedup_json = serde_json::to_vec_pretty(&dedup)
         .map_err(io::Error::other)
         .map_err(PostError::Hash)?;
-    fs::write(&key_path, dedup_json).map_err(PostError::Hash)?;
+    // Atomic + durable: a crash mid-write would leave a truncated
+    // dedup.json, and the next process start's parse-fail fallback
+    // would treat the garbage as a non-matching prior hash, re-
+    // posting the same status comment.
+    ooda_core::atomic_io::write_atomic(&key_path, &dedup_json).map_err(PostError::Hash)?;
     let result = PostResult {
         prior_hash: prior,
         new_hash: key,

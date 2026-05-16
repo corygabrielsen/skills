@@ -121,6 +121,8 @@ pub fn orient(
         &obs.pull_request_view,
         last_commit_at,
         &obs.stack_root_branch,
+        &obs.branch_rules,
+        &obs.checks,
     );
     // The Graphite mergeability check pends indefinitely on a PR
     // stacked under an open parent; treat it as advisory rather than

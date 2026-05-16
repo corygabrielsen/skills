@@ -397,6 +397,9 @@ mod tests {
                     crate::observe::github::pull_request_view::MergeStateStatus::Clean,
                 updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
                 last_commit_at: None,
+                active_branch_rule_types: vec![],
+                required_check_names_per_ruleset: vec![],
+                missing_required_check_names_on_head: vec![],
             },
             reviews: ReviewSummary {
                 decision: None,

@@ -18,16 +18,16 @@
 //!
 //! ```text
 //! UsageError(_)                                 → 64
-//! ∃ ProcessOutcome with BinaryError(_)          → 6
-//! ∃ ProcessOutcome with HandoffAgent(_)         → 5
+//! ∃ ProcessOutcome with BinaryError(_)          → 70
+//! ∃ ProcessOutcome with HandoffAgent(_)         → 4
 //! ∃ ProcessOutcome with HandoffHuman(_)         → 3
-//! ∃ ProcessOutcome with StuckCapReached(_)      → 2
-//! ∃ ProcessOutcome with StuckRepeated(_)        → 1
-//! ∃ ProcessOutcome with WouldAdvance(_)         → 4    (inspect-only)
+//! ∃ ProcessOutcome with StuckCapReached(_)      → 7
+//! ∃ ProcessOutcome with StuckRepeated(_)        → 6
+//! ∃ ProcessOutcome with WouldAdvance(_)         → 2    (inspect-only)
 //! all terminal/Paused (DoneSucceeded | DoneAborted | Paused) → 0
 //! ```
 //!
-//! `Paused` (per-PR exit 7) and `DoneAborted` (per-PR exit 8) fold
+//! `Paused` (per-PR exit 1) and `DoneAborted` (per-PR exit 5) fold
 //! into `0` at the suite level: they are non-actionable terminal
 //! states from the harness's perspective. The per-PR records on
 //! stdout disambiguate.

@@ -71,9 +71,14 @@ impl BlockerKey {
     /// that satisfy `&'static str` are compile-time string
     /// literals or runtime-selected entries from a fixed set
     /// (`enum::name() -> &'static str`, `const`s, etc.).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `s` is empty or whitespace-only — both are
+    /// programmer errors in the caller, not user input.
     #[must_use]
     pub fn from_static(s: &'static str) -> Self {
-        debug_assert!(
+        assert!(
             !s.trim().is_empty(),
             "BlockerKey::from_static called with empty or whitespace-only string"
         );
@@ -84,9 +89,13 @@ impl BlockerKey {
     /// lifetime string (stable by lifetime); the identifier
     /// implements [`GateIdentity`] (stable by trait contract).
     /// Renders as `"<category>:<id>"`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `category` is empty or whitespace-only.
     #[must_use]
     pub fn typed<I: GateIdentity>(category: &'static str, id: &I) -> Self {
-        debug_assert!(
+        assert!(
             !category.trim().is_empty(),
             "BlockerKey::typed called with empty category"
         );

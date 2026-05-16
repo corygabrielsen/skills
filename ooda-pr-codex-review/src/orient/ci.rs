@@ -19,7 +19,7 @@ use serde::Serialize;
 // ── Bucket projection (unchanged contract, used by render + main) ───
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CiSummary {
+pub(crate) struct CiSummary {
     /// Required-check counts (gating merge).
     pub required: CheckBucket,
     /// Required checks configured but not present on the PR yet.
@@ -31,7 +31,7 @@ pub struct CiSummary {
 }
 
 impl CiSummary {
-    pub fn missing(&self) -> usize {
+    pub(crate) fn missing(&self) -> usize {
         self.missing_names.len()
     }
 }
@@ -40,30 +40,30 @@ impl CiSummary {
 /// (required *or* advisory). Same shape on both sides so callers can
 /// reason uniformly.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
-pub struct CheckBucket {
+pub(crate) struct CheckBucket {
     pub pass: usize,
     pub failed: Vec<FailedCheck>,
     pub pending_names: Vec<CheckName>,
 }
 
 impl CheckBucket {
-    pub fn fail(&self) -> usize {
+    pub(crate) fn fail(&self) -> usize {
         self.failed.len()
     }
-    pub fn pending(&self) -> usize {
+    pub(crate) fn pending(&self) -> usize {
         self.pending_names.len()
     }
     #[cfg(test)]
-    pub fn total(&self) -> usize {
+    pub(crate) fn total(&self) -> usize {
         self.pass + self.fail() + self.pending()
     }
-    pub fn failed_names(&self) -> Vec<&CheckName> {
+    pub(crate) fn failed_names(&self) -> Vec<&CheckName> {
         self.failed.iter().map(|f| &f.name).collect()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FailedCheck {
+pub(crate) struct FailedCheck {
     pub name: CheckName,
     pub description: String,
     pub link: String,
@@ -82,14 +82,14 @@ const GRAPHITE_MERGEABILITY_CHECK: &str = "Graphite / mergeability_check";
 // 1.5x observed max (12.3 min queue, 30d sample across 3 repos);
 // pads above the longest legitimate pickup observed in
 // queue-latency telemetry.
-pub const QUEUE_TIMEOUT: chrono::Duration = chrono::Duration::minutes(20);
+pub(crate) const QUEUE_TIMEOUT: chrono::Duration = chrono::Duration::minutes(20);
 
 /// Time a workflow run is allowed to spend `in_progress` before its
 /// check is treated as `RunTimeout`-degraded.
 //
 // 1.5x observed max (28 min, dominated by the "CI" workflow); the
 // 6h GHA hard ceiling acts as an absolute Failed backstop above this.
-pub const RUN_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
+pub(crate) const RUN_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
 
 /// Per-(check, HEAD) re-run budget — number of distinct workflow
 /// runs by name on the current HEAD allowed before the check
@@ -98,7 +98,7 @@ pub const RUN_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
 // Matches `crate::orient::copilot::HEALTH_REMEDIATION_BUDGET`. Per
 // the anti-DRY mirror rule, both wear the constant independently
 // until a 3rd axis lifts it into ooda_core.
-pub const BUDGET: usize = 2;
+pub(crate) const BUDGET: usize = 2;
 
 // CI-axis Symptom. Note that QueueTimeout/RunTimeout are nullary
 // like Copilot's StartTimeout/ReviewTimeout. If a future Symptom
@@ -117,7 +117,7 @@ pub enum Symptom {
 // ooda_core::AxisHealth<S>. Per anti-DRY mirror rule, keep
 // per-binary until then.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum CheckHealth {
+pub(crate) enum CheckHealth {
     /// In flight within timeout windows — keep waiting.
     Healthy,
     /// Timeout crossed for this check at the current HEAD. Re-run is
@@ -132,7 +132,7 @@ pub enum CheckHealth {
 /// One pending check on the current HEAD, with the workflow run
 /// handle (for re-run side effects) and its current health.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PendingCheck {
+pub(crate) struct PendingCheck {
     pub name: CheckName,
     pub run_id: WorkflowRunId,
     pub health: CheckHealth,
@@ -142,7 +142,7 @@ pub struct PendingCheck {
 /// the existing `CiSummary` fields decide already branches on so
 /// the Resolved arms are byte-equivalent to the pre-health logic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum ResolvedState {
+pub(crate) enum ResolvedState {
     /// Every required check completed successfully.
     AllGreen,
     /// At least one required check failed (or terminally cancelled,
@@ -157,7 +157,7 @@ pub enum ResolvedState {
 // decide). Resolved states cover the existing post-completion paths.
 // Idle is the no-required-checks case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum CiActivity {
+pub(crate) enum CiActivity {
     /// No required checks observed (e.g. repo with no branch
     /// protection or stacked-PR with Graphite filter active).
     Idle,
@@ -174,14 +174,14 @@ pub enum CiActivity {
 /// The full CI report decide consumes. Pairs the bucket projection
 /// (used by render + main) with the typed activity (used by decide).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CiReport {
+pub(crate) struct CiReport {
     pub summary: CiSummary,
     pub activity: CiActivity,
 }
 
 /// Project CI activity onto a dashboard signal. `Idle` returns
 /// `None` — repo has no required checks active on this PR.
-pub fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisSignal> {
+pub(crate) fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
         CiActivity::Idle => return None,
@@ -259,7 +259,7 @@ fn join_check_names(names: &[CheckName]) -> String {
 /// projection: timing comes from the `workflow_run`'s `created_at` /
 /// `run_started_at`, and the per-(name, HEAD) attempt count
 /// (re-run budget) comes from counting runs on the same `head_sha`.
-pub fn orient_ci(
+pub(crate) fn orient_ci(
     checks: &[PullRequestCheck],
     required_names: &[CheckName],
     has_open_parent_pr: bool,

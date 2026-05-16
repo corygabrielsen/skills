@@ -23,7 +23,7 @@ use crate::orient::claude_review::is_claude;
 const CLAUDE_REVIEW_FILE: &str = "claude_review_attest.json";
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ClaudeReviewObservation {
+pub(crate) struct ClaudeReviewObservation {
     pub attestation: Option<ClaudeReviewAttestation>,
     pub head_sha: GitCommitSha,
     /// Always `None` for this axis — Claude content drift, not SHA
@@ -48,7 +48,10 @@ pub struct ClaudeReviewObservation {
 /// the act-layer prompt composer surfaces the same absolute path the
 /// agent must pass to `ooda-attest claude-review`.
 #[must_use]
-pub fn claude_review_attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathBuf {
+pub(crate) fn claude_review_attest_path(
+    state_root: &std::path::Path,
+    pr: PullRequestNumber,
+) -> PathBuf {
     state_root.join(pr.to_string()).join(CLAUDE_REVIEW_FILE)
 }
 
@@ -56,7 +59,7 @@ pub fn claude_review_attest_path(state_root: &std::path::Path, pr: PullRequestNu
 /// content across the three surfaces already in the observation
 /// bundle. The caller supplies `reviews`, `issue_comments`, and
 /// `threads` from the existing observe layer — no new fetch.
-pub fn observe_claude_review(
+pub(crate) fn observe_claude_review(
     state_root: Option<&std::path::Path>,
     pr: PullRequestNumber,
     head_sha: &GitCommitSha,

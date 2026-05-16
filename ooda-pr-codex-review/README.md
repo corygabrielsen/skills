@@ -98,7 +98,7 @@ Boundary: `gh` subprocess (REST + GraphQL) → typed Rust structs. Pure I/O.
 fetch_all : RepoSlug × PullRequestNumber → Result⟨GitHubObservations, GhError⟩
 
 GitHubObservations =
-    pr_view              : PullRequestView
+    pull_request_view              : PullRequestView
   × checks               : Vec⟨PullRequestCheck⟩
   × reviews              : Vec⟨PullRequestReview⟩
   × review_threads_page  : ReviewThreadsResponse
@@ -114,7 +114,7 @@ GitHubObservations =
 ### Per-endpoint shapes (key fields)
 
 ```
-PullRequestView     ::  state              : PrState (Open ⊕ Closed ⊕ Merged)
+PullRequestView     ::  state              : PullRequestState (Open ⊕ Closed ⊕ Merged)
                     ::  is_draft           : Bool
                     ::  mergeable          : Mergeable (Mergeable ⊕ Conflicting ⊕ Unknown)
                     ::  merge_state_status : MergeStateStatus
@@ -154,7 +154,7 @@ GhError =
 
 **Concurrency:** nine fetchers fan out under `thread::scope`;
 first-error fail-fast. Terminal short-circuit:
-`state ∈ {Merged, Closed} → terminal_observations(pr_view)` skips
+`state ∈ {Merged, Closed} → terminal_observations(pull_request_view)` skips
 auxiliary endpoints whose base may have been deleted post-merge.
 
 ### Codex review observation (axis-gated)
@@ -185,7 +185,7 @@ VerdictClass  = Clean ⊕ HasIssues
 ```
 
 Pure filesystem read. Head-SHA gate: `<batch_dir>/head_sha.txt`
-content must match the PR's `pr_view.head_ref_oid`; mismatch or
+content must match the PR's `pull_request_view.head_ref_oid`; mismatch or
 absent file is reported as `NotStarted` so the runner re-spawns at
 the current head.
 
@@ -299,10 +299,10 @@ iteration's orient picks level N+1 without any explicit
 
 ## D — Decide
 
-Boundary: `OrientedState × PrState → Decision`. Pure, total.
+Boundary: `OrientedState × PullRequestState → Decision`. Pure, total.
 
 ```
-decide : OrientedState × PrState → Decision
+decide : OrientedState × PullRequestState → Decision
 
 Decision =
     Execute(Action)              (loop runs the action)
@@ -459,11 +459,11 @@ run_loop(ctx, cfg, on_state) =
     for i in 1..=cfg.max_iterations:
         obs       := fetch_all(ctx.slug, ctx.pr)?           -- LoopError::Observe
         codex_obs := if ctx.codex.is_some() && cfg.codex_review.is_some():
-                         refresh ctx.codex.head_sha + base_branch from obs.pr_view
+                         refresh ctx.codex.head_sha + base_branch from obs.pull_request_view
                          fetch_codex(...)?                  -- LoopError::CodexObserve
                      else: None
         oriented  := orient(obs, codex_obs, None)
-        decision  := decide(oriented, obs.pr_view.state)
+        decision  := decide(oriented, obs.pull_request_view.state)
         on_state(i, oriented, decision)
         case decision of
             Halt(h)    → return Decision(h)

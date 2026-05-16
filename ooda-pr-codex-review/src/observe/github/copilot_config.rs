@@ -30,7 +30,7 @@ use super::rulesets::{
 /// active ruleset with `copilot_code_review` won — even when its
 /// conditions excluded the PR's branch — producing misleading
 /// "Copilot configured" status and pointless rerequest waits.
-pub fn fetch_copilot_config(
+pub(crate) fn fetch_copilot_config(
     slug: &RepoSlug,
     branch: &str,
 ) -> Result<Option<CopilotCodeReviewParams>, GhError> {

@@ -35,7 +35,7 @@ use ooda_core::decide_from_candidates;
 /// Read the wall-clock once per iteration. Axes that need a clock
 /// (copilot health, future CI queue-stall) take this as a parameter
 /// so behavior under test is deterministic.
-pub fn current_timestamp() -> Timestamp {
+pub(crate) fn current_timestamp() -> Timestamp {
     let now = chrono::Utc::now().to_rfc3339();
     // `to_rfc3339` always produces a parseable RFC-3339 string;
     // this round-trip cannot fail.
@@ -60,7 +60,7 @@ impl std::fmt::Display for LoopError {
 impl std::error::Error for LoopError {}
 
 #[derive(Clone, Copy)]
-pub struct LoopConfig {
+pub(crate) struct LoopConfig {
     /// Iteration cap. `NonZeroU32` so the driver's "iter 1
     /// always runs" guarantee is structural: the CLI parser
     /// rejects `--max-iter 0` at the boundary, and the type
@@ -94,7 +94,7 @@ pub(crate) enum IterStep {
 /// state, full candidate set, and chosen decision. Halt decisions
 /// also fire it before returning. Use it to render iteration logs,
 /// post comments, and record the run bundle.
-pub fn run_loop(
+pub(crate) fn run_loop(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     state_root: Option<&std::path::Path>,

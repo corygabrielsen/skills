@@ -75,7 +75,7 @@ struct CheckRunWire {
 /// suite stuck in `Queued` with no child `check_run` ever appearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CheckSuiteStatus {
+pub(crate) enum CheckSuiteStatus {
     Queued,
     InProgress,
     Completed,
@@ -89,7 +89,7 @@ pub enum CheckSuiteStatus {
 /// vice versa during eventual-consistency windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CheckRunStatus {
+pub(crate) enum CheckRunStatus {
     Queued,
     InProgress,
     Completed,
@@ -104,7 +104,7 @@ pub enum CheckRunStatus {
 /// signal — not just a pass/fail bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CheckRunConclusion {
+pub(crate) enum CheckRunConclusion {
     Success,
     Failure,
     Neutral,
@@ -123,7 +123,7 @@ pub enum CheckRunConclusion {
 /// axis interprets that against the PR author to distinguish
 /// "Cursor declined this PR" from "Cursor not active in this repo".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CursorStatus {
+pub(crate) struct CursorStatus {
     /// `None` when Cursor has not opened a `check_suite` on this HEAD.
     pub suite: Option<CursorCheckSuite>,
     /// `None` when no child `check_run` exists. The suite may still
@@ -133,7 +133,7 @@ pub struct CursorStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CursorCheckSuite {
+pub(crate) struct CursorCheckSuite {
     pub status: CheckSuiteStatus,
     /// Suite creation timestamp — when GitHub received the push
     /// webhook for Cursor. Anchor for the `no child run` stall
@@ -143,7 +143,7 @@ pub struct CursorCheckSuite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CursorCheckRun {
+pub(crate) struct CursorCheckRun {
     pub status: CheckRunStatus,
     pub conclusion: Option<CheckRunConclusion>,
     /// `None` when the run was created but never started (extremely
@@ -155,7 +155,10 @@ pub struct CursorCheckRun {
 /// Two REST calls in series — the suite alone tells us "is Cursor
 /// active at all on this HEAD"; the run carries the per-run timing
 /// when present. Bounded N (≤1 suite, ≤1 run per suite for Cursor).
-pub fn fetch_cursor_status(slug: &RepoSlug, head: &GitCommitSha) -> Result<CursorStatus, GhError> {
+pub(crate) fn fetch_cursor_status(
+    slug: &RepoSlug,
+    head: &GitCommitSha,
+) -> Result<CursorStatus, GhError> {
     let suite = fetch_cursor_check_suite(slug, head)?;
     // Skip the check_runs call when no Cursor suite exists — the run
     // can't exist without a suite, and the second REST call would

@@ -42,7 +42,7 @@ use std::fmt::Write;
 /// [`Decision`] for executor semantics. The `Dashboard` exists purely
 /// for human-facing rendering surfaces.
 #[derive(Debug, Clone, Serialize)]
-pub struct Dashboard {
+pub(crate) struct Dashboard {
     /// Candidates in urgency order (already sorted by [`crate::decide::candidates`]).
     /// `None` iff the executor halt was [`DecisionHalt::Success`] or
     /// [`DecisionHalt::Terminal`] — no work to surface.
@@ -59,7 +59,7 @@ pub struct Dashboard {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RankedCandidate {
+pub(crate) struct RankedCandidate {
     /// Action variant name (payload-free) for stable rendering.
     pub action_name: &'static str,
     /// Human-readable log line from `effect.rendered_message()` —
@@ -74,7 +74,7 @@ pub struct RankedCandidate {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AxisSignal {
+pub(crate) struct AxisSignal {
     pub axis: AxisName,
     pub icon: SignalIcon,
     pub summary: String,
@@ -83,7 +83,7 @@ pub struct AxisSignal {
 /// Per-axis health icon. Five-bucket coarse projection — the spec
 /// table at the top of the `IMPLEMENTATION_SPEC` fixes the mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum SignalIcon {
+pub(crate) enum SignalIcon {
     Ok,
     InFlight,
     Warn,
@@ -94,7 +94,7 @@ pub enum SignalIcon {
 impl SignalIcon {
     /// Single-char glyph for compact rendering. The renderer pairs
     /// this with the axis name and summary.
-    pub fn glyph(self) -> &'static str {
+    pub(crate) fn glyph(self) -> &'static str {
         match self {
             Self::Ok => "✓",
             Self::InFlight => "·",
@@ -109,7 +109,7 @@ impl SignalIcon {
 /// Limited to the three reviewer axes; new axes append.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AxisName {
+pub(crate) enum AxisName {
     Copilot,
     Ci,
     Cursor,
@@ -119,7 +119,7 @@ pub enum AxisName {
 }
 
 impl AxisName {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Copilot => "copilot",
             Self::Ci => "ci",
@@ -132,7 +132,7 @@ impl AxisName {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Blocker {
+pub(crate) struct Blocker {
     /// The stable `BlockerKey` from the candidate naming this blocker.
     pub tag: BlockerKey,
     /// Action variant name that named this blocker — gives a human
@@ -148,7 +148,7 @@ impl Dashboard {
     /// `(OrientedState, candidates, decision)`. Mirrors the data
     /// already flowing through [`Recorder::record_iteration`] — no
     /// new observation source.
-    pub fn from_iteration(
+    pub(crate) fn from_iteration(
         oriented: &OrientedState,
         candidates: &[Action],
         decision: &Decision,
@@ -219,7 +219,7 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
 /// projects an `Ok` quiet positive; `Drift` warns with the commit
 /// count; `NeverAttested` warns with a first-attestation prompt.
 #[must_use]
-pub fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisSignal {
+pub(crate) fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisSignal {
     let (icon, summary) = match state {
         PullRequestMetadata::Synced => (SignalIcon::Ok, "PR meta synced".to_string()),
         PullRequestMetadata::Drift {
@@ -249,7 +249,7 @@ pub fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisSignal {
 /// Project doc-review state onto a dashboard signal. Same shape as
 /// `pull_request_metadata_signal`.
 #[must_use]
-pub fn doc_review_signal(state: &DocReview) -> AxisSignal {
+pub(crate) fn doc_review_signal(state: &DocReview) -> AxisSignal {
     let (icon, summary) = match state {
         DocReview::Synced => (SignalIcon::Ok, "doc review synced".to_string()),
         DocReview::Drift {
@@ -282,7 +282,7 @@ pub fn doc_review_signal(state: &DocReview) -> AxisSignal {
 /// `Addressed` is an `Ok` quiet positive; `Fresh` is a `Warn` with
 /// the inline thread count.
 #[must_use]
-pub fn claude_review_signal(state: &ClaudeReview) -> AxisSignal {
+pub(crate) fn claude_review_signal(state: &ClaudeReview) -> AxisSignal {
     let (icon, summary) = match state {
         ClaudeReview::NoActivity => (
             SignalIcon::NotApplicable,
@@ -334,7 +334,7 @@ impl Dashboard {
     /// Render `next.md`. Tier-grouped — winner with its `action_log`,
     /// then any same-tier alternatives, then a section per lower
     /// urgency tier. Empty sections are omitted.
-    pub fn render_next_md(&self) -> String {
+    pub(crate) fn render_next_md(&self) -> String {
         let Some(winner) = self.candidates.first() else {
             return "# Next\n\nNo action selected.\n".to_string();
         };
@@ -414,7 +414,7 @@ impl Dashboard {
     /// body below the header. Returns the empty string for an empty
     /// candidate list — the caller decides what to substitute (e.g.
     /// a terminal-halt summary line).
-    pub fn render_status_comment(&self) -> String {
+    pub(crate) fn render_status_comment(&self) -> String {
         let Some(winner) = self.candidates.first() else {
             return String::new();
         };
@@ -484,7 +484,7 @@ impl Dashboard {
     }
 
     /// Render `blockers.md` — structured blocker list on its own.
-    pub fn render_blockers_md(&self) -> String {
+    pub(crate) fn render_blockers_md(&self) -> String {
         if self.blockers.is_empty() {
             return "# Blockers\n\nNo current blocker.\n".to_string();
         }
@@ -505,7 +505,7 @@ impl Dashboard {
     /// queued lower-tier groups → signals → blockers. Empty
     /// sections are omitted — the same rule the on-disk surfaces
     /// follow.
-    pub fn render_handoff_preamble(&self) -> Vec<PromptSection> {
+    pub(crate) fn render_handoff_preamble(&self) -> Vec<PromptSection> {
         let mut sections: Vec<PromptSection> = Vec::new();
 
         let Some(winner) = self.candidates.first() else {

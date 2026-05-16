@@ -1,25 +1,25 @@
 //! GitHub-sourced observations (REST + GraphQL via `gh` CLI).
 
-pub mod branch_protection;
-pub mod branch_rules;
-pub mod checks;
-pub mod claude_review_attest;
-pub mod comments;
-pub mod compare;
-pub mod copilot_config;
-pub mod cursor_status;
-pub mod doc_review_attest;
-pub mod gh;
-pub mod issue_events;
-pub mod pull_request_metadata_attestation;
-pub mod pull_request_view;
-pub mod rate_limit;
-pub mod requested_reviewers;
-pub mod review_threads;
-pub mod reviews;
-pub mod rulesets;
-pub mod stack_root;
-pub mod workflow_runs;
+pub(crate) mod branch_protection;
+pub(crate) mod branch_rules;
+pub(crate) mod checks;
+pub(crate) mod claude_review_attest;
+pub(crate) mod comments;
+pub(crate) mod compare;
+pub(crate) mod copilot_config;
+pub(crate) mod cursor_status;
+pub(crate) mod doc_review_attest;
+pub(crate) mod gh;
+pub(crate) mod issue_events;
+pub(crate) mod pull_request_metadata_attestation;
+pub(crate) mod pull_request_view;
+pub(crate) mod rate_limit;
+pub(crate) mod requested_reviewers;
+pub(crate) mod review_threads;
+pub(crate) mod reviews;
+pub(crate) mod rulesets;
+pub(crate) mod stack_root;
+pub(crate) mod workflow_runs;
 
 use std::thread;
 
@@ -60,7 +60,7 @@ use workflow_runs::{WorkflowRun, fetch_workflow_runs_for_head};
 /// scope's retry window). [`GhError`] is reserved for non-recoverable
 /// failures: spawn errors, parse errors, real non-2xx responses.
 #[derive(Debug, Clone, Serialize)]
-pub enum FetchOutcome {
+pub(crate) enum FetchOutcome {
     Observations(Box<GitHubObservations>),
     RateLimited(RateLimitHit),
 }
@@ -71,7 +71,7 @@ pub enum FetchOutcome {
 /// `review_threads_page` holds *all* threads — `fetch_all_review_threads`
 /// loops the GraphQL cursor until the last page.
 #[derive(Debug, Clone, Serialize)]
-pub struct GitHubObservations {
+pub(crate) struct GitHubObservations {
     pub pull_request_view: PullRequestView,
     pub checks: Vec<PullRequestCheck>,
     pub reviews: Vec<PullRequestReview>,
@@ -147,7 +147,7 @@ pub struct GitHubObservations {
 ///   3. Parallel aux fetch — the remaining nine calls fan out
 ///      concurrently. Fail-fast on the first error.
 #[allow(clippy::too_many_lines)]
-pub fn fetch_all(
+pub(crate) fn fetch_all(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     state_root: Option<&std::path::Path>,

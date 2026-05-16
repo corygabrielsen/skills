@@ -35,7 +35,7 @@ use super::bot_threads::{BotThreadSummary, count_bot_threads};
 
 const CURSOR_LOGINS: &[&str] = &["cursor[bot]", "cursor"];
 
-pub fn is_cursor(login: &str) -> bool {
+pub(crate) fn is_cursor(login: &str) -> bool {
     CURSOR_LOGINS.contains(&login)
 }
 
@@ -71,12 +71,12 @@ fn is_bot_author(author: &PullRequestAuthor) -> bool {
 // at p99=14.6m), pads enough that healthy pickups don't trip the
 // detector while still catching the canonical stuck-suite pattern
 // (suite stuck queued > 1h).
-pub const STALL_TIMEOUT: chrono::Duration = chrono::Duration::minutes(15);
+pub(crate) const STALL_TIMEOUT: chrono::Duration = chrono::Duration::minutes(15);
 
 // ── Public types ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CursorReport {
+pub(crate) struct CursorReport {
     pub activity: CursorActivity,
     /// All Cursor review rounds, oldest first. Empty when Cursor has
     /// not yet submitted a review at any HEAD on this PR.
@@ -103,7 +103,7 @@ pub struct CursorReport {
 // feedback-domain-shapes-design memory — don't force a meta-structure
 // across axes when domains diverge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum CursorActivity {
+pub(crate) enum CursorActivity {
     /// Cursor not active in this repo — no Cursor `check_suite` ever
     /// observed for this PR's HEAD AND the author isn't on the
     /// bot-class skip list. Repo-level absence.
@@ -131,7 +131,7 @@ pub enum CursorActivity {
 // class so the JSONL schema is stable when those paths land.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum SkipReason {
+pub(crate) enum SkipReason {
     /// Author is in Cursor's bot-class filter (Dependabot, Renovate,
     /// GitHub Actions). Detected at observe boundary; the activity
     /// classifier never sees a "missing check" it can't explain for
@@ -155,7 +155,7 @@ pub enum SkipReason {
 // already knows about the PR). No remediation → no retry budget →
 // straight to escalation on threshold trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum InFlightHealth {
+pub(crate) enum InFlightHealth {
     /// Within `STALL_TIMEOUT` of either the suite's creation (when no
     /// child run exists yet) or the run's `started_at` (or the
     /// suite's `created_at` as fallback when the run has no
@@ -167,7 +167,7 @@ pub enum InFlightHealth {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ReviewedState {
+pub(crate) enum ReviewedState {
     /// Run completed with no findings posted as a review on this
     /// commit. Cursor's `success` conclusion is normal-and-quiet.
     Clean,
@@ -181,7 +181,7 @@ pub enum ReviewedState {
 
 /// Project Cursor activity onto a dashboard signal. `NotApplicable`
 /// returns `None` — repo/PR has no Cursor signal at all.
-pub fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboard::AxisSignal> {
+pub(crate) fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
         CursorActivity::NotApplicable => return None,
@@ -219,7 +219,7 @@ fn skip_reason_label(r: SkipReason) -> &'static str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CursorReviewRound {
+pub(crate) struct CursorReviewRound {
     /// 1-indexed within this PR's Cursor review history.
     pub round: u32,
     pub reviewed_at: Timestamp,
@@ -228,7 +228,7 @@ pub struct CursorReviewRound {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-pub struct CursorSeverityBreakdown {
+pub(crate) struct CursorSeverityBreakdown {
     pub high: u32,
     pub medium: u32,
     pub low: u32,
@@ -238,7 +238,7 @@ impl CursorSeverityBreakdown {
     /// `["2 high", "1 medium"]` — only non-zero buckets, in order.
     /// Used to render compact severity summaries in prompts and
     /// PR comments.
-    pub fn nonzero_parts(&self) -> Vec<String> {
+    pub(crate) fn nonzero_parts(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if self.high > 0 {
             out.push(format!("{} high", self.high));
@@ -256,7 +256,7 @@ impl CursorSeverityBreakdown {
 /// Same tier lattice as Copilot — kept as a separate type to prevent
 /// accidental cross-bot comparison without explicit choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum CursorTier {
+pub(crate) enum CursorTier {
     Bronze,
     Silver,
     Gold,
@@ -264,7 +264,7 @@ pub enum CursorTier {
 }
 
 impl CursorTier {
-    pub fn slug(self) -> &'static str {
+    pub(crate) fn slug(self) -> &'static str {
         match self {
             Self::Bronze => "bronze",
             Self::Silver => "silver",
@@ -289,7 +289,7 @@ impl CursorTier {
 /// distinguish "no observation at all" from "observation says
 /// `NotApplicable`".
 #[allow(clippy::too_many_arguments)]
-pub fn orient_cursor(
+pub(crate) fn orient_cursor(
     reviews: &[PullRequestReview],
     threads: &ReviewThreadsResponse,
     cursor_status: &CursorStatus,

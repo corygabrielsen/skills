@@ -31,7 +31,7 @@ const CHECK_FIELDS: &str = "name,state,description,link,completedAt";
 // flattened-per-name `gh pr checks` rollup. v1 keeps the existing
 // cancelled→failed bucket; the workflow_runs feed grew exactly to
 // enable a later disposition tag without re-shaping this fetcher.
-pub fn fetch_pull_request_checks(
+pub(crate) fn fetch_pull_request_checks(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<PullRequestCheck>, GhError> {
@@ -49,7 +49,7 @@ pub fn fetch_pull_request_checks(
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PullRequestCheck {
+pub(crate) struct PullRequestCheck {
     pub name: CheckName,
     pub state: CheckState,
     /// Check output title (one-liner). Often empty.
@@ -72,7 +72,7 @@ pub struct PullRequestCheck {
 /// `Unknown` so observe doesn't abort on a future addition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum CheckState {
+pub(crate) enum CheckState {
     Success,
     Failure,
     Skipped,

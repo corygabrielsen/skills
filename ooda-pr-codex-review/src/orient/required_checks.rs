@@ -27,7 +27,7 @@ use crate::observe::github::rulesets::RequiredStatusChecksParams;
 /// known false-green; the merge-state fallback (BLOCKED handoff)
 /// catches it via `mergeStateStatus` when no other axis explains
 /// the blockage.
-pub fn required_check_names(
+pub(crate) fn required_check_names(
     branch_rules: &[BranchRule],
     protection: Option<&BranchProtectionRequiredStatusChecks>,
 ) -> Vec<CheckName> {

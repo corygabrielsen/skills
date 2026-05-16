@@ -9,8 +9,8 @@
 //! [`fetch_all`] is the boundary entry point; the runner closure
 //! calls it once per OODA iteration to refresh observations.
 
-pub mod batch;
-pub mod verdict;
+pub(crate) mod batch;
+pub(crate) mod verdict;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,15 +22,12 @@ use crate::ids::{RepoId, ReviewTarget};
 
 use batch::{BatchState, scan_batch};
 
-pub use verdict::VerdictClass;
+pub(crate) use verdict::VerdictClass;
 
 /// Per-iteration observation bundle. The runner closure constructs
-/// this each iteration; orient consumes it. Phase 5 wires
-/// `current_level` and `batch_state`; Phase 6 will add
-/// `level_history` and `last_test_run` once the recorder is the
-/// source of truth for cross-iteration state.
+/// this each iteration; orient consumes it.
 #[derive(Debug, Clone, Serialize)]
-pub struct CodexObservations {
+pub(crate) struct CodexObservations {
     pub repo_id: RepoId,
     pub target: ReviewTarget,
     pub current_level: CodexReasoningLevel,
@@ -57,8 +54,8 @@ pub struct CodexObservations {
 ///   - `expected`: the configured `n` for this batch.
 ///
 /// All filesystem reads are scoped to `batch_dir`; no subprocess
-/// spawn, no network. Spawn lives in `act` (Phase 5/7 tie-in).
-pub fn fetch_all(
+/// spawn, no network. Spawn lives in `act`.
+pub(crate) fn fetch_all(
     repo_id: RepoId,
     target: ReviewTarget,
     batch_dir: &Path,

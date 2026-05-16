@@ -19,7 +19,7 @@ use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Ur
 // signature churn.
 /// Mechanical merge blockers — must clear for the PR to be
 /// mergeable at all. Emitted by decide before review/bot axes.
-pub fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
+pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
     let state = &oriented.state;
     let mut out: Vec<Action> = Vec::new();
 
@@ -310,7 +310,7 @@ fn merge_blocked_unmodeled_prompt(state: &PullRequestProjection) -> ooda_core::H
 /// fired. Otherwise the modeled axis already explains the BLOCKED
 /// state and a duplicate emission would shadow the more actionable
 /// candidate.
-pub fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
+pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
     match state.merge_state_status {
         MergeStateStatus::Blocked => vec![Action {
             kind: ActionKind::ResolveMergePolicy,

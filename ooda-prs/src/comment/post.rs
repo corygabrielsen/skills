@@ -18,7 +18,7 @@ use crate::recorder::Recorder;
 use super::render::Rendered;
 
 #[derive(Debug)]
-pub enum PostError {
+pub(crate) enum PostError {
     Gh(GhError),
     Hash(io::Error),
 }
@@ -43,7 +43,7 @@ impl From<GhError> for PostError {
 /// Post the comment iff its dedup key differs from the last post.
 /// Returns `Ok(true)` when a comment was actually posted, `Ok(false)`
 /// when suppressed by dedup.
-pub fn post_if_changed(
+pub(crate) fn post_if_changed(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     rendered: &Rendered,

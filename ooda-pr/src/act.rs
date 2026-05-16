@@ -4,11 +4,11 @@
 //! never reach act. Anything Action that arrives here is either
 //! Full (we run it) or Wait (we sleep `next_poll_seconds` and return).
 
-pub mod address_claude_review;
+pub(crate) mod address_claude_review;
 mod ci;
 mod copilot;
-pub mod review_docs;
-pub mod sync_pull_request_metadata;
+pub(crate) mod review_docs;
+pub(crate) mod sync_pull_request_metadata;
 
 use std::thread;
 
@@ -50,7 +50,7 @@ impl From<GhError> for ActError {
 
 /// Execute (or wait for) one action. Returns Ok on success;
 /// caller's loop re-iterates after this returns.
-pub fn act(action: &Action, slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), ActError> {
+pub(crate) fn act(action: &Action, slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => run_full(&action.kind, slug, pr),
         ActionEffect::Wait { interval, .. } => {

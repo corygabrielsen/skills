@@ -1,4 +1,4 @@
-//! End-to-end binary contract tests for the Phase 7 CLI surface.
+//! End-to-end binary contract tests for the CLI surface.
 //!
 //! Coverage:
 //!   * `--help` short-circuits to exit 0 (regardless of position)

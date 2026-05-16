@@ -29,7 +29,7 @@ use super::bot_threads::{BotThreadSummary, count_bot_threads};
 /// Canonical login string for adding Copilot as a reviewer (POST
 /// `requested_reviewers`). The `[bot]` suffix variant is the only
 /// form the write API accepts.
-pub const COPILOT_REVIEWER_LOGIN: &str = "copilot-pull-request-reviewer[bot]";
+pub(crate) const COPILOT_REVIEWER_LOGIN: &str = "copilot-pull-request-reviewer[bot]";
 
 /// Every known Copilot login variant. GitHub returns different
 /// strings on different API surfaces (REST reviews vs GraphQL vs
@@ -40,14 +40,14 @@ const COPILOT_LOGINS: &[&str] = &[
     "copilot-pull-request-reviewer",
 ];
 
-pub fn is_copilot(login: &str) -> bool {
+pub(crate) fn is_copilot(login: &str) -> bool {
     COPILOT_LOGINS.contains(&login)
 }
 
 // ── Public types ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CopilotReport {
+pub(crate) struct CopilotReport {
     pub config: CopilotRepoConfig,
     pub activity: CopilotActivity,
     /// All review rounds, oldest first. Empty when Copilot has not
@@ -60,7 +60,7 @@ pub struct CopilotReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct CopilotRepoConfig {
+pub(crate) struct CopilotRepoConfig {
     pub enabled: bool,
     pub review_on_push: bool,
     pub review_draft_pull_requests: bool,
@@ -80,7 +80,7 @@ impl From<CopilotCodeReviewParams> for CopilotRepoConfig {
 // Health by design — the "health is meaningful only when in flight"
 // invariant is type-structural here, not enforced at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum CopilotActivity {
+pub(crate) enum CopilotActivity {
     Idle,
     Requested {
         requested_at: Timestamp,
@@ -99,7 +99,7 @@ pub enum CopilotActivity {
 /// Project Copilot activity onto a dashboard signal. `Idle` returns
 /// `None` — the axis is dormant and should not emit a row. Every
 /// other variant emits the icon+summary the spec table fixes.
-pub fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashboard::AxisSignal> {
+pub(crate) fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
         CopilotActivity::Idle => return None,
@@ -143,7 +143,7 @@ pub fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashboard::Ax
 // subsequent reviewer axis will wear the same shape. On the third
 // axis, lift to ooda_core::AxisHealth<S>.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum InFlightHealth {
+pub(crate) enum InFlightHealth {
     /// In flight within the configured timeout window — keep waiting.
     Healthy,
     /// Timeout crossed once for this round at the current HEAD. One
@@ -168,19 +168,19 @@ pub enum Symptom {
 
 /// Time Copilot is allowed to ack a fresh review request before the
 /// round is treated as `StartTimeout`-degraded.
-pub const THRESHOLD_START_TIMEOUT: chrono::Duration = chrono::Duration::minutes(10);
+pub(crate) const THRESHOLD_START_TIMEOUT: chrono::Duration = chrono::Duration::minutes(10);
 
 /// Time Copilot is allowed between ack and review submission before
 /// the round is treated as `ReviewTimeout`-degraded.
-pub const THRESHOLD_REVIEW_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
+pub(crate) const THRESHOLD_REVIEW_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
 
 /// Per-HEAD remediation budget — number of Degraded rounds at the
 /// current HEAD we will tolerate before promoting to `Failed` and
 /// handing off to a human.
-pub const HEALTH_REMEDIATION_BUDGET: usize = 2;
+pub(crate) const HEALTH_REMEDIATION_BUDGET: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CopilotReviewRound {
+pub(crate) struct CopilotReviewRound {
     /// 1-indexed within this PR's Copilot review history.
     pub round: u32,
     pub requested_at: Timestamp,
@@ -194,7 +194,7 @@ pub struct CopilotReviewRound {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum CopilotTier {
+pub(crate) enum CopilotTier {
     Bronze,
     Silver,
     Gold,
@@ -205,7 +205,7 @@ impl CopilotTier {
     /// Lowercase, stable slug for use in user-facing strings and
     /// blocker keys. Coupled to the variant *names* in the type
     /// contract — renaming a variant requires updating this impl.
-    pub fn slug(self) -> &'static str {
+    pub(crate) fn slug(self) -> &'static str {
         match self {
             Self::Bronze => "bronze",
             Self::Silver => "silver",
@@ -228,7 +228,7 @@ impl CopilotTier {
 /// "context" struct would only shift the surface area without
 /// shrinking it; the long list pays for itself in call-site clarity.
 #[allow(clippy::too_many_arguments)]
-pub fn orient_copilot(
+pub(crate) fn orient_copilot(
     config: CopilotRepoConfig,
     events: &[IssueEvent],
     reviews: &[PullRequestReview],

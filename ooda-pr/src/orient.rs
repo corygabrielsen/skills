@@ -3,17 +3,17 @@
 //! The shared shape (Facts / Findings / Opportunities, etc.) emerges
 //! once a second axis lands and forces the abstraction.
 
-pub mod bot_threads;
-pub mod ci;
-pub mod claude_review;
-pub mod copilot;
-pub mod cursor;
-pub mod doc_review;
-pub mod pull_request_metadata;
-pub mod required_checks;
-pub mod reviews;
-pub mod state;
-pub mod thread;
+pub(crate) mod bot_threads;
+pub(crate) mod ci;
+pub(crate) mod claude_review;
+pub(crate) mod copilot;
+pub(crate) mod cursor;
+pub(crate) mod doc_review;
+pub(crate) mod pull_request_metadata;
+pub(crate) mod required_checks;
+pub(crate) mod reviews;
+pub(crate) mod state;
+pub(crate) mod thread;
 
 use crate::ids::Timestamp;
 use crate::observe::github::GitHubObservations;
@@ -47,7 +47,7 @@ use thread::ReviewThread;
 /// approach conflated these and produced false halts; the
 /// per-axis `Option` makes the distinction unrepresentable.
 #[derive(Debug, Clone, Serialize)]
-pub struct OrientedState {
+pub(crate) struct OrientedState {
     pub ci: CiReport,
     pub state: PullRequestProjection,
     pub reviews: ReviewSummary,
@@ -110,7 +110,7 @@ pub struct OrientedState {
 /// once by the runner per iteration and threaded through axes that
 /// need a clock (currently: copilot health). Tests pass fixed
 /// values to keep behavior deterministic.
-pub fn orient(
+pub(crate) fn orient(
     obs: &GitHubObservations,
     last_commit_at: Option<Timestamp>,
     now: Timestamp,

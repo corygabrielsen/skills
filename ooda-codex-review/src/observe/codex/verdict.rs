@@ -19,7 +19,7 @@ use serde::Serialize;
 /// `awk '/^codex$/{found=1; block=""; next} found{block=block $0
 /// "\n"} END{printf "%s", block}'` — last marker wins, body is
 /// everything after it.
-pub fn extract_verdict(log: &str) -> Option<String> {
+pub(crate) fn extract_verdict(log: &str) -> Option<String> {
     let mut after_last_marker: Option<usize> = None;
     let mut offset = 0usize;
     for line in log.split_inclusive('\n') {
@@ -41,7 +41,7 @@ pub fn extract_verdict(log: &str) -> Option<String> {
 /// abstains rather than guessing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum VerdictClass {
+pub(crate) enum VerdictClass {
     /// Empty body or recognized "clean" phrasing — the review is clean.
     Clean,
     /// Body contains codex's structural issue markers
@@ -60,7 +60,7 @@ pub enum VerdictClass {
 /// Evaluation order — structural markers (codex's own grammar)
 /// before prose phrase-matching, so a `[P*]` bullet in an otherwise
 /// clean-leaning summary still classifies as `HasIssues`.
-pub fn classify(verdict: &str) -> VerdictClass {
+pub(crate) fn classify(verdict: &str) -> VerdictClass {
     let body = verdict.trim();
     if body.is_empty() {
         return VerdictClass::Clean;

@@ -50,7 +50,7 @@ impl std::fmt::Display for LoopError {
 impl std::error::Error for LoopError {}
 
 #[derive(Clone, Copy)]
-pub struct LoopConfig {
+pub(crate) struct LoopConfig {
     /// Iteration cap. `NonZeroU32` so the driver's "iter 1
     /// always runs" guarantee is structural.
     pub max_iterations: NonZeroU32,
@@ -89,7 +89,7 @@ enum IterStep {
 /// `on_state` is called once per iteration after decide and
 /// before act, with the iteration index, oriented state, and
 /// chosen decision. Halt decisions also fire it before returning.
-pub fn run_loop(
+pub(crate) fn run_loop(
     repo_id: &RepoId,
     target: &ReviewTarget,
     config: LoopConfig,

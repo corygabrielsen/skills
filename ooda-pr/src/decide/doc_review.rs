@@ -15,7 +15,7 @@ use crate::orient::doc_review::DocReview;
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 #[must_use]
-pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
+pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     if oriented.state.commits == 0 {
         return Vec::new();
     }

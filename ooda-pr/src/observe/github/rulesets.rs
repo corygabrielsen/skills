@@ -21,7 +21,7 @@ use super::gh::{GhError, gh_json, gh_json_paginate};
 /// `fetch_copilot_config` returning `None` and PRs misreported as
 /// Copilot-unconfigured. Class invariant: every list endpoint that
 /// may exceed one page uses `gh_json_paginate`.
-pub fn fetch_ruleset_list(slug: &RepoSlug) -> Result<Vec<RulesetSummary>, GhError> {
+pub(crate) fn fetch_ruleset_list(slug: &RepoSlug) -> Result<Vec<RulesetSummary>, GhError> {
     let path = format!("repos/{slug}/rulesets?per_page=100");
     gh_json_paginate(&["api", "--paginate", &path])
 }
@@ -31,7 +31,7 @@ pub fn fetch_ruleset_list(slug: &RepoSlug) -> Result<Vec<RulesetSummary>, GhErro
 /// Callers that iterate the ruleset list may see a ruleset vanish
 /// between list and fetch; this surfaces as `GhError::NotFound` and
 /// should be treated as a non-fatal skip.
-pub fn fetch_ruleset(slug: &RepoSlug, id: u64) -> Result<Ruleset, GhError> {
+pub(crate) fn fetch_ruleset(slug: &RepoSlug, id: u64) -> Result<Ruleset, GhError> {
     let path = format!("repos/{slug}/rulesets/{id}");
     gh_json(&["api", &path])
 }
@@ -39,12 +39,12 @@ pub fn fetch_ruleset(slug: &RepoSlug, id: u64) -> Result<Ruleset, GhError> {
 /// Entry from the list endpoint. The list response is trimmed; the
 /// full shape is fetched per-id via `Ruleset`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct RulesetSummary {
+pub(crate) struct RulesetSummary {
     pub id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct Ruleset {
+pub(crate) struct Ruleset {
     pub id: u64,
     pub name: String,
     pub enforcement: RulesetEnforcement,
@@ -61,13 +61,13 @@ pub struct Ruleset {
 /// them appear unconditionally matched.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub struct RulesetConditions {
+pub(crate) struct RulesetConditions {
     #[serde(default)]
     pub ref_name: Option<RefNameCondition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
-pub struct RefNameCondition {
+pub(crate) struct RefNameCondition {
     /// Patterns: `~ALL` (every branch), `~DEFAULT_BRANCH`
     /// (repo default), exact `refs/heads/<name>`, or
     /// fnmatch-style globs like `refs/heads/release/*`.
@@ -95,7 +95,7 @@ pub struct RefNameCondition {
 ///   - `refs/heads/<exact>` exact match.
 ///   - `refs/heads/<glob>` with `*` wildcards (fnmatch-style,
 ///     no character classes).
-pub fn ruleset_matches_branch(conditions: Option<&RulesetConditions>, branch: &str) -> bool {
+pub(crate) fn ruleset_matches_branch(conditions: Option<&RulesetConditions>, branch: &str) -> bool {
     let Some(c) = conditions else { return true };
     let Some(rn) = &c.ref_name else { return true };
     let qualified = format!("refs/heads/{branch}");
@@ -157,7 +157,7 @@ fn glob_matches(pat: &str, s: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum RulesetEnforcement {
+pub(crate) enum RulesetEnforcement {
     Active,
     Disabled,
     Evaluate,
@@ -167,7 +167,7 @@ pub enum RulesetEnforcement {
 /// a typed view via `serde_json::from_value(rule.parameters.clone())`
 /// using one of the typed `*Params` structs below.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct RulesetRule {
+pub(crate) struct RulesetRule {
     #[serde(rename = "type")]
     pub rule_type: String,
     #[serde(default)]
@@ -176,19 +176,19 @@ pub struct RulesetRule {
 
 /// Shape of `parameters` when `rule_type == "copilot_code_review"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CopilotCodeReviewParams {
+pub(crate) struct CopilotCodeReviewParams {
     pub review_on_push: bool,
     pub review_draft_pull_requests: bool,
 }
 
 /// Shape of `parameters` when `rule_type == "required_status_checks"`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct RequiredStatusChecksParams {
+pub(crate) struct RequiredStatusChecksParams {
     pub required_status_checks: Vec<RequiredStatusCheck>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct RequiredStatusCheck {
+pub(crate) struct RequiredStatusCheck {
     pub context: CheckName,
     /// Null when the required check is not pinned to a GitHub App
     /// (status posted from any source matching the context name).

@@ -22,7 +22,7 @@ use crate::runner::LoopError;
 
 /// Codex-review-domain `Outcome`. 1:1 variant → exit-code via
 /// [`ooda_core::Outcome::exit_code`].
-pub type Outcome = ooda_core::Outcome<ActionKind>;
+pub(crate) type Outcome = ooda_core::Outcome<ActionKind>;
 
 /// `LoopError` → `BinaryError(String)`. The caller sees a
 /// single-line human-triage string; the typed error is flattened

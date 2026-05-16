@@ -9,14 +9,14 @@
 //! and per-variant rationale.
 
 use super::action::ActionKind;
-pub use ooda_core::Terminal;
+pub(crate) use ooda_core::Terminal;
 
 /// What the loop should do next. Returned by [`super::decide`].
-pub type Decision = ooda_core::Decision<ActionKind>;
+pub(crate) type Decision = ooda_core::Decision<ActionKind>;
 
 /// Why `decide()` returned a halt.
-pub type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
+pub(crate) type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
 
 /// Why `run_loop` stopped. Superset of [`DecisionHalt`] with the
 /// two loop-level halt classes.
-pub type HaltReason = ooda_core::HaltReason<ActionKind>;
+pub(crate) type HaltReason = ooda_core::HaltReason<ActionKind>;

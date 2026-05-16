@@ -20,7 +20,7 @@ use serde::Serialize;
 use crate::observe::github::pull_request_metadata_attestation::PullRequestMetadataObservation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum PullRequestMetadata {
+pub(crate) enum PullRequestMetadata {
     Synced,
     Drift {
         attested_sha: String,
@@ -32,7 +32,9 @@ pub enum PullRequestMetadata {
 
 /// Project a `PullRequestMetadataObservation` into the typed axis.
 #[must_use]
-pub fn orient_pull_request_metadata(obs: &PullRequestMetadataObservation) -> PullRequestMetadata {
+pub(crate) fn orient_pull_request_metadata(
+    obs: &PullRequestMetadataObservation,
+) -> PullRequestMetadata {
     match &obs.attestation {
         None => PullRequestMetadata::NeverAttested,
         Some(att) if att.attested_sha == obs.head_sha.as_str() => PullRequestMetadata::Synced,

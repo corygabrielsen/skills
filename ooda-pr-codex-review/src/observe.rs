@@ -2,5 +2,5 @@
 //! sources. No interpretation — downstream stages decide what the
 //! signals mean.
 
-pub mod codex;
-pub mod github;
+pub(crate) mod codex;
+pub(crate) mod github;

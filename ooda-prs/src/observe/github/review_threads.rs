@@ -35,7 +35,7 @@ fn gh_graphql<T: DeserializeOwned>(body: &str) -> Result<T, GhError> {
 /// full comment history. Class invariant: every nested `first:N`
 /// GraphQL list with a pageInfo must be followed up if
 /// `hasNextPage`, or downstream consumers see a truncated view.
-pub fn fetch_review_threads_page(
+pub(crate) fn fetch_review_threads_page(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     cursor: Option<&str>,
@@ -122,24 +122,24 @@ struct ThreadCommentsPageNode {
 // -- top-level wrapping -----------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ReviewThreadsResponse {
+pub(crate) struct ReviewThreadsResponse {
     pub data: ReviewThreadsData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ReviewThreadsData {
+pub(crate) struct ReviewThreadsData {
     pub repository: ReviewThreadsRepo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewThreadsRepo {
+pub(crate) struct ReviewThreadsRepo {
     pub pull_request: ReviewThreadsPr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewThreadsPr {
+pub(crate) struct ReviewThreadsPr {
     pub review_threads: ReviewThreadsPage,
     pub review_requests: ReviewRequestsPage,
 }
@@ -148,7 +148,7 @@ pub struct ReviewThreadsPr {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewThreadsPage {
+pub(crate) struct ReviewThreadsPage {
     pub page_info: PageInfo,
     pub nodes: Vec<ReviewThread>,
 }
@@ -212,13 +212,13 @@ pub struct CommentAuthor {
 // -- reviewRequests ---------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ReviewRequestsPage {
+pub(crate) struct ReviewRequestsPage {
     pub nodes: Vec<ReviewRequestNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReviewRequestNode {
+pub(crate) struct ReviewRequestNode {
     /// Null when the requested reviewer has been removed or the actor
     /// is otherwise unknown.
     pub requested_reviewer: Option<RequestedReviewer>,
@@ -228,7 +228,7 @@ pub struct ReviewRequestNode {
 /// login; Teams carry a name.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "__typename")]
-pub enum RequestedReviewer {
+pub(crate) enum RequestedReviewer {
     User { login: GitHubLogin },
     Bot { login: GitHubLogin },
     Team { name: TeamName },
@@ -254,7 +254,7 @@ pub struct PageInfo {
 /// Callers that don't expect >100 unresolved threads can call
 /// `fetch_review_threads_page` directly; `fetch_all` uses this
 /// loop for correctness on big PRs.
-pub fn fetch_all_review_threads(
+pub(crate) fn fetch_all_review_threads(
     slug: &crate::ids::RepoSlug,
     pr: crate::ids::PullRequestNumber,
 ) -> Result<ReviewThreadsResponse, GhError> {
@@ -328,7 +328,7 @@ fn next_cursor(info: PageInfo) -> Option<String> {
 /// Empty `ReviewThreadsResponse` for callers that need a stub when
 /// no actual fetch is required (e.g. terminal-PR short-circuit in
 /// `fetch_all`). Has no threads and no review requests.
-pub fn empty_review_threads_response() -> ReviewThreadsResponse {
+pub(crate) fn empty_review_threads_response() -> ReviewThreadsResponse {
     ReviewThreadsResponse {
         data: ReviewThreadsData {
             repository: ReviewThreadsRepo {

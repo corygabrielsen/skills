@@ -8,7 +8,7 @@
 /// `count(1, "thread")` → `"1 thread"`
 /// `count(0, "thread")` → `"0 threads"`
 /// `count(5, "low-confidence finding")` → `"5 low-confidence findings"`
-pub fn count(n: usize, noun: &str) -> String {
+pub(crate) fn count(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("{n} {noun}")
     } else {

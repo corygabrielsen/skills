@@ -17,14 +17,14 @@ use crate::observe::github::claude_review_attest::ClaudeReviewObservation;
 
 const CLAUDE_LOGINS: &[&str] = &["claude[bot]", "claude"];
 
-pub fn is_claude(login: &str) -> bool {
+pub(crate) fn is_claude(login: &str) -> bool {
     CLAUDE_LOGINS.contains(&login)
 }
 
 // ── Axis projection ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum ClaudeReview {
+pub(crate) enum ClaudeReview {
     NoActivity,
     Addressed,
     Fresh {
@@ -47,7 +47,7 @@ pub enum ClaudeReview {
 
 /// Project a [`ClaudeReviewObservation`] into the typed axis.
 #[must_use]
-pub fn orient_claude_review(obs: &ClaudeReviewObservation) -> ClaudeReview {
+pub(crate) fn orient_claude_review(obs: &ClaudeReviewObservation) -> ClaudeReview {
     let Some(latest_at) = obs.latest_claude_at else {
         return ClaudeReview::NoActivity;
     };

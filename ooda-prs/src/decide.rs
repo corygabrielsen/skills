@@ -7,12 +7,12 @@
 //! when the candidate set is empty (Success) or when the top
 //! candidate requires an external resolver (Agent / Human).
 
-pub mod action;
+pub(crate) mod action;
 mod ci;
 mod claude_review;
 mod copilot;
 mod cursor;
-pub mod decision;
+pub(crate) mod decision;
 mod doc_review;
 mod pull_request_metadata;
 mod reviews;

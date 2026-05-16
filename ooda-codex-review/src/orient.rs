@@ -1,10 +1,8 @@
 //! Orient stage: typed view over [`CodexObservations`] for the
 //! decide layer.
 //!
-//! Phase 6 surface: just a forwarding layer that copies the
-//! observation fields the state machine needs. Cross-iteration
-//! state (level history, last test run) lands here when the
-//! recorder is wired (Phase 8).
+//! Forwarding layer that copies the observation fields the state
+//! machine needs.
 
 use serde::Serialize;
 
@@ -15,7 +13,7 @@ use crate::observe::codex::batch::BatchState;
 /// Inputs decide consumes. Pure data — no methods on this struct
 /// have any policy.
 #[derive(Debug, Clone, Serialize)]
-pub struct OrientedState {
+pub(crate) struct OrientedState {
     /// Reasoning level the current batch is running at.
     pub current_level: CodexReasoningLevel,
     /// Top of the configured ladder. When `current_level == ceiling`
@@ -36,7 +34,7 @@ pub struct OrientedState {
 /// the invocation was configured with. `ceiling` lives outside the
 /// observation because it's a CLI/orchestrator-time configuration
 /// value, not a filesystem-derived signal.
-pub fn orient(obs: &CodexObservations, ceiling: CodexReasoningLevel) -> OrientedState {
+pub(crate) fn orient(obs: &CodexObservations, ceiling: CodexReasoningLevel) -> OrientedState {
     OrientedState {
         current_level: obs.current_level,
         ceiling,

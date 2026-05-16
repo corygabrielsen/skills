@@ -17,7 +17,7 @@ use crate::orient::doc_review::DocReview;
 /// the state-root for the literal CLI invocation. `attest_path` is
 /// `Option` because the binary may run without `--state-root`.
 #[must_use]
-pub fn build_review_docs_prompt(
+pub(crate) fn build_review_docs_prompt(
     pr: PullRequestNumber,
     state: &DocReview,
     attest_path: Option<&Path>,

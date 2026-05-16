@@ -12,8 +12,8 @@
 //! output.
 
 use super::action::ActionKind;
-pub use ooda_core::Terminal;
+pub(crate) use ooda_core::Terminal;
 
-pub type Decision = ooda_core::Decision<ActionKind>;
-pub type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
-pub type HaltReason = ooda_core::HaltReason<ActionKind>;
+pub(crate) type Decision = ooda_core::Decision<ActionKind>;
+pub(crate) type DecisionHalt = ooda_core::DecisionHalt<ActionKind>;
+pub(crate) type HaltReason = ooda_core::HaltReason<ActionKind>;

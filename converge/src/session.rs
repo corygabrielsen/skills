@@ -10,7 +10,7 @@ use crate::halt::{HaltReport, IterLog};
 
 const BASE_DIR: &str = "/tmp/converge";
 
-pub struct Session {
+pub(crate) struct Session {
     pub dir: PathBuf,
     pub history: Vec<IterLog>,
     lock_path: PathBuf,
@@ -18,7 +18,7 @@ pub struct Session {
 
 impl Session {
     /// Open (or create) a session directory. Acquires a lock file.
-    pub fn open(session_id: &str) -> Result<Self, String> {
+    pub(crate) fn open(session_id: &str) -> Result<Self, String> {
         let dir = PathBuf::from(BASE_DIR).join(session_id);
         fs::create_dir_all(&dir)
             .map_err(|e| format!("cannot create session dir {}: {e}", dir.display()))?;
@@ -50,7 +50,7 @@ impl Session {
         })
     }
 
-    pub fn append_history(&mut self, entry: IterLog) -> Result<(), String> {
+    pub(crate) fn append_history(&mut self, entry: IterLog) -> Result<(), String> {
         let path = self.dir.join("history.jsonl");
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -64,7 +64,11 @@ impl Session {
         Ok(())
     }
 
-    pub fn write_in_progress(&self, session_id: &str, resume_cmd: &[String]) -> Result<(), String> {
+    pub(crate) fn write_in_progress(
+        &self,
+        session_id: &str,
+        resume_cmd: &[String],
+    ) -> Result<(), String> {
         let stub = serde_json::json!({
             "stage": "in_progress",
             "timestamp": now_iso(),
@@ -74,11 +78,11 @@ impl Session {
         write_json(&self.dir.join("exit.json"), &stub)
     }
 
-    pub fn write_halt(&self, report: &HaltReport) -> Result<(), String> {
+    pub(crate) fn write_halt(&self, report: &HaltReport) -> Result<(), String> {
         write_json(&self.dir.join("exit.json"), report)
     }
 
-    pub fn release(&self) {
+    pub(crate) fn release(&self) {
         let _ = fs::remove_file(&self.lock_path);
     }
 }
@@ -101,7 +105,7 @@ fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), String> 
 }
 
 /// ISO 8601 UTC timestamp without external dependencies.
-pub fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

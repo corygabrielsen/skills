@@ -6,7 +6,7 @@ use crate::observe::github::review_threads::ReviewThreadsResponse;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-pub struct BotThreadSummary {
+pub(crate) struct BotThreadSummary {
     pub total: u32,
     pub resolved: u32,
     /// Threads that are `is_resolved=false` AND `is_outdated=false` —
@@ -31,7 +31,7 @@ pub struct BotThreadSummary {
 ///
 /// `stale` only fires when `latest_reviewed_at` is `Some` — without
 /// a completed review, no thread can be stale relative to it.
-pub fn count_bot_threads<F>(
+pub(crate) fn count_bot_threads<F>(
     threads: &ReviewThreadsResponse,
     latest_reviewed_at: Option<&Timestamp>,
     is_bot: F,

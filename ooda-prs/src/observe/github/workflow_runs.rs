@@ -52,7 +52,7 @@ impl std::fmt::Display for WorkflowRunId {
 // a future iteration wires the disposition into orient/ci.rs.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum CancelledDisposition {
+pub(crate) enum CancelledDisposition {
     /// Auto-cancel-by-concurrency: another run on the same `head_sha`
     /// supersedes this one. The health detector ignores these — they
     /// represent normal developer push churn, not a failure mode.
@@ -68,7 +68,7 @@ pub enum CancelledDisposition {
 /// compatibility (same pattern as `CheckState::Unknown`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowRunStatus {
+pub(crate) enum WorkflowRunStatus {
     Queued,
     InProgress,
     Completed,
@@ -83,7 +83,7 @@ pub enum WorkflowRunStatus {
 /// has not completed yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowRunConclusion {
+pub(crate) enum WorkflowRunConclusion {
     Success,
     Failure,
     Cancelled,
@@ -103,7 +103,7 @@ pub enum WorkflowRunConclusion {
 /// arrives.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub struct WorkflowRun {
+pub(crate) struct WorkflowRun {
     pub id: WorkflowRunId,
     /// Workflow display name. Joined against `PullRequestCheck.name`
     /// at orient time.
@@ -158,7 +158,7 @@ struct WorkflowRunsEnvelope {
 /// Fetch every workflow run on `head_sha` for `slug`. The set is
 /// bounded — typically 0-30 rows on a single commit — so a single
 /// page suffices (`per_page=100`).
-pub fn fetch_workflow_runs_for_head(
+pub(crate) fn fetch_workflow_runs_for_head(
     slug: &RepoSlug,
     head_sha: &GitCommitSha,
 ) -> Result<Vec<WorkflowRun>, GhError> {

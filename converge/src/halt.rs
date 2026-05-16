@@ -7,7 +7,7 @@ use crate::protocol::{Action, Automation, FitnessReport};
 /// Terminal outcome of the convergence loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HaltStatus {
+pub(crate) enum HaltStatus {
     Success,
     Stalled,
     Timeout,
@@ -20,7 +20,7 @@ pub enum HaltStatus {
 }
 
 impl HaltStatus {
-    pub fn exit_code(self) -> i32 {
+    pub(crate) fn exit_code(self) -> i32 {
         match self {
             Self::Success => 0,
             Self::Stalled => 1,
@@ -37,21 +37,21 @@ impl HaltStatus {
 
 /// Per-iteration audit record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IterLog {
+pub(crate) struct IterLog {
     pub iter: u32,
     pub score: f64,
     pub action_summary: ActionSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionSummary {
+pub(crate) struct ActionSummary {
     pub kind: String,
     pub automation: Automation,
 }
 
 /// Structured cause for error and `fitness_unavailable` halts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorCause {
+pub(crate) struct ErrorCause {
     pub source: String,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,7 +62,7 @@ pub struct ErrorCause {
 
 /// The full halt report written to exit.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HaltReport {
+pub(crate) struct HaltReport {
     pub stage: String,
     pub status: HaltStatus,
     pub timestamp: String,
@@ -87,7 +87,7 @@ pub struct HaltReport {
 /// Event sent to the hook coprocess via JSONL on stdin.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum HookEvent<'a> {
+pub(crate) enum HookEvent<'a> {
     Iteration {
         iter: u32,
         report: &'a FitnessReport,

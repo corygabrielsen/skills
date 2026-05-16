@@ -2,4 +2,4 @@
 //! directory. No interpretation — downstream stages decide what
 //! the signals mean.
 
-pub mod codex;
+pub(crate) mod codex;

@@ -14,7 +14,7 @@ use crate::orient::claude_review::ClaudeReview;
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 #[must_use]
-pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
+pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     let ClaudeReview::Fresh {
         body_at,
         latest_claude_body,

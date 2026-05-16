@@ -307,7 +307,7 @@ impl fmt::Display for GitHubLogin {
 ///
 /// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
 /// constructor, and infallible `tag` live in the shared crate.
-pub use ooda_core::BlockerKey;
+pub(crate) use ooda_core::BlockerKey;
 
 // -- BranchName ------------------------------------------------------
 

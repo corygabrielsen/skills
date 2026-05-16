@@ -16,7 +16,7 @@ const BASE_BACKOFF_MS: u64 = 1_000;
 
 /// Classified error from a fitness invocation.
 #[derive(Debug)]
-pub enum FitnessError {
+pub(crate) enum FitnessError {
     /// Transient — worth retrying (rate limit, network).
     Transient(String),
     /// Permanent — don't retry (auth, crash, parse failure).
@@ -51,7 +51,10 @@ fn classify_stderr(stderr: &str) -> FitnessError {
 
 /// Invoke the fitness skill with retry/backoff. Returns the parsed report
 /// or a classified error. `cancelled` is checked between attempts.
-pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, FitnessError> {
+pub(crate) fn invoke(
+    argv: &[String],
+    cancelled: &AtomicBool,
+) -> Result<FitnessReport, FitnessError> {
     let (cmd, cmd_args) = argv
         .split_first()
         .ok_or_else(|| FitnessError::Permanent("empty fitness argv".to_string()))?;

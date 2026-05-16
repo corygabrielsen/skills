@@ -23,7 +23,7 @@ use super::gh::{GhError, gh_json};
 /// consume quota. Returns the two buckets the OODA family uses
 /// (REST primary + GraphQL primary); secondary-limit counters and
 /// the legacy top-level `rate` field are ignored.
-pub fn fetch_rate_limit_budget() -> Result<RateLimitBudget, GhError> {
+pub(crate) fn fetch_rate_limit_budget() -> Result<RateLimitBudget, GhError> {
     let wire: RateLimitWire = gh_json(&["api", "rate_limit"])?;
     Ok(RateLimitBudget {
         rest: wire.resources.core.into(),

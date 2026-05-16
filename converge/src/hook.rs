@@ -10,13 +10,13 @@ use std::process::{Child, Command, Stdio};
 use crate::halt::{HaltReport, HookEvent};
 use crate::protocol::{Action, FitnessReport};
 
-pub struct Hook {
+pub(crate) struct Hook {
     child: Child,
 }
 
 impl Hook {
     /// Spawn the hook command via `sh -c` so shell features work.
-    pub fn spawn(cmd: &str) -> std::io::Result<Self> {
+    pub(crate) fn spawn(cmd: &str) -> std::io::Result<Self> {
         let child = Command::new("sh")
             .args(["-c", cmd])
             .stdin(Stdio::piped())
@@ -27,7 +27,7 @@ impl Hook {
     }
 
     /// Send an iteration event. Non-blocking, best-effort.
-    pub fn send_iteration(&mut self, iter: u32, report: &FitnessReport, action: &Action) {
+    pub(crate) fn send_iteration(&mut self, iter: u32, report: &FitnessReport, action: &Action) {
         let event = HookEvent::Iteration {
             iter,
             report,
@@ -37,7 +37,7 @@ impl Hook {
     }
 
     /// Send a halt event. Non-blocking, best-effort.
-    pub fn send_halt(&mut self, halt: &HaltReport, last_report: Option<&FitnessReport>) {
+    pub(crate) fn send_halt(&mut self, halt: &HaltReport, last_report: Option<&FitnessReport>) {
         let event = HookEvent::Halt { halt, last_report };
         self.send(&event);
     }
@@ -52,7 +52,7 @@ impl Hook {
     }
 
     /// Close stdin and wait for the child to exit.
-    pub fn finish(mut self) {
+    pub(crate) fn finish(mut self) {
         // Drop stdin to signal EOF.
         drop(self.child.stdin.take());
         let _ = self.child.wait();

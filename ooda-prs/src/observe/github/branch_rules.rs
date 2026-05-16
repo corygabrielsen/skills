@@ -24,7 +24,10 @@ use super::gh::{GhError, encode_path_segment, gh_json_paginate};
 /// from the decision model and a still-blocked PR to look clean.
 /// Class invariant: every list endpoint that may exceed one page
 /// uses `gh_json_paginate`.
-pub fn fetch_branch_rules(slug: &RepoSlug, branch: &str) -> Result<Vec<BranchRule>, GhError> {
+pub(crate) fn fetch_branch_rules(
+    slug: &RepoSlug,
+    branch: &str,
+) -> Result<Vec<BranchRule>, GhError> {
     let path = format!(
         "repos/{slug}/rules/branches/{}?per_page=100",
         encode_path_segment(branch)
@@ -33,7 +36,7 @@ pub fn fetch_branch_rules(slug: &RepoSlug, branch: &str) -> Result<Vec<BranchRul
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct BranchRule {
+pub(crate) struct BranchRule {
     #[serde(rename = "type")]
     pub rule_type: String,
     #[serde(default)]

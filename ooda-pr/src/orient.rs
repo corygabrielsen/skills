@@ -14,6 +14,7 @@ pub mod thread;
 
 use crate::ids::Timestamp;
 use crate::observe::github::GitHubObservations;
+use crate::observe::github::compare::MergeBaseDelta;
 use serde::Serialize;
 
 use ci::CiReport;
@@ -60,6 +61,12 @@ pub struct OrientedState {
     /// state. The witness for `AddressThreads` actions and the
     /// canonical source for any per-author thread query.
     pub threads: Vec<ReviewThread>,
+    /// Merge-base delta surfaced as-is from observe — pure
+    /// pass-through with no axis-specific projection. `None` when
+    /// the compare endpoint was unavailable (terminal PR, base ref
+    /// race). Consumed by decide's Rebase emission to surface the
+    /// concrete file overlap rather than a generic "rebase now."
+    pub merge_base_delta: Option<MergeBaseDelta>,
 }
 
 /// Compose all axes from a single GitHub observation bundle.
@@ -138,5 +145,6 @@ pub fn orient(
         copilot,
         cursor,
         threads,
+        merge_base_delta: obs.merge_base_delta.clone(),
     }
 }

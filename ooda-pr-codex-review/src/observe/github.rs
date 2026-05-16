@@ -4,6 +4,7 @@ pub mod branch_protection;
 pub mod branch_rules;
 pub mod checks;
 pub mod comments;
+pub mod compare;
 pub mod copilot_config;
 pub mod cursor_status;
 pub mod gh;
@@ -29,6 +30,7 @@ use branch_protection::{
 use branch_rules::{BranchRule, fetch_branch_rules};
 use checks::{PullRequestCheck, fetch_pr_checks};
 use comments::{IssueComment, fetch_issue_comments};
+use compare::{MergeBaseDelta, fetch_merge_base_delta};
 use copilot_config::fetch_copilot_config;
 use cursor_status::{CursorStatus, fetch_cursor_status};
 use gh::GhError;
@@ -99,6 +101,13 @@ pub struct GitHubObservations {
     /// stuck-suite stall signal — `gh pr checks` can't see a
     /// check_suite that never spawned a child check_run.
     pub cursor_status: CursorStatus,
+    /// Merge-base delta between the PR head and its immediate base —
+    /// commits behind, files master touched since base, and the
+    /// intersection with branch-touched files. `None` when the
+    /// compare endpoint failed for this PR (e.g. base ref deleted
+    /// post-merge in a race); decide treats absence as "no extra
+    /// detail," not as an error.
+    pub merge_base_delta: Option<MergeBaseDelta>,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -168,6 +177,14 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
             let head_for_cursor = head_sha.clone();
             s.spawn(move || fetch_cursor_status(slug, &head_for_cursor))
         };
+        let h_compare = {
+            // Keyed on the PR's immediate base (not the resolved
+            // stack root) so a stacked PR's compare describes the
+            // local rebase target, not the trunk far below.
+            let base_for_compare = pr_view.base_ref_name.clone();
+            let head_for_compare = head_sha.clone();
+            s.spawn(move || fetch_merge_base_delta(slug, &base_for_compare, &head_for_compare))
+        };
 
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pr_view,
@@ -208,6 +225,17 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
                     .join()
                     .expect("fetch_cursor_status panicked")
             ),
+            // Compare endpoint 404s after a base-ref delete race —
+            // tolerate that case the same way `branch_protection`
+            // does (collapse to None), surface every other failure.
+            merge_base_delta: match h_compare.join().expect("fetch_merge_base_delta panicked") {
+                Ok(delta) => Some(delta),
+                Err(GhError::NotFound) => None,
+                Err(GhError::RateLimited(hit)) => {
+                    return Ok(FetchOutcome::RateLimited(hit));
+                }
+                Err(e) => return Err(e),
+            },
         })))
     })
 }
@@ -240,5 +268,9 @@ fn terminal_observations(
             suite: None,
             run: None,
         },
+        // Terminal PRs (merged / closed) have no live merge base to
+        // describe — the compare fetch is skipped along with the
+        // rest of the parallel aux pass.
+        merge_base_delta: None,
     }
 }

@@ -352,6 +352,7 @@ mod tests {
             copilot: None,
             cursor: None,
             threads,
+            merge_base_delta: None,
         }
     }
 

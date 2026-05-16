@@ -4,14 +4,23 @@
 
 use crate::ids::BlockerKey;
 
+use crate::observe::github::compare::MergeBaseDelta;
 use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
+use crate::orient::OrientedState;
 use crate::orient::state::PullRequestState;
+use crate::orient::thread::{ReviewThread, ThreadState};
 
-use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
 
+// Widened from `&PullRequestState` to `&OrientedState` so the Rebase
+// emission can reach `oriented.threads` (orphan-risk witnesses) and
+// any future compare-endpoint facts. Other action prompts can now
+// enrich themselves from the same wider input without further
+// signature churn.
 /// Mechanical merge blockers — must clear for the PR to be
 /// mergeable at all. Emitted by decide before review/bot axes.
-pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
+pub fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
+    let state = &oriented.state;
     let mut out: Vec<Action> = Vec::new();
 
     // PR-shape blockers (draft / wip / title) come BEFORE
@@ -74,10 +83,12 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::Rebase,
             effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new(rebase_description(
+                prompt: build_rebase_prompt(
                     "Rebase to resolve merge conflicts",
                     state,
-                )),
+                    &oriented.threads,
+                    oriented.merge_base_delta.as_ref(),
+                ),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
@@ -87,10 +98,12 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::Rebase,
             effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new(rebase_description(
+                prompt: build_rebase_prompt(
                     "Rebase onto the latest base branch",
                     state,
-                )),
+                    &oriented.threads,
+                    oriented.merge_base_delta.as_ref(),
+                ),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
@@ -101,10 +114,65 @@ pub fn blocking_candidates(state: &PullRequestState) -> Vec<Action> {
     out
 }
 
-/// Append a stack-aware rebase hint when the PR sits on top of an
-/// open parent. A naive `git rebase <trunk>` would orphan stacked
-/// branches; `gt restack` walks the chain and rebases every branch.
-fn rebase_description(base: &str, state: &PullRequestState) -> String {
+/// Build the structured Rebase prompt. Combines:
+///
+/// * Headline with the stack-aware addendum when this PR is stacked
+///   under an open parent.
+/// * `Witnesses` listing open review threads with line anchors —
+///   each will need re-anchoring once the rebase moves the hunks.
+///   Omitted entirely when no live, line-anchored threads exist.
+/// * `Paragraph` with the merge-base delta (commits behind, oldest
+///   master commit) and a `NumberedList` of files master touched
+///   since the merge base — when known.
+/// * `Paragraph` + optional `NumberedList` reporting the file
+///   intersection between master and the branch. An empty
+///   intersection is itself a recommendation: no overlap, no
+///   conflict surface, just rebase.
+fn build_rebase_prompt(
+    base: &str,
+    state: &PullRequestState,
+    threads: &[ReviewThread],
+    delta: Option<&MergeBaseDelta>,
+) -> ooda_core::HandoffPrompt {
+    use ooda_core::{HandoffPrompt, SingleLineString, Witness};
+
+    let mut prompt = HandoffPrompt::new(rebase_headline(base, state));
+
+    let live: Vec<&ReviewThread> = threads
+        .iter()
+        .filter(|t| t.state == ThreadState::Live && t.location.line.is_some())
+        .collect();
+    if let Some(live) = NonEmpty::try_from_vec(live) {
+        prompt.push_paragraph(
+            "Open review threads (will need re-anchoring after rebase):".to_string(),
+        );
+        let witnesses = live.map_ref(|t| {
+            let label = SingleLineString::new(format!(
+                "{} — {} (thread_id: {})",
+                t.location, t.author, t.id,
+            ));
+            let body = t
+                .body
+                .lines()
+                .map(|line| format!("   > {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Witness { label, body }
+        });
+        prompt.push_witnesses(witnesses);
+    }
+
+    if let Some(delta) = delta {
+        push_merge_base_delta_sections(&mut prompt, delta);
+    }
+
+    prompt
+}
+
+/// Stack-aware rebase headline. A naive `git rebase <trunk>` would
+/// orphan stacked branches; `gt restack` walks the chain and rebases
+/// every branch.
+fn rebase_headline(base: &str, state: &PullRequestState) -> String {
     if state.has_open_parent_pr {
         format!(
             "{base}. This PR is stacked under an unmerged parent PR — \
@@ -114,6 +182,64 @@ fn rebase_description(base: &str, state: &PullRequestState) -> String {
         )
     } else {
         base.to_string()
+    }
+}
+
+/// Append the compare-endpoint sections (commits behind, files
+/// touched, conflict surface) to a Rebase prompt. An empty
+/// `conflict_surface` is itself the recommendation — the prompt
+/// surfaces "clean rebase, just go" so the human doesn't second-
+/// guess and dig through the diff.
+fn push_merge_base_delta_sections(prompt: &mut ooda_core::HandoffPrompt, delta: &MergeBaseDelta) {
+    use ooda_core::SingleLineString;
+
+    if delta.commits_behind == 0 && delta.master_files.is_empty() {
+        return;
+    }
+
+    let oldest = delta
+        .oldest_master_commit_at
+        .as_ref()
+        .map(|t| format!(" (oldest: {t})"))
+        .unwrap_or_default();
+    prompt.push_paragraph(format!(
+        "Behind base by {} since merge-base{oldest}.",
+        crate::text::count(delta.commits_behind as usize, "commit"),
+    ));
+
+    if let Some(master_files) = NonEmpty::try_from_vec(
+        delta
+            .master_files
+            .iter()
+            .map(|p| SingleLineString::new(p.clone()))
+            .collect(),
+    ) {
+        prompt.push_paragraph(format!(
+            "Base touched {} since merge-base:",
+            crate::text::count(delta.master_files.len(), "file"),
+        ));
+        prompt.push_numbered_list(master_files);
+    }
+
+    if let Some(conflict_surface) = NonEmpty::try_from_vec(
+        delta
+            .conflict_surface
+            .iter()
+            .map(|p| SingleLineString::new(p.clone()))
+            .collect(),
+    ) {
+        prompt.push_paragraph(format!(
+            "Of those, {} overlap with this branch (potential conflict surface):",
+            crate::text::count(delta.conflict_surface.len(), "file"),
+        ));
+        prompt.push_numbered_list(conflict_surface);
+    } else if !delta.master_files.is_empty() && !delta.branch_files.is_empty() {
+        // Empty intersection on a non-empty cross-product is a real
+        // signal, not "we didn't observe" — surface it as a positive
+        // recommendation so the human doesn't second-guess.
+        prompt.push_paragraph(
+            "No file overlap with base since merge-base — clean rebase, just go.".to_string(),
+        );
     }
 }
 
@@ -182,6 +308,9 @@ pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
 mod tests {
     use super::*;
     use crate::ids::Timestamp;
+    use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
+    use crate::orient::reviews::{PendingReviews, ReviewSummary};
+    use crate::orient::thread::{BotName, FilePath, ThreadAuthor, ThreadId, ThreadLocation};
 
     fn clean() -> PullRequestState {
         PullRequestState {
@@ -206,25 +335,111 @@ mod tests {
         }
     }
 
+    fn clean_ci() -> CiReport {
+        CiReport {
+            summary: CiSummary {
+                required: CheckBucket::default(),
+                missing_names: vec![],
+                completed_at: None,
+                advisory: CheckBucket::default(),
+            },
+            activity: CiActivity::Resolved(ResolvedState::AllGreen),
+        }
+    }
+
+    fn clean_reviews() -> ReviewSummary {
+        ReviewSummary {
+            decision: None,
+            threads_unresolved: 0,
+            threads_total: 0,
+            bot_comments: 0,
+            approvals_on_head: 0,
+            approvals_stale: 0,
+            pending_reviews: PendingReviews::default(),
+            bot_reviews: vec![],
+        }
+    }
+
+    fn oriented(state: PullRequestState) -> OrientedState {
+        OrientedState {
+            ci: clean_ci(),
+            state,
+            reviews: clean_reviews(),
+            copilot: None,
+            cursor: None,
+            threads: vec![],
+            merge_base_delta: None,
+        }
+    }
+
+    fn oriented_with(
+        state: PullRequestState,
+        threads: Vec<ReviewThread>,
+        delta: Option<MergeBaseDelta>,
+    ) -> OrientedState {
+        OrientedState {
+            ci: clean_ci(),
+            state,
+            reviews: clean_reviews(),
+            copilot: None,
+            cursor: None,
+            threads,
+            merge_base_delta: delta,
+        }
+    }
+
+    fn live_thread_with_line(path: &str, line: u32, body: &str, id: &str) -> ReviewThread {
+        ReviewThread {
+            id: ThreadId::new(id.to_string()),
+            author: ThreadAuthor::Bot(BotName::Copilot),
+            location: ThreadLocation {
+                path: FilePath::new(path),
+                line: Some(line),
+            },
+            body: body.into(),
+            state: ThreadState::Live,
+            created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+        }
+    }
+
+    fn resolved_thread_with_line(path: &str, line: u32, body: &str, id: &str) -> ReviewThread {
+        let mut t = live_thread_with_line(path, line, body, id);
+        t.state = ThreadState::Resolved;
+        t
+    }
+
     #[test]
     fn clean_state_yields_no_candidates() {
-        assert!(blocking_candidates(&clean()).is_empty());
+        assert!(blocking_candidates(&oriented(clean())).is_empty());
     }
 
     #[test]
     fn conflict_emits_rebase() {
         let mut s = clean();
         s.conflict = Mergeable::Conflicting;
-        let cs = blocking_candidates(&s);
+        let cs = blocking_candidates(&oriented(s));
         assert!(matches!(cs[0].kind, ActionKind::Rebase));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
+    }
+
+    #[test]
+    fn behind_emits_rebase() {
+        let mut s = clean();
+        s.behind = true;
+        s.merge_state_status = MergeStateStatus::Behind;
+        let cs = blocking_candidates(&oriented(s));
+        let rebase = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::Rebase))
+            .expect("Behind state must emit Rebase");
+        assert!(matches!(rebase.effect, ActionEffect::Agent { .. }));
     }
 
     #[test]
     fn draft_emits_mark_ready_full_automation() {
         let mut s = clean();
         s.draft = true;
-        let cs = blocking_candidates(&s);
+        let cs = blocking_candidates(&oriented(s));
         let mark = cs.iter().find(|a| matches!(a.kind, ActionKind::MarkReady));
         assert!(mark.is_some());
         assert!(matches!(mark.unwrap().effect, ActionEffect::Full { .. }));
@@ -236,7 +451,103 @@ mod tests {
         s.content_label = false;
         s.assignees = 0;
         s.body = false;
-        assert!(blocking_candidates(&s).is_empty());
+        assert!(blocking_candidates(&oriented(s)).is_empty());
+    }
+
+    // ─── Rebase prompt enrichment tests ─────────────────────────────
+
+    fn rebase_prompt_for(oriented: OrientedState) -> String {
+        let cs = blocking_candidates(&oriented);
+        let rebase = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::Rebase))
+            .expect("expected Rebase candidate");
+        rebase.rendered_payload()
+    }
+
+    #[test]
+    fn rebase_prompt_includes_witnesses_when_live_threads_present() {
+        let mut s = clean();
+        s.conflict = Mergeable::Conflicting;
+        let threads = vec![
+            live_thread_with_line("src/foo.rs", 42, "use ? not unwrap", "T1"),
+            live_thread_with_line("src/bar.rs", 108, "off-by-one", "T2"),
+        ];
+        let rendered = rebase_prompt_for(oriented_with(s, threads, None));
+        assert!(
+            rendered.contains("Open review threads"),
+            "headline paragraph missing: {rendered}"
+        );
+        assert!(rendered.contains("src/foo.rs:42"), "anchor 1: {rendered}");
+        assert!(rendered.contains("src/bar.rs:108"), "anchor 2: {rendered}");
+        assert!(rendered.contains("> use ? not unwrap"));
+        assert!(rendered.contains("thread_id: T1"));
+    }
+
+    #[test]
+    fn rebase_prompt_omits_witnesses_section_when_no_live_threads() {
+        let mut s = clean();
+        s.conflict = Mergeable::Conflicting;
+        // All resolved → no witnesses.
+        let threads = vec![resolved_thread_with_line(
+            "src/foo.rs",
+            1,
+            "already addressed",
+            "T_r",
+        )];
+        let rendered = rebase_prompt_for(oriented_with(s, threads, None));
+        assert!(
+            !rendered.contains("Open review threads"),
+            "must not emit the witnesses preamble when none are live: {rendered}"
+        );
+        assert!(!rendered.contains("thread_id"));
+    }
+
+    #[test]
+    fn rebase_prompt_includes_conflict_surface_when_overlap_present() {
+        let mut s = clean();
+        s.behind = true;
+        s.merge_state_status = MergeStateStatus::Behind;
+        let delta = MergeBaseDelta {
+            commits_behind: 5,
+            commits_ahead: 2,
+            master_files: vec!["src/a.rs".into(), "src/b.rs".into()],
+            branch_files: vec!["src/b.rs".into(), "src/c.rs".into()],
+            conflict_surface: vec!["src/b.rs".into()],
+            oldest_master_commit_at: Some(Timestamp::parse("2026-05-10T09:00:00Z").unwrap()),
+        };
+        let rendered = rebase_prompt_for(oriented_with(s, vec![], Some(delta)));
+        assert!(
+            rendered.contains("Behind base by 5 commits"),
+            "commits-behind headline missing: {rendered}"
+        );
+        assert!(rendered.contains("2026-05-10"), "oldest ts missing");
+        assert!(rendered.contains("1. src/a.rs"));
+        assert!(rendered.contains("2. src/b.rs"));
+        assert!(rendered.contains("potential conflict surface"));
+        assert!(rendered.contains("1. src/b.rs"));
+    }
+
+    #[test]
+    fn rebase_prompt_says_clean_rebase_when_intersection_empty() {
+        let mut s = clean();
+        s.behind = true;
+        s.merge_state_status = MergeStateStatus::Behind;
+        let delta = MergeBaseDelta {
+            commits_behind: 4,
+            commits_ahead: 2,
+            master_files: vec!["docs/readme.md".into()],
+            branch_files: vec!["src/lib.rs".into()],
+            conflict_surface: vec![],
+            oldest_master_commit_at: Some(Timestamp::parse("2026-05-12T11:00:00Z").unwrap()),
+        };
+        let rendered = rebase_prompt_for(oriented_with(s, vec![], Some(delta)));
+        assert!(
+            rendered.contains("clean rebase, just go"),
+            "missing clean-rebase recommendation: {rendered}"
+        );
+        // Must NOT spuriously surface a conflict-surface list.
+        assert!(!rendered.contains("potential conflict surface"));
     }
 
     // ─── property tests for the class invariant ─────────────────────

@@ -423,9 +423,18 @@ struct HandoffSnapshot {
     base_branch: String,
 }
 
-/// Append a PR-context block to `HandoffHuman` prompts so the
-/// stderr handoff is usable on its own — no tab-juggling. Pass-
-/// through for every other `Outcome` variant.
+// Rebase is `HandoffAgent`, not `HandoffHuman` — `ActionEffect::Agent`
+// projects to `Outcome::HandoffAgent` in `classify()`. The boundary
+// decorator must cover both classes of outcome where the situational
+// context (PR URL, branch, CI snapshot) is useful to whoever picks up
+// the prompt. As more `HandoffAgent` actions need the same context,
+// add them to `agent_action_needs_context` rather than spawning a
+// sibling decorator per kind.
+/// Append a PR-context block to handoff prompts so the stderr
+/// hand-off is usable on its own — no tab-juggling. Covers every
+/// `HandoffHuman` and the `HandoffAgent` variants whose recipient
+/// also needs the situational frame. Pass-through for every other
+/// `Outcome` variant.
 fn decorate_handoff_human(
     outcome: Outcome,
     slug: &RepoSlug,
@@ -437,8 +446,21 @@ fn decorate_handoff_human(
             push_handoff_context(&mut action, slug, pr, snapshot);
             Outcome::HandoffHuman(action)
         }
+        Outcome::HandoffAgent(mut action) if agent_action_needs_context(&action.kind) => {
+            push_handoff_context(&mut action, slug, pr, snapshot);
+            Outcome::HandoffAgent(action)
+        }
         other => other,
     }
+}
+
+/// `HandoffAgent` actions whose prompts benefit from the same
+/// PR / branch / CI context the `HandoffHuman` decorator appends.
+/// Today: `Rebase` (returning human triages the merge state).
+/// Add new variants here rather than open-coding the match at the
+/// call site.
+fn agent_action_needs_context(kind: &decide::action::ActionKind) -> bool {
+    matches!(kind, decide::action::ActionKind::Rebase)
 }
 
 /// Append the boundary context (PR URL, blocker, branch, CI,
@@ -773,6 +795,65 @@ mod tests {
         assert!(matches!(outcome, Outcome::DoneSucceeded));
         let outcome = decorate_handoff_human(Outcome::Paused, &slug, pr, None);
         assert!(matches!(outcome, Outcome::Paused));
+    }
+
+    #[test]
+    fn decorate_handoff_agent_rebase_gets_pr_context() {
+        // Rebase emits `HandoffAgent`, not `HandoffHuman`. The
+        // decorator was originally HandoffHuman-only, which left
+        // Rebase prompts with zero PR/URL/blocker frame. This test
+        // pins the widened decorator to Rebase so a future change
+        // that drops the HandoffAgent arm regresses loudly.
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::Rebase,
+            prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingFix,
+            blocker: ids::BlockerKey::tag("behind_base"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated =
+            decorate_handoff_human(Outcome::HandoffAgent(Box::new(handoff)), &slug, pr, None);
+        let Outcome::HandoffAgent(handoff) = decorated else {
+            panic!("expected HandoffAgent");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(
+            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            "PR context missing from Rebase HandoffAgent: {rendered}",
+        );
+        assert!(
+            rendered.contains("Blocker: behind_base"),
+            "blocker context missing: {rendered}",
+        );
+        // Original prompt content preserved.
+        assert!(rendered.starts_with("Rebase onto the latest base branch"));
+    }
+
+    #[test]
+    fn decorate_handoff_agent_non_rebase_passes_through_undecorated() {
+        // The widened decorator is allowlisted, not blanket. Other
+        // HandoffAgent variants (e.g. AddressThreads, FixCi) keep
+        // their original payload — the gate prevents context creep
+        // into prompts that already carry their own structure.
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::AddressChangeRequest,
+            prompt: ooda_core::HandoffPrompt::new("Address change request"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingFix,
+            blocker: ids::BlockerKey::tag("changes_requested_summary"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("1").unwrap();
+        let decorated =
+            decorate_handoff_human(Outcome::HandoffAgent(Box::new(handoff)), &slug, pr, None);
+        let Outcome::HandoffAgent(handoff) = decorated else {
+            panic!("expected HandoffAgent");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(!rendered.contains("PR: https://"));
+        assert!(!rendered.contains("Blocker:"));
     }
 
     #[test]

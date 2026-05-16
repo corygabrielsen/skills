@@ -73,12 +73,28 @@ fn failed_escalation(report: &CursorReport) -> Action {
     let stall_min = crate::orient::cursor::STALL_TIMEOUT.num_minutes();
     let headline = format!(
         "Cursor Bugbot has not produced a review within {stall_min} minutes of the suite \
-         opening at this HEAD. Cursor's check_suite appears stalled on Cursor's \
-         backend; there is no rerequest API that unsticks it. Investigate Cursor's \
-         service status (cursor.com/status) and push a new commit once the underlying \
-         issue is resolved — Cursor auto-runs on every push.",
+         opening at this HEAD."
     );
     let mut prompt = ooda_core::HandoffPrompt::new(headline);
+
+    prompt.push_paragraph(
+        "Cursor's check_suite appears stalled on Cursor's backend. There is no \
+         rerequest API that unsticks it — Cursor auto-runs on every push, so a \
+         new commit is the only way to retry."
+            .to_string(),
+    );
+
+    prompt.push_paragraph(
+        "Step 1 — check Cursor's service status at https://cursor.com/status to \
+         confirm the stall is upstream rather than per-PR."
+            .to_string(),
+    );
+
+    prompt.push_paragraph(
+        "Step 2 — once the underlying issue is resolved, push a new commit (any \
+         no-op commit suffices); Cursor will auto-run against the new HEAD."
+            .to_string(),
+    );
 
     if let Some(created_at) = report.suite_created_at {
         prompt.push_paragraph(format!("Suite opened at: {created_at}."));
@@ -335,6 +351,28 @@ mod tests {
             rendered.contains("Prior Cursor review rounds on this PR: 2 (tier: silver)"),
             "missing round count + tier: {rendered}",
         );
+    }
+
+    #[test]
+    fn escalate_cursor_stalled_prompt_uses_step_form_for_actions() {
+        let r = report_with(
+            CursorActivity::InFlight(InFlightHealth::Failed),
+            CursorTier::Bronze,
+            Some(ts("2026-05-15T08:00:00Z")),
+            vec![],
+        );
+        let cs = candidates(&r);
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Step 1"), "missing Step 1: {rendered}");
+        assert!(rendered.contains("Step 2"), "missing Step 2: {rendered}");
+        assert!(rendered.contains("cursor.com/status"), "{rendered}");
+        assert!(
+            rendered.contains("push a new commit"),
+            "step 2 must direct the user to push a new commit: {rendered}",
+        );
+        let step1 = rendered.find("Step 1").expect("step 1 present");
+        let step2 = rendered.find("Step 2").expect("step 2 present");
+        assert!(step1 < step2, "Step 1 must precede Step 2");
     }
 
     #[test]

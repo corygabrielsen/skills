@@ -27,11 +27,14 @@ pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action
     if !needs_sync {
         return Vec::new();
     }
+    let Some(attest_path) = oriented.attest_path.as_deref() else {
+        return Vec::new();
+    };
 
-    let attest_path: Option<&Path> = oriented.attest_path.as_deref();
-    let prompt = build_sync_pr_meta_prompt(pr, &oriented.pr_metadata, attest_path);
+    let attest_path_opt: Option<&Path> = Some(attest_path);
+    let prompt = build_sync_pr_meta_prompt(pr, &oriented.pr_metadata, attest_path_opt);
     let kind = ActionKind::SyncPrMeta {
-        attest_path: attest_path.map(Path::to_path_buf).unwrap_or_default(),
+        attest_path: attest_path.to_path_buf(),
     };
     let blocker = match oriented.pr_metadata {
         PrMetadata::Drift { .. } => BlockerKey::tag("pr_meta_drift"),
@@ -212,6 +215,20 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(a.stall_key(), b.stall_key());
+    }
+
+    #[test]
+    fn drift_with_no_attest_path_emits_nothing() {
+        let mut o = oriented(3, drift());
+        o.attest_path = None;
+        assert!(candidates(&o, pr()).is_empty());
+    }
+
+    #[test]
+    fn never_attested_with_no_attest_path_emits_nothing() {
+        let mut o = oriented(3, PrMetadata::NeverAttested);
+        o.attest_path = None;
+        assert!(candidates(&o, pr()).is_empty());
     }
 
     #[test]

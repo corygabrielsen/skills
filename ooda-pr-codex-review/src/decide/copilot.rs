@@ -185,18 +185,29 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
     let (tag, headline) = match symptom {
         Symptom::StartTimeout => (
             "copilot_failed_start_timeout",
-            "Copilot has not started reviewing after repeated requests at this HEAD. \
-             Investigate the GitHub Copilot service status and re-trigger manually \
-             once the underlying issue is resolved.",
+            "Copilot has not started reviewing after repeated requests at this HEAD.",
         ),
         Symptom::ReviewTimeout => (
             "copilot_failed_review_timeout",
             "Copilot started but failed to submit a review after repeated requests \
-             at this HEAD. Investigate the GitHub Copilot service status and \
-             re-trigger manually once the underlying issue is resolved.",
+             at this HEAD.",
         ),
     };
     let mut prompt = ooda_core::HandoffPrompt::new(headline);
+
+    prompt.push_paragraph(
+        "Step 1 — check the GitHub Copilot service status \
+         (https://www.githubstatus.com) to confirm the stall is upstream rather \
+         than per-PR."
+            .to_string(),
+    );
+
+    prompt.push_paragraph(
+        "Step 2 — once the underlying issue is resolved, re-request the Copilot \
+         review manually from the PR's Reviewers panel on GitHub."
+            .to_string(),
+    );
+
     prompt.push_paragraph(format!("Requested at: {}.", timing.requested_at));
     if let Some(ack_at) = timing.ack_at {
         prompt.push_paragraph(format!("Ack at: {ack_at}."));
@@ -586,5 +597,33 @@ mod tests {
             "missing ack_at: {rendered}",
         );
         assert!(rendered.contains("Attempt count at this HEAD: 1 (tier: silver)"));
+    }
+
+    #[test]
+    fn escalate_copilot_failed_prompt_uses_step_form_for_actions() {
+        let req_at = Timestamp::parse("2026-05-15T09:00:00Z").unwrap();
+        let r = report_with_rounds(
+            CopilotActivity::Requested {
+                requested_at: req_at,
+                health: InFlightHealth::Failed,
+            },
+            CopilotTier::Bronze,
+            vec![round_at_head()],
+        );
+        let cs = candidates(&r);
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Step 1"), "missing Step 1: {rendered}");
+        assert!(rendered.contains("Step 2"), "missing Step 2: {rendered}");
+        assert!(
+            rendered.contains("githubstatus.com"),
+            "step 1 must surface the GitHub status URL: {rendered}",
+        );
+        assert!(
+            rendered.contains("re-request the Copilot review"),
+            "step 2 must direct the user to re-request the review: {rendered}",
+        );
+        let step1 = rendered.find("Step 1").expect("step 1 present");
+        let step2 = rendered.find("Step 2").expect("step 2 present");
+        assert!(step1 < step2, "Step 1 must precede Step 2");
     }
 }

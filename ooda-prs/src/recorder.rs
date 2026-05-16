@@ -745,12 +745,16 @@ impl Inner {
     }
 
     fn copy_latest(&self, name: &str, artifact: &ArtifactRef) -> Result<(), RecorderError> {
+        // `latest/*` is a stable read-surface tree; readers expect
+        // each file to be either the prior valid state or the new
+        // valid state, never partially copied. Read source bytes,
+        // then write via the atomic helper. (fs::copy is
+        // truncate-then-write — would expose a zero-length window
+        // to concurrent readers.)
         let source = self.pr_root.join(&artifact.path);
         let target = self.pr_root.join("latest").join(name);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(source, target)?;
+        let bytes = fs::read(&source)?;
+        write_bytes_at(&target, &bytes)?;
         Ok(())
     }
 
@@ -945,12 +949,13 @@ fn append_file(path: &Path) -> Result<File, io::Error> {
 }
 
 fn write_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, bytes)
+    // Atomic + durable: stable read-surface files
+    // (latest/state.json, latest/index.md, blockers.md, next.md,
+    // event-range.json, manifest.json) must never be observed
+    // partially-written by a concurrent reader or survive a crash
+    // truncated. write_atomic does tmp+rename+fsync(tmp)+
+    // fsync(parent).
+    ooda_core::atomic_io::write_atomic(path, bytes)
 }
 
 pub(crate) fn resolve_state_root(explicit: Option<&Path>) -> PathBuf {

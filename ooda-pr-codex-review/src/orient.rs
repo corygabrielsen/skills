@@ -8,6 +8,7 @@ pub mod ci;
 pub mod codex_review;
 pub mod copilot;
 pub mod cursor;
+pub mod pr_meta;
 pub mod required_checks;
 pub mod reviews;
 pub mod state;
@@ -24,6 +25,7 @@ pub use codex_review::CodexReviewReport;
 use codex_review::orient_codex_review;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
 use cursor::{CursorReport, orient_cursor};
+use pr_meta::{PrMetadata, orient_pr_meta};
 use reviews::ReviewSummary;
 use state::PullRequestState;
 use thread::ReviewThread;
@@ -77,6 +79,16 @@ pub struct OrientedState {
     /// race). Consumed by decide's Rebase emission to surface the
     /// concrete file overlap rather than a generic "rebase now."
     pub merge_base_delta: Option<MergeBaseDelta>,
+    /// PR-meta sync state. Projects the observe-side attestation
+    /// file + HEAD-SHA comparison into `Synced` / `Drift` /
+    /// `NeverAttested`. Drives the `SyncPrMeta` decide candidate.
+    pub pr_metadata: PrMetadata,
+    /// Absolute path of the attestation file the agent must rewrite
+    /// after refreshing PR metadata. Carried from observe so decide
+    /// can compose the `SyncPrMeta` action payload without re-deriving
+    /// the path. `None` when no `--state-root` was supplied to the
+    /// binary.
+    pub attest_path: Option<std::path::PathBuf>,
 }
 
 /// Compose all axes from a single GitHub observation bundle plus
@@ -158,6 +170,9 @@ pub fn orient(
 
     let codex_review = codex_obs.map(orient_codex_review);
 
+    let pr_metadata = orient_pr_meta(&obs.pr_meta);
+    let attest_path = obs.pr_meta.attest_path.clone();
+
     OrientedState {
         ci,
         state: pr_state,
@@ -167,5 +182,7 @@ pub fn orient(
         threads,
         codex_review,
         merge_base_delta: obs.merge_base_delta.clone(),
+        pr_metadata,
+        attest_path,
     }
 }

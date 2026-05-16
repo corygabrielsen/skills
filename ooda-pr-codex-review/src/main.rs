@@ -353,7 +353,7 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
 fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
-    let obs = match fetch_all(&args.slug, args.pr) {
+    let obs = match fetch_all(&args.slug, args.pr, args.state_root.as_deref()) {
         Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, Ok(()));
             *o
@@ -398,7 +398,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         Err(e) => return e,
     };
     let oriented = orient(&obs, codex_obs.as_ref(), None, current_timestamp());
-    let candidate_actions = candidates(&oriented);
+    let candidate_actions = candidates(&oriented, args.pr);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pr_view.state);
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
     if args.status_comment {
@@ -481,7 +481,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
             log_post_result(&format!("[iter {i}] comment"), false, r, Some(recorder));
         }
     };
-    let outcome = match run_loop(ctx, cfg, recorder, on_state) {
+    let outcome = match run_loop(ctx, args.state_root.as_deref(), cfg, recorder, on_state) {
         Ok(reason) => Outcome::from(reason),
         Err(e) => Outcome::from(e),
     };
@@ -1239,6 +1239,8 @@ mod tests {
             threads: vec![],
             codex_review: None,
             merge_base_delta: None,
+            pr_metadata: orient::pr_meta::PrMetadata::NeverAttested,
+            attest_path: None,
         }
     }
 

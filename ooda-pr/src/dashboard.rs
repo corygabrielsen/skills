@@ -25,6 +25,7 @@ use crate::orient::OrientedState;
 use crate::orient::ci::ci_signal;
 use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
+use crate::orient::pr_meta::PrMetadata;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
 use std::fmt::Write;
@@ -110,6 +111,7 @@ pub enum AxisName {
     Copilot,
     Ci,
     Cursor,
+    PrMeta,
 }
 
 impl AxisName {
@@ -118,6 +120,7 @@ impl AxisName {
             Self::Copilot => "copilot",
             Self::Ci => "ci",
             Self::Cursor => "cursor",
+            Self::PrMeta => "pr_meta",
         }
     }
 }
@@ -198,7 +201,43 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
     {
         out.push(sig);
     }
+    out.push(pr_meta_signal(&oriented.pr_metadata));
     out
+}
+
+/// Project PR-meta state onto a dashboard signal. `Synced`
+/// projects an `Ok` quiet positive; `Drift` warns with the commit
+/// count; `NeverAttested` warns with a first-attestation prompt.
+#[must_use]
+pub fn pr_meta_signal(state: &PrMetadata) -> AxisSignal {
+    let (icon, summary) = match state {
+        PrMetadata::Synced => (SignalIcon::Ok, "PR meta synced".to_string()),
+        PrMetadata::Drift {
+            attested_sha,
+            commits_behind,
+            ..
+        } => (
+            SignalIcon::Warn,
+            format!(
+                "PR meta drifted {} since {}",
+                crate::text::count(*commits_behind, "commit"),
+                short_sha(attested_sha),
+            ),
+        ),
+        PrMetadata::NeverAttested => (
+            SignalIcon::Warn,
+            "PR meta never attested for this PR".to_string(),
+        ),
+    };
+    AxisSignal {
+        axis: AxisName::PrMeta,
+        icon,
+        summary,
+    }
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
 }
 
 /// Deduplicate by `BlockerKey` while preserving first-seen order.
@@ -1205,5 +1244,34 @@ mod tests {
         let sig = cursor_signal(&CursorActivity::Reviewed(CursorReviewedState::HasFindings))
             .expect("Reviewed HasFindings emits");
         assert_eq!(sig.icon, SignalIcon::Warn);
+    }
+
+    // ── PrMeta signal projection ─────────────────────────────────
+
+    #[test]
+    fn pr_meta_signal_synced_renders_ok() {
+        let sig = pr_meta_signal(&PrMetadata::Synced);
+        assert_eq!(sig.icon, SignalIcon::Ok);
+        assert_eq!(sig.axis, AxisName::PrMeta);
+        assert!(sig.summary.contains("synced"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn pr_meta_signal_drift_renders_warn_with_count_and_short_sha() {
+        let sig = pr_meta_signal(&PrMetadata::Drift {
+            attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
+            head_sha: "9".repeat(40),
+            commits_behind: 4,
+        });
+        assert_eq!(sig.icon, SignalIcon::Warn);
+        assert!(sig.summary.contains("4 commits"), "{}", sig.summary);
+        assert!(sig.summary.contains("abcdef1"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn pr_meta_signal_never_attested_renders_warn() {
+        let sig = pr_meta_signal(&PrMetadata::NeverAttested);
+        assert_eq!(sig.icon, SignalIcon::Warn);
+        assert!(sig.summary.contains("never attested"), "{}", sig.summary);
     }
 }

@@ -19,6 +19,7 @@ use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::orient::OrientedState;
 use crate::orient::copilot::CopilotActivity;
+use crate::orient::pr_meta::PrMetadata;
 use serde::Serialize;
 
 /// Lookup by tier slug (`bronze`/`silver`/`gold`/`platinum`).
@@ -81,13 +82,14 @@ pub fn render(
     let copilot = copilot_line(oriented);
     let cursor = cursor_line(oriented);
     let reviews = reviews_line(oriented);
+    let pr_meta = pr_meta_line(oriented);
     // Dedup key omits the action description's prose so that count
     // changes ("3 unresolved" → "2 unresolved") within the same
     // structural state don't suppress posting. Includes the action's
     // blocker slug so two different agent-handoff actions on the
     // same axis state don't collapse to the same key.
     let dedup_key = format!(
-        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{}\n{}",
+        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{}\n{}",
         decision_kind_tag(decision),
         decision_blocker_tag(decision),
     );
@@ -271,6 +273,22 @@ fn reviews_line(o: &OrientedState) -> String {
     }
 }
 
+fn pr_meta_line(o: &OrientedState) -> String {
+    match &o.pr_metadata {
+        PrMetadata::Synced => "✅ PR meta · synced".into(),
+        PrMetadata::Drift {
+            attested_sha,
+            commits_behind,
+            ..
+        } => format!(
+            "⚠ PR meta · drifted {} since {}",
+            crate::text::count(*commits_behind, "commit"),
+            attested_sha.chars().take(7).collect::<String>(),
+        ),
+        PrMetadata::NeverAttested => "⚠ PR meta · never attested".into(),
+    }
+}
+
 fn decision_kind_tag(d: &Decision) -> &'static str {
     match d {
         Decision::Execute(_) => "exec",
@@ -362,6 +380,8 @@ mod tests {
             codex_review: None,
             threads: vec![],
             merge_base_delta: None,
+            pr_metadata: PrMetadata::NeverAttested,
+            attest_path: None,
         }
     }
 
@@ -548,6 +568,35 @@ mod tests {
         );
         assert!(r.body.contains("**Halt:** no candidates."), "{}", r.body);
         assert!(r.dedup_key.contains("halt:agent"));
+    }
+
+    // ── pr_meta_line ─────────────────────────────────────────────
+
+    #[test]
+    fn pr_meta_line_synced_renders_check() {
+        let mut o = empty_oriented();
+        o.pr_metadata = PrMetadata::Synced;
+        assert_eq!(pr_meta_line(&o), "✅ PR meta · synced");
+    }
+
+    #[test]
+    fn pr_meta_line_drift_includes_count_and_short_sha() {
+        let mut o = empty_oriented();
+        o.pr_metadata = PrMetadata::Drift {
+            attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
+            head_sha: "9".repeat(40),
+            commits_behind: 5,
+        };
+        let line = pr_meta_line(&o);
+        assert!(line.contains("drifted 5 commits"), "{line}");
+        assert!(line.contains("abcdef1"), "{line}");
+    }
+
+    #[test]
+    fn pr_meta_line_never_attested_renders_warn() {
+        let mut o = empty_oriented();
+        o.pr_metadata = PrMetadata::NeverAttested;
+        assert_eq!(pr_meta_line(&o), "⚠ PR meta · never attested");
     }
 
     #[test]

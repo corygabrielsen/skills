@@ -9,6 +9,7 @@ pub mod copilot_config;
 pub mod cursor_status;
 pub mod gh;
 pub mod issue_events;
+pub mod pr_meta_attest;
 pub mod pr_view;
 pub mod rate_limit;
 pub mod requested_reviewers;
@@ -35,6 +36,7 @@ use copilot_config::fetch_copilot_config;
 use cursor_status::{CursorStatus, fetch_cursor_status};
 use gh::GhError;
 use issue_events::{IssueEvent, fetch_issue_events};
+use pr_meta_attest::{PrMetaObservation, observe_pr_meta};
 use pr_view::{PrState, PullRequestView, fetch_pr_view};
 use rate_limit::fetch_rate_limit_budget;
 use requested_reviewers::{RequestedReviewers, fetch_requested_reviewers};
@@ -108,6 +110,14 @@ pub struct GitHubObservations {
     /// post-merge in a race); decide treats absence as "no extra
     /// detail," not as an error.
     pub merge_base_delta: Option<MergeBaseDelta>,
+    /// PR-meta attestation snapshot: the recorded attestation (if
+    /// any), the current HEAD SHA, and the count of commits the PR
+    /// has added since the attestation. Drives the `PrMetadata`
+    /// orient axis. Absent attestation collapses to
+    /// `NeverAttested`; a `Some(0)` count after a drift compare
+    /// failure still classifies as Drift (orient inspects both
+    /// SHAs).
+    pub pr_meta: PrMetaObservation,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -123,7 +133,11 @@ pub struct GitHubObservations {
 ///      instead of `decide()`'s documented `Halt::Terminal`.
 ///   3. Parallel aux fetch — the remaining nine calls fan out
 ///      concurrently. Fail-fast on the first error.
-pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome, GhError> {
+pub fn fetch_all(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    state_root: Option<&std::path::Path>,
+) -> Result<FetchOutcome, GhError> {
     /// Promote `GhError::RateLimited` to early-return
     /// `Ok(FetchOutcome::RateLimited)`. Real errors propagate.
     macro_rules! try_fetch {
@@ -148,6 +162,7 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
             rate_limit_budget,
         ))));
     }
+    let pr_meta = observe_pr_meta(state_root, slug, pr, &pr_view.head_ref_oid);
     // Branch rules and protection live at the protected root, not
     // at intermediate stack branches. Resolve before fanning out.
     let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pr_view.base_ref_name));
@@ -236,6 +251,7 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
                 }
                 Err(e) => return Err(e),
             },
+            pr_meta,
         })))
     })
 }
@@ -250,6 +266,7 @@ fn terminal_observations(
     rate_limit_budget: RateLimitBudget,
 ) -> GitHubObservations {
     let stack_root_branch = pr_view.base_ref_name.clone();
+    let head_sha = pr_view.head_ref_oid.clone();
     GitHubObservations {
         pr_view,
         checks: vec![],
@@ -272,5 +289,15 @@ fn terminal_observations(
         // describe — the compare fetch is skipped along with the
         // rest of the parallel aux pass.
         merge_base_delta: None,
+        // Terminal PRs short-circuit before reading state-root.
+        // Stub the attestation observation so the orient layer can
+        // walk uniformly; decide short-circuits on pr_view.state
+        // before reading any field of pr_meta.
+        pr_meta: PrMetaObservation {
+            attestation: None,
+            head_sha,
+            commits_behind: None,
+            attest_path: None,
+        },
     }
 }

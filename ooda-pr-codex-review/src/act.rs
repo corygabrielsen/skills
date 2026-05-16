@@ -13,6 +13,7 @@
 
 mod ci;
 mod copilot;
+pub mod sync_pr_meta;
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;

@@ -12,6 +12,7 @@ mod ci;
 mod copilot;
 mod cursor;
 pub mod decision;
+mod pr_meta;
 mod reviews;
 mod state;
 
@@ -41,7 +42,10 @@ use action::{ActionEffect, Urgency};
 ///    Stable sort preserves axis order within each priority
 ///    bucket, so within "all Agent actions" the existing axis
 ///    rationale (state-before-ci-before-reviews) still applies.
-pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
+pub(crate) fn candidates(
+    oriented: &OrientedState,
+    pr: crate::ids::PullRequestNumber,
+) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     // Mechanical state blockers (rebase, mark_ready, remove_wip,
     // shorten_title) come before CI: a draft PR's required checks
@@ -57,6 +61,12 @@ pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     if let Some(c) = &oriented.cursor {
         out.extend(cursor::candidates(c));
     }
+    // PR-meta is Information-tier (Hygiene urgency) — fires
+    // alongside higher-tier candidates and is also capable of
+    // firing alone when it is the only outstanding axis. Always
+    // append after the mechanical / health axes so the urgency
+    // sort settles it at the bottom.
+    out.extend(pr_meta::candidates(oriented, pr));
     // Fallback merge-state blocker: only fires when NO axis can
     // already advance or unblock the PR. Catches unmodeled policy
     // gates (deployment protection, signed commits, custom

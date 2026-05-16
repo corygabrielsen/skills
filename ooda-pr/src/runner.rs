@@ -97,12 +97,21 @@ pub(crate) enum IterStep {
 pub fn run_loop(
     slug: &RepoSlug,
     pr: PullRequestNumber,
+    state_root: Option<&std::path::Path>,
     config: LoopConfig,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<HaltReason, LoopError> {
     run_loop_with(config, |iter, last_non_wait_key| {
-        run_iter(slug, pr, recorder, &mut on_state, iter, last_non_wait_key)
+        run_iter(
+            slug,
+            pr,
+            state_root,
+            recorder,
+            &mut on_state,
+            iter,
+            last_non_wait_key,
+        )
     })
 }
 
@@ -168,6 +177,7 @@ where
 fn run_iter(
     slug: &RepoSlug,
     pr: PullRequestNumber,
+    state_root: Option<&std::path::Path>,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
     iter: u32,
@@ -175,7 +185,7 @@ fn run_iter(
 ) -> Result<IterStep, LoopError> {
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
-    let obs = match fetch_all(slug, pr) {
+    let obs = match fetch_all(slug, pr, state_root) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, Ok(()));
             *obs
@@ -209,7 +219,7 @@ fn run_iter(
     };
     let now = current_timestamp();
     let oriented = orient(&obs, None, now);
-    let candidates = candidates(&oriented);
+    let candidates = candidates(&oriented, pr);
     let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 

@@ -374,6 +374,8 @@ mod tests {
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
+            pr_metadata: crate::orient::pr_meta::PrMetadata::NeverAttested,
+            attest_path: None,
         }
     }
 
@@ -390,6 +392,8 @@ mod tests {
             cursor: None,
             threads,
             merge_base_delta: delta,
+            pr_metadata: crate::orient::pr_meta::PrMetadata::NeverAttested,
+            attest_path: None,
         }
     }
 

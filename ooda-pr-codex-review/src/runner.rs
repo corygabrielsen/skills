@@ -104,6 +104,7 @@ enum IterStep {
 /// post comments, and record the run bundle.
 pub fn run_loop(
     mut ctx: ActContext,
+    state_root: Option<&std::path::Path>,
     config: LoopConfig,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
@@ -115,6 +116,7 @@ pub fn run_loop(
     // impossible there (no prior key).
     let mut last_attempted: Action = match run_iter(
         &mut ctx,
+        state_root,
         codex_cfg.as_ref(),
         recorder,
         &mut on_state,
@@ -138,6 +140,7 @@ pub fn run_loop(
     for iter in 2..=max_iter {
         let step = run_iter(
             &mut ctx,
+            state_root,
             codex_cfg.as_ref(),
             recorder,
             &mut on_state,
@@ -163,6 +166,7 @@ pub fn run_loop(
 #[allow(clippy::too_many_arguments)]
 fn run_iter(
     ctx: &mut ActContext,
+    state_root: Option<&std::path::Path>,
     codex_cfg: Option<&CodexReviewConfig>,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
@@ -174,7 +178,7 @@ fn run_iter(
 
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
-    let obs = match fetch_all(&slug, pr) {
+    let obs = match fetch_all(&slug, pr, state_root) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, Ok(()));
             *obs
@@ -235,7 +239,7 @@ fn run_iter(
 
     let now = current_timestamp();
     let oriented = orient(&obs, codex_obs.as_ref(), None, now);
-    let candidates = candidates(&oriented);
+    let candidates = candidates(&oriented, pr);
     let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 

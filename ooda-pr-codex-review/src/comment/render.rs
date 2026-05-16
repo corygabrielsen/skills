@@ -310,7 +310,7 @@ mod tests {
         CheckBucket, CiActivity, CiReport, CiSummary, FailedCheck, ResolvedState,
     };
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
-    use crate::orient::state::PullRequestState;
+    use crate::orient::state::PullRequestProjection;
 
     fn slug() -> RepoSlug {
         RepoSlug::parse("acme/widget").unwrap()
@@ -343,7 +343,7 @@ mod tests {
                 },
                 activity: CiActivity::Resolved(ResolvedState::AllGreen),
             },
-            state: PullRequestState {
+            state: PullRequestProjection {
                 conflict: Mergeable::Mergeable,
                 draft: false,
                 wip: false,

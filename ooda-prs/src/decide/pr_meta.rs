@@ -59,14 +59,14 @@ mod tests {
     use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
     use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
-    use crate::orient::state::PullRequestState;
+    use crate::orient::state::PullRequestProjection;
 
     fn pr() -> PullRequestNumber {
         PullRequestNumber::parse("753").unwrap()
     }
 
-    fn pr_state(commits: usize) -> PullRequestState {
-        PullRequestState {
+    fn pr_state(commits: usize) -> PullRequestProjection {
+        PullRequestProjection {
             conflict: Mergeable::Mergeable,
             draft: false,
             wip: false,

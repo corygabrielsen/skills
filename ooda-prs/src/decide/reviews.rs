@@ -383,7 +383,7 @@ mod tests {
     use crate::observe::github::pr_view::Mergeable;
     use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
-    use crate::orient::state::PullRequestState;
+    use crate::orient::state::PullRequestProjection;
 
     fn clean_ci() -> CiReport {
         CiReport {
@@ -412,8 +412,8 @@ mod tests {
         }
     }
 
-    fn clean_state() -> PullRequestState {
-        PullRequestState {
+    fn clean_state() -> PullRequestProjection {
+        PullRequestProjection {
             conflict: Mergeable::Mergeable,
             draft: false,
             wip: false,

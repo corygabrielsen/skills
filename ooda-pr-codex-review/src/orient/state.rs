@@ -18,7 +18,7 @@ const CONTENT_LABELS: &[&str] = &["bug", "enhancement"];
 // would obscure the GitHub API mapping.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PullRequestState {
+pub struct PullRequestProjection {
     pub conflict: Mergeable,
     pub draft: bool,
     pub wip: bool,
@@ -72,7 +72,7 @@ pub fn orient_state(
     pr: &PullRequestView,
     last_commit_at: Option<Timestamp>,
     stack_root: &BranchName,
-) -> PullRequestState {
+) -> PullRequestProjection {
     let body = pr.body.as_deref().unwrap_or_default();
     let label_names: Vec<&str> = pr.labels.iter().map(|l| l.name.as_str()).collect();
 
@@ -81,7 +81,7 @@ pub fn orient_state(
     let suffix_len = format!(" (#{})", pr.number).len();
     let title_len = pr.title.chars().count() + suffix_len;
 
-    PullRequestState {
+    PullRequestProjection {
         conflict: pr.mergeable,
         draft: pr.is_draft,
         wip: label_names.contains(&WIP_LABEL),

@@ -109,20 +109,13 @@ pub fn write_pull_request_metadata_atomic(
     if !is_valid_sha(&attested_sha) {
         return Err(AttestError::BadShaFormat(attested_sha));
     }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)?;
-    }
     let attestation = PullRequestMetadataAttestation {
         attested_sha,
         attested_at: Utc::now(),
         version: PULL_REQUEST_METADATA_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
-    let tmp = tmp_path(path);
-    fs::write(&tmp, &json)?;
-    fs::rename(&tmp, path)?;
+    crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
 }
 
@@ -176,20 +169,13 @@ pub fn write_doc_review_atomic(
     if !is_valid_sha(&attested_sha) {
         return Err(AttestError::BadShaFormat(attested_sha));
     }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)?;
-    }
     let attestation = DocReviewAttestation {
         attested_sha,
         attested_at: Utc::now(),
         version: DOC_REVIEW_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
-    let tmp = tmp_path(path);
-    fs::write(&tmp, &json)?;
-    fs::rename(&tmp, path)?;
+    crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
 }
 
@@ -237,20 +223,13 @@ pub fn write_claude_review_atomic(
     if !is_valid_sha(&attested_sha) {
         return Err(AttestError::BadShaFormat(attested_sha));
     }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)?;
-    }
     let attestation = ClaudeReviewAttestation {
         attested_sha,
         attested_at: Utc::now(),
         version: CLAUDE_REVIEW_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
-    let tmp = tmp_path(path);
-    fs::write(&tmp, &json)?;
-    fs::rename(&tmp, path)?;
+    crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
 }
 
@@ -279,12 +258,6 @@ pub fn read_claude_review(path: &Path) -> Result<Option<ClaudeReviewAttestation>
         return Err(AttestError::BadShaFormat(attestation.attested_sha));
     }
     Ok(Some(attestation))
-}
-
-fn tmp_path(path: &Path) -> std::path::PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".tmp");
-    s.into()
 }
 
 #[cfg(test)]

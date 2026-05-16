@@ -469,14 +469,14 @@ mod tests {
     }
 
     fn run(
-        id: &str,
+        id: u64,
         name: &str,
         status: WorkflowRunStatus,
         created: &str,
         started: Option<&str>,
     ) -> WorkflowRun {
         WorkflowRun {
-            id: WorkflowRunId(id.into()),
+            id: WorkflowRunId(id),
             name: name.into(),
             head_sha: head(),
             status,
@@ -488,13 +488,13 @@ mod tests {
     }
 
     fn run_completed(
-        id: &str,
+        id: u64,
         name: &str,
         conclusion: WorkflowRunConclusion,
         created: &str,
     ) -> WorkflowRun {
         WorkflowRun {
-            id: WorkflowRunId(id.into()),
+            id: WorkflowRunId(id),
             name: name.into(),
             head_sha: head(),
             status: WorkflowRunStatus::Completed,
@@ -592,14 +592,14 @@ mod tests {
         let req = vec![cn("Build"), cn("Test")];
         let runs = vec![
             run(
-                "1",
+                1,
                 "Build",
                 WorkflowRunStatus::InProgress,
                 "2026-04-23T09:50:00Z",
                 Some("2026-04-23T09:51:00Z"),
             ),
             run(
-                "2",
+                2,
                 "Test",
                 WorkflowRunStatus::Queued,
                 "2026-04-23T09:55:00Z",
@@ -762,7 +762,7 @@ mod tests {
         ];
         let req = vec![cn("Build"), cn("Lint")];
         let runs = vec![run(
-            "1",
+            1,
             "Build",
             WorkflowRunStatus::InProgress,
             "2026-04-23T09:50:00Z",
@@ -793,7 +793,7 @@ mod tests {
         let req = vec![cn("Build")];
         // Created 5 min ago, no start yet → within 20-min QUEUE_TIMEOUT.
         let runs = vec![run(
-            "1",
+            1,
             "Build",
             WorkflowRunStatus::Queued,
             "2026-04-23T09:55:00Z",
@@ -821,7 +821,7 @@ mod tests {
         // Queued at 9:30, still not started at 10:00 → 30 min elapsed
         // ≥ 20 min QUEUE_TIMEOUT. Only one attempt → Degraded.
         let runs = vec![run(
-            "1",
+            1,
             "Build",
             WorkflowRunStatus::Queued,
             "2026-04-23T09:30:00Z",
@@ -848,7 +848,7 @@ mod tests {
         // Started at 9:00, still in progress at 10:00 → 60 min elapsed
         // ≥ 30 min RUN_TIMEOUT.
         let runs = vec![run(
-            "1",
+            1,
             "Build",
             WorkflowRunStatus::InProgress,
             "2026-04-23T09:00:00Z",
@@ -878,13 +878,13 @@ mod tests {
         let req = vec![cn("Build")];
         let runs = vec![
             run_completed(
-                "1",
+                1,
                 "Build",
                 WorkflowRunConclusion::Cancelled,
                 "2026-04-23T08:00:00Z",
             ),
             run(
-                "2",
+                2,
                 "Build",
                 WorkflowRunStatus::Queued,
                 "2026-04-23T09:30:00Z",
@@ -917,7 +917,7 @@ mod tests {
         let old_sha = GitCommitSha::parse(&"b".repeat(40)).unwrap();
         let runs = vec![
             WorkflowRun {
-                id: WorkflowRunId("100".into()),
+                id: WorkflowRunId(100),
                 name: "Build".into(),
                 head_sha: old_sha.clone(),
                 status: WorkflowRunStatus::Completed,
@@ -927,7 +927,7 @@ mod tests {
                 run_attempt: 1,
             },
             WorkflowRun {
-                id: WorkflowRunId("200".into()),
+                id: WorkflowRunId(200),
                 name: "Build".into(),
                 head_sha: head(),
                 status: WorkflowRunStatus::Queued,

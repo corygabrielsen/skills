@@ -18,22 +18,19 @@ use crate::ids::{GitCommitSha, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json};
 
-/// Stable handle for a workflow run. Numeric in the GitHub Actions
-/// API but kept as String here to insulate from any future ID-shape
-/// changes; we never do arithmetic on it.
+/// Stable handle for a workflow run. GitHub Actions returns this as
+/// a JSON integer on the wire (`/repos/:o/:r/actions/runs`); modeling
+/// it as `String` aborted observe with a `serde` type error on every
+/// PR that had any workflow runs. `u64` matches the wire shape and
+/// the documented ID range; Display formats as decimal so the act-
+/// stage URL builder (`/actions/runs/{run_id}/rerun`) stays correct.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(transparent)]
-pub struct WorkflowRunId(pub String);
-
-impl WorkflowRunId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+pub struct WorkflowRunId(pub u64);
 
 impl std::fmt::Display for WorkflowRunId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        self.0.fmt(f)
     }
 }
 
@@ -185,7 +182,7 @@ mod tests {
     fn deserializes_minimal_envelope() {
         let json = r#"{
             "workflow_runs": [{
-                "id": "12345",
+                "id": 12345,
                 "name": "CI",
                 "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "status": "in_progress",
@@ -198,7 +195,8 @@ mod tests {
         let env: WorkflowRunsEnvelope = serde_json::from_str(json).unwrap();
         assert_eq!(env.workflow_runs.len(), 1);
         let r = &env.workflow_runs[0];
-        assert_eq!(r.id.as_str(), "12345");
+        assert_eq!(r.id, WorkflowRunId(12345));
+        assert_eq!(r.id.to_string(), "12345");
         assert_eq!(r.name, "CI");
         assert_eq!(r.head_sha, sha());
         assert_eq!(r.status, WorkflowRunStatus::InProgress);
@@ -207,11 +205,33 @@ mod tests {
         assert_eq!(r.run_attempt, 1);
     }
 
+    /// Regression for the reported wire-type bug. GitHub returns
+    /// workflow_run `id` as a JSON integer (real value observed:
+    /// 25961405250); the previous `String`-typed `WorkflowRunId`
+    /// aborted observe with `invalid type: integer ..., expected a
+    /// string` on every PR that had a workflow run, blocking the
+    /// whole OODA pipeline with exit 70.
+    #[test]
+    fn integer_id_deserializes_without_type_error() {
+        let json = r#"{
+            "workflow_runs": [{
+                "id": 25961405250,
+                "name": "CI",
+                "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "status": "in_progress",
+                "created_at": "2026-05-16T10:00:00Z"
+            }]
+        }"#;
+        let env: WorkflowRunsEnvelope = serde_json::from_str(json).unwrap();
+        assert_eq!(env.workflow_runs[0].id, WorkflowRunId(25_961_405_250));
+        assert_eq!(env.workflow_runs[0].id.to_string(), "25961405250");
+    }
+
     #[test]
     fn empty_run_started_at_becomes_none() {
         let json = r#"{
             "workflow_runs": [{
-                "id": "9",
+                "id": 9,
                 "name": "CI",
                 "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "status": "queued",
@@ -229,7 +249,7 @@ mod tests {
     fn unknown_status_routes_to_unknown_variant() {
         let json = r#"{
             "workflow_runs": [{
-                "id": "1",
+                "id": 1,
                 "name": "x",
                 "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "status": "mystery",
@@ -247,7 +267,7 @@ mod tests {
         // health detector filters it out.
         let json = r#"{
             "workflow_runs": [{
-                "id": "1",
+                "id": 1,
                 "name": "x",
                 "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "status": "completed",

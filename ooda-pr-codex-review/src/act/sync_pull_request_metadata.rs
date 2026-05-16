@@ -39,9 +39,7 @@ pub fn build_sync_pull_request_metadata_prompt(
 
     prompt.push_paragraph(
         "Step 1 — update the PR title, description, and labels to match HEAD. \
-         Refer to the repository's CONTRIBUTING.md for conventions. Keep it \
-         tight — defend against rot and verbosity. Docs and comments rot \
-         faster than code because they lack linters and compilers."
+         Refer to the repository's CONTRIBUTING.md for conventions. Keep it tight."
             .to_string(),
     );
 
@@ -171,11 +169,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_warns_against_verbosity() {
+    fn prompt_keeps_step_1_tight_and_defers_to_contributing_md() {
         let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), None);
         let s = p.to_string();
         assert!(s.contains("Keep it tight"), "{s}");
-        assert!(s.contains("rot and verbosity"), "{s}");
+        assert!(s.contains("CONTRIBUTING.md"), "{s}");
+        assert!(!s.contains("rot and verbosity"), "{s}");
     }
 
     #[test]

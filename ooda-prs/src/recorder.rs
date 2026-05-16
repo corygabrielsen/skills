@@ -949,28 +949,7 @@ fn write_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
 }
 
 pub(crate) fn resolve_state_root(explicit: Option<&Path>) -> PathBuf {
-    if let Some(path) = explicit {
-        return path.to_path_buf();
-    }
-    if let Some(path) = nonempty_env_path("OODA_PR_STATE_HOME") {
-        return path;
-    }
-    if let Some(path) = nonempty_env_path("XDG_STATE_HOME") {
-        return path.join("ooda-pr");
-    }
-    if let Some(home) = nonempty_env_path("HOME") {
-        return home.join(".local").join("state").join("ooda-pr");
-    }
-    std::env::temp_dir().join("ooda-pr")
-}
-
-fn nonempty_env_path(name: &str) -> Option<PathBuf> {
-    let value = std::env::var_os(name)?;
-    if value.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(value))
-    }
+    ooda_core::state_root::resolve_ooda_pr_state_root(explicit)
 }
 
 fn pull_request_root(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf {

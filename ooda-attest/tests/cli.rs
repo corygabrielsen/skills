@@ -127,6 +127,92 @@ fn not_a_git_repo_exits_65() {
 }
 
 #[test]
+fn ooda_pr_state_home_env_var_supplies_default_state_root() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .env("OODA_PR_STATE_HOME", state_root.path())
+        .env_remove("XDG_STATE_HOME")
+        .args(["pr-meta", "--pr-id", "753"])
+        .assert()
+        .success();
+
+    let path = expected_path(state_root.path(), "753");
+    assert!(
+        path.exists(),
+        "attestation not written at {}",
+        path.display()
+    );
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+}
+
+#[test]
+fn home_fallback_supplies_default_state_root_when_no_env_overrides() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let fake_home = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .env_remove("OODA_PR_STATE_HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env("HOME", fake_home.path())
+        .args(["pr-meta", "--pr-id", "753"])
+        .assert()
+        .success();
+
+    let path = fake_home
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".local")
+        .join("state")
+        .join("ooda-pr")
+        .join("753")
+        .join("pr_meta_attest.json");
+    assert!(
+        path.exists(),
+        "attestation not written at {}",
+        path.display()
+    );
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+}
+
+#[test]
+fn explicit_state_root_wins_over_env_var() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let explicit = TempDir::new().unwrap();
+    let env_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .env("OODA_PR_STATE_HOME", env_root.path())
+        .args(["pr-meta", "--pr-id", "42", "--state-root"])
+        .arg(explicit.path())
+        .assert()
+        .success();
+
+    let chosen = expected_path(explicit.path(), "42");
+    let unchosen = expected_path(env_root.path(), "42");
+    assert!(
+        chosen.exists(),
+        "explicit path missing: {}",
+        chosen.display()
+    );
+    assert!(
+        !unchosen.exists(),
+        "env-var path should not have been written: {}",
+        unchosen.display(),
+    );
+}
+
+#[test]
 fn idempotent_second_run_overwrites_and_advances_timestamp() {
     let repo = TempDir::new().unwrap();
     init_git_repo(repo.path());

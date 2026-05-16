@@ -4,6 +4,12 @@
 //! in the current working directory, then writes the attestation
 //! file at `<state-root>/<pr-id>/pr_meta_attest.json`.
 //!
+//! `--state-root` is optional. When omitted, the state root is
+//! resolved via `ooda_core::state_root::resolve_ooda_pr_state_root`:
+//! `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then
+//! `$HOME/.local/state/ooda-pr`, then `$TMPDIR/ooda-pr`. The
+//! resolved directory is created on demand.
+//!
 //! Exit codes:
 //!   0  success
 //!   2  clap argument parse failure (clap default; preserved)
@@ -12,11 +18,13 @@
 //!   70 write failure (IO / serialization)
 //!   1  fallback
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use clap::{Parser, Subcommand};
 use ooda_core::attest::{AttestError, write_pull_request_metadata_atomic};
+use ooda_core::state_root::resolve_ooda_pr_state_root;
 
 const EXIT_VALIDATION: u8 = 64;
 const EXIT_GIT: u8 = 65;
@@ -42,10 +50,13 @@ enum SubCmd {
         #[arg(long)]
         pr_id: String,
 
-        /// Existing state-root directory; the per-PR subdir is
-        /// created on demand by the underlying writer.
+        /// State-root directory; the per-PR subdir is created on
+        /// demand by the underlying writer. When omitted, resolved
+        /// from `$OODA_PR_STATE_HOME`, `$XDG_STATE_HOME/ooda-pr`,
+        /// `$HOME/.local/state/ooda-pr`, or `$TMPDIR/ooda-pr` (in
+        /// that order). The resolved directory is created if missing.
         #[arg(long)]
-        state_root: PathBuf,
+        state_root: Option<PathBuf>,
     },
 }
 
@@ -53,17 +64,17 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         SubCmd::PullRequestMetadata { pr_id, state_root } => {
-            run_pull_request_metadata(&pr_id, &state_root)
+            run_pull_request_metadata(&pr_id, state_root.as_deref())
         }
     }
 }
 
-fn run_pull_request_metadata(pr_id: &str, state_root: &Path) -> ExitCode {
+fn run_pull_request_metadata(pr_id: &str, state_root: Option<&Path>) -> ExitCode {
     let pr_id = match validate_pr_id(pr_id) {
         Ok(s) => s,
         Err(msg) => return fail(EXIT_VALIDATION, &msg),
     };
-    let state_root = match canonicalize_state_root(state_root) {
+    let state_root = match resolve_state_root(state_root) {
         Ok(p) => p,
         Err(msg) => return fail(EXIT_VALIDATION, &msg),
     };
@@ -100,20 +111,36 @@ fn validate_pr_id(s: &str) -> Result<&str, String> {
     Ok(s)
 }
 
-fn canonicalize_state_root(path: &Path) -> Result<PathBuf, String> {
-    if !path.exists() {
-        return Err(format!("--state-root does not exist: {}", path.display()));
+fn resolve_state_root(explicit: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = explicit {
+        if !path.exists() {
+            return Err(format!("--state-root does not exist: {}", path.display()));
+        }
+        if !path.is_dir() {
+            return Err(format!(
+                "--state-root is not a directory: {}",
+                path.display()
+            ));
+        }
+        return path.canonicalize().map_err(|e| {
+            format!(
+                "failed to canonicalize --state-root {}: {e}",
+                path.display()
+            )
+        });
     }
-    if !path.is_dir() {
-        return Err(format!(
-            "--state-root is not a directory: {}",
-            path.display()
-        ));
-    }
-    path.canonicalize().map_err(|e| {
+
+    let resolved = resolve_ooda_pr_state_root(None);
+    fs::create_dir_all(&resolved).map_err(|e| {
         format!(
-            "failed to canonicalize --state-root {}: {e}",
-            path.display()
+            "failed to create resolved state root {}: {e}",
+            resolved.display()
+        )
+    })?;
+    resolved.canonicalize().map_err(|e| {
+        format!(
+            "failed to canonicalize resolved state root {}: {e}",
+            resolved.display()
         )
     })
 }

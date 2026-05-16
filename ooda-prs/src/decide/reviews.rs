@@ -170,7 +170,11 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
                 .join("\n")
         };
         prompt.push_paragraph("Latest CHANGES_REQUESTED review:".to_string());
-        prompt.push_witnesses(NonEmpty::singleton(Witness { label, body }));
+        prompt.push_witnesses(NonEmpty::singleton(Witness {
+            label,
+            body,
+            url: None,
+        }));
     } else {
         prompt.push_paragraph(
             "No human CHANGES_REQUESTED review observed in the reviews \
@@ -314,7 +318,11 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
             .map(|line| format!("   > {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        Witness { label, body }
+        Witness {
+            label,
+            body,
+            url: None,
+        }
     });
     prompt.push_witnesses(witnesses);
 

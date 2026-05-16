@@ -342,6 +342,7 @@ fn terminal_observations(
             commits_behind: None,
             attest_path: None,
             latest_claude_at: None,
+            body_at: None,
             latest_claude_body: None,
             latest_claude_url: None,
             inline_thread_count: 0,

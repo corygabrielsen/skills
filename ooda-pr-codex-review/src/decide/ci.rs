@@ -272,9 +272,15 @@ fn failed_check_witness(f: &FailedCheck) -> Witness {
         // still names the check.
         body_lines.push("  (no run details available)".to_string());
     }
+    let url = if f.link.trim().is_empty() {
+        None
+    } else {
+        Some(f.link.trim().to_string())
+    };
     Witness {
         label,
         body: body_lines.join("\n"),
+        url,
     }
 }
 
@@ -319,13 +325,17 @@ fn escalate_ci_failed_prompt(
                 .failed
                 .iter()
                 .find(|f| f.name == handle.name);
-            let body = match matched {
-                Some(f) => failed_check_witness(f).body,
-                None => {
-                    "  (no description / link available — eventual-consistency window)".to_string()
+            let (body, url) = match matched {
+                Some(f) => {
+                    let w = failed_check_witness(f);
+                    (w.body, w.url)
                 }
+                None => (
+                    "  (no description / link available — eventual-consistency window)".to_string(),
+                    None,
+                ),
             };
-            Witness { label, body }
+            Witness { label, body, url }
         })
         .collect();
     if let Some(ws) = NonEmpty::try_from_vec(witnesses_vec) {

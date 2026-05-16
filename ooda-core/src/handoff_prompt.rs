@@ -64,10 +64,15 @@ pub enum PromptSection {
 }
 
 /// One witness in a [`PromptSection::Witnesses`] section.
+///
+/// `url`, when `Some`, renders as a trailing `URL: <url>` line below
+/// the body. `None` omits the line entirely — the renderer never
+/// emits a bare `URL:` header.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Witness {
     pub label: SingleLineString,
     pub body: String,
+    pub url: Option<String>,
 }
 
 /// One `<key>: <value>` line in a [`PromptSection::Context`]
@@ -191,6 +196,9 @@ impl fmt::Display for PromptSection {
                         f.write_str("\n\n")?;
                     }
                     write!(f, "{}\n{}", w.label, w.body)?;
+                    if let Some(url) = &w.url {
+                        write!(f, "\nURL: {url}")?;
+                    }
                 }
                 Ok(())
             }
@@ -275,10 +283,12 @@ mod tests {
             Witness {
                 label: "Copilot @ src/foo.rs:42    thread_id: t1".into(),
                 body: "Consider a different name here.".into(),
+                url: None,
             },
             Witness {
                 label: "Cursor @ src/bar.rs:7    thread_id: t2".into(),
                 body: "Multi-line\nbody.".into(),
+                url: None,
             },
         ])
         .unwrap();
@@ -289,6 +299,33 @@ mod tests {
             s.contains("Copilot @ src/foo.rs:42    thread_id: t1\nConsider a different name here.")
         );
         assert!(s.contains("Cursor @ src/bar.rs:7    thread_id: t2\nMulti-line\nbody."));
+    }
+
+    #[test]
+    fn witness_with_url_none_renders_without_url_line() {
+        let witnesses = NonEmpty::singleton(Witness {
+            label: "label".into(),
+            body: "body line".into(),
+            url: None,
+        });
+        let mut p = HandoffPrompt::new("h");
+        p.push_witnesses(witnesses);
+        let s = format!("{p}");
+        assert_eq!(s, "h\n\nlabel\nbody line");
+        assert!(!s.contains("URL:"));
+    }
+
+    #[test]
+    fn witness_with_url_some_renders_url_line_below_body() {
+        let witnesses = NonEmpty::singleton(Witness {
+            label: "label".into(),
+            body: "body line".into(),
+            url: Some("https://example/r/1".into()),
+        });
+        let mut p = HandoffPrompt::new("h");
+        p.push_witnesses(witnesses);
+        let s = format!("{p}");
+        assert_eq!(s, "h\n\nlabel\nbody line\nURL: https://example/r/1");
     }
 
     #[test]

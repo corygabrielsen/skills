@@ -156,7 +156,7 @@ fn run_iter(
     mut observe: impl FnMut(&RepoId, &ReviewTarget) -> Result<CodexObservations, String>,
     mut on_state: impl FnMut(u32, &OrientedState, &Decision),
     iter: u32,
-    last_non_wait_key: Option<&ooda_core::StallKey<crate::decide::action::ActionKind>>,
+    last_non_wait_key: Option<&ooda_core::StallKey>,
 ) -> Result<IterStep, LoopError> {
     let obs = observe(repo_id, target).map_err(LoopError::Observe)?;
     let oriented = orient(&obs, ceiling);

@@ -143,13 +143,16 @@ pub enum DecisionHalt<K> {
 
 impl<K> DecisionHalt<K> {
     /// Decide-level exit codes track [`crate::Outcome`]:
-    /// `Success` and `Terminal` halt the loop with
+    /// `Success` and `Terminal(Succeeded)` halt the loop with
     /// [`ExitCode::DoneSucceeded`] (Paused is not produced at the
-    /// decide layer); `HumanNeeded` maps to [`ExitCode::HandoffHuman`];
-    /// `AgentNeeded` maps to [`ExitCode::HandoffAgent`].
+    /// decide layer); `Terminal(Aborted)` maps to
+    /// [`ExitCode::DoneAborted`]; `HumanNeeded` maps to
+    /// [`ExitCode::HandoffHuman`]; `AgentNeeded` maps to
+    /// [`ExitCode::HandoffAgent`].
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Success | Self::Terminal(_) => ExitCode::DoneSucceeded,
+            Self::Success | Self::Terminal(Terminal::Succeeded) => ExitCode::DoneSucceeded,
+            Self::Terminal(Terminal::Aborted) => ExitCode::DoneAborted,
             Self::HumanNeeded(_) => ExitCode::HandoffHuman,
             Self::AgentNeeded(_) => ExitCode::HandoffAgent,
         }
@@ -255,11 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn decision_halt_terminal_maps_to_done_succeeded() {
+    fn decision_halt_terminal_succeeded_maps_to_done_succeeded() {
         let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
         assert_eq!(d.exit_code(), ExitCode::DoneSucceeded);
+    }
+
+    #[test]
+    fn decision_halt_terminal_aborted_maps_to_done_aborted() {
         let d: Decision<K> = Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
-        assert_eq!(d.exit_code(), ExitCode::DoneSucceeded);
+        assert_eq!(d.exit_code(), ExitCode::DoneAborted);
     }
 
     #[test]

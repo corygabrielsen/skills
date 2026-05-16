@@ -298,9 +298,18 @@ mod tests {
     fn pc(name: &str, health: CheckHealth) -> PendingCheck {
         PendingCheck {
             name: cn(name),
-            run_id: WorkflowRunId(format!("run-{name}")),
+            // Deterministic id-from-name so the test names stay
+            // self-documenting; the hash is reproducible across runs.
+            run_id: WorkflowRunId(stable_id(name)),
             health,
         }
+    }
+
+    fn stable_id(name: &str) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        name.hash(&mut h);
+        h.finish()
     }
 
     #[test]

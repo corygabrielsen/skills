@@ -21,8 +21,9 @@ use super::action::{
 };
 use crate::ids::{BlockerKey, CheckName};
 use crate::orient::ci::{
-    CheckHealth, CiActivity, CiReport, CiSummary, PendingCheck, ResolvedState, Symptom,
+    CheckHealth, CiActivity, CiReport, CiSummary, FailedCheck, PendingCheck, ResolvedState, Symptom,
 };
+use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
 /// Comma-join a slice of `CheckName` for human-readable rendering.
 fn join_names(names: &[CheckName]) -> String {
@@ -59,10 +60,7 @@ pub fn candidates(report: &CiReport) -> Vec<Action> {
                         check_name: f.name.clone(),
                     },
                     effect: ActionEffect::Agent {
-                        prompt: ooda_core::HandoffPrompt::new(format!(
-                            "Fix failing check: {}",
-                            f.name
-                        )),
+                        prompt: fix_ci_prompt(f),
                     },
                     target_effect: TargetEffect::Blocks,
                     urgency: Urgency::BlockingFix,
@@ -108,20 +106,14 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let headline = format!(
-            "Per-(check, HEAD) re-run budget exhausted on: {names_csv}. \
-             Investigate the underlying workflow or GitHub Actions \
-             status and re-trigger manually once the issue is resolved.",
-        );
         // The blocker tag combines the worst symptom (sorted) so a
         // queue-timeout failure produces a distinct stall key from a
         // run-timeout failure on the same check set.
         let tag = format!("ci_failed: {names_csv}");
+        let prompt = escalate_ci_failed_prompt(&failed_ne, summary, &names_csv);
         out.push(Action {
             kind: ActionKind::EscalateCiFailed { checks: failed_ne },
-            effect: ActionEffect::Human {
-                prompt: ooda_core::HandoffPrompt::new(headline),
-            },
+            effect: ActionEffect::Human { prompt },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
             blocker: BlockerKey::tag(tag),
@@ -238,27 +230,122 @@ fn triage_or_missing(summary: &CiSummary, names: &[CheckName], out: &mut Vec<Act
 }
 
 fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<Action>) {
-    let advisory_lines: Vec<String> = summary
-        .advisory
-        .failed
-        .iter()
-        .map(|f| format!("- Advisory \"{}\" failed", f.name))
-        .collect();
     let quoted: Vec<String> = blocked.iter().map(|n| format!("\"{n}\"")).collect();
-    let headline = format!("CI waiting on {}. Concurrent state:", quoted.join(", "));
+    let headline = format!(
+        "CI waiting on {}. {} advisory failed concurrently.",
+        quoted.join(", "),
+        crate::text::count(summary.advisory.failed.len(), "advisory check"),
+    );
     let blocker_list = join_names(&blocked);
+    let prompt = triage_wait_prompt(headline, &summary.advisory.failed);
     out.push(Action {
         kind: ActionKind::TriageWait {
             blocked_checks: blocked,
         },
-        effect: ActionEffect::Agent {
-            prompt: ooda_core::HandoffPrompt::new(headline)
-                .with_paragraph(advisory_lines.join("\n")),
-        },
+        effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
         blocker: BlockerKey::tag(format!("ci_triage: {blocker_list}")),
     });
+}
+
+/// One Witness per failed check, body inlining description + link
+/// when present. Re-used by `FixCi`, `EscalateCiFailed`, and
+/// `TriageWait` so the rendered shape stays uniform across CI
+/// remediation prompts.
+fn failed_check_witness(f: &FailedCheck) -> Witness {
+    let label = SingleLineString::new(f.name.as_str().to_string());
+    let mut body_lines: Vec<String> = Vec::new();
+    if !f.description.trim().is_empty() {
+        body_lines.push(format!("  {}", f.description.trim()));
+    }
+    if !f.link.trim().is_empty() {
+        body_lines.push(format!("  Run: {}", f.link.trim()));
+    }
+    if body_lines.is_empty() {
+        // Preserve the witness shape even when the upstream
+        // observation has no description/link — the label alone
+        // still names the check.
+        body_lines.push("  (no run details available)".to_string());
+    }
+    Witness {
+        label,
+        body: body_lines.join("\n"),
+    }
+}
+
+fn fix_ci_prompt(f: &FailedCheck) -> HandoffPrompt {
+    let mut prompt = HandoffPrompt::new(format!("Fix failing check: {}", f.name));
+    let description = f.description.trim();
+    let link = f.link.trim();
+    if !description.is_empty() {
+        prompt.push_paragraph(format!("Description: {description}"));
+    }
+    if !link.is_empty() {
+        prompt.push_paragraph(format!("Run: {link}"));
+    }
+    prompt
+}
+
+fn escalate_ci_failed_prompt(
+    failed_ne: &NonEmpty<FailedCheckHandle>,
+    summary: &CiSummary,
+    names_csv: &str,
+) -> HandoffPrompt {
+    let headline = format!(
+        "Per-(check, HEAD) re-run budget exhausted on: {names_csv}. \
+         Investigate the underlying workflow or GitHub Actions \
+         status and re-trigger manually once the issue is resolved.",
+    );
+    let mut prompt = HandoffPrompt::new(headline);
+
+    // Build one Witness per Failed handle, labelled `name [symptom]`
+    // with body description+link from the matching `summary.required.
+    // failed` entry. When a Failed handle has no description/link
+    // counterpart (eventual-consistency window between the
+    // workflow_runs feed and `gh pr checks`), still emit a Witness
+    // with just the symptom so the per-check structure is preserved.
+    let witnesses_vec: Vec<Witness> = failed_ne
+        .iter()
+        .map(|handle| {
+            let symptom_label = symptom_slug(handle.symptom);
+            let label = SingleLineString::new(format!("{} [{symptom_label}]", handle.name));
+            let matched = summary
+                .required
+                .failed
+                .iter()
+                .find(|f| f.name == handle.name);
+            let body = match matched {
+                Some(f) => failed_check_witness(f).body,
+                None => {
+                    "  (no description / link available — eventual-consistency window)".to_string()
+                }
+            };
+            Witness { label, body }
+        })
+        .collect();
+    if let Some(ws) = NonEmpty::try_from_vec(witnesses_vec) {
+        prompt.push_witnesses(ws);
+    }
+    prompt
+}
+
+fn triage_wait_prompt(headline: String, advisory_failed: &[FailedCheck]) -> HandoffPrompt {
+    let mut prompt = HandoffPrompt::new(headline);
+    if let Some(ws) =
+        NonEmpty::try_from_vec(advisory_failed.iter().map(failed_check_witness).collect())
+    {
+        prompt.push_paragraph("Advisory failures (non-blocking, surfaced for triage):");
+        prompt.push_witnesses(ws);
+    }
+    prompt
+}
+
+fn symptom_slug(s: Symptom) -> &'static str {
+    match s {
+        Symptom::QueueTimeout => "queue-timeout",
+        Symptom::RunTimeout => "run-timeout",
+    }
 }
 
 #[cfg(test)]
@@ -649,5 +736,137 @@ mod tests {
                 "ci baseline contract violated for activity = {activity:?}",
             );
         }
+    }
+
+    // ── prompt-enrichment tests ─────────────────────────────────────
+
+    fn failed_with(name: &str, desc: &str, link: &str) -> FailedCheck {
+        FailedCheck {
+            name: CheckName::parse(name).unwrap(),
+            description: desc.into(),
+            link: link.into(),
+        }
+    }
+
+    #[test]
+    fn fix_ci_prompt_inlines_description_and_link() {
+        let mut s = empty_summary();
+        s.required.failed = vec![failed_with(
+            "Lint",
+            "3 errors in src/foo.rs",
+            "https://github.com/o/r/actions/runs/123",
+        )];
+        let cs = candidates(&report(
+            s,
+            CiActivity::Resolved(ResolvedState::HasFailures(vec![cn("Lint")])),
+        ));
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Fix failing check: Lint"));
+        assert!(
+            rendered.contains("Description: 3 errors in src/foo.rs"),
+            "missing description: {rendered}",
+        );
+        assert!(
+            rendered.contains("Run: https://github.com/o/r/actions/runs/123"),
+            "missing link: {rendered}",
+        );
+    }
+
+    #[test]
+    fn fix_ci_prompt_omits_paragraphs_when_observation_lacks_them() {
+        // When observe surfaces a Failed check with no description or
+        // link (rare wire-source race), the prompt still has its
+        // headline — no empty Description: / Run: paragraphs.
+        let mut s = empty_summary();
+        s.required.failed = vec![failed("Lint")];
+        let cs = candidates(&report(
+            s,
+            CiActivity::Resolved(ResolvedState::HasFailures(vec![cn("Lint")])),
+        ));
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Fix failing check: Lint"));
+        assert!(!rendered.contains("Description:"));
+        assert!(!rendered.contains("Run:"));
+    }
+
+    #[test]
+    fn escalate_ci_failed_emits_witness_per_check_with_description_and_link() {
+        // Two pending Failed checks at this HEAD; the matching
+        // summary.required.failed entries carry the run details.
+        let mut s = empty_summary();
+        s.required.pending_names = vec![cn("Build"), cn("Test")];
+        s.required.failed = vec![
+            failed_with(
+                "Build",
+                "compile error in src/foo.rs",
+                "https://example/build",
+            ),
+            failed_with("Test", "1 test failing: it_works", "https://example/test"),
+        ];
+        let activity = CiActivity::InFlight(vec![
+            pc("Build", CheckHealth::Failed(Symptom::RunTimeout)),
+            pc("Test", CheckHealth::Failed(Symptom::QueueTimeout)),
+        ]);
+        let cs = candidates(&report(s, activity));
+        let rendered = cs[0].rendered_payload();
+        assert!(
+            rendered.contains("Build [run-timeout]"),
+            "Build label: {rendered}"
+        );
+        assert!(rendered.contains("compile error in src/foo.rs"));
+        assert!(rendered.contains("Run: https://example/build"));
+        assert!(rendered.contains("Test [queue-timeout]"));
+        assert!(rendered.contains("1 test failing: it_works"));
+        assert!(rendered.contains("Run: https://example/test"));
+    }
+
+    #[test]
+    fn escalate_ci_failed_emits_witness_with_fallback_when_summary_lacks_match() {
+        // Eventual-consistency window: the Failed handle is in
+        // flight but the summary's required.failed entry has not
+        // populated yet. The Witness still names the check + symptom
+        // and notes the gap.
+        let mut s = empty_summary();
+        s.required.pending_names = vec![cn("Build")];
+        // summary.required.failed intentionally empty.
+        let activity =
+            CiActivity::InFlight(vec![pc("Build", CheckHealth::Failed(Symptom::RunTimeout))]);
+        let cs = candidates(&report(s, activity));
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Build [run-timeout]"));
+        assert!(rendered.contains("eventual-consistency window"));
+    }
+
+    #[test]
+    fn triage_wait_prompt_emits_witness_per_advisory_failure() {
+        let mut s = empty_summary();
+        s.missing_names = vec![cn("Mergeability Check")];
+        s.advisory.failed = vec![
+            failed_with(
+                "Lint",
+                "8 warnings on master",
+                "https://example/lint-advisory",
+            ),
+            failed_with("Style", "0 deltas", "https://example/style"),
+        ];
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired(vec![cn(
+            "Mergeability Check",
+        )]));
+        let cs = candidates(&report(s, activity));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::TriageWait { .. }))
+            .expect("TriageWait must fire");
+        let rendered = action.rendered_payload();
+        assert!(rendered.contains("CI waiting on \"Mergeability Check\""));
+        assert!(
+            rendered.contains("Advisory failures"),
+            "missing advisory section: {rendered}",
+        );
+        assert!(rendered.contains("Lint"));
+        assert!(rendered.contains("8 warnings on master"));
+        assert!(rendered.contains("https://example/lint-advisory"));
+        assert!(rendered.contains("Style"));
+        assert!(rendered.contains("0 deltas"));
     }
 }

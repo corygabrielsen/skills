@@ -119,6 +119,7 @@ pub fn orient(
         &obs.review_threads_page,
         &obs.issue_comments,
         &obs.reviews,
+        &obs.requested_reviewers,
     );
     let copilot = obs
         .copilot_config

@@ -86,6 +86,13 @@ pub struct CursorReport {
     pub tier: CursorTier,
     /// Latest review observed at HEAD (`latest.commit == head`).
     pub fresh: bool,
+    /// `created_at` from the Cursor check_suite when present.
+    /// `None` when no suite has been observed for this PR
+    /// (NotApplicable, Skipped, or a round-only history). Decide's
+    /// `EscalateCursorStalled` prompt surfaces the suite's age so
+    /// the human sees "stalled since <ts>, ~N minutes ago" rather
+    /// than just a generic STALL_TIMEOUT mention.
+    pub suite_created_at: Option<Timestamp>,
 }
 
 // Cursor's state machine is deliberately divergent from Copilot's
@@ -306,6 +313,7 @@ pub fn orient_cursor(
     let activity = derive_activity(cursor_status, author, has_review_row_at_head, now);
     let tier = score_tier(&rounds, &thread_summary, cursor_status);
     let fresh = is_fresh(&rounds, head);
+    let suite_created_at = cursor_status.suite.as_ref().map(|s| s.created_at);
 
     Some(CursorReport {
         activity,
@@ -314,6 +322,7 @@ pub fn orient_cursor(
         severity,
         tier,
         fresh,
+        suite_created_at,
     })
 }
 

@@ -286,7 +286,7 @@ fn pull_request_metadata_line(o: &OrientedState) -> String {
             ..
         } => format!(
             "⚠ PR meta · drifted {} since {}",
-            crate::text::count(*commits_behind, "commit"),
+            drift_count(*commits_behind),
             attested_sha.chars().take(7).collect::<String>(),
         ),
         PullRequestMetadata::NeverAttested => "⚠ PR meta · never attested".into(),
@@ -302,10 +302,21 @@ fn doc_review_line(o: &OrientedState) -> String {
             ..
         } => format!(
             "⚠ Doc review · drifted {} since {}",
-            crate::text::count(*commits_behind, "commit"),
+            drift_count(*commits_behind),
             attested_sha.chars().take(7).collect::<String>(),
         ),
         DocReview::NeverAttested => "⚠ Doc review · never attested".into(),
+    }
+}
+
+/// Render a Drift `commits_behind` field. `None` means the
+/// `gh api compare` call failed (attested SHA pruned post-rebase,
+/// transport error, etc.) — drift still exists but the count is
+/// not available. Distinct rendering from `Some(0)`.
+fn drift_count(commits_behind: Option<usize>) -> String {
+    match commits_behind {
+        Some(n) => crate::text::count(n, "commit"),
+        None => "unknown commits".into(),
     }
 }
 
@@ -416,6 +427,7 @@ mod tests {
             copilot: None,
             cursor: None,
             threads: vec![],
+            codex_review: None,
             merge_base_delta: None,
             pull_request_metadata: PullRequestMetadata::NeverAttested,
             attest_path: None,
@@ -423,7 +435,6 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
-            codex_review: None,
         }
     }
 
@@ -627,7 +638,7 @@ mod tests {
         o.pull_request_metadata = PullRequestMetadata::Drift {
             attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
             head_sha: "9".repeat(40),
-            commits_behind: 5,
+            commits_behind: Some(5),
         };
         let line = pull_request_metadata_line(&o);
         assert!(line.contains("drifted 5 commits"), "{line}");
@@ -656,7 +667,7 @@ mod tests {
         o.doc_review = DocReview::Drift {
             attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
             head_sha: "9".repeat(40),
-            commits_behind: 5,
+            commits_behind: Some(5),
         };
         let line = doc_review_line(&o);
         assert!(line.contains("drifted 5 commits"), "{line}");

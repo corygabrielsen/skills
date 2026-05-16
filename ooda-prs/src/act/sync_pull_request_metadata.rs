@@ -106,7 +106,7 @@ mod tests {
         PullRequestMetadata::Drift {
             attested_sha: "a".repeat(40),
             head_sha: "b".repeat(40),
-            commits_behind: 4,
+            commits_behind: Some(4),
         }
     }
 

@@ -50,7 +50,7 @@ pub(crate) fn observe_doc_review(
         .and_then(|p| read_doc_review(p).ok().flatten());
     let commits_behind = match &attestation {
         Some(att) if att.attested_sha != head_sha.as_str() => {
-            Some(compare_ahead_by(slug, &att.attested_sha, head_sha).unwrap_or(0))
+            compare_ahead_by(slug, &att.attested_sha, head_sha)
         }
         _ => None,
     };

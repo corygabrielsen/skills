@@ -130,6 +130,7 @@ mod tests {
             copilot: None,
             cursor: None,
             threads: vec![],
+            codex_review: None,
             merge_base_delta: None,
             pull_request_metadata,
             attest_path: Some(std::path::PathBuf::from("/state/753/pr_meta_attest.json")),
@@ -137,7 +138,6 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
-            codex_review: None,
         }
     }
 
@@ -151,7 +151,7 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .to_string(),
-            commits_behind: 2,
+            commits_behind: Some(2),
         }
     }
 

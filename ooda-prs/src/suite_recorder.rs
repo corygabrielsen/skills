@@ -68,11 +68,11 @@ struct Inner {
     suite_root: PathBuf,
     suite_id: String,
     started_at: DateTime<Utc>,
-    pointers: Vec<PrPointer>,
+    pointers: Vec<PullRequestPointer>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PrPointer {
+struct PullRequestPointer {
     slug: String,
     pr: u64,
     run_id: String,
@@ -103,7 +103,7 @@ struct SuiteMember {
 struct PointersFile<'a> {
     schema_version: u32,
     suite_id: &'a str,
-    prs: &'a [PrPointer],
+    prs: &'a [PullRequestPointer],
 }
 
 #[derive(Serialize)]
@@ -190,7 +190,7 @@ impl SuiteRecorder {
     /// behavior.
     pub fn register_pr(&self, slug: &RepoSlug, pr: PullRequestNumber, run_id: &str) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.pointers.push(PrPointer {
+            inner.pointers.push(PullRequestPointer {
                 slug: slug.to_string(),
                 pr: pr.get(),
                 run_id: run_id.to_string(),

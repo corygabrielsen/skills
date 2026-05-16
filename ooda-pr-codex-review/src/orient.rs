@@ -27,7 +27,7 @@ use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
 use cursor::{CursorReport, orient_cursor};
 use pr_meta::{PrMetadata, orient_pr_meta};
 use reviews::ReviewSummary;
-use state::PullRequestState;
+use state::PullRequestProjection;
 use thread::ReviewThread;
 
 /// All five orient axes assembled from a single observation bundle.
@@ -49,7 +49,7 @@ use thread::ReviewThread;
 #[derive(Debug, Clone, Serialize)]
 pub struct OrientedState {
     pub ci: CiReport,
-    pub state: PullRequestState,
+    pub state: PullRequestProjection,
     pub reviews: ReviewSummary,
     /// `None` when Copilot is not configured for the repo (no
     /// active `copilot_code_review` ruleset rule). Distinct from

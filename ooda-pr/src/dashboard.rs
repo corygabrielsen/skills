@@ -111,7 +111,7 @@ pub enum AxisName {
     Copilot,
     Ci,
     Cursor,
-    PrMeta,
+    PrMetadata,
 }
 
 impl AxisName {
@@ -120,7 +120,7 @@ impl AxisName {
             Self::Copilot => "copilot",
             Self::Ci => "ci",
             Self::Cursor => "cursor",
-            Self::PrMeta => "pr_meta",
+            Self::PrMetadata => "pr_meta",
         }
     }
 }
@@ -230,7 +230,7 @@ pub fn pr_meta_signal(state: &PrMetadata) -> AxisSignal {
         ),
     };
     AxisSignal {
-        axis: AxisName::PrMeta,
+        axis: AxisName::PrMetadata,
         icon,
         summary,
     }
@@ -1252,7 +1252,7 @@ mod tests {
     fn pr_meta_signal_synced_renders_ok() {
         let sig = pr_meta_signal(&PrMetadata::Synced);
         assert_eq!(sig.icon, SignalIcon::Ok);
-        assert_eq!(sig.axis, AxisName::PrMeta);
+        assert_eq!(sig.axis, AxisName::PrMetadata);
         assert!(sig.summary.contains("synced"), "{}", sig.summary);
     }
 

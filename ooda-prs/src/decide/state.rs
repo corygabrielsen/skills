@@ -7,12 +7,12 @@ use crate::ids::BlockerKey;
 use crate::observe::github::compare::MergeBaseDelta;
 use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
 use crate::orient::OrientedState;
-use crate::orient::state::PullRequestState;
+use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadState};
 
 use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
 
-// Widened from `&PullRequestState` to `&OrientedState` so the Rebase
+// Widened from `&PullRequestProjection` to `&OrientedState` so the Rebase
 // emission can reach `oriented.threads` (orphan-risk witnesses) and
 // any future compare-endpoint facts. Other action prompts can now
 // enrich themselves from the same wider input without further
@@ -133,7 +133,7 @@ pub fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
 ///   conflict surface, just rebase.
 fn build_rebase_prompt(
     base: &str,
-    state: &PullRequestState,
+    state: &PullRequestProjection,
     threads: &[ReviewThread],
     delta: Option<&MergeBaseDelta>,
 ) -> ooda_core::HandoffPrompt {
@@ -175,7 +175,7 @@ fn build_rebase_prompt(
 /// Stack-aware rebase headline. A naive `git rebase <trunk>` would
 /// orphan stacked branches; `gt restack` walks the chain and rebases
 /// every branch.
-fn rebase_headline(base: &str, state: &PullRequestState) -> String {
+fn rebase_headline(base: &str, state: &PullRequestProjection) -> String {
     if state.has_open_parent_pr {
         format!(
             "{base}. This PR is stacked under an unmerged parent PR — \
@@ -262,7 +262,7 @@ fn push_merge_base_delta_sections(prompt: &mut ooda_core::HandoffPrompt, delta: 
 /// fired. Otherwise the modeled axis already explains the BLOCKED
 /// state and a duplicate emission would shadow the more actionable
 /// candidate.
-pub fn fallback_merge_state_blocker(state: &PullRequestState) -> Vec<Action> {
+pub fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
     match state.merge_state_status {
         MergeStateStatus::Blocked => vec![Action {
             kind: ActionKind::ResolveMergePolicy,
@@ -315,8 +315,8 @@ mod tests {
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::thread::{BotName, FilePath, ThreadAuthor, ThreadId, ThreadLocation};
 
-    fn clean() -> PullRequestState {
-        PullRequestState {
+    fn clean() -> PullRequestProjection {
+        PullRequestProjection {
             conflict: Mergeable::Mergeable,
             draft: false,
             wip: false,
@@ -365,7 +365,7 @@ mod tests {
         }
     }
 
-    fn oriented(state: PullRequestState) -> OrientedState {
+    fn oriented(state: PullRequestProjection) -> OrientedState {
         OrientedState {
             ci: clean_ci(),
             state,
@@ -380,7 +380,7 @@ mod tests {
     }
 
     fn oriented_with(
-        state: PullRequestState,
+        state: PullRequestProjection,
         threads: Vec<ReviewThread>,
         delta: Option<MergeBaseDelta>,
     ) -> OrientedState {
@@ -628,7 +628,7 @@ mod tests {
         ]
     }
 
-    fn observed_fallback_behavior(state: &PullRequestState) -> FallbackBehavior {
+    fn observed_fallback_behavior(state: &PullRequestProjection) -> FallbackBehavior {
         let cs = fallback_merge_state_blocker(state);
         match cs.as_slice() {
             [] => FallbackBehavior::Empty,

@@ -14,6 +14,7 @@ pub mod review_threads;
 pub mod reviews;
 pub mod rulesets;
 pub mod stack_root;
+pub mod workflow_runs;
 
 use std::thread;
 
@@ -39,6 +40,7 @@ use review_threads::{
 use reviews::{PullRequestReview, fetch_pr_reviews};
 use rulesets::CopilotCodeReviewParams;
 use stack_root::resolve_stack_root;
+use workflow_runs::{WorkflowRun, fetch_workflow_runs_for_head};
 
 /// Successful outcome of [`fetch_all`]. Either a full observation
 /// bundle (the loop proceeds to orient/decide) or a [`RateLimitHit`]
@@ -82,6 +84,12 @@ pub struct GitHubObservations {
     /// See [`ooda_core::RateLimitBudget`] for the named-but-unimplemented
     /// routing concepts.
     pub rate_limit_budget: RateLimitBudget,
+    /// All workflow runs on the current HEAD SHA. Source of per-check
+    /// `created_at` / `run_started_at` (the CI health detector's
+    /// queue/run timeouts) and per-(name, HEAD) attempt counts (the
+    /// re-run budget). Bounded N — a single HEAD typically has 0-30
+    /// runs.
+    pub workflow_runs: Vec<WorkflowRun>,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -126,6 +134,7 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
     // at intermediate stack branches. Resolve before fanning out.
     let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pr_view.base_ref_name));
     let root_for_threads = stack_root_branch.clone();
+    let head_sha = pr_view.head_ref_oid.clone();
 
     thread::scope(|s| {
         let root = root_for_threads.as_str();
@@ -142,6 +151,10 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
         // alongside the others so the snapshot is roughly
         // coincident with the rest of the observation bundle.
         let h_rate_limit = s.spawn(fetch_rate_limit_budget);
+        let h_workflow_runs = {
+            let head_for_runs = head_sha.clone();
+            s.spawn(move || fetch_workflow_runs_for_head(slug, &head_for_runs))
+        };
 
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pr_view,
@@ -172,6 +185,11 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
                     .join()
                     .expect("fetch_rate_limit_budget panicked")
             ),
+            workflow_runs: try_fetch!(
+                h_workflow_runs
+                    .join()
+                    .expect("fetch_workflow_runs_for_head panicked")
+            ),
         })))
     })
 }
@@ -199,5 +217,6 @@ fn terminal_observations(
         stack_root_branch,
         copilot_config: None,
         rate_limit_budget,
+        workflow_runs: vec![],
     }
 }

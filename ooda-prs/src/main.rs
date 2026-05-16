@@ -690,7 +690,7 @@ fn push_handoff_context(
             "Branch",
             format!("{} ← {}", snap.base_branch, snap.head_short),
         );
-        let req = &snap.oriented.ci.required;
+        let req = &snap.oriented.ci.summary.required;
         prompt.push_context_line(
             "CI",
             format!(

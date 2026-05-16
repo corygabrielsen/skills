@@ -8,6 +8,8 @@
 //! the wrong position" bug is a compile error.
 
 use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
+use crate::observe::github::workflow_runs::WorkflowRunId;
+use crate::orient::ci::Symptom as CiSymptom;
 use crate::orient::copilot::Symptom;
 use crate::orient::thread::ReviewThread;
 pub use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
@@ -17,6 +19,27 @@ use serde::Serialize;
 /// PR-domain `Action`. Concrete instantiation of the generic
 /// [`ooda_core::Action`] over this binary's [`ActionKind`].
 pub type Action = ooda_core::Action<ActionKind>;
+
+/// Payload for [`ActionKind::ReRunWorkflow`]: one degraded check
+/// with its workflow run handle (consumed by the act layer to issue
+/// the rerun) and the triggering symptom (recorded in the blocker
+/// tag so the stall comparator separates queue-timeout from
+/// run-timeout stalls).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DegradedCheck {
+    pub name: CheckName,
+    pub run_id: WorkflowRunId,
+    pub symptom: CiSymptom,
+}
+
+/// Payload for [`ActionKind::EscalateCiFailed`]: one Failed check
+/// with the triggering symptom. No workflow run handle — escalation
+/// has no side effect, only naming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FailedCheckHandle {
+    pub name: CheckName,
+    pub symptom: CiSymptom,
+}
 
 /// Synthesize the action the runner executes when observe surfaces a
 /// rate-limit hit. The action's effect is a [`ActionEffect::Wait`]
@@ -57,6 +80,21 @@ pub enum ActionKind {
     /// to an agent to triage.
     TriageWait {
         blocked_checks: NonEmpty<CheckName>,
+    },
+    /// Health-driven remediation. One or more required checks crossed
+    /// a queue/run timeout on the current HEAD and re-run budget is
+    /// not yet exhausted. The act layer issues `POST
+    /// /repos/:o/:r/actions/runs/:run_id/rerun` for each entry; the
+    /// next iteration sees a fresh workflow run as Healthy.
+    ReRunWorkflow {
+        checks: NonEmpty<DegradedCheck>,
+    },
+    /// Per-(check, HEAD) re-run budget exhausted on at least one
+    /// required check; humans must triage. No automatic side effect
+    /// — decide hands off via `ActionEffect::Human`. The action
+    /// payload carries every Failed check so the prompt names them.
+    EscalateCiFailed {
+        checks: NonEmpty<FailedCheckHandle>,
     },
 
     // ── Reviews ──
@@ -101,8 +139,9 @@ pub enum ActionKind {
     AddDescription,
 
     // ── Bot tier advancement ──
-    // Degraded-axis remediation. CI will add ReRunWorkflow +
-    // EscalateCiFailed in the same family.
+    // Degraded-axis remediation. CI's ReRunWorkflow +
+    // EscalateCiFailed (above) wear the same Healthy/Degraded/Failed
+    // shape; on the 3rd axis lift to ooda_core::AxisHealth<S>.
     RerequestCopilot {
         /// Health-driven remediation carries the triggering symptom;
         /// tier-advancement re-requests (no health degradation) pass
@@ -163,6 +202,8 @@ impl ActionKindName for ActionKind {
             Self::FixCi { .. } => "FixCi",
             Self::WaitForCi { .. } => "WaitForCi",
             Self::TriageWait { .. } => "TriageWait",
+            Self::ReRunWorkflow { .. } => "ReRunWorkflow",
+            Self::EscalateCiFailed { .. } => "EscalateCiFailed",
             Self::AddressThreads { .. } => "AddressThreads",
             Self::AddressChangeRequest => "AddressChangeRequest",
             Self::RequestApproval => "RequestApproval",

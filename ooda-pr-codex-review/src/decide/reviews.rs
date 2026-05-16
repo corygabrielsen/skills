@@ -20,7 +20,7 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 
 pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     let reviews = &oriented.reviews;
-    let ci = &oriented.ci;
+    let ci = &oriented.ci.summary;
     let mut out: Vec<Action> = Vec::new();
 
     let unresolved_threads: Vec<ReviewThread> = oriented
@@ -288,16 +288,19 @@ mod tests {
     use super::*;
     use crate::ids::{GitHubLogin, Reviewer, Timestamp};
     use crate::observe::github::pr_view::Mergeable;
-    use crate::orient::ci::{CheckBucket, CiSummary};
+    use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestState;
 
-    fn clean_ci() -> CiSummary {
-        CiSummary {
-            required: CheckBucket::default(),
-            missing_names: vec![],
-            completed_at: None,
-            advisory: CheckBucket::default(),
+    fn clean_ci() -> CiReport {
+        CiReport {
+            summary: CiSummary {
+                required: CheckBucket::default(),
+                missing_names: vec![],
+                completed_at: None,
+                advisory: CheckBucket::default(),
+            },
+            activity: CiActivity::Resolved(ResolvedState::AllGreen),
         }
     }
 
@@ -651,7 +654,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         let mut o = oriented_with(r);
-        o.ci.required.failed = vec![crate::orient::ci::FailedCheck {
+        o.ci.summary.required.failed = vec![crate::orient::ci::FailedCheck {
             name: crate::ids::CheckName::parse("Lint").unwrap(),
             description: String::new(),
             link: String::new(),

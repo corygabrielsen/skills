@@ -4,6 +4,7 @@
 //! never reach act. Anything Action that arrives here is either
 //! Full (we run it) or Wait (we sleep next_poll_seconds and return).
 
+mod ci;
 mod copilot;
 
 use std::thread;
@@ -76,6 +77,14 @@ fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result
             WIP_LABEL,
         ])?,
         ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(slug, pr)?,
+        ActionKind::ReRunWorkflow { checks } => {
+            // Iterate every degraded check; each carries its own
+            // workflow run handle. Fail-fast on the first GH error —
+            // the next iteration re-observes from scratch.
+            for c in checks.iter() {
+                ci::rerun_workflow(slug, &c.run_id)?;
+            }
+        }
         _ => return Err(ActError::UnsupportedAutomation),
     }
     Ok(())

@@ -11,6 +11,7 @@
 //! the spawn-time data (binary path, repo root, batch dir root,
 //! current head SHA).
 
+mod ci;
 mod copilot;
 
 use std::ffi::OsString;
@@ -140,6 +141,14 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
             WIP_LABEL,
         ])?,
         ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(&ctx.slug, ctx.pr)?,
+        ActionKind::ReRunWorkflow { checks } => {
+            // Iterate every degraded check; each carries its own
+            // workflow run handle. Fail-fast on the first GH error —
+            // the next iteration re-observes from scratch.
+            for c in checks.iter() {
+                ci::rerun_workflow(&ctx.slug, &c.run_id)?;
+            }
+        }
         ActionKind::RunCodexReviewBatch { level, n } => {
             let codex = ctx.codex.as_ref().ok_or(ActError::CodexDisabled)?;
             spawn_codex_review_batch(codex, *level, *n)?;

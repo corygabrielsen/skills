@@ -650,8 +650,20 @@ impl Inner {
             .join(format!("{iteration:04}"))
             .join("event-range.json");
         let first_sequence = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<EventRange>(&bytes)
-                .map_or(sequence, |range| range.first_sequence),
+            Ok(bytes) => match serde_json::from_slice::<EventRange>(&bytes) {
+                Ok(range) => range.first_sequence,
+                // event-range.json exists but is corrupt (legacy
+                // torn write from before atomic_io migration, or
+                // external mutation). The authoritative event log
+                // (trace.jsonl) still has the iteration's events;
+                // re-derive `first_sequence` by scanning for the
+                // first event with this iteration number.
+                Err(_) => self
+                    .first_sequence_for_iteration(iteration)
+                    .unwrap_or(sequence),
+            },
+            // File doesn't exist yet: this is the iteration's
+            // first event, so first == last == sequence.
             Err(_) => sequence,
         };
         let range = EventRange {
@@ -659,6 +671,29 @@ impl Inner {
             last_sequence: sequence,
         };
         Self::write_json_at(&path, &range)
+    }
+
+    /// Re-derive the first sequence number for `iteration` by
+    /// scanning the per-run event log. Returns `None` if the log
+    /// cannot be read, parses ambiguously, or has no event with
+    /// the requested iteration. Used as a recovery path when
+    /// `event-range.json` is corrupt.
+    fn first_sequence_for_iteration(&self, iteration: u32) -> Option<u64> {
+        let path = self.run_root.join("trace.jsonl");
+        let content = fs::read_to_string(&path).ok()?;
+        for line in content.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let it = v.get("iteration").and_then(serde_json::Value::as_u64);
+            if it.is_some_and(|n| u32::try_from(n).is_ok_and(|n| n == iteration)) {
+                return v.get("sequence").and_then(serde_json::Value::as_u64);
+            }
+        }
+        None
     }
 
     fn append_ledger(&mut self, kind: &str, summary: &str) -> Result<(), RecorderError> {

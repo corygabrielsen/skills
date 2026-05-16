@@ -37,29 +37,36 @@ impl BlockerKey {
     ///
     /// # Errors
     ///
-    /// Returns [`BlockerKeyError`] if the input is empty.
+    /// Returns [`BlockerKeyError`] if the input is empty or
+    /// whitespace-only. Whitespace-only inputs are rejected because
+    /// stall-comparator equality is positional on the inner string
+    /// — `" "` and `"  "` would compare unequal, defeating stall
+    /// detection.
     pub fn parse(s: impl Into<String>) -> Result<Self, BlockerKeyError> {
         let s = s.into();
-        if s.is_empty() {
-            return Err(BlockerKeyError("empty".into()));
+        if s.trim().is_empty() {
+            return Err(BlockerKeyError("empty or whitespace-only".into()));
         }
         Ok(Self(s))
     }
 
     /// Infallible constructor for known-non-empty construction —
     /// literal prefixes joined with typed payloads inside the
-    /// decide layer. Panics on empty input (a programmer error in
-    /// the caller, not user input). `Self` return signals
-    /// "construction is intended to succeed" where
+    /// decide layer. Panics on empty or whitespace-only input (a
+    /// programmer error in the caller, not user input). `Self`
+    /// return signals "construction is intended to succeed" where
     /// `parse(...).expect(...)` would suggest a fallible op.
     ///
     /// # Panics
     ///
-    /// Panics if the input is empty.
+    /// Panics if the input is empty or whitespace-only.
     #[must_use]
     pub fn tag(s: impl Into<String>) -> Self {
         let s = s.into();
-        assert!(!s.is_empty(), "BlockerKey::tag called with empty string");
+        assert!(
+            !s.trim().is_empty(),
+            "BlockerKey::tag called with empty or whitespace-only string"
+        );
         Self(s)
     }
 
@@ -85,6 +92,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_whitespace_only() {
+        assert!(BlockerKey::parse(" ").is_err());
+        assert!(BlockerKey::parse("   ").is_err());
+        assert!(BlockerKey::parse("\t").is_err());
+        assert!(BlockerKey::parse("\t\n  ").is_err());
+    }
+
+    #[test]
     fn parse_accepts_non_empty() {
         assert_eq!(BlockerKey::parse("ci:fix").unwrap().as_str(), "ci:fix");
     }
@@ -98,9 +113,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "BlockerKey::tag called with empty string")]
+    #[should_panic(expected = "BlockerKey::tag called with empty or whitespace-only string")]
     fn tag_panics_on_empty() {
         let _ = BlockerKey::tag("");
+    }
+
+    #[test]
+    #[should_panic(expected = "BlockerKey::tag called with empty or whitespace-only string")]
+    fn tag_panics_on_whitespace_only() {
+        let _ = BlockerKey::tag("   ");
     }
 
     #[test]

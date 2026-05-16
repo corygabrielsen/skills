@@ -345,9 +345,12 @@ impl Recorder {
     }
 
     fn write_manifest(&self) -> Result<(), RecorderError> {
+        // Atomic + durable: manifest.json is read by try_resume on
+        // every subsequent process start; a torn write silently
+        // collapses resume → Fresh and the level_history is lost.
         let path = self.current_run_dir.join("manifest.json");
         let bytes = serde_json::to_vec_pretty(&self.manifest)?;
-        fs::write(&path, &bytes)?;
+        ooda_core::atomic_io::write_atomic(&path, &bytes)?;
         Ok(())
     }
 
@@ -355,8 +358,10 @@ impl Recorder {
         // Plain text file containing just the current run-id.
         // A symlink would be tighter but textfiles are portable
         // across Windows/WSL and easy to inspect with `cat`.
+        // Atomic + durable: read by try_resume + classify_resume_
+        // failure; a truncated pointer breaks resume entirely.
         let path = self.target_root.join("latest");
-        fs::write(&path, &self.manifest.run_id)?;
+        ooda_core::atomic_io::write_atomic(&path, self.manifest.run_id.as_bytes())?;
         Ok(())
     }
 

@@ -325,11 +325,14 @@ fn outcome_short(o: &crate::outcome::Outcome) -> String {
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), RecorderError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(RecorderError::Io)?;
-    }
+    // Atomic + durable: suite manifest.json / pointers.json /
+    // outcome.json are stable read surfaces. pointers.json in
+    // particular is rewritten on every register_pull_request call
+    // (once per worker-thread completion), so concurrent torn
+    // writes are reachable too. write_atomic does tmp+rename+
+    // fsync(tmp)+fsync(parent).
     let bytes = serde_json::to_vec_pretty(value).map_err(RecorderError::Json)?;
-    fs::write(path, bytes).map_err(RecorderError::Io)?;
+    ooda_core::atomic_io::write_atomic(path, &bytes).map_err(RecorderError::Io)?;
     Ok(())
 }
 

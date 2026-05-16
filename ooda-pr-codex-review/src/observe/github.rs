@@ -7,6 +7,7 @@ pub mod comments;
 pub mod compare;
 pub mod copilot_config;
 pub mod cursor_status;
+pub mod doc_review_attest;
 pub mod gh;
 pub mod issue_events;
 pub mod pull_request_metadata_attestation;
@@ -34,6 +35,7 @@ use comments::{IssueComment, fetch_issue_comments};
 use compare::{MergeBaseDelta, fetch_merge_base_delta};
 use copilot_config::fetch_copilot_config;
 use cursor_status::{CursorStatus, fetch_cursor_status};
+use doc_review_attest::{DocReviewObservation, observe_doc_review};
 use gh::GhError;
 use issue_events::{IssueEvent, fetch_issue_events};
 use pull_request_metadata_attestation::{
@@ -120,6 +122,9 @@ pub struct GitHubObservations {
     /// failure still classifies as Drift (orient inspects both
     /// SHAs).
     pub pull_request_metadata: PullRequestMetadataObservation,
+    /// Doc-review attestation snapshot. Same shape as
+    /// `pull_request_metadata`; drives the `DocReview` orient axis.
+    pub doc_review: DocReviewObservation,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -166,6 +171,7 @@ pub fn fetch_all(
     }
     let pull_request_metadata =
         observe_pull_request_metadata(state_root, slug, pr, &pull_request_view.head_ref_oid);
+    let doc_review = observe_doc_review(state_root, slug, pr, &pull_request_view.head_ref_oid);
     // Branch rules and protection live at the protected root, not
     // at intermediate stack branches. Resolve before fanning out.
     let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pull_request_view.base_ref_name));
@@ -245,6 +251,7 @@ pub fn fetch_all(
                 Err(e) => return Err(e),
             },
             pull_request_metadata,
+            doc_review,
         })))
     })
 }
@@ -287,6 +294,12 @@ fn terminal_observations(
         // walk uniformly; decide short-circuits on pull_request_view.state
         // before reading any field of pull_request_metadata.
         pull_request_metadata: PullRequestMetadataObservation {
+            attestation: None,
+            head_sha: head_sha.clone(),
+            commits_behind: None,
+            attest_path: None,
+        },
+        doc_review: DocReviewObservation {
             attestation: None,
             head_sha,
             commits_behind: None,

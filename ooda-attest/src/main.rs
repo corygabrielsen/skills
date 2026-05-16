@@ -1,8 +1,9 @@
 //! `ooda-attest` — CLI wrapper around `ooda_core::attest`.
 //!
-//! Single subcommand: `pr-meta`. Looks up HEAD via `git rev-parse`
-//! in the current working directory, then writes the attestation
-//! file at `<state-root>/<pr-id>/pr_meta_attest.json`.
+//! Subcommands: `pr-meta`, `doc-review`. Each looks up HEAD via
+//! `git rev-parse` in the current working directory, then writes the
+//! corresponding attestation file at
+//! `<state-root>/<pr-id>/<file>.json`.
 //!
 //! `--state-root` is optional. When omitted, the state root is
 //! resolved via `ooda_core::state_root::resolve_ooda_pr_state_root`:
@@ -23,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use clap::{Parser, Subcommand};
-use ooda_core::attest::{AttestError, write_pull_request_metadata_atomic};
+use ooda_core::attest::{AttestError, write_doc_review_atomic, write_pull_request_metadata_atomic};
 use ooda_core::state_root::resolve_ooda_pr_state_root;
 
 const EXIT_VALIDATION: u8 = 64;
@@ -32,6 +33,7 @@ const EXIT_WRITE: u8 = 70;
 const EXIT_FALLBACK: u8 = 1;
 
 const PULL_REQUEST_METADATA_FILE: &str = "pr_meta_attest.json";
+const DOC_REVIEW_FILE: &str = "doc_review_attest.json";
 
 #[derive(Parser, Debug)]
 #[command(name = "ooda-attest", about = "Write OODA attestation files", version)]
@@ -58,18 +60,43 @@ enum SubCmd {
         #[arg(long)]
         state_root: Option<PathBuf>,
     },
+
+    /// Attest that doc and comment hygiene have been reviewed for
+    /// the current HEAD's full PR diff.
+    #[command(name = "doc-review")]
+    DocReview {
+        /// PR number (digits only).
+        #[arg(long)]
+        pr_id: String,
+
+        /// State-root directory; see `pr-meta` for resolution rules.
+        #[arg(long)]
+        state_root: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        SubCmd::PullRequestMetadata { pr_id, state_root } => {
-            run_pull_request_metadata(&pr_id, state_root.as_deref())
-        }
+        SubCmd::PullRequestMetadata { pr_id, state_root } => run_attest(
+            &pr_id,
+            state_root.as_deref(),
+            PULL_REQUEST_METADATA_FILE,
+            write_pull_request_metadata_atomic,
+        ),
+        SubCmd::DocReview { pr_id, state_root } => run_attest(
+            &pr_id,
+            state_root.as_deref(),
+            DOC_REVIEW_FILE,
+            write_doc_review_atomic,
+        ),
     }
 }
 
-fn run_pull_request_metadata(pr_id: &str, state_root: Option<&Path>) -> ExitCode {
+fn run_attest<F, T>(pr_id: &str, state_root: Option<&Path>, filename: &str, writer: F) -> ExitCode
+where
+    F: FnOnce(&Path, String) -> Result<T, AttestError>,
+{
     let pr_id = match validate_pr_id(pr_id) {
         Ok(s) => s,
         Err(msg) => return fail(EXIT_VALIDATION, &msg),
@@ -83,8 +110,8 @@ fn run_pull_request_metadata(pr_id: &str, state_root: Option<&Path>) -> ExitCode
         Err(msg) => return fail(EXIT_GIT, &msg),
     };
 
-    let path = state_root.join(pr_id).join(PULL_REQUEST_METADATA_FILE);
-    match write_pull_request_metadata_atomic(&path, sha.clone()) {
+    let path = state_root.join(pr_id).join(filename);
+    match writer(&path, sha.clone()) {
         Ok(_) => {
             println!("{} {}", path.display(), sha);
             ExitCode::SUCCESS

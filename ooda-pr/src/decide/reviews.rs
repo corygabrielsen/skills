@@ -451,6 +451,8 @@ mod tests {
             pull_request_metadata:
                 crate::orient::pull_request_metadata::PullRequestMetadata::Synced,
             attest_path: None,
+            doc_review: crate::orient::doc_review::DocReview::Synced,
+            doc_review_attest_path: None,
         }
     }
 

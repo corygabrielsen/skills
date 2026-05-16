@@ -60,7 +60,9 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag(format!("pending_bot_review: {names}")),
+            // Stable across iterations: gate is "≥1 pending bot
+            // review". Reviewer list is on the action payload.
+            blocker: BlockerKey::tag("pending_bot_review"),
         });
     }
 
@@ -75,7 +77,9 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag(format!("pending_human_review: {names}")),
+            // Stable across iterations: gate is "≥1 pending human
+            // review". Reviewer list is on the action payload.
+            blocker: BlockerKey::tag("pending_human_review"),
         });
     }
 

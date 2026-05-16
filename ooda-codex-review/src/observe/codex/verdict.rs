@@ -100,10 +100,16 @@ fn matches_clean_phrasing(normalized: &str) -> bool {
     // Empirically-tuned codex clean phrasings. Conjunction markers
     // (` but `, ` however `) were removed in commit 6cedd08 — they
     // over-triggered on hedging language in clean verdicts.
+    //
+    // "no issues" stays exact-match only — two words is insufficient
+    // signal to contains-match without false-positives on prose like
+    // "previously had no issues here, but now broken".
     matches!(
         normalized,
         "no issues found" | "no issues" | "looks good" | "no actionable findings"
-    ) || normalized.contains("no actionable issues")
+    ) || normalized.contains("no issues found")
+        || normalized.contains("looks good")
+        || normalized.contains("no actionable issues")
         || normalized.contains("no actionable correctness issues")
         || normalized.contains("no actionable findings")
         || normalized.contains("did not find any")
@@ -407,5 +413,32 @@ mod tests {
             ),
             VerdictClass::Clean
         );
+    }
+
+    #[test]
+    fn classify_canonical_phrase_with_trailing_prose_is_clean() {
+        // Short canonical clean phrasings followed by trailing prose
+        // must still classify Clean — contains-match for the safe
+        // long-enough phrasings ("no issues found", "looks good",
+        // "no actionable findings").
+        assert_eq!(
+            classify("No issues found, but consider renaming foo."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("I think it looks good overall."),
+            VerdictClass::Clean
+        );
+        assert_eq!(
+            classify("No actionable findings; the patch is straightforward."),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_bare_no_issues_short_phrase_is_clean() {
+        // Exact-match-only kept for "no issues" — too short to
+        // contains-match safely.
+        assert_eq!(classify("no issues"), VerdictClass::Clean);
     }
 }

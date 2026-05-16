@@ -1,4 +1,4 @@
-//! PR-meta sync state. Pure projection of `PrMetaObservation`.
+//! PR-meta sync state. Pure projection of `PullRequestMetadataObservation`.
 //!
 //! Three states:
 //! * `Synced` — an attestation exists AND its SHA equals HEAD.
@@ -17,10 +17,10 @@
 
 use serde::Serialize;
 
-use crate::observe::github::pr_meta_attest::PrMetaObservation;
+use crate::observe::github::pull_request_metadata_attestation::PullRequestMetadataObservation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum PrMetadata {
+pub enum PullRequestMetadata {
     Synced,
     Drift {
         attested_sha: String,
@@ -30,13 +30,13 @@ pub enum PrMetadata {
     NeverAttested,
 }
 
-/// Project a `PrMetaObservation` into the typed axis.
+/// Project a `PullRequestMetadataObservation` into the typed axis.
 #[must_use]
-pub fn orient_pr_meta(obs: &PrMetaObservation) -> PrMetadata {
+pub fn orient_pull_request_metadata(obs: &PullRequestMetadataObservation) -> PullRequestMetadata {
     match &obs.attestation {
-        None => PrMetadata::NeverAttested,
-        Some(att) if att.attested_sha == obs.head_sha.as_str() => PrMetadata::Synced,
-        Some(att) => PrMetadata::Drift {
+        None => PullRequestMetadata::NeverAttested,
+        Some(att) if att.attested_sha == obs.head_sha.as_str() => PullRequestMetadata::Synced,
+        Some(att) => PullRequestMetadata::Drift {
             attested_sha: att.attested_sha.clone(),
             head_sha: obs.head_sha.as_str().to_string(),
             commits_behind: obs.commits_behind.unwrap_or(0),
@@ -49,16 +49,16 @@ mod tests {
     use super::*;
     use crate::ids::GitCommitSha;
     use chrono::Utc;
-    use ooda_core::attest::{PR_META_SCHEMA_VERSION, PrMetaAttestation};
+    use ooda_core::attest::{PULL_REQUEST_METADATA_SCHEMA_VERSION, PullRequestMetadataAttestation};
 
     const HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
     const OTHER_SHA: &str = "fedcba9876543210fedcba9876543210fedcba98";
 
-    fn attestation(sha: &str) -> PrMetaAttestation {
-        PrMetaAttestation {
+    fn attestation(sha: &str) -> PullRequestMetadataAttestation {
+        PullRequestMetadataAttestation {
             attested_sha: sha.to_string(),
             attested_at: Utc::now(),
-            version: PR_META_SCHEMA_VERSION,
+            version: PULL_REQUEST_METADATA_SCHEMA_VERSION,
         }
     }
 
@@ -68,37 +68,43 @@ mod tests {
 
     #[test]
     fn no_attestation_yields_never_attested() {
-        let obs = PrMetaObservation {
+        let obs = PullRequestMetadataObservation {
             attestation: None,
             head_sha: head(),
             commits_behind: None,
             attest_path: None,
         };
-        assert_eq!(orient_pr_meta(&obs), PrMetadata::NeverAttested);
+        assert_eq!(
+            orient_pull_request_metadata(&obs),
+            PullRequestMetadata::NeverAttested
+        );
     }
 
     #[test]
     fn matching_sha_yields_synced() {
-        let obs = PrMetaObservation {
+        let obs = PullRequestMetadataObservation {
             attestation: Some(attestation(HEAD_SHA)),
             head_sha: head(),
             commits_behind: None,
             attest_path: None,
         };
-        assert_eq!(orient_pr_meta(&obs), PrMetadata::Synced);
+        assert_eq!(
+            orient_pull_request_metadata(&obs),
+            PullRequestMetadata::Synced
+        );
     }
 
     #[test]
     fn mismatched_sha_with_count_yields_drift() {
-        let obs = PrMetaObservation {
+        let obs = PullRequestMetadataObservation {
             attestation: Some(attestation(OTHER_SHA)),
             head_sha: head(),
             commits_behind: Some(3),
             attest_path: None,
         };
         assert_eq!(
-            orient_pr_meta(&obs),
-            PrMetadata::Drift {
+            orient_pull_request_metadata(&obs),
+            PullRequestMetadata::Drift {
                 attested_sha: OTHER_SHA.to_string(),
                 head_sha: HEAD_SHA.to_string(),
                 commits_behind: 3,
@@ -108,14 +114,14 @@ mod tests {
 
     #[test]
     fn mismatched_sha_with_none_count_yields_drift_with_zero() {
-        let obs = PrMetaObservation {
+        let obs = PullRequestMetadataObservation {
             attestation: Some(attestation(OTHER_SHA)),
             head_sha: head(),
             commits_behind: None,
             attest_path: None,
         };
-        match orient_pr_meta(&obs) {
-            PrMetadata::Drift { commits_behind, .. } => assert_eq!(commits_behind, 0),
+        match orient_pull_request_metadata(&obs) {
+            PullRequestMetadata::Drift { commits_behind, .. } => assert_eq!(commits_behind, 0),
             other => panic!("expected Drift, got {other:?}"),
         }
     }
@@ -123,8 +129,10 @@ mod tests {
     #[test]
     fn round_trip_attestation_classifies_as_synced() {
         use crate::ids::{PullRequestNumber, RepoSlug};
-        use crate::observe::github::pr_meta_attest::{attest_path, observe_pr_meta};
-        use ooda_core::attest::write_pr_meta_atomic;
+        use crate::observe::github::pull_request_metadata_attestation::{
+            attest_path, observe_pull_request_metadata,
+        };
+        use ooda_core::attest::write_pull_request_metadata_atomic;
         use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
@@ -132,22 +140,26 @@ mod tests {
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let head_sha = GitCommitSha::parse(HEAD_SHA).unwrap();
 
-        write_pr_meta_atomic(&attest_path(dir.path(), pr), HEAD_SHA.to_string()).unwrap();
+        write_pull_request_metadata_atomic(&attest_path(dir.path(), pr), HEAD_SHA.to_string())
+            .unwrap();
 
-        let obs = observe_pr_meta(Some(dir.path()), &slug, pr, &head_sha);
-        assert_eq!(orient_pr_meta(&obs), PrMetadata::Synced);
+        let obs = observe_pull_request_metadata(Some(dir.path()), &slug, pr, &head_sha);
+        assert_eq!(
+            orient_pull_request_metadata(&obs),
+            PullRequestMetadata::Synced
+        );
     }
 
     #[test]
     fn mismatched_sha_with_zero_count_still_drift() {
-        let obs = PrMetaObservation {
+        let obs = PullRequestMetadataObservation {
             attestation: Some(attestation(OTHER_SHA)),
             head_sha: head(),
             commits_behind: Some(0),
             attest_path: None,
         };
-        match orient_pr_meta(&obs) {
-            PrMetadata::Drift {
+        match orient_pull_request_metadata(&obs) {
+            PullRequestMetadata::Drift {
                 attested_sha,
                 head_sha,
                 commits_behind,

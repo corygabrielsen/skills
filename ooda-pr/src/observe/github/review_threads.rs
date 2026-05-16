@@ -352,7 +352,7 @@ mod tests {
         include_str!("../../../test/fixtures/github/review_threads_page.json");
 
     #[test]
-    fn deserializes_fixture_merged_pr() {
+    fn deserializes_fixture_merged_pull_request() {
         let resp: ReviewThreadsResponse = serde_json::from_str(THREADS_FIXTURE).unwrap();
         let pr = &resp.data.repository.pull_request;
 

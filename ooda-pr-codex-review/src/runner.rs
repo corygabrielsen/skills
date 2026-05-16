@@ -218,8 +218,8 @@ fn run_iter(
     // points `codex review --base` at the PR's actual base.
     let codex_obs: Option<CodexObservations> =
         if let (Some(codex_cfg), Some(codex_ctx)) = (codex_cfg, ctx.codex.as_mut()) {
-            codex_ctx.head_sha = obs.pr_view.head_ref_oid.as_str().to_string();
-            codex_ctx.base_branch = obs.pr_view.base_ref_name.as_str().to_string();
+            codex_ctx.head_sha = obs.pull_request_view.head_ref_oid.as_str().to_string();
+            codex_ctx.base_branch = obs.pull_request_view.base_ref_name.as_str().to_string();
             let codex_pr_root = codex_ctx.codex_pr_root.clone();
             let head_sha = codex_ctx.head_sha.clone();
             let expected = codex_ctx.n;
@@ -240,7 +240,7 @@ fn run_iter(
     let now = current_timestamp();
     let oriented = orient(&obs, codex_obs.as_ref(), None, now);
     let candidates = candidates(&oriented, pr);
-    let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
+    let decision = decide_from_candidates(candidates.clone(), obs.pull_request_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 
     match decision {

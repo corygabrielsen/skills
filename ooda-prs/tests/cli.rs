@@ -153,7 +153,7 @@ fn slug_only_group_is_usage_error() {
 }
 
 #[test]
-fn extra_token_after_two_is_pr_parse_error() {
+fn extra_token_after_two_is_pull_request_parse_error() {
     // Under the multi-PR grammar `owner/repo 1 extra` is one group
     // with slug `owner/repo` and PR tokens [1, extra]; `extra` fails
     // as a PR. (Cf. ooda-pr, where this was a positional-arity error.)
@@ -171,12 +171,12 @@ fn malformed_slug_is_usage_error() {
 }
 
 #[test]
-fn bad_pr_number_is_usage_error() {
+fn bad_pull_request_number_is_usage_error() {
     assert_usage_error(&["owner/repo", "abc"], "invalid pull request number");
 }
 
 #[test]
-fn pr_zero_is_usage_error() {
+fn pull_request_zero_is_usage_error() {
     // PullRequestNumber is { ℕ | > 0 }
     assert_usage_error(&["owner/repo", "0"], "invalid pull request number");
 }
@@ -409,7 +409,7 @@ fn run_with_failing_gh(args: &[&str], state_root: &std::path::Path) -> (i32, Str
 }
 
 #[test]
-fn homogeneous_pr_list_emits_three_jsonl_records() {
+fn homogeneous_pull_request_list_emits_three_jsonl_records() {
     // Form 1 from the design: `<slug> <pr> <pr> <pr>` — homogeneous
     // suite, all PRs in one repo.
     let state = temp_path("multi-homogeneous");
@@ -493,7 +493,7 @@ fn slug_inheritance_carries_to_subsequent_groups() {
 }
 
 #[test]
-fn duplicate_pr_rejected_as_usage_error() {
+fn duplicate_pull_request_rejected_as_usage_error() {
     // `<slug> <pr>, <pr>` where the second pr is a duplicate of the
     // first. Suite invariant: distinct (slug, pr) pairs.
     assert_usage_error(&["acme/widget", "5,", "5"], "duplicate PR: acme/widget#5");
@@ -661,7 +661,7 @@ fn suite_recorder_writes_manifest_pointers_outcome_and_trace() {
 }
 
 #[test]
-fn usage_error_emits_no_stdout_in_multi_pr_mode() {
+fn usage_error_emits_no_stdout_in_multi_pull_request_mode() {
     // Symmetry with the per-PR contract: parser failures emit
     // nothing on stdout; the parent harness sees `$? = 64` and the
     // usage block on stderr.

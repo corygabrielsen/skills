@@ -15,7 +15,7 @@
 
 use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::issue_events::IssueEvent;
-use crate::observe::github::pr_view::Commit;
+use crate::observe::github::pull_request_view::Commit;
 use crate::observe::github::requested_reviewers::RequestedReviewers;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;

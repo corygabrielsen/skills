@@ -25,7 +25,7 @@ use crate::orient::OrientedState;
 use crate::orient::ci::ci_signal;
 use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
-use crate::orient::pr_meta::PrMetadata;
+use crate::orient::pull_request_metadata::PullRequestMetadata;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
 use std::fmt::Write;
@@ -111,7 +111,7 @@ pub enum AxisName {
     Copilot,
     Ci,
     Cursor,
-    PrMetadata,
+    PullRequestMetadata,
 }
 
 impl AxisName {
@@ -120,7 +120,7 @@ impl AxisName {
             Self::Copilot => "copilot",
             Self::Ci => "ci",
             Self::Cursor => "cursor",
-            Self::PrMetadata => "pr_meta",
+            Self::PullRequestMetadata => "pr_meta",
         }
     }
 }
@@ -201,7 +201,9 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
     {
         out.push(sig);
     }
-    out.push(pr_meta_signal(&oriented.pr_metadata));
+    out.push(pull_request_metadata_signal(
+        &oriented.pull_request_metadata,
+    ));
     out
 }
 
@@ -209,10 +211,10 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
 /// projects an `Ok` quiet positive; `Drift` warns with the commit
 /// count; `NeverAttested` warns with a first-attestation prompt.
 #[must_use]
-pub fn pr_meta_signal(state: &PrMetadata) -> AxisSignal {
+pub fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisSignal {
     let (icon, summary) = match state {
-        PrMetadata::Synced => (SignalIcon::Ok, "PR meta synced".to_string()),
-        PrMetadata::Drift {
+        PullRequestMetadata::Synced => (SignalIcon::Ok, "PR meta synced".to_string()),
+        PullRequestMetadata::Drift {
             attested_sha,
             commits_behind,
             ..
@@ -224,13 +226,13 @@ pub fn pr_meta_signal(state: &PrMetadata) -> AxisSignal {
                 short_sha(attested_sha),
             ),
         ),
-        PrMetadata::NeverAttested => (
+        PullRequestMetadata::NeverAttested => (
             SignalIcon::Warn,
             "PR meta never attested for this PR".to_string(),
         ),
     };
     AxisSignal {
-        axis: AxisName::PrMetadata,
+        axis: AxisName::PullRequestMetadata,
         icon,
         summary,
     }
@@ -1246,19 +1248,19 @@ mod tests {
         assert_eq!(sig.icon, SignalIcon::Warn);
     }
 
-    // ── PrMeta signal projection ─────────────────────────────────
+    // ── PullRequestMetadata signal projection ─────────────────────────────────
 
     #[test]
-    fn pr_meta_signal_synced_renders_ok() {
-        let sig = pr_meta_signal(&PrMetadata::Synced);
+    fn pull_request_metadata_signal_synced_renders_ok() {
+        let sig = pull_request_metadata_signal(&PullRequestMetadata::Synced);
         assert_eq!(sig.icon, SignalIcon::Ok);
-        assert_eq!(sig.axis, AxisName::PrMetadata);
+        assert_eq!(sig.axis, AxisName::PullRequestMetadata);
         assert!(sig.summary.contains("synced"), "{}", sig.summary);
     }
 
     #[test]
-    fn pr_meta_signal_drift_renders_warn_with_count_and_short_sha() {
-        let sig = pr_meta_signal(&PrMetadata::Drift {
+    fn pull_request_metadata_signal_drift_renders_warn_with_count_and_short_sha() {
+        let sig = pull_request_metadata_signal(&PullRequestMetadata::Drift {
             attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
             head_sha: "9".repeat(40),
             commits_behind: 4,
@@ -1269,8 +1271,8 @@ mod tests {
     }
 
     #[test]
-    fn pr_meta_signal_never_attested_renders_warn() {
-        let sig = pr_meta_signal(&PrMetadata::NeverAttested);
+    fn pull_request_metadata_signal_never_attested_renders_warn() {
+        let sig = pull_request_metadata_signal(&PullRequestMetadata::NeverAttested);
         assert_eq!(sig.icon, SignalIcon::Warn);
         assert!(sig.summary.contains("never attested"), "{}", sig.summary);
     }

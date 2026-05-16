@@ -2,7 +2,7 @@
 //!
 //! Modeled as a sum so the "open vs done" partition is structural:
 //! every site that branches on lifecycle reaches the terminal case
-//! through one arm (`PrState::Terminal(t)`), and the inner
+//! through one arm (`PullRequestState::Terminal(t)`), and the inner
 //! `TerminalState` carries the success/abort distinction.
 //!
 //! Wire format mirrors the GitHub GraphQL `PullRequestState` enum:
@@ -13,14 +13,14 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrState {
+pub enum PullRequestState {
     Open,
     Terminal(TerminalState),
 }
 
 /// PR terminal lifecycle states. `Merged` is the success terminal;
-/// `Closed` is the abort terminal. Lifted out of `PrState` so the
-/// "this PR is done" check is `matches!(state, PrState::Terminal(_))`
+/// `Closed` is the abort terminal. Lifted out of `PullRequestState` so the
+/// "this PR is done" check is `matches!(state, PullRequestState::Terminal(_))`
 /// without enumerating arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalState {
@@ -28,13 +28,13 @@ pub enum TerminalState {
     Closed,
 }
 
-impl<'de> Deserialize<'de> for PrState {
+impl<'de> Deserialize<'de> for PullRequestState {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
         match s.as_str() {
-            "OPEN" => Ok(PrState::Open),
-            "MERGED" => Ok(PrState::Terminal(TerminalState::Merged)),
-            "CLOSED" => Ok(PrState::Terminal(TerminalState::Closed)),
+            "OPEN" => Ok(PullRequestState::Open),
+            "MERGED" => Ok(PullRequestState::Terminal(TerminalState::Merged)),
+            "CLOSED" => Ok(PullRequestState::Terminal(TerminalState::Closed)),
             other => Err(serde::de::Error::custom(format!(
                 "unknown PR state: {other}"
             ))),
@@ -42,12 +42,12 @@ impl<'de> Deserialize<'de> for PrState {
     }
 }
 
-impl Serialize for PrState {
+impl Serialize for PullRequestState {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         let s = match self {
-            PrState::Open => "OPEN",
-            PrState::Terminal(TerminalState::Merged) => "MERGED",
-            PrState::Terminal(TerminalState::Closed) => "CLOSED",
+            PullRequestState::Open => "OPEN",
+            PullRequestState::Terminal(TerminalState::Merged) => "MERGED",
+            PullRequestState::Terminal(TerminalState::Closed) => "CLOSED",
         };
         ser.serialize_str(s)
     }
@@ -60,33 +60,36 @@ mod tests {
     #[test]
     fn deserializes_graphql_strings() {
         assert_eq!(
-            serde_json::from_str::<PrState>("\"OPEN\"").unwrap(),
-            PrState::Open
+            serde_json::from_str::<PullRequestState>("\"OPEN\"").unwrap(),
+            PullRequestState::Open
         );
         assert_eq!(
-            serde_json::from_str::<PrState>("\"MERGED\"").unwrap(),
-            PrState::Terminal(TerminalState::Merged)
+            serde_json::from_str::<PullRequestState>("\"MERGED\"").unwrap(),
+            PullRequestState::Terminal(TerminalState::Merged)
         );
         assert_eq!(
-            serde_json::from_str::<PrState>("\"CLOSED\"").unwrap(),
-            PrState::Terminal(TerminalState::Closed)
+            serde_json::from_str::<PullRequestState>("\"CLOSED\"").unwrap(),
+            PullRequestState::Terminal(TerminalState::Closed)
         );
     }
 
     #[test]
     fn rejects_unknown_state() {
-        assert!(serde_json::from_str::<PrState>("\"DRAFT\"").is_err());
+        assert!(serde_json::from_str::<PullRequestState>("\"DRAFT\"").is_err());
     }
 
     #[test]
     fn serializes_to_graphql_strings() {
-        assert_eq!(serde_json::to_string(&PrState::Open).unwrap(), "\"OPEN\"");
         assert_eq!(
-            serde_json::to_string(&PrState::Terminal(TerminalState::Merged)).unwrap(),
+            serde_json::to_string(&PullRequestState::Open).unwrap(),
+            "\"OPEN\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PullRequestState::Terminal(TerminalState::Merged)).unwrap(),
             "\"MERGED\""
         );
         assert_eq!(
-            serde_json::to_string(&PrState::Terminal(TerminalState::Closed)).unwrap(),
+            serde_json::to_string(&PullRequestState::Terminal(TerminalState::Closed)).unwrap(),
             "\"CLOSED\""
         );
     }

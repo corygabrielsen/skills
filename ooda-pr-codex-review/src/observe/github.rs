@@ -9,8 +9,8 @@ pub mod copilot_config;
 pub mod cursor_status;
 pub mod gh;
 pub mod issue_events;
-pub mod pr_meta_attest;
-pub mod pr_view;
+pub mod pull_request_metadata_attestation;
+pub mod pull_request_view;
 pub mod rate_limit;
 pub mod requested_reviewers;
 pub mod review_threads;
@@ -29,21 +29,23 @@ use branch_protection::{
     BranchProtectionRequiredStatusChecks, fetch_branch_protection_required_checks,
 };
 use branch_rules::{BranchRule, fetch_branch_rules};
-use checks::{PullRequestCheck, fetch_pr_checks};
+use checks::{PullRequestCheck, fetch_pull_request_checks};
 use comments::{IssueComment, fetch_issue_comments};
 use compare::{MergeBaseDelta, fetch_merge_base_delta};
 use copilot_config::fetch_copilot_config;
 use cursor_status::{CursorStatus, fetch_cursor_status};
 use gh::GhError;
 use issue_events::{IssueEvent, fetch_issue_events};
-use pr_meta_attest::{PrMetaObservation, observe_pr_meta};
-use pr_view::{PrState, PullRequestView, fetch_pr_view};
+use pull_request_metadata_attestation::{
+    PullRequestMetadataObservation, observe_pull_request_metadata,
+};
+use pull_request_view::{PullRequestState, PullRequestView, fetch_pull_request_view};
 use rate_limit::fetch_rate_limit_budget;
 use requested_reviewers::{RequestedReviewers, fetch_requested_reviewers};
 use review_threads::{
     ReviewThreadsResponse, empty_review_threads_response, fetch_all_review_threads,
 };
-use reviews::{PullRequestReview, fetch_pr_reviews};
+use reviews::{PullRequestReview, fetch_pull_request_reviews};
 use rulesets::CopilotCodeReviewParams;
 use stack_root::resolve_stack_root;
 use workflow_runs::{WorkflowRun, fetch_workflow_runs_for_head};
@@ -66,7 +68,7 @@ pub enum FetchOutcome {
 /// loops the GraphQL cursor until the last page.
 #[derive(Debug, Clone, Serialize)]
 pub struct GitHubObservations {
-    pub pr_view: PullRequestView,
+    pub pull_request_view: PullRequestView,
     pub checks: Vec<PullRequestCheck>,
     pub reviews: Vec<PullRequestReview>,
     pub review_threads_page: ReviewThreadsResponse,
@@ -77,7 +79,7 @@ pub struct GitHubObservations {
     /// `None` when legacy branch protection is unconfigured (HTTP 404).
     pub branch_protection: Option<BranchProtectionRequiredStatusChecks>,
     /// Branch the rules + protection were resolved against. Differs
-    /// from `pr_view.base_ref_name` when this PR is mid-stack and
+    /// from `pull_request_view.base_ref_name` when this PR is mid-stack and
     /// the protected branch is downstream.
     pub stack_root_branch: crate::ids::BranchName,
     /// `None` when no active ruleset has a `copilot_code_review`
@@ -112,18 +114,18 @@ pub struct GitHubObservations {
     pub merge_base_delta: Option<MergeBaseDelta>,
     /// PR-meta attestation snapshot: the recorded attestation (if
     /// any), the current HEAD SHA, and the count of commits the PR
-    /// has added since the attestation. Drives the `PrMetadata`
+    /// has added since the attestation. Drives the `PullRequestMetadata`
     /// orient axis. Absent attestation collapses to
     /// `NeverAttested`; a `Some(0)` count after a drift compare
     /// failure still classifies as Drift (orient inspects both
     /// SHAs).
-    pub pr_meta: PrMetaObservation,
+    pub pull_request_metadata: PullRequestMetadataObservation,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
 ///
 /// Three phases:
-///   1. `fetch_pr_view` — needed both for terminal short-circuit
+///   1. `fetch_pull_request_view` — needed both for terminal short-circuit
 ///      and for `base_ref_name` used by branch-level endpoints.
 ///   2. Terminal short-circuit — Merged/Closed PRs skip the
 ///      auxiliary fetches entirely. Branch rules + protection
@@ -152,27 +154,28 @@ pub fn fetch_all(
         };
     }
 
-    let pr_view = try_fetch!(fetch_pr_view(slug, pr));
-    if matches!(pr_view.state, PrState::Terminal(_)) {
+    let pull_request_view = try_fetch!(fetch_pull_request_view(slug, pr));
+    if matches!(pull_request_view.state, PullRequestState::Terminal(_)) {
         // Terminal PRs still get a budget snapshot — the recorder
         // sees one final per-iteration row before the loop halts.
         let rate_limit_budget = try_fetch!(fetch_rate_limit_budget());
         return Ok(FetchOutcome::Observations(Box::new(terminal_observations(
-            pr_view,
+            pull_request_view,
             rate_limit_budget,
         ))));
     }
-    let pr_meta = observe_pr_meta(state_root, slug, pr, &pr_view.head_ref_oid);
+    let pull_request_metadata =
+        observe_pull_request_metadata(state_root, slug, pr, &pull_request_view.head_ref_oid);
     // Branch rules and protection live at the protected root, not
     // at intermediate stack branches. Resolve before fanning out.
-    let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pr_view.base_ref_name));
+    let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pull_request_view.base_ref_name));
     let root_for_threads = stack_root_branch.clone();
-    let head_sha = pr_view.head_ref_oid.clone();
+    let head_sha = pull_request_view.head_ref_oid.clone();
 
     thread::scope(|s| {
         let root = root_for_threads.as_str();
-        let h_checks = s.spawn(|| fetch_pr_checks(slug, pr));
-        let h_reviews = s.spawn(|| fetch_pr_reviews(slug, pr));
+        let h_checks = s.spawn(|| fetch_pull_request_checks(slug, pr));
+        let h_reviews = s.spawn(|| fetch_pull_request_reviews(slug, pr));
         let h_threads = s.spawn(|| fetch_all_review_threads(slug, pr));
         let h_events = s.spawn(|| fetch_issue_events(slug, pr));
         let h_comments = s.spawn(|| fetch_issue_comments(slug, pr));
@@ -196,44 +199,34 @@ pub fn fetch_all(
             // Keyed on the PR's immediate base (not the resolved
             // stack root) so a stacked PR's compare describes the
             // local rebase target, not the trunk far below.
-            let base_for_compare = pr_view.base_ref_name.clone();
+            let base_for_compare = pull_request_view.base_ref_name.clone();
             let head_for_compare = head_sha.clone();
             s.spawn(move || fetch_merge_base_delta(slug, &base_for_compare, &head_for_compare))
         };
 
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
-            pr_view,
-            checks: try_fetch!(h_checks.join().expect("fetch_pr_checks panicked")),
-            reviews: try_fetch!(h_reviews.join().expect("fetch_pr_reviews panicked")),
-            review_threads_page: try_fetch!(
-                h_threads
+            pull_request_view,
+            checks: try_fetch!(h_checks.join().expect("fetch_pull_request_checks panicked")),
+            reviews: try_fetch!(
+                h_reviews
                     .join()
-                    .expect("fetch_review_threads_page panicked")
+                    .expect("fetch_pull_request_reviews panicked")
             ),
+            review_threads_page: try_fetch!(h_threads.join().expect("fetch_threads panicked")),
             issue_events: try_fetch!(h_events.join().expect("fetch_issue_events panicked")),
             issue_comments: try_fetch!(h_comments.join().expect("fetch_issue_comments panicked")),
-            requested_reviewers: try_fetch!(
-                h_reqrev.join().expect("fetch_requested_reviewers panicked")
-            ),
+            requested_reviewers: try_fetch!(h_reqrev.join().expect("fetch_reqrev panicked")),
             branch_rules: try_fetch!(h_rules.join().expect("fetch_branch_rules panicked")),
-            branch_protection: try_fetch!(
-                h_prot
-                    .join()
-                    .expect("fetch_branch_protection_required_checks panicked")
-            ),
+            branch_protection: try_fetch!(h_prot.join().expect("fetch_branch_protection panicked")),
             copilot_config: try_fetch!(
                 h_copilot_cfg.join().expect("fetch_copilot_config panicked")
             ),
             stack_root_branch,
-            rate_limit_budget: try_fetch!(
-                h_rate_limit
-                    .join()
-                    .expect("fetch_rate_limit_budget panicked")
-            ),
+            rate_limit_budget: try_fetch!(h_rate_limit.join().expect("fetch_rate_limit panicked")),
             workflow_runs: try_fetch!(
                 h_workflow_runs
                     .join()
-                    .expect("fetch_workflow_runs_for_head panicked")
+                    .expect("fetch_workflow_runs panicked")
             ),
             cursor_status: try_fetch!(
                 h_cursor_status
@@ -251,24 +244,24 @@ pub fn fetch_all(
                 }
                 Err(e) => return Err(e),
             },
-            pr_meta,
+            pull_request_metadata,
         })))
     })
 }
 
 /// Stub bundle for terminal (merged/closed) PRs. `decide()` will
-/// short-circuit on `pr_view.state` before reading any of the
+/// short-circuit on `pull_request_view.state` before reading any of the
 /// empty aux fields, so semantic correctness is preserved while
 /// avoiding the deleted-base-branch 404 that the auxiliary
 /// fetches would otherwise hit.
 fn terminal_observations(
-    pr_view: PullRequestView,
+    pull_request_view: PullRequestView,
     rate_limit_budget: RateLimitBudget,
 ) -> GitHubObservations {
-    let stack_root_branch = pr_view.base_ref_name.clone();
-    let head_sha = pr_view.head_ref_oid.clone();
+    let stack_root_branch = pull_request_view.base_ref_name.clone();
+    let head_sha = pull_request_view.head_ref_oid.clone();
     GitHubObservations {
-        pr_view,
+        pull_request_view,
         checks: vec![],
         reviews: vec![],
         review_threads_page: empty_review_threads_response(),
@@ -291,9 +284,9 @@ fn terminal_observations(
         merge_base_delta: None,
         // Terminal PRs short-circuit before reading state-root.
         // Stub the attestation observation so the orient layer can
-        // walk uniformly; decide short-circuits on pr_view.state
-        // before reading any field of pr_meta.
-        pr_meta: PrMetaObservation {
+        // walk uniformly; decide short-circuits on pull_request_view.state
+        // before reading any field of pull_request_metadata.
+        pull_request_metadata: PullRequestMetadataObservation {
             attestation: None,
             head_sha,
             commits_behind: None,

@@ -186,7 +186,7 @@ struct EventRange {
 impl Recorder {
     pub fn open(cfg: RecorderConfig) -> Result<Self, RecorderError> {
         let state_root = resolve_state_root(cfg.state_root.as_deref());
-        let pr_root = pr_root(&state_root, &cfg.slug, cfg.pr);
+        let pr_root = pull_request_root(&state_root, &cfg.slug, cfg.pr);
         let now = Utc::now();
         let run_id = make_run_id(now);
         let run_root = pr_root.join("runs").join(&run_id);
@@ -248,7 +248,7 @@ impl Recorder {
     }
 
     #[cfg(test)]
-    pub fn pr_root(&self) -> PathBuf {
+    pub fn pull_request_root(&self) -> PathBuf {
         self.with_inner(|inner| inner.pr_root.clone())
             .unwrap_or_default()
     }
@@ -973,7 +973,7 @@ fn nonempty_env_path(name: &str) -> Option<PathBuf> {
     }
 }
 
-fn pr_root(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf {
+fn pull_request_root(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf {
     root.join("github.com")
         .join(slug.owner().as_str())
         .join(slug.repo().as_str())
@@ -1213,10 +1213,10 @@ mod tests {
     }
 
     #[test]
-    fn pr_root_is_repo_pr_scoped() {
+    fn pull_request_root_is_repo_scoped() {
         let slug = RepoSlug::parse("acme/widgets").unwrap();
         let pr = PullRequestNumber::new(42).unwrap();
-        let root = pr_root(Path::new("/state"), &slug, pr);
+        let root = pull_request_root(Path::new("/state"), &slug, pr);
         assert_eq!(root, PathBuf::from("/state/github.com/acme/widgets/prs/42"));
     }
 
@@ -1245,7 +1245,7 @@ mod tests {
 
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused);
 
-        let pr_root = recorder.pr_root();
+        let pr_root = recorder.pull_request_root();
         let outcome = fs::read(pr_root.join("latest/outcome.json")).unwrap();
         let hash = sha256_hex(&outcome);
         let blob = pr_root
@@ -1275,7 +1275,7 @@ mod tests {
     }
 
     fn empty_oriented_for_golden() -> OrientedState {
-        use crate::observe::github::pr_view::Mergeable;
+        use crate::observe::github::pull_request_view::Mergeable;
         use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
         use crate::orient::reviews::{PendingReviews, ReviewSummary};
         use crate::orient::state::PullRequestProjection;
@@ -1305,7 +1305,8 @@ mod tests {
                 commits: 1,
                 behind: false,
                 has_open_parent_pr: false,
-                merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
+                merge_state_status:
+                    crate::observe::github::pull_request_view::MergeStateStatus::Clean,
                 updated_at: ts("2026-04-23T10:00:00Z"),
                 last_commit_at: None,
             },
@@ -1325,7 +1326,8 @@ mod tests {
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
-            pr_metadata: crate::orient::pr_meta::PrMetadata::Synced,
+            pull_request_metadata:
+                crate::orient::pull_request_metadata::PullRequestMetadata::Synced,
             attest_path: None,
         }
     }
@@ -1350,7 +1352,7 @@ mod tests {
 
         recorder.record_iteration(1, &serde_json::json!({}), &oriented, &[], &decision);
 
-        let pr_root = recorder.pr_root();
+        let pr_root = recorder.pull_request_root();
         let events = fs::read_to_string(pr_root.join("events.jsonl")).unwrap();
         let line = events
             .lines()

@@ -16,14 +16,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use clap::{Parser, Subcommand};
-use ooda_core::attest::{AttestError, write_pr_meta_atomic};
+use ooda_core::attest::{AttestError, write_pull_request_metadata_atomic};
 
 const EXIT_VALIDATION: u8 = 64;
 const EXIT_GIT: u8 = 65;
 const EXIT_WRITE: u8 = 70;
 const EXIT_FALLBACK: u8 = 1;
 
-const PR_META_FILE: &str = "pr_meta_attest.json";
+const PULL_REQUEST_METADATA_FILE: &str = "pr_meta_attest.json";
 
 #[derive(Parser, Debug)]
 #[command(name = "ooda-attest", about = "Write OODA attestation files", version)]
@@ -36,7 +36,8 @@ struct Cli {
 enum SubCmd {
     /// Attest that PR title, description, and labels are correct
     /// for the current HEAD.
-    PrMeta {
+    #[command(name = "pr-meta")]
+    PullRequestMetadata {
         /// PR number (digits only).
         #[arg(long)]
         pr_id: String,
@@ -51,11 +52,13 @@ enum SubCmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        SubCmd::PrMeta { pr_id, state_root } => run_pr_meta(&pr_id, &state_root),
+        SubCmd::PullRequestMetadata { pr_id, state_root } => {
+            run_pull_request_metadata(&pr_id, &state_root)
+        }
     }
 }
 
-fn run_pr_meta(pr_id: &str, state_root: &Path) -> ExitCode {
+fn run_pull_request_metadata(pr_id: &str, state_root: &Path) -> ExitCode {
     let pr_id = match validate_pr_id(pr_id) {
         Ok(s) => s,
         Err(msg) => return fail(EXIT_VALIDATION, &msg),
@@ -69,8 +72,8 @@ fn run_pr_meta(pr_id: &str, state_root: &Path) -> ExitCode {
         Err(msg) => return fail(EXIT_GIT, &msg),
     };
 
-    let path = state_root.join(pr_id).join(PR_META_FILE);
-    match write_pr_meta_atomic(&path, sha.clone()) {
+    let path = state_root.join(pr_id).join(PULL_REQUEST_METADATA_FILE);
+    match write_pull_request_metadata_atomic(&path, sha.clone()) {
         Ok(_) => {
             println!("{} {}", path.display(), sha);
             ExitCode::SUCCESS

@@ -7,7 +7,7 @@ pub mod bot_threads;
 pub mod ci;
 pub mod copilot;
 pub mod cursor;
-pub mod pr_meta;
+pub mod pull_request_metadata;
 pub mod required_checks;
 pub mod reviews;
 pub mod state;
@@ -21,7 +21,7 @@ use serde::Serialize;
 use ci::CiReport;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
 use cursor::{CursorReport, orient_cursor};
-use pr_meta::{PrMetadata, orient_pr_meta};
+use pull_request_metadata::{PullRequestMetadata, orient_pull_request_metadata};
 use reviews::ReviewSummary;
 use state::PullRequestProjection;
 use thread::ReviewThread;
@@ -71,11 +71,11 @@ pub struct OrientedState {
     pub merge_base_delta: Option<MergeBaseDelta>,
     /// PR-meta sync state. Projects the observe-side attestation
     /// file + HEAD-SHA comparison into `Synced` / `Drift` /
-    /// `NeverAttested`. Drives the `SyncPrMeta` decide candidate.
-    pub pr_metadata: PrMetadata,
+    /// `NeverAttested`. Drives the `SyncPullRequestMetadata` decide candidate.
+    pub pull_request_metadata: PullRequestMetadata,
     /// Absolute path of the attestation file the agent must rewrite
     /// after refreshing PR metadata. Carried from observe so decide
-    /// can compose the `SyncPrMeta` action payload without re-deriving
+    /// can compose the `SyncPullRequestMetadata` action payload without re-deriving
     /// the path. `None` when no `--state-root` was supplied to the
     /// binary.
     pub attest_path: Option<std::path::PathBuf>,
@@ -96,7 +96,11 @@ pub fn orient(
 ) -> OrientedState {
     let required =
         required_checks::required_check_names(&obs.branch_rules, obs.branch_protection.as_ref());
-    let pr_state = state::orient_state(&obs.pr_view, last_commit_at, &obs.stack_root_branch);
+    let pr_state = state::orient_state(
+        &obs.pull_request_view,
+        last_commit_at,
+        &obs.stack_root_branch,
+    );
     // The Graphite mergeability check pends indefinitely on a PR
     // stacked under an open parent; treat it as advisory rather than
     // a required wait for those PRs so the loop halts `Paused` once
@@ -106,11 +110,11 @@ pub fn orient(
         &required,
         pr_state.has_open_parent_pr,
         &obs.workflow_runs,
-        &obs.pr_view.head_ref_oid,
+        &obs.pull_request_view.head_ref_oid,
         now,
     );
     let reviews = reviews::orient_reviews(
-        &obs.pr_view,
+        &obs.pull_request_view,
         &obs.review_threads_page,
         &obs.issue_comments,
         &obs.reviews,
@@ -126,8 +130,8 @@ pub fn orient(
                 &obs.reviews,
                 &obs.review_threads_page,
                 &obs.requested_reviewers,
-                &obs.pr_view.head_ref_oid,
-                &obs.pr_view.commits,
+                &obs.pull_request_view.head_ref_oid,
+                &obs.pull_request_view.commits,
                 now,
             )
         });
@@ -135,8 +139,8 @@ pub fn orient(
         &obs.reviews,
         &obs.review_threads_page,
         &obs.cursor_status,
-        obs.pr_view.author.as_ref(),
-        &obs.pr_view.head_ref_oid,
+        obs.pull_request_view.author.as_ref(),
+        &obs.pull_request_view.head_ref_oid,
         now,
     );
 
@@ -151,8 +155,8 @@ pub fn orient(
         .filter_map(ReviewThread::from_wire)
         .collect();
 
-    let pr_metadata = orient_pr_meta(&obs.pr_meta);
-    let attest_path = obs.pr_meta.attest_path.clone();
+    let pull_request_metadata = orient_pull_request_metadata(&obs.pull_request_metadata);
+    let attest_path = obs.pull_request_metadata.attest_path.clone();
 
     OrientedState {
         ci,
@@ -162,7 +166,7 @@ pub fn orient(
         cursor,
         threads,
         merge_base_delta: obs.merge_base_delta.clone(),
-        pr_metadata,
+        pull_request_metadata,
         attest_path,
     }
 }

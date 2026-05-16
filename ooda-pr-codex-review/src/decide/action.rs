@@ -223,7 +223,7 @@ pub enum ActionKind {
     /// re-run `ooda-attest pr-meta` to write a fresh attestation.
     /// Payload carries the absolute path of the attestation file so
     /// the prompt can surface the exact CLI invocation.
-    SyncPrMeta {
+    SyncPullRequestMetadata {
         attest_path: std::path::PathBuf,
     },
 }
@@ -273,7 +273,7 @@ impl ActionKindName for ActionKind {
             Self::RunCodexReviewBatch { .. } => "RunCodexReviewBatch",
             Self::AwaitCodexReviewBatch { .. } => "AwaitCodexReviewBatch",
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
-            Self::SyncPrMeta { .. } => "SyncPrMeta",
+            Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
         }
     }
 }

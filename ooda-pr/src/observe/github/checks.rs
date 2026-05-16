@@ -31,7 +31,7 @@ const CHECK_FIELDS: &str = "name,state,description,link,completedAt";
 // flattened-per-name `gh pr checks` rollup. v1 keeps the existing
 // cancelled→failed bucket; the workflow_runs feed grew exactly to
 // enable a later disposition tag without re-shaping this fetcher.
-pub fn fetch_pr_checks(
+pub fn fetch_pull_request_checks(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<PullRequestCheck>, GhError> {
@@ -207,8 +207,8 @@ mod tests {
             {"name":"b","state":"FAILURE","description":"","link":"","completedAt":""}
         ]"#;
         // Exercise the filter via the same path callers use: parse +
-        // filter, matching the body of `fetch_pr_checks` after the
-        // `gh_json_lenient` call. (We can't call fetch_pr_checks
+        // filter, matching the body of `fetch_pull_request_checks` after the
+        // `gh_json_lenient` call. (We can't call fetch_pull_request_checks
         // directly without spawning `gh`.)
         let raw: Vec<PullRequestCheck> = serde_json::from_str(json).unwrap();
         let filtered: Vec<PullRequestCheck> = raw

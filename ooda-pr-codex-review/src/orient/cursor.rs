@@ -24,7 +24,7 @@ use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::cursor_status::{
     CheckRunConclusion, CheckRunStatus, CheckSuiteStatus, CursorCheckSuite, CursorStatus,
 };
-use crate::observe::github::pr_view::PullRequestAuthor;
+use crate::observe::github::pull_request_view::PullRequestAuthor;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
 use serde::Serialize;
@@ -622,7 +622,7 @@ mod tests {
     use super::*;
     use crate::ids::GitHubLogin;
     use crate::observe::github::cursor_status::{CursorCheckRun, CursorCheckSuite, CursorStatus};
-    use crate::observe::github::pr_view::PullRequestAuthor;
+    use crate::observe::github::pull_request_view::PullRequestAuthor;
     use crate::observe::github::review_threads::{
         CommentAuthor, PageInfo, ReviewRequestsPage, ReviewThread, ReviewThreadsData,
         ReviewThreadsPage, ReviewThreadsPr, ReviewThreadsRepo, ReviewThreadsResponse,

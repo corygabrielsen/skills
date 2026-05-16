@@ -20,7 +20,10 @@ const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
 // other fields); we deserialize the subset we consume below.
 
 /// Fetch PR metadata via `gh pr view`.
-pub fn fetch_pr_view(slug: &RepoSlug, pr: PullRequestNumber) -> Result<PullRequestView, GhError> {
+pub fn fetch_pull_request_view(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+) -> Result<PullRequestView, GhError> {
     let slug_s = slug.to_string();
     let pr_s = pr.to_string();
     gh_json(&["pr", "view", &pr_s, "-R", &slug_s, "--json", PR_FIELDS])
@@ -33,7 +36,7 @@ pub struct PullRequestView {
     pub number: PullRequestNumber,
     pub url: String,
     pub body: Option<String>,
-    pub state: PrState,
+    pub state: PullRequestState,
     pub is_draft: bool,
     pub mergeable: Mergeable,
     pub merge_state_status: MergeStateStatus,
@@ -88,7 +91,7 @@ where
     }
 }
 
-pub use ooda_core::PrState;
+pub use ooda_core::PullRequestState;
 
 // GraphQL's `Mergeable` enum has a variant literally named
 // `MERGEABLE`; mirroring that preserves 1:1 alignment with the
@@ -189,13 +192,13 @@ mod tests {
     const MERGED_FIXTURE: &str = include_str!("../../../test/fixtures/github/pr_view_merged.json");
 
     #[test]
-    fn deserializes_merged_pr_fixture() {
+    fn deserializes_merged_pull_request_fixture() {
         let view: PullRequestView = serde_json::from_str(MERGED_FIXTURE).unwrap();
         assert_eq!(view.number.get(), 1563);
         assert_eq!(view.title, "Fix usize hashing in runner selection");
         assert_eq!(
             view.state,
-            PrState::Terminal(ooda_core::TerminalState::Merged)
+            PullRequestState::Terminal(ooda_core::TerminalState::Merged)
         );
         assert!(!view.is_draft);
         assert_eq!(view.mergeable, Mergeable::Unknown);

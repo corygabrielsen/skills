@@ -1,6 +1,6 @@
 //! PR-meta candidates.
 //!
-//! Emit `SyncPrMeta` when the orient axis is `Drift` or
+//! Emit `SyncPullRequestMetadata` when the orient axis is `Drift` or
 //! `NeverAttested` AND the PR has at least one commit. Skip for
 //! `Synced` (no work) and for empty PRs (no commits to attest
 //! against). Information-tier — advisory; never preempts a
@@ -8,10 +8,10 @@
 
 use std::path::Path;
 
-use crate::act::sync_pr_meta::build_sync_pr_meta_prompt;
+use crate::act::sync_pull_request_metadata::build_sync_pull_request_metadata_prompt;
 use crate::ids::{BlockerKey, PullRequestNumber};
 use crate::orient::OrientedState;
-use crate::orient::pr_meta::PrMetadata;
+use crate::orient::pull_request_metadata::PullRequestMetadata;
 
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
@@ -21,8 +21,8 @@ pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action
         return Vec::new();
     }
     let needs_sync = matches!(
-        oriented.pr_metadata,
-        PrMetadata::Drift { .. } | PrMetadata::NeverAttested,
+        oriented.pull_request_metadata,
+        PullRequestMetadata::Drift { .. } | PullRequestMetadata::NeverAttested,
     );
     if !needs_sync {
         return Vec::new();
@@ -32,16 +32,20 @@ pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action
     };
 
     let attest_path_opt: Option<&Path> = Some(attest_path);
-    let prompt = build_sync_pr_meta_prompt(pr, &oriented.pr_metadata, attest_path_opt);
-    let kind = ActionKind::SyncPrMeta {
+    let prompt = build_sync_pull_request_metadata_prompt(
+        pr,
+        &oriented.pull_request_metadata,
+        attest_path_opt,
+    );
+    let kind = ActionKind::SyncPullRequestMetadata {
         attest_path: attest_path.to_path_buf(),
     };
-    let blocker = match oriented.pr_metadata {
-        PrMetadata::Drift { .. } => BlockerKey::tag("pr_meta_drift"),
-        PrMetadata::NeverAttested => BlockerKey::tag("pr_meta_never_attested"),
+    let blocker = match oriented.pull_request_metadata {
+        PullRequestMetadata::Drift { .. } => BlockerKey::tag("pr_meta_drift"),
+        PullRequestMetadata::NeverAttested => BlockerKey::tag("pr_meta_never_attested"),
         // Synced is filtered above; the match is exhaustive for
         // clippy, the arm is unreachable in practice.
-        PrMetadata::Synced => BlockerKey::tag("pr_meta_synced"),
+        PullRequestMetadata::Synced => BlockerKey::tag("pr_meta_synced"),
     };
     vec![Action {
         kind,
@@ -56,7 +60,7 @@ pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action
 mod tests {
     use super::*;
     use crate::ids::{GitCommitSha, PullRequestNumber, Timestamp};
-    use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
+    use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable};
     use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestProjection;
@@ -65,7 +69,7 @@ mod tests {
         PullRequestNumber::parse("753").unwrap()
     }
 
-    fn pr_state(commits: usize) -> PullRequestProjection {
+    fn pull_request_state(commits: usize) -> PullRequestProjection {
         PullRequestProjection {
             conflict: Mergeable::Mergeable,
             draft: false,
@@ -115,22 +119,22 @@ mod tests {
         }
     }
 
-    fn oriented(commits: usize, pr_metadata: PrMetadata) -> OrientedState {
+    fn oriented(commits: usize, pull_request_metadata: PullRequestMetadata) -> OrientedState {
         OrientedState {
             ci: ci_report(),
-            state: pr_state(commits),
+            state: pull_request_state(commits),
             reviews: reviews(),
             copilot: None,
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
-            pr_metadata,
+            pull_request_metadata,
             attest_path: Some(std::path::PathBuf::from("/state/753/pr_meta_attest.json")),
         }
     }
 
-    fn drift() -> PrMetadata {
-        PrMetadata::Drift {
+    fn drift() -> PullRequestMetadata {
+        PullRequestMetadata::Drift {
             attested_sha: GitCommitSha::parse(&"a".repeat(40))
                 .unwrap()
                 .as_str()
@@ -144,10 +148,13 @@ mod tests {
     }
 
     #[test]
-    fn drift_with_commits_emits_sync_pr_meta() {
+    fn drift_with_commits_emits_sync_pull_request_metadata() {
         let cs = candidates(&oriented(3, drift()), pr());
         assert_eq!(cs.len(), 1);
-        assert!(matches!(cs[0].kind, ActionKind::SyncPrMeta { .. }));
+        assert!(matches!(
+            cs[0].kind,
+            ActionKind::SyncPullRequestMetadata { .. }
+        ));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
         assert_eq!(cs[0].urgency, Urgency::Hygiene);
         assert_eq!(cs[0].target_effect, TargetEffect::Neutral);
@@ -155,15 +162,15 @@ mod tests {
     }
 
     #[test]
-    fn never_attested_with_commits_emits_sync_pr_meta() {
-        let cs = candidates(&oriented(1, PrMetadata::NeverAttested), pr());
+    fn never_attested_with_commits_emits_sync_pull_request_metadata() {
+        let cs = candidates(&oriented(1, PullRequestMetadata::NeverAttested), pr());
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].blocker.as_str(), "pr_meta_never_attested");
     }
 
     #[test]
     fn never_attested_with_zero_commits_emits_nothing() {
-        let cs = candidates(&oriented(0, PrMetadata::NeverAttested), pr());
+        let cs = candidates(&oriented(0, PullRequestMetadata::NeverAttested), pr());
         assert!(cs.is_empty());
     }
 
@@ -175,15 +182,15 @@ mod tests {
 
     #[test]
     fn synced_emits_nothing() {
-        let cs = candidates(&oriented(3, PrMetadata::Synced), pr());
+        let cs = candidates(&oriented(3, PullRequestMetadata::Synced), pr());
         assert!(cs.is_empty());
     }
 
     #[test]
-    fn sync_pr_meta_carries_attest_path_in_payload() {
+    fn sync_pull_request_metadata_carries_attest_path_in_payload() {
         let cs = candidates(&oriented(3, drift()), pr());
-        let ActionKind::SyncPrMeta { attest_path } = &cs[0].kind else {
-            panic!("expected SyncPrMeta");
+        let ActionKind::SyncPullRequestMetadata { attest_path } = &cs[0].kind else {
+            panic!("expected SyncPullRequestMetadata");
         };
         assert_eq!(
             attest_path,
@@ -192,12 +199,12 @@ mod tests {
     }
 
     #[test]
-    fn sync_pr_meta_stall_key_distinguishes_drift_from_never_attested() {
+    fn sync_pull_request_metadata_stall_key_distinguishes_drift_from_never_attested() {
         let drift_action = candidates(&oriented(2, drift()), pr())
             .into_iter()
             .next()
             .unwrap();
-        let never_action = candidates(&oriented(2, PrMetadata::NeverAttested), pr())
+        let never_action = candidates(&oriented(2, PullRequestMetadata::NeverAttested), pr())
             .into_iter()
             .next()
             .unwrap();
@@ -205,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_pr_meta_stall_key_equal_to_itself() {
+    fn sync_pull_request_metadata_stall_key_equal_to_itself() {
         let a = candidates(&oriented(2, drift()), pr())
             .into_iter()
             .next()
@@ -226,17 +233,17 @@ mod tests {
 
     #[test]
     fn never_attested_with_no_attest_path_emits_nothing() {
-        let mut o = oriented(3, PrMetadata::NeverAttested);
+        let mut o = oriented(3, PullRequestMetadata::NeverAttested);
         o.attest_path = None;
         assert!(candidates(&o, pr()).is_empty());
     }
 
     #[test]
-    fn sync_pr_meta_action_name_is_sync_pr_meta() {
+    fn sync_pull_request_metadata_action_name_is_sync_pull_request_metadata() {
         let a = candidates(&oriented(2, drift()), pr())
             .into_iter()
             .next()
             .unwrap();
-        assert_eq!(a.kind.name(), "SyncPrMeta");
+        assert_eq!(a.kind.name(), "SyncPullRequestMetadata");
     }
 }

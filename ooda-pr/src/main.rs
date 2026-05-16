@@ -266,7 +266,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
             return Outcome::binary_error(format!("observe: {e}"));
         }
     };
-    if obs.stack_root_branch != obs.pr_view.base_ref_name {
+    if obs.stack_root_branch != obs.pull_request_view.base_ref_name {
         // Diagnostic note when the PR's immediate base differs
         // from the stack root used for branch-rule lookups. The
         // suffix repeated `<root>` was redundant; dropped to make
@@ -274,14 +274,14 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         // format exactly.
         let line = format!(
             "stack: {} → {}",
-            obs.pr_view.base_ref_name, obs.stack_root_branch,
+            obs.pull_request_view.base_ref_name, obs.stack_root_branch,
         );
         eprintln!("{line}");
         recorder.write_trace_line(&line);
     }
     let oriented = orient(&obs, None, current_timestamp());
     let candidate_actions = candidates(&oriented, args.pr);
-    let decision = decide_from_candidates(candidate_actions.clone(), obs.pr_view.state);
+    let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
     if args.status_comment {
         let rendered = comment::render::render(
@@ -298,8 +298,14 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     }
     let snapshot = HandoffSnapshot {
         oriented: oriented.clone(),
-        head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
-        base_branch: obs.pr_view.base_ref_name.to_string(),
+        head_short: obs
+            .pull_request_view
+            .head_ref_oid
+            .as_str()
+            .chars()
+            .take(7)
+            .collect(),
+        base_branch: obs.pull_request_view.base_ref_name.to_string(),
         dashboard: Dashboard::from_iteration(&oriented, &candidate_actions, &decision),
     };
     decorate_handoff_human(
@@ -322,8 +328,14 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
                     d: &Decision| {
         snapshot = Some(HandoffSnapshot {
             oriented: oriented.clone(),
-            head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
-            base_branch: obs.pr_view.base_ref_name.to_string(),
+            head_short: obs
+                .pull_request_view
+                .head_ref_oid
+                .as_str()
+                .chars()
+                .take(7)
+                .collect(),
+            base_branch: obs.pull_request_view.base_ref_name.to_string(),
             dashboard: Dashboard::from_iteration(oriented, candidate_actions, d),
         });
         recorder.set_iteration(Some(i));
@@ -829,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn decorate_handoff_human_appends_pr_link_and_blocker() {
+    fn decorate_handoff_human_appends_pull_request_link_and_blocker() {
         let handoff = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::RequestApproval,
             prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
@@ -868,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn decorate_handoff_agent_rebase_gets_pr_context() {
+    fn decorate_handoff_agent_rebase_gets_pull_request_context() {
         // Rebase emits `HandoffAgent`, not `HandoffHuman`. The
         // decorator was originally HandoffHuman-only, which left
         // Rebase prompts with zero PR/URL/blocker frame. This test
@@ -972,7 +984,7 @@ mod tests {
         // in the decorator tests below pin on PR-context lines
         // (which use the slug/pr passed in, not snapshot fields).
         use crate::ids::Timestamp;
-        use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
+        use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable};
         use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
         use crate::orient::reviews::{PendingReviews, ReviewSummary};
         use crate::orient::state::PullRequestProjection;
@@ -1022,7 +1034,8 @@ mod tests {
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
-            pr_metadata: orient::pr_meta::PrMetadata::NeverAttested,
+            pull_request_metadata:
+                orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
             attest_path: None,
         }
     }

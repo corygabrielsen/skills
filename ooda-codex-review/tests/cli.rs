@@ -333,7 +333,7 @@ fn end_to_end_with_fake_codex_clean_at_ceiling_halts_done_fixed_point() {
 
 #[test]
 #[cfg(unix)]
-fn pr_mode_resolves_base_branch_before_spawning_codex() {
+fn pull_request_mode_resolves_base_branch_before_spawning_codex() {
     use std::os::unix::fs::PermissionsExt;
 
     let state_root = std::env::temp_dir().join(format!(

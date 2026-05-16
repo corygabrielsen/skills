@@ -354,7 +354,7 @@ fn main() -> ExitCode {
             };
 
             // Parallel per-PR dispatch under `thread::scope`. Each
-            // thread runs `drive_one_pr` which opens its own per-PR
+            // thread runs `drive_one_pull_request` which opens its own per-PR
             // Recorder, installs it as the thread-local tool-call
             // sink, runs the observe/orient/decide/act pipeline,
             // renders the per-PR variant block on stderr, and
@@ -375,7 +375,7 @@ fn main() -> ExitCode {
             //     (`last_non_wait`, `last_attempted`) is local to
             //     the worker stack frame.
             let process_outcomes = suite::drive_suite(&args.suite, args.concurrency, |slug, pr| {
-                drive_one_pr(slug, pr, &args, suite_recorder.as_ref())
+                drive_one_pull_request(slug, pr, &args, suite_recorder.as_ref())
             });
             let multi = MultiOutcome::Bundle(process_outcomes);
             // Stdout — the agent-harness contract. One JSONL record
@@ -411,7 +411,7 @@ fn main() -> ExitCode {
 /// mode (`Loop` or `Inspect`), render the resulting `Outcome` to
 /// stderr, and record the outcome to the per-PR ledger. Returns
 /// the `Outcome` for the suite-level aggregator.
-fn drive_one_pr(
+fn drive_one_pull_request(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     args: &Args,
@@ -437,7 +437,7 @@ fn drive_one_pr(
     };
     recorder.install_process_recorder();
     if let Some(sr) = suite_recorder {
-        sr.register_pr(slug, pr, &recorder.run_id());
+        sr.register_pull_request(slug, pr, &recorder.run_id());
     }
     let outcome = match args.mode {
         Mode::Inspect => run_inspect(slug, pr, args, &recorder),
@@ -500,7 +500,7 @@ fn run_inspect(
             return Outcome::binary_error(format!("observe: {e}"));
         }
     };
-    if obs.stack_root_branch != obs.pr_view.base_ref_name {
+    if obs.stack_root_branch != obs.pull_request_view.base_ref_name {
         // Diagnostic note when the PR's immediate base differs
         // from the stack root used for branch-rule lookups. The
         // suffix repeated `<root>` was redundant; dropped to make
@@ -508,14 +508,14 @@ fn run_inspect(
         // format exactly.
         let line = format!(
             "stack: {} → {}",
-            obs.pr_view.base_ref_name, obs.stack_root_branch,
+            obs.pull_request_view.base_ref_name, obs.stack_root_branch,
         );
         eprintln!("{line}");
         recorder.write_trace_line(&line);
     }
     let oriented = orient(&obs, None, current_timestamp());
     let candidate_actions = candidates(&oriented, pr);
-    let decision = decide_from_candidates(candidate_actions.clone(), obs.pr_view.state);
+    let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
     if args.status_comment {
         let rendered =
@@ -526,8 +526,14 @@ fn run_inspect(
     }
     let snapshot = HandoffSnapshot {
         oriented: oriented.clone(),
-        head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
-        base_branch: obs.pr_view.base_ref_name.to_string(),
+        head_short: obs
+            .pull_request_view
+            .head_ref_oid
+            .as_str()
+            .chars()
+            .take(7)
+            .collect(),
+        base_branch: obs.pull_request_view.base_ref_name.to_string(),
         dashboard: Dashboard::from_iteration(&oriented, &candidate_actions, &decision),
     };
     decorate_handoff_human(Outcome::from(decision), slug, pr, Some(&snapshot))
@@ -545,8 +551,14 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
                     d: &Decision| {
         snapshot = Some(HandoffSnapshot {
             oriented: oriented.clone(),
-            head_short: obs.pr_view.head_ref_oid.as_str().chars().take(7).collect(),
-            base_branch: obs.pr_view.base_ref_name.to_string(),
+            head_short: obs
+                .pull_request_view
+                .head_ref_oid
+                .as_str()
+                .chars()
+                .take(7)
+                .collect(),
+            base_branch: obs.pull_request_view.base_ref_name.to_string(),
             dashboard: Dashboard::from_iteration(oriented, candidate_actions, d),
         });
         recorder.set_iteration(Some(i));
@@ -672,7 +684,7 @@ struct HandoffSnapshot {
     dashboard: Dashboard,
 }
 
-fn pr_url(slug: &RepoSlug, pr: PullRequestNumber) -> String {
+fn pull_request_url(slug: &RepoSlug, pr: PullRequestNumber) -> String {
     format!("https://github.com/{slug}/pull/{pr}")
 }
 
@@ -767,7 +779,7 @@ fn push_handoff_context(
 ) {
     let blocker = handoff.blocker.to_string();
     let prompt = &mut handoff.prompt;
-    prompt.push_context_line("PR", pr_url(slug, pr));
+    prompt.push_context_line("PR", pull_request_url(slug, pr));
     prompt.push_context_line("Blocker", blocker);
     if let Some(snap) = snapshot {
         prompt.push_context_line(
@@ -828,7 +840,7 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
     obj.insert("pr".into(), json!(po.pr.get()));
     // Always include a deep link so harnesses don't have to
     // re-derive it from slug + pr per record.
-    obj.insert("pr_url".into(), json!(pr_url(&po.slug, po.pr)));
+    obj.insert("pr_url".into(), json!(pull_request_url(&po.slug, po.pr)));
     obj.insert("outcome".into(), json!(outcome_variant_name(&po.outcome)));
     obj.insert("exit".into(), json!(po.outcome.exit_code()));
     match &po.outcome {
@@ -1151,15 +1163,15 @@ mod tests {
     // these field names directly, so a rename here is a breaking
     // change that MUST surface as a test failure.
     //
-    // The match in `pr_jsonl_golden` is exhaustive over `Outcome`,
+    // The match in `pull_request_jsonl_golden` is exhaustive over `Outcome`,
     // so adding a new variant fails to compile here until a golden
-    // is added. The sample list (`pr_jsonl_sample_outcomes`) is
+    // is added. The sample list (`pull_request_jsonl_sample_outcomes`) is
     // hand-maintained but the length sentinel in the test catches
     // omissions.
 
     /// Canonical JSON shape emitted by `per_pr_jsonl_record` for
     /// each `Outcome` variant. Used by `jsonl_schema_goldens_exhaustive`.
-    fn pr_jsonl_golden(outcome: &Outcome) -> serde_json::Value {
+    fn pull_request_jsonl_golden(outcome: &Outcome) -> serde_json::Value {
         use serde_json::json;
         // Every record carries these four fields regardless of
         // variant. The merge below adds the variant-specific tail.
@@ -1234,7 +1246,7 @@ mod tests {
     /// sentinel in `jsonl_schema_goldens_exhaustive` catches drift.
     /// Variants carrying an `Action` use distinct kinds / blockers /
     /// payloads so the golden distinguishes them by shape.
-    fn pr_jsonl_sample_outcomes() -> Vec<Outcome> {
+    fn pull_request_jsonl_sample_outcomes() -> Vec<Outcome> {
         let stuck_action = action("rebase-needed");
         let mut would_advance_action = action("ci_pending: build");
         would_advance_action.effect = ActionEffect::Wait {
@@ -1274,25 +1286,25 @@ mod tests {
     }
 
     /// One golden assertion per `Outcome` variant. Compile-checked
-    /// exhaustiveness lives in `pr_jsonl_golden`; runtime
+    /// exhaustiveness lives in `pull_request_jsonl_golden`; runtime
     /// completeness for the sample list is enforced by the length
     /// sentinel — every Outcome variant in the family of 10 must
     /// be represented.
     #[test]
     fn jsonl_schema_goldens_exhaustive() {
-        let samples = pr_jsonl_sample_outcomes();
+        let samples = pull_request_jsonl_sample_outcomes();
         assert_eq!(
             samples.len(),
             10,
-            "`pr_jsonl_sample_outcomes` must include one sample per `Outcome` variant; \
-             adding a new variant requires adding both a golden arm in `pr_jsonl_golden` \
+            "`pull_request_jsonl_sample_outcomes` must include one sample per `Outcome` variant; \
+             adding a new variant requires adding both a golden arm in `pull_request_jsonl_golden` \
              AND a sample here.",
         );
         for outcome in samples {
             let outcome_name = outcome_variant_name(&outcome);
             let po = po("acme/widget", 42, outcome);
             let actual = parse_record(&per_pr_jsonl_record(&po));
-            let expected = pr_jsonl_golden(&po.outcome);
+            let expected = pull_request_jsonl_golden(&po.outcome);
             assert_eq!(
                 actual, expected,
                 "schema mismatch for variant {outcome_name}"
@@ -1301,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn decorate_handoff_human_appends_pr_link_and_blocker() {
+    fn decorate_handoff_human_appends_pull_request_link_and_blocker() {
         use crate::decide::action::{ActionKind, TargetEffect, Urgency};
         use crate::ids::BlockerKey;
         let h = ooda_core::HandoffAction {
@@ -1341,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn decorate_handoff_agent_rebase_gets_pr_context() {
+    fn decorate_handoff_agent_rebase_gets_pull_request_context() {
         // Rebase emits `HandoffAgent`, not `HandoffHuman`. The
         // decorator was originally HandoffHuman-only, which left
         // Rebase prompts with zero PR/URL/blocker frame. This test
@@ -1420,7 +1432,7 @@ mod tests {
         // in the decorator tests below pin on PR-context lines
         // (which use the slug/pr passed in, not snapshot fields).
         use crate::ids::Timestamp;
-        use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
+        use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable};
         use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
         use crate::orient::reviews::{PendingReviews, ReviewSummary};
         use crate::orient::state::PullRequestProjection;
@@ -1470,7 +1482,8 @@ mod tests {
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
-            pr_metadata: orient::pr_meta::PrMetadata::NeverAttested,
+            pull_request_metadata:
+                orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
             attest_path: None,
         }
     }
@@ -1634,7 +1647,7 @@ mod tests {
     // golden's match arms are the per-variant contract.
 
     #[test]
-    fn render_multi_jsonl_emits_one_line_per_pr_in_order() {
+    fn render_multi_jsonl_emits_one_line_per_pull_request_in_order() {
         let multi = MultiOutcome::Bundle(vec![
             po("a/b", 1, Outcome::DoneSucceeded),
             po(

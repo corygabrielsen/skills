@@ -162,12 +162,12 @@ fn bad_slug_is_usage_error() {
 }
 
 #[test]
-fn bad_pr_number_is_usage_error() {
+fn bad_pull_request_number_is_usage_error() {
     assert_usage_error(&["owner/repo", "abc"], "invalid pull request number");
 }
 
 #[test]
-fn pr_zero_is_usage_error() {
+fn pull_request_zero_is_usage_error() {
     // PullRequestNumber is { ℕ | > 0 }
     assert_usage_error(&["owner/repo", "0"], "invalid pull request number");
 }

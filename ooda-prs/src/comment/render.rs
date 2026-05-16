@@ -19,7 +19,7 @@ use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::orient::OrientedState;
 use crate::orient::copilot::CopilotActivity;
-use crate::orient::pr_meta::PrMetadata;
+use crate::orient::pull_request_metadata::PullRequestMetadata;
 use serde::Serialize;
 
 /// Lookup by tier slug (`bronze`/`silver`/`gold`/`platinum`).
@@ -82,7 +82,7 @@ pub fn render(
     let copilot = copilot_line(oriented);
     let cursor = cursor_line(oriented);
     let reviews = reviews_line(oriented);
-    let pr_meta = pr_meta_line(oriented);
+    let pr_meta = pull_request_metadata_line(oriented);
     // Dedup key omits the action description's prose so that count
     // changes ("3 unresolved" → "2 unresolved") within the same
     // structural state don't suppress posting. Includes the action's
@@ -264,7 +264,7 @@ fn cursor_line(o: &OrientedState) -> String {
 }
 
 fn reviews_line(o: &OrientedState) -> String {
-    use crate::observe::github::pr_view::ReviewDecision;
+    use crate::observe::github::pull_request_view::ReviewDecision;
     match o.reviews.decision {
         Some(ReviewDecision::Approved) => "✅ Approval".into(),
         Some(ReviewDecision::ChangesRequested) => "❌ Changes requested".into(),
@@ -273,10 +273,10 @@ fn reviews_line(o: &OrientedState) -> String {
     }
 }
 
-fn pr_meta_line(o: &OrientedState) -> String {
-    match &o.pr_metadata {
-        PrMetadata::Synced => "✅ PR meta · synced".into(),
-        PrMetadata::Drift {
+fn pull_request_metadata_line(o: &OrientedState) -> String {
+    match &o.pull_request_metadata {
+        PullRequestMetadata::Synced => "✅ PR meta · synced".into(),
+        PullRequestMetadata::Drift {
             attested_sha,
             commits_behind,
             ..
@@ -285,7 +285,7 @@ fn pr_meta_line(o: &OrientedState) -> String {
             crate::text::count(*commits_behind, "commit"),
             attested_sha.chars().take(7).collect::<String>(),
         ),
-        PrMetadata::NeverAttested => "⚠ PR meta · never attested".into(),
+        PullRequestMetadata::NeverAttested => "⚠ PR meta · never attested".into(),
     }
 }
 
@@ -305,7 +305,7 @@ mod tests {
     use crate::decide::action::{ActionEffect, ActionKind, TargetEffect};
     use crate::decide::decision::{Decision, DecisionHalt};
     use crate::ids::{BlockerKey, Timestamp};
-    use crate::observe::github::pr_view::Mergeable;
+    use crate::observe::github::pull_request_view::Mergeable;
     use crate::orient::ci::{
         CheckBucket, CiActivity, CiReport, CiSummary, FailedCheck, ResolvedState,
     };
@@ -359,7 +359,8 @@ mod tests {
                 commits: 1,
                 behind: false,
                 has_open_parent_pr: false,
-                merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
+                merge_state_status:
+                    crate::observe::github::pull_request_view::MergeStateStatus::Clean,
                 updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
                 last_commit_at: None,
             },
@@ -379,7 +380,7 @@ mod tests {
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
-            pr_metadata: PrMetadata::NeverAttested,
+            pull_request_metadata: PullRequestMetadata::NeverAttested,
             attest_path: None,
         }
     }
@@ -537,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn render_terminal_aborted_yields_pr_closed_halt_line() {
+    fn render_terminal_aborted_yields_pull_request_closed_halt_line() {
         let o = empty_oriented();
         let r = render(
             &slug(),
@@ -569,33 +570,33 @@ mod tests {
         assert!(r.dedup_key.contains("halt:agent"));
     }
 
-    // ── pr_meta_line ─────────────────────────────────────────────
+    // ── pull_request_metadata_line ─────────────────────────────────────────────
 
     #[test]
-    fn pr_meta_line_synced_renders_check() {
+    fn pull_request_metadata_line_synced_renders_check() {
         let mut o = empty_oriented();
-        o.pr_metadata = PrMetadata::Synced;
-        assert_eq!(pr_meta_line(&o), "✅ PR meta · synced");
+        o.pull_request_metadata = PullRequestMetadata::Synced;
+        assert_eq!(pull_request_metadata_line(&o), "✅ PR meta · synced");
     }
 
     #[test]
-    fn pr_meta_line_drift_includes_count_and_short_sha() {
+    fn pull_request_metadata_line_drift_includes_count_and_short_sha() {
         let mut o = empty_oriented();
-        o.pr_metadata = PrMetadata::Drift {
+        o.pull_request_metadata = PullRequestMetadata::Drift {
             attested_sha: "abcdef1234567890abcdef1234567890abcdef12".into(),
             head_sha: "9".repeat(40),
             commits_behind: 5,
         };
-        let line = pr_meta_line(&o);
+        let line = pull_request_metadata_line(&o);
         assert!(line.contains("drifted 5 commits"), "{line}");
         assert!(line.contains("abcdef1"), "{line}");
     }
 
     #[test]
-    fn pr_meta_line_never_attested_renders_warn() {
+    fn pull_request_metadata_line_never_attested_renders_warn() {
         let mut o = empty_oriented();
-        o.pr_metadata = PrMetadata::NeverAttested;
-        assert_eq!(pr_meta_line(&o), "⚠ PR meta · never attested");
+        o.pull_request_metadata = PullRequestMetadata::NeverAttested;
+        assert_eq!(pull_request_metadata_line(&o), "⚠ PR meta · never attested");
     }
 
     #[test]

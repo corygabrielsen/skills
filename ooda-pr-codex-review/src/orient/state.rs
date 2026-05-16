@@ -4,7 +4,7 @@
 //! — no joins, no cross-references. The simplest axis possible.
 
 use crate::ids::{BranchName, Timestamp};
-use crate::observe::github::pr_view::{MergeStateStatus, Mergeable, PullRequestView};
+use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable, PullRequestView};
 use serde::Serialize;
 
 const TITLE_MAX_LEN: usize = 50;
@@ -116,17 +116,17 @@ fn has_section_heading(body: &str, heading: &str) -> bool {
 mod tests {
     use super::*;
     use crate::ids::{GitCommitSha, GitHubLogin, PullRequestNumber};
-    use crate::observe::github::pr_view::{
-        Assignee, Commit, Label, PrState, PullRequestView, ReviewRequest,
+    use crate::observe::github::pull_request_view::{
+        Assignee, Commit, Label, PullRequestState, PullRequestView, ReviewRequest,
     };
 
-    fn pr_view(overrides: impl FnOnce(&mut PullRequestView)) -> PullRequestView {
+    fn pull_request_view(overrides: impl FnOnce(&mut PullRequestView)) -> PullRequestView {
         let mut v = PullRequestView {
             title: "fix thing".into(),
             number: PullRequestNumber::new(123).unwrap(),
             url: "https://example/pr/123".into(),
             body: Some("body".into()),
-            state: PrState::Open,
+            state: PullRequestState::Open,
             is_draft: false,
             mergeable: Mergeable::Mergeable,
             merge_state_status: MergeStateStatus::Clean,
@@ -153,8 +153,8 @@ mod tests {
     }
 
     #[test]
-    fn defaults_for_minimal_open_pr() {
-        let pr = pr_view(|_| {});
+    fn defaults_for_minimal_open_pull_request() {
+        let pr = pull_request_view(|_| {});
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.conflict, Mergeable::Mergeable);
         assert!(!s.draft);
@@ -172,9 +172,9 @@ mod tests {
     }
 
     #[test]
-    fn title_len_includes_phantom_pr_suffix() {
+    fn title_len_includes_phantom_pull_request_suffix() {
         // "fix thing" = 9, " (#123)" = 7 → 16
-        let pr = pr_view(|p| p.title = "fix thing".into());
+        let pr = pull_request_view(|p| p.title = "fix thing".into());
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.title_len, 16);
         assert!(s.title_ok);
@@ -184,7 +184,7 @@ mod tests {
     fn title_just_over_50_with_suffix_fails() {
         // Need title_len > 50. Suffix " (#123)" is 7 chars, so a
         // 44-char title gives total 51.
-        let pr = pr_view(|p| p.title = "a".repeat(44));
+        let pr = pull_request_view(|p| p.title = "a".repeat(44));
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.title_len, 51);
         assert!(!s.title_ok);
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn title_at_exactly_50_passes() {
-        let pr = pr_view(|p| p.title = "a".repeat(43));
+        let pr = pull_request_view(|p| p.title = "a".repeat(43));
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert_eq!(s.title_len, 50);
         assert!(s.title_ok);
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn empty_body_marks_body_false_and_no_sections() {
-        let pr = pr_view(|p| p.body = Some(String::new()));
+        let pr = pull_request_view(|p| p.body = Some(String::new()));
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.body);
         assert!(!s.summary);
@@ -209,14 +209,14 @@ mod tests {
 
     #[test]
     fn null_body_treated_as_empty() {
-        let pr = pr_view(|p| p.body = None);
+        let pr = pull_request_view(|p| p.body = None);
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.body);
     }
 
     #[test]
     fn detects_summary_and_test_plan_headings_case_insensitive() {
-        let pr = pr_view(|p| {
+        let pr = pull_request_view(|p| {
             p.body = Some("## summary\nstuff\n\n## TEST PLAN\n- check it\n".into());
         });
         let s = orient_state(&pr, None, &pr.base_ref_name);
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn heading_must_be_at_line_start() {
         // Inline mention shouldn't trigger the heading detector.
-        let pr = pr_view(|p| {
+        let pr = pull_request_view(|p| {
             p.body = Some("intro about ## summary in prose".into());
         });
         let s = orient_state(&pr, None, &pr.base_ref_name);
@@ -236,14 +236,14 @@ mod tests {
 
     #[test]
     fn wip_label_detected_exact_match() {
-        let pr = pr_view(|p| p.labels.push(label("work in progress")));
+        let pr = pull_request_view(|p| p.labels.push(label("work in progress")));
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.wip);
     }
 
     #[test]
     fn merge_when_ready_label_detected() {
-        let pr = pr_view(|p| p.labels.push(label("merge-when-ready")));
+        let pr = pull_request_view(|p| p.labels.push(label("merge-when-ready")));
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.merge_when_ready);
     }
@@ -251,30 +251,30 @@ mod tests {
     #[test]
     fn content_label_recognizes_bug_or_enhancement() {
         for ct in ["bug", "enhancement"] {
-            let pr = pr_view(|p| p.labels.push(label(ct)));
+            let pr = pull_request_view(|p| p.labels.push(label(ct)));
             let s = orient_state(&pr, None, &pr.base_ref_name);
             assert!(s.content_label, "expected content_label for {ct}");
         }
         // A non-content label doesn't count.
-        let pr = pr_view(|p| p.labels.push(label("documentation")));
+        let pr = pull_request_view(|p| p.labels.push(label("documentation")));
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.content_label);
     }
 
     #[test]
     fn behind_only_when_merge_state_status_is_behind() {
-        let pr = pr_view(|p| p.merge_state_status = MergeStateStatus::Behind);
+        let pr = pull_request_view(|p| p.merge_state_status = MergeStateStatus::Behind);
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(s.behind);
 
-        let pr = pr_view(|p| p.merge_state_status = MergeStateStatus::Blocked);
+        let pr = pull_request_view(|p| p.merge_state_status = MergeStateStatus::Blocked);
         let s = orient_state(&pr, None, &pr.base_ref_name);
         assert!(!s.behind);
     }
 
     #[test]
     fn counts_assignees_reviewers_and_commits() {
-        let pr = pr_view(|p| {
+        let pr = pull_request_view(|p| {
             p.assignees = vec![Assignee {
                 login: GitHubLogin::parse("alice").unwrap(),
             }];
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn last_commit_at_passes_through() {
         let ts = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
-        let pr = pr_view(|_| {});
+        let pr = pull_request_view(|_| {});
         let s = orient_state(&pr, Some(ts), &pr.base_ref_name);
         assert_eq!(s.last_commit_at, Some(ts));
     }

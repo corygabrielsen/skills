@@ -188,7 +188,7 @@ impl SuiteRecorder {
     /// Called from each worker thread after `Recorder::open`.
     /// Best-effort: file-write failures do not change the worker's
     /// behavior.
-    pub fn register_pr(&self, slug: &RepoSlug, pr: PullRequestNumber, run_id: &str) {
+    pub fn register_pull_request(&self, slug: &RepoSlug, pr: PullRequestNumber, run_id: &str) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.pointers.push(PullRequestPointer {
                 slug: slug.to_string(),
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn register_pr_writes_pointers_json() {
+    fn register_pull_request_writes_pointers_json() {
         let root = temp_root("register");
         let _ = fs::remove_dir_all(&root);
         let rec = SuiteRecorder::open(&SuiteRecorderConfig {
@@ -394,7 +394,7 @@ mod tests {
         })
         .unwrap();
 
-        rec.register_pr(&slug("a/b"), pr(1), "20260505T120000Z-000000000-p1234");
+        rec.register_pull_request(&slug("a/b"), pr(1), "20260505T120000Z-000000000-p1234");
         let p: serde_json::Value =
             serde_json::from_slice(&fs::read(rec.suite_root().join("pointers.json")).unwrap())
                 .unwrap();
@@ -420,8 +420,8 @@ mod tests {
         })
         .unwrap();
 
-        rec.register_pr(&slug("a/b"), pr(1), "RUN-1");
-        rec.register_pr(&slug("a/b"), pr(2), "RUN-2");
+        rec.register_pull_request(&slug("a/b"), pr(1), "RUN-1");
+        rec.register_pull_request(&slug("a/b"), pr(2), "RUN-2");
 
         let multi = MultiOutcome::Bundle(vec![
             ProcessOutcome {

@@ -11,7 +11,7 @@
 
 use crate::action::{Action, ActionEffect, HandoffAction};
 use crate::exit_code::ExitCode;
-use crate::pr_state::{PrState, TerminalState};
+use crate::pull_request_state::{PullRequestState, TerminalState};
 use serde::Serialize;
 
 /// Reduce a ranked candidate set and a PR lifecycle state to a
@@ -20,18 +20,21 @@ use serde::Serialize;
 /// merged/closed PRs have no advancement available. An empty
 /// candidate set on an open PR is success. Otherwise the top
 /// candidate is projected via [`classify`].
-pub fn decide_from_candidates<K>(candidates: Vec<Action<K>>, lifecycle: PrState) -> Decision<K> {
-    // PrState::Terminal(_) is the single arm that catches both
+pub fn decide_from_candidates<K>(
+    candidates: Vec<Action<K>>,
+    lifecycle: PullRequestState,
+) -> Decision<K> {
+    // PullRequestState::Terminal(_) is the single arm that catches both
     // merged-and-done and closed-without-merge — the inner
     // TerminalState picks the boundary halt's Succeeded/Aborted.
     match lifecycle {
-        PrState::Terminal(TerminalState::Merged) => {
+        PullRequestState::Terminal(TerminalState::Merged) => {
             return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
         }
-        PrState::Terminal(TerminalState::Closed) => {
+        PullRequestState::Terminal(TerminalState::Closed) => {
             return Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted));
         }
-        PrState::Open => {}
+        PullRequestState::Open => {}
     }
 
     let Some(top) = candidates.into_iter().next() else {
@@ -346,8 +349,10 @@ mod tests {
 
     #[test]
     fn decide_from_candidates_merged_yields_succeeded() {
-        let d: Decision<K> =
-            decide_from_candidates(vec![dummy()], PrState::Terminal(TerminalState::Merged));
+        let d: Decision<K> = decide_from_candidates(
+            vec![dummy()],
+            PullRequestState::Terminal(TerminalState::Merged),
+        );
         assert!(matches!(
             d,
             Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded))
@@ -356,8 +361,10 @@ mod tests {
 
     #[test]
     fn decide_from_candidates_closed_yields_aborted() {
-        let d: Decision<K> =
-            decide_from_candidates(vec![dummy()], PrState::Terminal(TerminalState::Closed));
+        let d: Decision<K> = decide_from_candidates(
+            vec![dummy()],
+            PullRequestState::Terminal(TerminalState::Closed),
+        );
         assert!(matches!(
             d,
             Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted))
@@ -366,13 +373,13 @@ mod tests {
 
     #[test]
     fn decide_from_candidates_open_empty_yields_success() {
-        let d: Decision<K> = decide_from_candidates(vec![], PrState::Open);
+        let d: Decision<K> = decide_from_candidates(vec![], PullRequestState::Open);
         assert!(matches!(d, Decision::Halt(DecisionHalt::Success)));
     }
 
     #[test]
     fn decide_from_candidates_open_nonempty_delegates_to_classify() {
-        let d: Decision<K> = decide_from_candidates(vec![dummy()], PrState::Open);
+        let d: Decision<K> = decide_from_candidates(vec![dummy()], PullRequestState::Open);
         assert!(matches!(d, Decision::Execute(_)));
     }
 

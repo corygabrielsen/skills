@@ -220,7 +220,7 @@ fn run_iter(
     let now = current_timestamp();
     let oriented = orient(&obs, None, now);
     let candidates = candidates(&oriented, pr);
-    let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
+    let decision = decide_from_candidates(candidates.clone(), obs.pull_request_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 
     match decision {

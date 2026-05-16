@@ -514,7 +514,8 @@ fn run_inspect(
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pr_view.state);
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
     if args.status_comment {
-        let rendered = comment::render::render(&oriented, &decision);
+        let rendered =
+            comment::render::render(slug, pr, Some(1), &oriented, &candidate_actions, &decision);
         recorder.record_status_comment_rendered(Some(1), &rendered, "inspect comment rendered");
         let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(1));
         log_post_result("comment", true, r, Some(recorder));
@@ -550,7 +551,8 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
         eprintln!("{line}");
         recorder.write_trace_line(&line);
         if args.status_comment {
-            let rendered = comment::render::render(oriented, d);
+            let rendered =
+                comment::render::render(slug, pr, Some(i), oriented, candidate_actions, d);
             recorder.record_status_comment_rendered(
                 Some(i),
                 &rendered,

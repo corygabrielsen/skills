@@ -3,9 +3,20 @@
 //! Returns both the full markdown body and a stable dedup key
 //! (axis lines + decision-kind tag, no prose) so that count-only
 //! changes within the same structural state don't suppress posts.
+//!
+//! Phase C of the tier-grouped dashboard work routes the body
+//! through [`crate::dashboard::Dashboard::render_status_comment`]
+//! so the PR comment surfaces the same tier-grouped projection the
+//! on-disk `next.md` and the handoff preamble already use. The
+//! header is rendered here (it depends on slug/pr/iteration, which
+//! the dashboard doesn't carry); the dedup key stays per-axis +
+//! decision-kind so structural state — not iteration count or
+//! action prose — gates re-posts.
 
-use crate::decide::action::{Action, ActionEffect, TargetEffect};
+use crate::dashboard::Dashboard;
+use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt, Terminal};
+use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::orient::OrientedState;
 use crate::orient::copilot::CopilotActivity;
 use serde::Serialize;
@@ -31,22 +42,45 @@ pub struct Rendered {
     pub dedup_key: String,
 }
 
-pub fn render(oriented: &OrientedState, decision: &Decision) -> Rendered {
+/// Render the PR status comment from the per-iteration triple
+/// `(oriented, candidates, decision)` plus the slug / pr / iteration
+/// the header needs.
+///
+/// Body shape:
+/// * `## OODA · {repo}#{pr} — iteration N` header
+/// * Dashboard render (winner + queued + signals + blockers) —
+///   tier-grouped, same projection as `next.md`. For terminal halts
+///   (`Halt::Success` / `Halt::Terminal`) the dashboard yields no
+///   candidates and this function substitutes a concise halt line.
+///
+/// Dedup key shape (unchanged): per-axis lines plus decision-kind
+/// tag plus decision-blocker tag. Iteration is intentionally
+/// absent — every iteration would otherwise force a re-post even
+/// when nothing structural changed.
+pub fn render(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    iteration: Option<u32>,
+    oriented: &OrientedState,
+    candidates: &[Action],
+    decision: &Decision,
+) -> Rendered {
+    let dashboard = Dashboard::from_iteration(oriented, candidates, decision);
+    let header = header_line(slug, pr, iteration);
+    let dashboard_body = dashboard.render_status_comment();
+    let body = if dashboard_body.is_empty() {
+        // Terminal halt or empty-candidate path — no recommended
+        // action to render. Surface the halt summary so the comment
+        // is still meaningful in the PR timeline.
+        format!("{header}\n\n{}\n", halt_summary(decision))
+    } else {
+        format!("{header}\n\n{dashboard_body}")
+    };
+
     let ci = ci_line(oriented);
     let copilot = copilot_line(oriented);
     let cursor = cursor_line(oriented);
     let reviews = reviews_line(oriented);
-
-    let body = [
-        ci.as_str(),
-        copilot.as_str(),
-        cursor.as_str(),
-        reviews.as_str(),
-        "",
-        &decision_block(decision),
-    ]
-    .join("\n");
-
     // Dedup key omits the action description's prose so that count
     // changes ("3 unresolved" → "2 unresolved") within the same
     // structural state don't suppress posting. Includes the action's
@@ -59,6 +93,33 @@ pub fn render(oriented: &OrientedState, decision: &Decision) -> Rendered {
     );
 
     Rendered { body, dedup_key }
+}
+
+fn header_line(slug: &RepoSlug, pr: PullRequestNumber, iteration: Option<u32>) -> String {
+    match iteration {
+        Some(i) => format!("## OODA · {slug}#{pr} — iteration {i}"),
+        None => format!("## OODA · {slug}#{pr}"),
+    }
+}
+
+/// Concise halt-line for the empty-candidate case (terminal halts
+/// only; agent/human handoffs populate candidates and never hit this
+/// branch). Mirrors the decision_block strings used pre-Phase-C so
+/// the PR timeline still gets the same halt message.
+fn halt_summary(d: &Decision) -> String {
+    match d {
+        Decision::Halt(DecisionHalt::Success) => {
+            "**Halt:** Success — no advancing actions remain.".into()
+        }
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)) => {
+            "**Halt:** PR merged.".into()
+        }
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => "**Halt:** PR closed.".into(),
+        // Every other arm carries candidates so render_status_comment
+        // produces a non-empty body — this fallback would only trip
+        // on a future variant that opts out of candidate emission.
+        _ => "**Halt:** no candidates.".into(),
+    }
 }
 
 fn decision_blocker_tag(d: &Decision) -> String {
@@ -205,79 +266,6 @@ fn reviews_line(o: &OrientedState) -> String {
     }
 }
 
-// ── decision block ───────────────────────────────────────────────────
-
-fn decision_block(d: &Decision) -> String {
-    match d {
-        Decision::Execute(action) => action_block("Top action", action),
-        Decision::Halt(DecisionHalt::Success) => {
-            "**Halt:** Success — no advancing actions remain.".into()
-        }
-        Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)) => {
-            "**Halt:** PR merged.".into()
-        }
-        Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => "**Halt:** PR closed.".into(),
-        Decision::Halt(DecisionHalt::AgentNeeded(h)) => {
-            handoff_action_block("Agent needed", "agent", h)
-        }
-        Decision::Halt(DecisionHalt::HumanNeeded(h)) => {
-            handoff_action_block("Human needed", "human", h)
-        }
-    }
-}
-
-fn action_block(prefix: &str, action: &Action) -> String {
-    let auto = match &action.effect {
-        ActionEffect::Full { .. } => "auto".to_owned(),
-        ActionEffect::Wait { interval, .. } => {
-            format!("wait {}s", interval.as_duration().as_secs())
-        }
-        ActionEffect::Agent { .. } => "agent".to_owned(),
-        ActionEffect::Human { .. } => "human".to_owned(),
-    };
-    let effect = match action.target_effect {
-        TargetEffect::Blocks => "blocks",
-        TargetEffect::Advances => "advances",
-        TargetEffect::Neutral => "neutral",
-    };
-    format!(
-        "**{prefix}:** `{kind}` ({auto}, {effect})\n\n{quoted}",
-        kind = action.blocker,
-        quoted = blockquote(&action.rendered_payload()),
-    )
-}
-
-/// Render block for a handoff variant (`AgentNeeded` / `HumanNeeded`).
-/// `automation_label` distinguishes "agent" vs "human" — the
-/// underlying `HandoffAction` shape is identical for both, so the
-/// caller picks the label from the variant being rendered.
-fn handoff_action_block(
-    prefix: &str,
-    automation_label: &str,
-    handoff: &ooda_core::HandoffAction<crate::decide::action::ActionKind>,
-) -> String {
-    let effect = match handoff.target_effect {
-        TargetEffect::Blocks => "blocks",
-        TargetEffect::Advances => "advances",
-        TargetEffect::Neutral => "neutral",
-    };
-    format!(
-        "**{prefix}:** `{kind}` ({auto}, {effect})\n\n{quoted}",
-        kind = handoff.blocker,
-        auto = automation_label,
-        quoted = blockquote(&handoff.prompt.to_string()),
-    )
-}
-
-/// Prefix every line with `> ` so multi-line descriptions render
-/// as a single quote block on GitHub.
-fn blockquote(text: &str) -> String {
-    text.lines()
-        .map(|l| format!("> {l}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn decision_kind_tag(d: &Decision) -> &'static str {
     match d {
         Decision::Execute(_) => "exec",
@@ -291,15 +279,35 @@ fn decision_kind_tag(d: &Decision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decide::action::{Action, ActionEffect, ActionKind, TargetEffect};
+    use crate::decide::action::{ActionEffect, ActionKind, TargetEffect};
     use crate::decide::decision::{Decision, DecisionHalt};
-    use crate::ids::Timestamp;
+    use crate::ids::{BlockerKey, Timestamp};
     use crate::observe::github::pr_view::Mergeable;
     use crate::orient::ci::{
         CheckBucket, CiActivity, CiReport, CiSummary, FailedCheck, ResolvedState,
     };
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestState;
+
+    fn slug() -> RepoSlug {
+        RepoSlug::parse("acme/widget").unwrap()
+    }
+
+    fn pr() -> PullRequestNumber {
+        PullRequestNumber::parse("753").unwrap()
+    }
+
+    fn rebase_action() -> Action {
+        Action {
+            kind: ActionKind::Rebase,
+            effect: ActionEffect::Agent {
+                prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
+            },
+            target_effect: TargetEffect::Blocks,
+            urgency: crate::decide::action::Urgency::BlockingFix,
+            blocker: BlockerKey::tag("rebase-needed"),
+        }
+    }
 
     fn empty_oriented() -> OrientedState {
         OrientedState {
@@ -386,42 +394,99 @@ mod tests {
     }
 
     #[test]
-    fn render_halt_success_yields_concise_block() {
+    fn render_halt_success_yields_terminal_halt_line() {
         let o = empty_oriented();
-        let r = render(&o, &Decision::Halt(DecisionHalt::Success));
-        assert!(r.body.contains("Halt:"));
+        let r = render(
+            &slug(),
+            pr(),
+            Some(7),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::Success),
+        );
+        assert!(r.body.contains("## OODA · acme/widget#753 — iteration 7"));
+        assert!(r.body.contains("**Halt:**"));
         assert!(r.body.contains("Success"));
         assert!(r.dedup_key.contains("halt:success"));
     }
 
     #[test]
-    fn render_action_blockquotes_multiline_description() {
+    fn render_terminal_merged_yields_merged_halt_line() {
         let o = empty_oriented();
-        // Use a no-payload variant to exercise the renderer's
-        // multiline-description path without needing a stub
-        // ReviewThread; AddressThreads' NonEmpty<ReviewThread>
-        // payload would force us to fabricate a thread here.
-        let action = Action {
-            kind: ActionKind::Rebase,
-            effect: ActionEffect::Agent {
-                prompt: ooda_core::HandoffPrompt::new("line one")
-                    .with_paragraph("line two\nline three"),
-            },
-            target_effect: TargetEffect::Blocks,
-            urgency: crate::decide::action::Urgency::BlockingFix,
-            blocker: crate::ids::BlockerKey::tag("rebase-needed"),
-        };
-        let r = render(&o, &Decision::Execute(action));
-        assert!(r.body.contains("> line one"));
-        assert!(r.body.contains("> line two"));
-        assert!(r.body.contains("> line three"));
+        let r = render(
+            &slug(),
+            pr(),
+            Some(3),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)),
+        );
+        assert!(r.body.contains("PR merged"));
+        assert!(r.dedup_key.contains("halt:terminal"));
+    }
+
+    #[test]
+    fn render_execute_action_routes_through_dashboard() {
+        let o = empty_oriented();
+        let action = rebase_action();
+        let r = render(
+            &slug(),
+            pr(),
+            Some(2),
+            &o,
+            std::slice::from_ref(&action),
+            &Decision::Execute(action.clone()),
+        );
+        // Body now goes through the dashboard's status-comment
+        // render — confirm the tier-grouped headline is present
+        // instead of the legacy `Top action:` block.
+        assert!(r.body.contains("## OODA · acme/widget#753 — iteration 2"));
+        assert!(
+            r.body.contains("**Recommended (blocking fix):** Rebase:"),
+            "{}",
+            r.body
+        );
+        assert!(!r.body.contains("Top action"));
+    }
+
+    #[test]
+    fn render_header_omits_iteration_when_absent() {
+        let o = empty_oriented();
+        let r = render(
+            &slug(),
+            pr(),
+            None,
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::Success),
+        );
+        assert!(r.body.starts_with("## OODA · acme/widget#753\n"));
+        assert!(!r.body.contains("iteration"));
     }
 
     #[test]
     fn dedup_key_stable_across_volatile_render_calls() {
         let o = empty_oriented();
-        let r1 = render(&o, &Decision::Halt(DecisionHalt::Success));
-        let r2 = render(&o, &Decision::Halt(DecisionHalt::Success));
+        // Iteration is part of the header but intentionally absent
+        // from the dedup key — re-iterating without structural state
+        // changes must collapse to the same key so the dedup post
+        // path skips the comment.
+        let r1 = render(
+            &slug(),
+            pr(),
+            Some(1),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::Success),
+        );
+        let r2 = render(
+            &slug(),
+            pr(),
+            Some(99),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::Success),
+        );
         assert_eq!(r1.dedup_key, r2.dedup_key);
     }
 }

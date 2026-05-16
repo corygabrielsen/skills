@@ -96,6 +96,7 @@ pub enum ExitCode {
 
 impl ExitCode {
     /// Numeric value the process returns to `$?`.
+    #[must_use]
     pub const fn as_u8(self) -> u8 {
         self as u8
     }
@@ -103,6 +104,7 @@ impl ExitCode {
     /// Stable variant identifier — same string as the Rust
     /// variant name. Used in iter-log lines, manifest fields, and
     /// per-binary help text generation.
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::DoneSucceeded => "DoneSucceeded",

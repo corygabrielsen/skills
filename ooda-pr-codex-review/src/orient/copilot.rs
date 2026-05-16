@@ -819,6 +819,10 @@ fn compute_in_flight_health(
     }
 
     let tail: &CopilotReviewRound = rounds_h[tail_idx];
+    // Intentional exhaustive match per axis pattern; Resolved and
+    // Healthy are kept distinct for spec clarity even though both
+    // collapse to `Healthy` at the tail.
+    #[allow(clippy::match_same_arms)]
     match seal(tail, None, now) {
         Sealed::Resolved => InFlightHealth::Healthy,
         Sealed::Healthy => InFlightHealth::Healthy,

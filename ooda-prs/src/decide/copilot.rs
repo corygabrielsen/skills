@@ -191,7 +191,7 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
         ),
     };
     let mut prompt = ooda_core::HandoffPrompt::new(headline);
-    prompt.push_paragraph(format!("Requested at: {}.", timing.requested_at,));
+    prompt.push_paragraph(format!("Requested at: {}.", timing.requested_at));
     if let Some(ack_at) = timing.ack_at {
         prompt.push_paragraph(format!("Ack at: {ack_at}."));
     }
@@ -389,6 +389,9 @@ mod tests {
     /// `CopilotActivity` variant OR a new `InFlightHealth` variant
     /// fails to compile here until a new arm is added.
     fn expected_copilot_baseline_behavior(activity: &CopilotActivity) -> CopilotBaselineBehavior {
+        // Intentional exhaustive match per axis pattern; arms are
+        // duplicated for spec clarity.
+        #[allow(clippy::match_same_arms)]
         match activity {
             CopilotActivity::Idle => CopilotBaselineBehavior::NoCandidate,
             CopilotActivity::Requested {

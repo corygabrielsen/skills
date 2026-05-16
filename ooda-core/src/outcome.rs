@@ -81,6 +81,7 @@ impl<K> Outcome<K> {
     /// numeric values live in exactly one place
     /// (`exit_code.rs`). Convert via `u8::from(_)` /
     /// `i32::from(_)` when handing to `std::process::exit`.
+    #[must_use]
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::DoneSucceeded => ExitCode::DoneSucceeded,

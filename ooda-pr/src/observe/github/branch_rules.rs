@@ -62,7 +62,7 @@ mod tests {
 
         let copilot = &rules[1];
         assert_eq!(copilot.rule_type, "copilot_code_review");
-        assert_eq!(copilot.ruleset_id, 12592595);
+        assert_eq!(copilot.ruleset_id, 12_592_595);
     }
 
     #[test]

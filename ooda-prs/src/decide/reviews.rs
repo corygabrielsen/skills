@@ -161,7 +161,7 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
                 .as_ref()
                 .map(Timestamp::to_string)
                 .unwrap_or_else(|| "unknown time".to_string());
-            let label = SingleLineString::new(format!("{} @ {when}", h.author,));
+            let label = SingleLineString::new(format!("{} @ {when}", h.author));
             let body = if h.body.trim().is_empty() {
                 "   > (review body was empty)".to_string()
             } else {
@@ -810,6 +810,9 @@ mod tests {
     /// Exhaustive over `Option<ReviewDecision>`. The compiler
     /// enforces that every variant has an explicit behavior arm.
     fn expected_review_axis_behavior(decision: Option<ReviewDecision>) -> ReviewAxisBehavior {
+        // Intentional exhaustive match per axis pattern; arms are
+        // duplicated for spec clarity.
+        #[allow(clippy::match_same_arms)]
         match decision {
             None => ReviewAxisBehavior::NoBlocker,
             Some(ReviewDecision::Approved) => ReviewAxisBehavior::NoBlocker,

@@ -14,6 +14,9 @@ pub const WIP_LABEL: &str = "work in progress";
 const MERGE_WHEN_READY_LABEL: &str = "merge-when-ready";
 const CONTENT_LABELS: &[&str] = &["bug", "enhancement"];
 
+// Each bool represents a distinct mergeability axis; restructuring
+// would obscure the GitHub API mapping.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PullRequestState {
     pub conflict: Mergeable,

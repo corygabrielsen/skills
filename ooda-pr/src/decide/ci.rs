@@ -38,6 +38,10 @@ pub fn candidates(report: &CiReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     let summary = &report.summary;
 
+    // Intentional exhaustive match per axis pattern; the Idle and
+    // AllGreen arms are kept distinct for spec clarity even though
+    // both emit no candidate.
+    #[allow(clippy::match_same_arms)]
     match &report.activity {
         CiActivity::Idle => {
             // No required checks observed; nothing to emit. The
@@ -594,6 +598,9 @@ mod tests {
     /// exhaustive over both CheckHealth and CiActivity — adding a
     /// new variant requires a new arm here.
     fn expected_ci_baseline_behavior(activity: &CiActivity) -> CiBaselineBehavior {
+        // Intentional exhaustive match per axis pattern; arms are
+        // duplicated for spec clarity.
+        #[allow(clippy::match_same_arms)]
         match activity {
             CiActivity::Idle => CiBaselineBehavior::NoCandidate,
             CiActivity::Resolved(ResolvedState::AllGreen) => CiBaselineBehavior::NoCandidate,

@@ -316,15 +316,15 @@ impl Recorder {
                     action,
                     "application/json",
                 )?),
-                Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(handoff))
-                | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(handoff)) => {
-                    Some(inner.write_json_artifact(
-                        Some(iteration),
-                        "action.json",
-                        handoff,
-                        "application/json",
-                    )?)
-                }
+                Decision::Halt(
+                    crate::decide::decision::DecisionHalt::AgentNeeded(handoff)
+                    | crate::decide::decision::DecisionHalt::HumanNeeded(handoff),
+                ) => Some(inner.write_json_artifact(
+                    Some(iteration),
+                    "action.json",
+                    handoff,
+                    "application/json",
+                )?),
                 Decision::Halt(_) => None,
             };
             if let Some(action_ref) = &action_ref {
@@ -1051,7 +1051,7 @@ fn action_projection(action: &Action) -> Value {
 fn handoff_action_summary(
     handoff: &ooda_core::HandoffAction<crate::decide::action::ActionKind>,
 ) -> String {
-    format!("{} blocker: {}", handoff.kind.name(), handoff.blocker,)
+    format!("{} blocker: {}", handoff.kind.name(), handoff.blocker)
 }
 
 fn handoff_action_projection(

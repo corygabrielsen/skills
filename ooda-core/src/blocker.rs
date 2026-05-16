@@ -34,6 +34,10 @@ impl BlockerKey {
     /// Validating constructor for arbitrary input. Use when the
     /// value comes from user-controlled or computed text where
     /// emptiness is possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlockerKeyError`] if the input is empty.
     pub fn parse(s: impl Into<String>) -> Result<Self, BlockerKeyError> {
         let s = s.into();
         if s.is_empty() {
@@ -48,12 +52,18 @@ impl BlockerKey {
     /// the caller, not user input). `Self` return signals
     /// "construction is intended to succeed" where
     /// `parse(...).expect(...)` would suggest a fallible op.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the input is empty.
+    #[must_use]
     pub fn tag(s: impl Into<String>) -> Self {
         let s = s.into();
         assert!(!s.is_empty(), "BlockerKey::tag called with empty string");
         Self(s)
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

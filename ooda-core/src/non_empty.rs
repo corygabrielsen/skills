@@ -33,6 +33,7 @@ impl<T> NonEmpty<T> {
 
     /// Try to construct from a `Vec<T>`. Returns `None` if the
     /// input is empty; otherwise the input is moved in unchanged.
+    #[must_use]
     pub fn try_from_vec(v: Vec<T>) -> Option<Self> {
         if v.is_empty() { None } else { Some(Self(v)) }
     }
@@ -43,6 +44,7 @@ impl<T> NonEmpty<T> {
     }
 
     /// First element. The `len ≥ 1` invariant makes this total.
+    #[must_use]
     pub fn first(&self) -> &T {
         &self.0[0]
     }
@@ -52,11 +54,18 @@ impl<T> NonEmpty<T> {
     /// own types. Most callers can just use `.len()` (via the
     /// `Deref<Target = [T]>` impl) for a `usize` and rely on the
     /// type-level guarantee that it's `≥ 1`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `NonEmpty` invariant is violated — which is
+    /// statically impossible through the public API.
+    #[must_use]
     pub fn nonzero_len(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.0.len()).expect("NonEmpty invariant violated: inner Vec is empty")
     }
 
     /// Borrow as a `&[T]` slice.
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.0
     }
@@ -80,6 +89,7 @@ impl<T> NonEmpty<T> {
     /// safe without an `Option` wrap (in contrast to slice's
     /// `last()`, which Deref still exposes for callers that prefer
     /// the slice signature).
+    #[must_use]
     pub fn last(&self) -> &T {
         // SAFETY-equivalent at the type level: `len ≥ 1` ⇒
         // `len - 1 ≥ 0` is a valid index. The slice version
@@ -95,6 +105,11 @@ impl<T> NonEmpty<T> {
     /// Useful for building a `NonEmpty<U>` from an iteration that
     /// can fail (e.g. observe-layer fetchers that return `io::Result`
     /// per element).
+    ///
+    /// # Errors
+    ///
+    /// Short-circuits and returns the first `Err(E)` produced by
+    /// `f`; otherwise returns `Ok` with the mapped collection.
     pub fn try_map<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<NonEmpty<U>, E> {
         let len = self.0.len();
         let mut out = Vec::with_capacity(len);

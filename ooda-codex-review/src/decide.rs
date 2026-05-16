@@ -67,7 +67,12 @@ pub fn decide(oriented: &OrientedState) -> Decision {
         BatchState::Complete { verdicts } => {
             let has_issues_count = verdicts
                 .iter()
-                .filter(|v| matches!(v.class, VerdictClass::HasIssues))
+                .filter(|v| {
+                    matches!(
+                        v.class,
+                        VerdictClass::HasIssues | VerdictClass::Indeterminate
+                    )
+                })
                 .count() as u32;
             mk_address_batch(oriented.current_level, has_issues_count)
         }

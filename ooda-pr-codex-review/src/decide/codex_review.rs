@@ -45,7 +45,9 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
                     )
                 })
                 .collect();
-            let count = issues.len() as u32;
+            // Codex-review issue count fits in u32: per-batch verdicts
+            // are bounded by the batch fan-out (well under 4B).
+            let count = u32::try_from(issues.len()).expect("codex issue count fits in u32");
             vec![mk_address(*level, count, &issues)]
         }
     }

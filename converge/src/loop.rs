@@ -77,17 +77,15 @@ fn iter_key(action: &Action, report: &FitnessReport) -> String {
     blockers.sort();
     let blocker_str = blockers.join("|");
 
-    let activity = report
-        .activity_state
-        .as_ref()
-        .map(|m| stable_json(&serde_json::Value::Object(m.clone())))
-        .unwrap_or_else(|| "{}".to_string());
+    let activity = report.activity_state.as_ref().map_or_else(
+        || "{}".to_string(),
+        |m| stable_json(&serde_json::Value::Object(m.clone())),
+    );
 
     let type_digest = action
         .r#type
         .as_ref()
-        .map(stable_json)
-        .unwrap_or_else(|| "null".to_string());
+        .map_or_else(|| "null".to_string(), stable_json);
 
     format!(
         "{}\0{}\0{}\0{}",
@@ -124,7 +122,12 @@ fn make_halt(
     }
 }
 
-pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport, String> {
+// Flat observe→decide→act loop with one-shot poll, full execution, and
+// halt branches. Length IS the spec; each block names its phase inline
+// (observe, classify, dispatch, repeat). Splitting into helpers would
+// shred the loop invariants across files.
+#[allow(clippy::too_many_lines)]
+pub fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport, String> {
     let mut session = Session::open(&opts.session_id)?;
 
     let mut hook = opts
@@ -134,7 +137,9 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
         .transpose()
         .map_err(|e| format!("cannot spawn hook: {e}"))?;
 
-    let start_iter = session.history.len() as u32 + 1;
+    // Iteration history length fits in u32: max_iter is u32-bounded
+    // and the loop terminates well before usize overflow could occur.
+    let start_iter = u32::try_from(session.history.len()).expect("history length fits in u32") + 1;
     let mut iter = start_iter - 1;
     let mut last_score: Option<f64> = session.history.last().map(|h| h.score);
     let mut last_report: Option<FitnessReport> = None;
@@ -152,8 +157,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
         session.write_halt(&halt)?;
         let score_str = halt
             .final_score
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "?".to_string());
+            .map_or_else(|| "?".to_string(), |s| s.to_string());
         eprintln!(
             "halt {:?} iter {} score={}",
             halt.status, halt.iterations, score_str
@@ -181,7 +185,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
 
     while poll_count < max_polls {
         if cancelled.load(Ordering::Relaxed) {
-            let halt = make_halt(HaltStatus::Cancelled, &session, &opts, iter, last_score);
+            let halt = make_halt(HaltStatus::Cancelled, &session, opts, iter, last_score);
             return finalize(halt, &session, &mut hook, &last_report);
         }
         poll_count += 1;
@@ -192,12 +196,12 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
         let report = match fitness::invoke(&opts.fitness_argv, cancelled) {
             Ok(r) => r,
             Err(fitness::FitnessError::Cancelled) => {
-                let halt = make_halt(HaltStatus::Cancelled, &session, &opts, iter, last_score);
+                let halt = make_halt(HaltStatus::Cancelled, &session, opts, iter, last_score);
                 return finalize(halt, &session, &mut hook, &last_report);
             }
             Err(fitness::FitnessError::Permanent(msg)) => {
                 let mut halt =
-                    make_halt(HaltStatus::FitnessUnavailable, &session, &opts, iter, None);
+                    make_halt(HaltStatus::FitnessUnavailable, &session, opts, iter, None);
                 halt.cause = Some(ErrorCause {
                     source: "fitness".to_string(),
                     message: msg.clone(),
@@ -209,7 +213,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
             Err(fitness::FitnessError::Transient(msg)) => {
                 // Should not reach here (invoke retries internally), but handle.
                 let mut halt =
-                    make_halt(HaltStatus::FitnessUnavailable, &session, &opts, iter, None);
+                    make_halt(HaltStatus::FitnessUnavailable, &session, opts, iter, None);
                 halt.cause = Some(ErrorCause {
                     source: "fitness".to_string(),
                     message: msg.clone(),
@@ -235,7 +239,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
             let mut halt = make_halt(
                 HaltStatus::Success,
                 &session,
-                &opts,
+                opts,
                 iter,
                 Some(report.score),
             );
@@ -249,7 +253,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
             let mut halt = make_halt(
                 HaltStatus::Terminal,
                 &session,
-                &opts,
+                opts,
                 iter,
                 Some(report.score),
             );
@@ -260,18 +264,15 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
             return finalize(halt, &session, &mut hook, &last_report);
         }
 
-        let action = match action {
-            None => {
-                let halt = make_halt(
-                    HaltStatus::Stalled,
-                    &session,
-                    &opts,
-                    iter,
-                    Some(report.score),
-                );
-                return finalize(halt, &session, &mut hook, &last_report);
-            }
-            Some(a) => a,
+        let Some(action) = action else {
+            let halt = make_halt(
+                HaltStatus::Stalled,
+                &session,
+                opts,
+                iter,
+                Some(report.score),
+            );
+            return finalize(halt, &session, &mut hook, &last_report);
         };
 
         // Iteration key dedup.
@@ -286,7 +287,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
                 let halt = make_halt(
                     HaltStatus::Timeout,
                     &session,
-                    &opts,
+                    opts,
                     iter - 1,
                     Some(report.score),
                 );
@@ -324,7 +325,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
                 let execute = action.execute.as_deref().unwrap_or_default();
                 if execute.is_empty() {
                     let mut halt =
-                        make_halt(HaltStatus::Error, &session, &opts, iter, Some(report.score));
+                        make_halt(HaltStatus::Error, &session, opts, iter, Some(report.score));
                     halt.cause = Some(ErrorCause {
                         source: "execute".to_string(),
                         message: "full action has empty execute argv".to_string(),
@@ -344,7 +345,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
                     Ok(status) if status.success() => {}
                     Ok(status) => {
                         let mut halt =
-                            make_halt(HaltStatus::Error, &session, &opts, iter, Some(report.score));
+                            make_halt(HaltStatus::Error, &session, opts, iter, Some(report.score));
                         halt.cause = Some(ErrorCause {
                             source: "execute".to_string(),
                             message: format!(
@@ -359,7 +360,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
                     }
                     Err(e) => {
                         let mut halt =
-                            make_halt(HaltStatus::Error, &session, &opts, iter, Some(report.score));
+                            make_halt(HaltStatus::Error, &session, opts, iter, Some(report.score));
                         halt.cause = Some(ErrorCause {
                             source: "execute".to_string(),
                             message: format!("spawn failed: {e}"),
@@ -374,7 +375,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
                 let mut halt = make_halt(
                     HaltStatus::AgentNeeded,
                     &session,
-                    &opts,
+                    opts,
                     iter,
                     Some(report.score),
                 );
@@ -383,12 +384,16 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
             }
             Automation::Wait => {
                 let secs = action.next_poll_seconds.unwrap_or(60.0);
-                let ms = (secs * 1000.0) as u64;
+                // Wait interval comes from the fitness skill as positive
+                // seconds; clamp at 0 to handle negative/NaN. The cast
+                // saturates at u64::MAX, which is unreachable for any
+                // realistic delay (centuries of milliseconds).
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let ms = (secs * 1000.0).max(0.0) as u64;
                 interruptible_sleep(ms, cancelled)?;
             }
             Automation::Human => {
-                let mut halt =
-                    make_halt(HaltStatus::Hil, &session, &opts, iter, Some(report.score));
+                let mut halt = make_halt(HaltStatus::Hil, &session, opts, iter, Some(report.score));
                 halt.action = Some(action.clone());
                 return finalize(halt, &session, &mut hook, &last_report);
             }
@@ -396,7 +401,7 @@ pub fn converge(opts: ConvergeOpts, cancelled: &AtomicBool) -> Result<HaltReport
     }
 
     // Poll cap exhausted.
-    let halt = make_halt(HaltStatus::Timeout, &session, &opts, iter, last_score);
+    let halt = make_halt(HaltStatus::Timeout, &session, opts, iter, last_score);
     finalize(halt, &session, &mut hook, &last_report)
 }
 

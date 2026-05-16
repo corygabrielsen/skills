@@ -64,12 +64,13 @@ pub fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport {
     // complete-and-clean for the current head SHA.
     let mut current_level_observation: Option<&CodexLevelObservation> = None;
     for lvl_obs in &obs.levels {
-        match &lvl_obs.batch_state {
-            BatchState::Complete { verdicts } if all_clean(verdicts) => continue,
-            _ => {
-                current_level_observation = Some(lvl_obs);
-                break;
-            }
+        let is_clean_complete = matches!(
+            &lvl_obs.batch_state,
+            BatchState::Complete { verdicts } if all_clean(verdicts)
+        );
+        if !is_clean_complete {
+            current_level_observation = Some(lvl_obs);
+            break;
         }
     }
 

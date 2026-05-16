@@ -27,13 +27,13 @@ use super::bot_threads::{BotThreadSummary, count_bot_threads};
 // ── Identity ─────────────────────────────────────────────────────────
 
 /// Canonical login string for adding Copilot as a reviewer (POST
-/// requested_reviewers). The `[bot]` suffix variant is the only
+/// `requested_reviewers`). The `[bot]` suffix variant is the only
 /// form the write API accepts.
 pub const COPILOT_REVIEWER_LOGIN: &str = "copilot-pull-request-reviewer[bot]";
 
 /// Every known Copilot login variant. GitHub returns different
 /// strings on different API surfaces (REST reviews vs GraphQL vs
-/// requested_reviewers); we accept all of them on read.
+/// `requested_reviewers`); we accept all of them on read.
 const COPILOT_LOGINS: &[&str] = &[
     COPILOT_REVIEWER_LOGIN,
     "Copilot",
@@ -205,7 +205,7 @@ impl CopilotTier {
     /// Lowercase, stable slug for use in user-facing strings and
     /// blocker keys. Coupled to the variant *names* in the type
     /// contract — renaming a variant requires updating this impl.
-    pub fn slug(&self) -> &'static str {
+    pub fn slug(self) -> &'static str {
         match self {
             Self::Bronze => "bronze",
             Self::Silver => "silver",
@@ -479,7 +479,9 @@ fn correlate_rounds(
     // timestamps — preserve insertion order).
     rounds.sort_by_key(|r| r.requested_at);
     for (i, r) in rounds.iter_mut().enumerate() {
-        r.round = i as u32 + 1;
+        // Review-round count fits in u32 by construction: bounded by
+        // GitHub's per-PR review history (orders of magnitude < 4B).
+        r.round = u32::try_from(i).expect("review round index fits in u32") + 1;
     }
     rounds
 }
@@ -643,8 +645,7 @@ fn bare_stage(
     {
         let req_at = latest_request
             .filter(|r| r.at <= ack.at)
-            .map(|r| r.at)
-            .unwrap_or_else(|| ack.at);
+            .map_or_else(|| ack.at, |r| r.at);
         return BareStage::Working {
             requested_at: req_at,
             ack_at: ack.at,
@@ -661,9 +662,7 @@ fn bare_stage(
             // guard halted Stalled. Treat as Requested (waiting for
             // ack) so the loop emits WaitForCopilotAck instead.
             if currently_pending(requested) {
-                let req_at = latest_request
-                    .map(|r| r.at)
-                    .unwrap_or_else(|| latest.requested_at);
+                let req_at = latest_request.map_or_else(|| latest.requested_at, |r| r.at);
                 return BareStage::Requested {
                     requested_at: req_at,
                 };
@@ -707,10 +706,10 @@ fn bare_stage(
         // Success while Copilot review is pending. The Requested
         // activity is what matters; downstream consumers don't
         // anchor on the requested_at timestamp.
-        let requested_at = timeline
-            .last()
-            .map(|p| p.at)
-            .unwrap_or_else(|| Timestamp::parse("1970-01-01T00:00:00Z").unwrap());
+        let requested_at = timeline.last().map_or_else(
+            || Timestamp::parse("1970-01-01T00:00:00Z").unwrap(),
+            |p| p.at,
+        );
         return BareStage::Requested { requested_at };
     }
     BareStage::Idle
@@ -1175,7 +1174,7 @@ mod tests {
             req_event("2026-04-23T10:00:00Z", "Copilot"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
-        let revs = vec![copilot_review(
+        let reviews = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
@@ -1187,8 +1186,15 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot_test(enabled(), &events, &revs, &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r = orient_copilot_test(
+            enabled(),
+            &events,
+            &reviews,
+            &empty_threads(),
+            &reqs,
+            &head(),
+        )
+        .unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Requested { .. }),
             "Reviewed + currently_pending must be Requested (re-request just fired), got {:?}",
@@ -1370,7 +1376,7 @@ mod tests {
         // Two rounds expected: the synthetic pre-request round
         // (with reviewed_at) and the real request round (with ack
         // but no review yet).
-        let revs = vec![copilot_review(
+        let reviews = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:00:00Z",
             "generated 1 comment.",
@@ -1386,8 +1392,15 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot_test(enabled(), &events, &revs, &empty_threads(), &reqs, &head())
-            .unwrap();
+        let r = orient_copilot_test(
+            enabled(),
+            &events,
+            &reviews,
+            &empty_threads(),
+            &reqs,
+            &head(),
+        )
+        .unwrap();
         assert_eq!(r.rounds.len(), 2);
         assert!(r.rounds[0].reviewed_at.is_some());
         assert!(r.rounds[0].ack_at.is_none());

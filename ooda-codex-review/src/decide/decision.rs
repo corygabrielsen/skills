@@ -8,7 +8,7 @@
 //! See [`ooda_core::decision`] for the three-layered halt taxonomy
 //! and per-variant rationale. `Terminal::Succeeded` covers the
 //! codex-review ladder's fixed-point terminal state; the binary's
-//! stderr renderer maps it to "DoneFixedPoint" for caller-visible
+//! stderr renderer maps it to "`DoneFixedPoint`" for caller-visible
 //! output.
 
 use super::action::ActionKind;

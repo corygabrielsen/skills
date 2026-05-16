@@ -68,7 +68,7 @@ pub struct OrientedState {
     /// Codex review axis. `None` when `--codex-review-ceiling off`
     /// (or unset) — produces ooda-pr-equivalent behavior. `Some`
     /// when the axis is enabled, carrying the ladder slice's current
-    /// status (Spawn / Await / Address / LadderSatisfied) plus the
+    /// status (Spawn / Await / Address / `LadderSatisfied`) plus the
     /// directory + head SHA the spawn/scan layers need.
     pub codex_review: Option<CodexReviewReport>,
     /// Merge-base delta surfaced as-is from observe — pure

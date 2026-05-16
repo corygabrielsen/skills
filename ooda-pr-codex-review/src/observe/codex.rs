@@ -5,7 +5,7 @@
 //! orient surface on top of `/ooda-pr`. Per-PR codex state lives
 //! under the recorder's `pr_root/codex/` subtree, with one batch
 //! directory per `(reasoning_level, head_sha)` pair. Stale batches
-//! (mismatched head_sha.txt) are reported as `NotStarted` so the
+//! (mismatched `head_sha.txt`) are reported as `NotStarted` so the
 //! runner re-spawns at the current PR head.
 
 pub mod batch;

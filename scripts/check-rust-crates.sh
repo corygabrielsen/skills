@@ -80,8 +80,8 @@ for crate in "${sorted_crates[@]}"; do
             (cd "$crate" && cargo fmt --check)
             ;;
         clippy)
-            echo "==> $crate: cargo clippy --all-targets --all-features -- -D warnings"
-            (cd "$crate" && cargo clippy --all-targets --all-features -- -D warnings)
+            echo "==> $crate: cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic"
+            (cd "$crate" && cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic)
             ;;
         test)
             echo "==> $crate: cargo test --quiet"

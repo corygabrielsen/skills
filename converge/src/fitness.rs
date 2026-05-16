@@ -52,7 +52,7 @@ fn classify_stderr(stderr: &str) -> FitnessError {
 /// Invoke the fitness skill with retry/backoff. Returns the parsed report
 /// or a classified error. `cancelled` is checked between attempts.
 pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, FitnessError> {
-    let (cmd, args) = argv
+    let (cmd, cmd_args) = argv
         .split_first()
         .ok_or_else(|| FitnessError::Permanent("empty fitness argv".to_string()))?;
 
@@ -64,7 +64,7 @@ pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, 
         }
 
         let output = Command::new(cmd)
-            .args(args)
+            .args(cmd_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -83,7 +83,7 @@ pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, 
         };
 
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        last_stderr = stderr.clone();
+        last_stderr.clone_from(&stderr);
 
         if output.status.success() {
             let report: FitnessReport = serde_json::from_slice(&output.stdout)
@@ -93,7 +93,7 @@ pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, 
 
         let err = classify_stderr(&stderr);
         match &err {
-            FitnessError::Permanent(_) => return Err(err),
+            FitnessError::Permanent(_) | FitnessError::Cancelled => return Err(err),
             FitnessError::Transient(_) => {
                 if attempt == MAX_ATTEMPTS {
                     return Err(FitnessError::Permanent(format!(
@@ -102,7 +102,6 @@ pub fn invoke(argv: &[String], cancelled: &AtomicBool) -> Result<FitnessReport, 
                 }
                 sleep_backoff(attempt, cancelled)?;
             }
-            FitnessError::Cancelled => return Err(err),
         }
     }
 

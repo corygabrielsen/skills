@@ -46,9 +46,8 @@ pub fn fetch_copilot_config(
             .collect();
 
         for h in handles {
-            match h.join().expect("fetch_ruleset panicked")? {
-                Some(params) => return Ok(Some(params)),
-                None => continue,
+            if let Some(params) = h.join().expect("fetch_ruleset panicked")? {
+                return Ok(Some(params));
             }
         }
         Ok(None)

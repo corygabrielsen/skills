@@ -29,7 +29,7 @@ use crate::orient::state::WIP_LABEL;
 
 #[derive(Debug)]
 pub enum ActError {
-    /// Decide guarantees act() only sees Full or Wait actions; an
+    /// Decide guarantees `act()` only sees Full or Wait actions; an
     /// Agent or Human action here is a programmer error.
     UnsupportedAutomation,
     /// `gh` subprocess failed for a Full action.
@@ -145,7 +145,7 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
             // Iterate every degraded check; each carries its own
             // workflow run handle. Fail-fast on the first GH error —
             // the next iteration re-observes from scratch.
-            for c in checks.iter() {
+            for c in checks {
                 ci::rerun_workflow(&ctx.slug, &c.run_id)?;
             }
         }

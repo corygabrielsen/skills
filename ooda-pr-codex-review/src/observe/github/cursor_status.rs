@@ -1,11 +1,11 @@
-//! Typed view of the Cursor Bugbot check_suite + child check_run on
+//! Typed view of the Cursor Bugbot `check_suite` + child `check_run` on
 //! the current HEAD.
 //!
 //! Two endpoints, fused at observe boundary:
 //!   1. `GET /repos/{o}/{r}/commits/{sha}/check-suites` filtered by
 //!      `app.slug == "cursor"` — needed to detect the canonical
-//!      Cursor stall (a `queued` check_suite that never spawns a
-//!      child check_run). `gh pr checks` aggregates by check name
+//!      Cursor stall (a `queued` `check_suite` that never spawns a
+//!      child `check_run`). `gh pr checks` aggregates by check name
 //!      and cannot see this state — the suite has no name.
 //!   2. `GET /repos/{o}/{r}/commits/{sha}/check-runs?check_name=Cursor%20Bugbot`
 //!      — once the suite spawns a run, this carries the per-run
@@ -28,7 +28,7 @@ use super::gh::{GhError, gh_json};
 /// `feedback-domain-shapes-design`).
 const CURSOR_APP_SLUG: &str = "cursor";
 
-/// Display name of Cursor's check_run. Stable in their docs;
+/// Display name of Cursor's `check_run`. Stable in their docs;
 /// reproduced here for the `check_name=` query filter.
 const CURSOR_CHECK_RUN_NAME: &str = "Cursor Bugbot";
 
@@ -71,8 +71,8 @@ struct CheckRunWire {
     started_at: Option<Timestamp>,
 }
 
-/// `status` field on a check_suite. Cursor's stall signature is a
-/// suite stuck in `Queued` with no child check_run ever appearing.
+/// `status` field on a `check_suite`. Cursor's stall signature is a
+/// suite stuck in `Queued` with no child `check_run` ever appearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckSuiteStatus {
@@ -83,8 +83,8 @@ pub enum CheckSuiteStatus {
     Unknown,
 }
 
-/// `status` field on a check_run. Modeled separately from the
-/// check_suite status because the two carry semantically different
+/// `status` field on a `check_run`. Modeled separately from the
+/// `check_suite` status because the two carry semantically different
 /// state — a `completed` suite can host a `queued` run (rare) or
 /// vice versa during eventual-consistency windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -98,7 +98,7 @@ pub enum CheckRunStatus {
     Unknown,
 }
 
-/// `conclusion` field on a `completed` check_run. Modeled separately
+/// `conclusion` field on a `completed` `check_run`. Modeled separately
 /// from `CheckState::Conclusion`/`WorkflowRunConclusion` because
 /// Cursor's neutral disambiguation logic reads this as a domain
 /// signal — not just a pass/fail bucket.
@@ -119,14 +119,14 @@ pub enum CheckRunConclusion {
 }
 
 /// Fused Cursor signal on the current HEAD. `None` for `suite` means
-/// Cursor has not opened a check_suite for this commit — the orient
+/// Cursor has not opened a `check_suite` for this commit — the orient
 /// axis interprets that against the PR author to distinguish
 /// "Cursor declined this PR" from "Cursor not active in this repo".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CursorStatus {
-    /// `None` when Cursor has not opened a check_suite on this HEAD.
+    /// `None` when Cursor has not opened a `check_suite` on this HEAD.
     pub suite: Option<CursorCheckSuite>,
-    /// `None` when no child check_run exists. The suite may still
+    /// `None` when no child `check_run` exists. The suite may still
     /// exist (this is the canonical stall pattern). At most one run
     /// per suite — Cursor produces a single Bugbot run, not a fan-out.
     pub run: Option<CursorCheckRun>,
@@ -151,7 +151,7 @@ pub struct CursorCheckRun {
     pub started_at: Option<Timestamp>,
 }
 
-/// Fetch the Cursor check_suite and check_run (if any) for `head`.
+/// Fetch the Cursor `check_suite` and `check_run` (if any) for `head`.
 /// Two REST calls in series — the suite alone tells us "is Cursor
 /// active at all on this HEAD"; the run carries the per-run timing
 /// when present. Bounded N (≤1 suite, ≤1 run per suite for Cursor).

@@ -16,7 +16,7 @@ pub struct BotThreadSummary {
     /// Threads that are `is_resolved=false` AND `is_outdated=true` —
     /// GitHub flagged the anchor line as moved by a rebase/amend.
     /// Surfaced for diagnostics (e.g., fitness comment) but excluded
-    /// from `unresolved` so they do not drive AddressThreads actions.
+    /// from `unresolved` so they do not drive `AddressThreads` actions.
     pub outdated: u32,
     /// Thread has any non-bot comment authored strictly after
     /// `latest_reviewed_at` — the bot hasn't observed it.

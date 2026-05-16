@@ -86,7 +86,7 @@ pub struct VerdictRecord {
 /// at the current head. This is the entire mechanism that lets a
 /// pushed fix invalidate prior codex verdicts.
 ///
-/// Three-way logic once head_sha matches:
+/// Three-way logic once `head_sha` matches:
 ///   - 0 files                 → `NotStarted`
 ///   - completed < expected    → `Running { total, completed }`
 ///   - completed == expected   → `Complete { verdicts }`
@@ -124,7 +124,7 @@ pub fn scan_batch(
     let mut log_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
     let mut exit_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
 
-    for entry in read_dir.filter_map(|e| e.ok()) {
+    for entry in read_dir.filter_map(std::result::Result::ok) {
         let path = entry.path();
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
@@ -157,7 +157,7 @@ pub fn scan_batch(
     }
 
     let mut verdicts = Vec::with_capacity(log_paths.len());
-    for (&slot, p) in log_paths.iter() {
+    for (&slot, p) in &log_paths {
         let body_text = fs::read_to_string(p)?;
         let extracted = verdict::extract_verdict(&body_text);
         if let Some(exit_path) = exit_paths.get(&slot) {
@@ -193,8 +193,9 @@ pub fn scan_batch(
         }
     }
 
-    let total = log_paths.len() as u32;
-    let completed = verdicts.len() as u32;
+    // Batch fan-out is bounded (per-iteration N reviewers); u32 fits.
+    let total = u32::try_from(log_paths.len()).expect("batch log count fits in u32");
+    let completed = u32::try_from(verdicts.len()).expect("batch verdict count fits in u32");
     if completed == expected {
         Ok(BatchState::Complete { verdicts })
     } else {

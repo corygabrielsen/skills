@@ -88,7 +88,7 @@ impl Default for LoopConfig {
 }
 
 /// One iteration's typed outcome. The loop body produces either
-/// an early-halt (Decision::Halt or stall-detected) or a completed
+/// an early-halt (`Decision::Halt` or stall-detected) or a completed
 /// Execute that we keep as the running "last attempted" anchor.
 enum IterStep {
     Halt(HaltReason),
@@ -196,7 +196,7 @@ fn run_iter(
             recorder.record_action_end(
                 iter,
                 &action,
-                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
+                act_result.as_ref().copied().map_err(ToString::to_string),
             );
             act_result.map_err(LoopError::Act)?;
             return Ok(IterStep::Executed(action));
@@ -258,7 +258,7 @@ fn run_iter(
             recorder.record_action_end(
                 iter,
                 &action,
-                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
+                act_result.as_ref().copied().map_err(ToString::to_string),
             );
             act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))

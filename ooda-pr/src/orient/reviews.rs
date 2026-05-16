@@ -333,7 +333,7 @@ mod tests {
             path: String::new(),
             line: None,
             comments: ThreadComments {
-                page_info: Default::default(),
+                page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse("alice").unwrap(),
@@ -498,14 +498,14 @@ mod tests {
             .pending_reviews
             .bots
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert_eq!(bot_strs, vec!["dependabot[bot]", "copilot[bot]"]);
         let human_strs: Vec<String> = s
             .pending_reviews
             .humans
             .iter()
-            .map(|r| r.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert_eq!(human_strs, vec!["alice", "backend", "ghost"]);
     }
@@ -614,14 +614,14 @@ mod tests {
             .requested_reviewers
             .bots
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert_eq!(bot_strs, vec!["dependabot[bot]", "copilot[bot]"]);
         let human_strs: Vec<String> = s
             .requested_reviewers
             .humans
             .iter()
-            .map(|r| r.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert_eq!(human_strs, vec!["alice", "ghost", "backend"]);
         assert!(!s.requested_reviewers.is_empty());

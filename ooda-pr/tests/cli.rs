@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const BIN: &str = env!("CARGO_BIN_EXE_ooda-pr");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Run the binary with `args` and return (exit_code, stdout, stderr).
+/// Run the binary with `args` and return (`exit_code`, stdout, stderr).
 fn run(args: &[&str]) -> (i32, String, String) {
     let root = temp_path("state");
     let out = command(args)

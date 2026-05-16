@@ -1,4 +1,4 @@
-//! Cursor orient: project Cursor's check_suite + check_run + reviews
+//! Cursor orient: project Cursor's `check_suite` + `check_run` + reviews
 //! into the per-PR Cursor activity state.
 //!
 //! ## Why this axis diverges
@@ -9,16 +9,16 @@
 //! (no `review_requested` event), has no remediation API (cannot
 //! re-poke a stalled suite — posting a `cursor review` comment
 //! doesn't unstick Cursor's own backend queue), and has first-class
-//! non-presence states (NotApplicable, Skipped) because Cursor
+//! non-presence states (`NotApplicable`, Skipped) because Cursor
 //! explicitly declines some PRs server-side (Dependabot author
 //! class, repo opt-out). See feedback-domain-shapes-design memory:
 //! when domains diverge, don't force a meta-structure across axes.
 //!
 //! Concretely, that means no `AxisHealth<S>` lift here — Cursor's
-//! health is binary (Healthy or Failed), the InFlight payload is
-//! nullary, the Skipped variant carries a SkipReason for diagnostic
+//! health is binary (Healthy or Failed), the `InFlight` payload is
+//! nullary, the Skipped variant carries a `SkipReason` for diagnostic
 //! distinction, and there is no Symptom enum because Cursor has a
-//! single failure mode (stalled check_suite on Cursor's servers).
+//! single failure mode (stalled `check_suite` on Cursor's servers).
 
 use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::cursor_status::{
@@ -62,7 +62,7 @@ fn is_bot_author(author: &PullRequestAuthor) -> bool {
 
 // ── Stall threshold ──────────────────────────────────────────────────
 
-/// Time Cursor is allowed between check_suite creation (or check_run
+/// Time Cursor is allowed between `check_suite` creation (or `check_run`
 /// start) and a terminal state before the in-flight stage is treated
 /// as Failed.
 //
@@ -86,12 +86,12 @@ pub struct CursorReport {
     pub tier: CursorTier,
     /// Latest review observed at HEAD (`latest.commit == head`).
     pub fresh: bool,
-    /// `created_at` from the Cursor check_suite when present.
+    /// `created_at` from the Cursor `check_suite` when present.
     /// `None` when no suite has been observed for this PR
-    /// (NotApplicable, Skipped, or a round-only history). Decide's
+    /// (`NotApplicable`, Skipped, or a round-only history). Decide's
     /// `EscalateCursorStalled` prompt surfaces the suite's age so
     /// the human sees "stalled since <ts>, ~N minutes ago" rather
-    /// than just a generic STALL_TIMEOUT mention.
+    /// than just a generic `STALL_TIMEOUT` mention.
     pub suite_created_at: Option<Timestamp>,
 }
 
@@ -104,18 +104,18 @@ pub struct CursorReport {
 // across axes when domains diverge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CursorActivity {
-    /// Cursor not active in this repo — no Cursor check_suite ever
+    /// Cursor not active in this repo — no Cursor `check_suite` ever
     /// observed for this PR's HEAD AND the author isn't on the
     /// bot-class skip list. Repo-level absence.
     NotApplicable,
     /// Cursor declined this PR. Per-PR refusal — distinct from
-    /// repo-level NotApplicable for diagnostic purposes (the JSONL
+    /// repo-level `NotApplicable` for diagnostic purposes (the JSONL
     /// record carries the reason).
     Skipped(SkipReason),
-    /// Cursor's check_suite (and maybe child check_run) is pending.
+    /// Cursor's `check_suite` (and maybe child `check_run`) is pending.
     /// Health is binary — see [`InFlightHealth`].
     InFlight(InFlightHealth),
-    /// Cursor's check_run reached a terminal state on this HEAD.
+    /// Cursor's `check_run` reached a terminal state on this HEAD.
     Reviewed(ReviewedState),
 }
 
@@ -156,12 +156,12 @@ pub enum SkipReason {
 // straight to escalation on threshold trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum InFlightHealth {
-    /// Within STALL_TIMEOUT of either the suite's creation (when no
+    /// Within `STALL_TIMEOUT` of either the suite's creation (when no
     /// child run exists yet) or the run's `started_at` (or the
     /// suite's `created_at` as fallback when the run has no
     /// `started_at`).
     Healthy,
-    /// STALL_TIMEOUT elapsed. No remediation; the decide layer
+    /// `STALL_TIMEOUT` elapsed. No remediation; the decide layer
     /// escalates directly to a human handoff.
     Failed,
 }
@@ -174,7 +174,7 @@ pub enum ReviewedState {
     /// Run completed with findings. Either `success` + a cursor[bot]
     /// review row exists on this commit, or `neutral` disambiguated
     /// to "issues found" via the cross-ref join on `/pulls/{n}/reviews`.
-    /// Existing thread-addressing path (the generic AddressThreads
+    /// Existing thread-addressing path (the generic `AddressThreads`
     /// from the reviews axis) handles the actual remediation.
     HasFindings,
 }
@@ -264,7 +264,7 @@ pub enum CursorTier {
 }
 
 impl CursorTier {
-    pub fn slug(&self) -> &'static str {
+    pub fn slug(self) -> &'static str {
         match self {
             Self::Bronze => "bronze",
             Self::Silver => "silver",
@@ -284,10 +284,10 @@ impl CursorTier {
 /// Returns `None` purely to preserve the existing
 /// `Option<CursorReport>` field shape — `None` happens when neither
 /// the suite, prior rounds, nor an author signal give the classifier
-/// anything to project. In practice this collapses with NotApplicable;
+/// anything to project. In practice this collapses with `NotApplicable`;
 /// the Option layer is kept so the rendering and JSONL paths can
 /// distinguish "no observation at all" from "observation says
-/// NotApplicable".
+/// `NotApplicable`".
 #[allow(clippy::too_many_arguments)]
 pub fn orient_cursor(
     reviews: &[PullRequestReview],
@@ -381,7 +381,9 @@ fn correlate_rounds(reviews: &[PullRequestReview]) -> Vec<CursorReviewRound> {
         .filter_map(|(i, r)| {
             let reviewed_at = r.submitted_at?;
             Some(CursorReviewRound {
-                round: i as u32 + 1,
+                // Review-round index fits in u32: bounded by GitHub's
+                // per-PR review history (orders of magnitude < 4B).
+                round: u32::try_from(i).expect("review round index fits in u32") + 1,
                 reviewed_at,
                 commit: r.commit_id.clone(),
                 findings_count: parse_findings_count(&r.body),
@@ -430,7 +432,7 @@ fn count_severity(threads: &ReviewThreadsResponse) -> CursorSeverityBreakdown {
 
 /// Tier rules (first match wins):
 ///   bronze:   unresolved>0 OR (no rounds AND no suite)
-///   silver:   unresolved=0 AND suite queued/in_progress AND prior round
+///   silver:   unresolved=0 AND suite `queued/in_progress` AND prior round
 ///   gold:     unresolved=0 AND rounds present AND no in-flight suite
 ///   platinum: suite completed with success-conclusion run at HEAD
 fn score_tier(
@@ -721,7 +723,7 @@ mod tests {
             path: String::new(),
             line: None,
             comments: ThreadComments {
-                page_info: Default::default(),
+                page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse("cursor[bot]").unwrap(),

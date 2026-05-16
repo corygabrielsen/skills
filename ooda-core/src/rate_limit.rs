@@ -1,7 +1,7 @@
 //! First-class rate-limit observations.
 //!
 //! Loops drive long-running interactions with external APIs (GitHub,
-//! Anthropic, OpenAI, …). Each API has its own quota bucket, its
+//! Anthropic, `OpenAI`, …). Each API has its own quota bucket, its
 //! own reset semantics, and its own error format. Rather than
 //! collapse them into a single opaque "rate limited" error, the
 //! observe layer surfaces a typed [`RateLimitHit`] identifying the
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 ///   content creation, search). Fires with `Retry-After`; not the
 ///   5000/hr quota.
 ///
-/// Adding Anthropic / OpenAI / etc. is a single-variant extension.
+/// Adding Anthropic / `OpenAI` / etc. is a single-variant extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RateLimitScope {
     GitHubGraphqlPrimary,
@@ -154,7 +154,7 @@ mod tests {
         let names: Vec<&'static str> = samples().iter().map(|s| s.name()).collect();
         // No duplicates.
         let mut sorted = names.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), names.len());
         // No whitespace, no uppercase — these end up in

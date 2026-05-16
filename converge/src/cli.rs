@@ -183,7 +183,7 @@ pub fn run() -> i32 {
         verbose: parsed.verbose,
     };
 
-    match converge(opts, &cancelled) {
+    match converge(&opts, &cancelled) {
         Ok(halt) => halt.status.exit_code(),
         Err(msg) => {
             eprintln!("converge: {msg}");

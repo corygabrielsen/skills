@@ -75,7 +75,7 @@ where
     if n == 0 {
         return Vec::new();
     }
-    let cap = concurrency.map(|c| c as usize).unwrap_or(n).max(1).min(n);
+    let cap = concurrency.map_or(n, |c| c as usize).max(1).min(n);
 
     // Per-index result slot. Each worker writes exactly its own
     // slot, so the Mutex is never contended; we use it only because

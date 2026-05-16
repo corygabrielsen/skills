@@ -564,11 +564,10 @@ impl Recorder {
             max_iter: inner.max_iter,
             status_comment: inner.status_comment,
             cwd: std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "<unknown>".to_string()),
+                .map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string()),
             argv: std::env::args().collect(),
         };
-        inner.write_json_at(&inner.run_root.join("manifest.json"), &manifest)?;
+        Inner::write_json_at(&inner.run_root.join("manifest.json"), &manifest)?;
         let header = format!(
             "===== ooda-pr {} repo={} pr={} mode={} max_iter={} status_comment={} state_root={} run_id={} =====",
             started_at.to_rfc3339(),
@@ -647,15 +646,14 @@ impl Inner {
             .join("event-range.json");
         let first_sequence = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice::<EventRange>(&bytes)
-                .map(|range| range.first_sequence)
-                .unwrap_or(sequence),
+                .map_or(sequence, |range| range.first_sequence),
             Err(_) => sequence,
         };
         let range = EventRange {
             first_sequence,
             last_sequence: sequence,
         };
-        self.write_json_at(&path, &range)
+        Self::write_json_at(&path, &range)
     }
 
     fn append_ledger(&mut self, kind: &str, summary: &str) -> Result<(), RecorderError> {
@@ -735,7 +733,7 @@ impl Inner {
         })
     }
 
-    fn write_json_at<T: Serialize>(&self, path: &Path, value: &T) -> Result<(), RecorderError> {
+    fn write_json_at<T: Serialize>(path: &Path, value: &T) -> Result<(), RecorderError> {
         let bytes = serde_json::to_vec_pretty(value)?;
         write_bytes_at(path, &bytes)?;
         Ok(())
@@ -804,8 +802,7 @@ pub fn tool_call_started(program: &str, args: &[&str]) -> Option<ToolCallGuard> 
     let (call_id, iteration) = next_tool_call_id_locked(&recorder)?;
     let args_v: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
     let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
+        .map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
 
     recorder.best_effort(|inner| {
         inner.append_event(
@@ -875,8 +872,7 @@ impl ToolCallGuard {
                     output
                         .status
                         .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "?".to_string())
+                        .map_or_else(|| "?".to_string(), |c| c.to_string())
                 ),
                 vec![stdout_ref, stderr_ref, record_ref],
                 json!({

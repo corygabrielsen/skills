@@ -66,8 +66,8 @@ pub struct PullRequestCheck {
 
 /// GitHub's check-run conclusion + status vocabulary, mapped to a
 /// single enum. Variants beyond the common six (Success / Failure /
-/// Skipped / Neutral / InProgress / Queued) cover gh's full output:
-/// Cancelled, TimedOut, ActionRequired, Stale, Pending all show up
+/// Skipped / Neutral / `InProgress` / Queued) cover gh's full output:
+/// Cancelled, `TimedOut`, `ActionRequired`, Stale, Pending all show up
 /// in real PRs. An unknown variant we haven't seen yet routes to
 /// `Unknown` so observe doesn't abort on a future addition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

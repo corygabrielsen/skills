@@ -8,6 +8,7 @@
 //! the wrong position" bug is a compile error.
 
 use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
+use crate::orient::copilot::Symptom;
 use crate::orient::thread::ReviewThread;
 pub use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
 use ooda_core::{RateLimitHit, RateLimitScope};
@@ -100,7 +101,21 @@ pub enum ActionKind {
     AddDescription,
 
     // ── Bot tier advancement ──
-    RerequestCopilot,
+    // Degraded-axis remediation. CI will add ReRunWorkflow +
+    // EscalateCiFailed in the same family.
+    RerequestCopilot {
+        /// Health-driven remediation carries the triggering symptom;
+        /// tier-advancement re-requests (no health degradation) pass
+        /// `None`. The variant is the same — the side effect is
+        /// identical (POST requested_reviewers).
+        symptom: Option<Symptom>,
+    },
+    /// Per-HEAD health budget exhausted; humans must triage. No
+    /// automatic side effect — decide hands off via
+    /// `ActionEffect::Human`.
+    EscalateCopilotFailed {
+        symptom: Symptom,
+    },
     WaitForCopilotAck,
     WaitForCopilotReview,
     AddressCopilotSuppressed {
@@ -160,7 +175,8 @@ impl ActionKindName for ActionKind {
             Self::AddContentLabel => "AddContentLabel",
             Self::AddAssignee => "AddAssignee",
             Self::AddDescription => "AddDescription",
-            Self::RerequestCopilot => "RerequestCopilot",
+            Self::RerequestCopilot { .. } => "RerequestCopilot",
+            Self::EscalateCopilotFailed { .. } => "EscalateCopilotFailed",
             Self::WaitForCopilotAck => "WaitForCopilotAck",
             Self::WaitForCopilotReview => "WaitForCopilotReview",
             Self::AddressCopilotSuppressed { .. } => "AddressCopilotSuppressed",

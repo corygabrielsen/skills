@@ -26,7 +26,7 @@ use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};
-use runner::{LoopConfig, run_loop};
+use runner::{LoopConfig, current_timestamp, run_loop};
 use suite_recorder::{SuiteRecorder, SuiteRecorderConfig};
 
 fn print_usage(out: &mut dyn std::io::Write) {
@@ -507,7 +507,7 @@ fn run_inspect(
         eprintln!("{line}");
         recorder.write_trace_line(&line);
     }
-    let oriented = orient(&obs, None);
+    let oriented = orient(&obs, None, current_timestamp());
     let candidate_actions = candidates(&oriented);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pr_view.state);
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);

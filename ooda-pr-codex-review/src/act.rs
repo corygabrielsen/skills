@@ -11,6 +11,8 @@
 //! the spawn-time data (binary path, repo root, batch dir root,
 //! current head SHA).
 
+mod copilot;
+
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -22,7 +24,6 @@ use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{CodexReasoningLevel, PullRequestNumber, RepoSlug};
 use crate::observe::codex::batch_dir as codex_batch_dir;
 use crate::observe::github::gh::{GhError, gh_run};
-use crate::orient::copilot::COPILOT_REVIEWER_LOGIN;
 use crate::orient::state::WIP_LABEL;
 
 #[derive(Debug)]
@@ -138,11 +139,7 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
             "--remove-label",
             WIP_LABEL,
         ])?,
-        ActionKind::RerequestCopilot => {
-            let path = format!("repos/{}/pulls/{}/requested_reviewers", ctx.slug, ctx.pr);
-            let reviewer = format!("reviewers[]={COPILOT_REVIEWER_LOGIN}");
-            gh_run(&["api", &path, "--method", "POST", "-f", &reviewer])?;
-        }
+        ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(&ctx.slug, ctx.pr)?,
         ActionKind::RunCodexReviewBatch { level, n } => {
             let codex = ctx.codex.as_ref().ok_or(ActError::CodexDisabled)?;
             spawn_codex_review_batch(codex, *level, *n)?;

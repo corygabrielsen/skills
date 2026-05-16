@@ -15,6 +15,7 @@
 
 use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::issue_events::IssueEvent;
+use crate::observe::github::pr_view::Commit;
 use crate::observe::github::requested_reviewers::RequestedReviewers;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
@@ -75,20 +76,65 @@ impl From<CopilotCodeReviewParams> for CopilotRepoConfig {
     }
 }
 
+// Health embedded in in-flight variants. Idle and Reviewed carry no
+// Health by design — the "health is meaningful only when in flight"
+// invariant is type-structural here, not enforced at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CopilotActivity {
     Idle,
     Requested {
         requested_at: Timestamp,
+        health: InFlightHealth,
     },
     Working {
         requested_at: Timestamp,
         ack_at: Timestamp,
+        health: InFlightHealth,
     },
     Reviewed {
         latest: CopilotReviewRound,
     },
 }
+
+// Per-axis health projection. CI axis (queue stalls) and any
+// subsequent reviewer axis will wear the same shape. On the third
+// axis, lift to ooda_core::AxisHealth<S>.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum InFlightHealth {
+    /// In flight within the configured timeout window — keep waiting.
+    Healthy,
+    /// Timeout crossed once for this round at the current HEAD. One
+    /// re-request remediation is in budget before escalation.
+    Degraded,
+    /// Timeout crossed and the per-HEAD budget is exhausted —
+    /// re-requesting again would only restart the same failure mode.
+    Failed,
+}
+
+// Axis-local. The future AxisHealth<S> parameterization carries this
+// per axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Symptom {
+    /// `copilot_work_started` never landed within the start window
+    /// after `review_requested`.
+    StartTimeout,
+    /// Started but no review submitted within the review window
+    /// after the start event.
+    ReviewTimeout,
+}
+
+/// Time Copilot is allowed to ack a fresh review request before the
+/// round is treated as `StartTimeout`-degraded.
+pub const THRESHOLD_START_TIMEOUT: chrono::Duration = chrono::Duration::minutes(10);
+
+/// Time Copilot is allowed between ack and review submission before
+/// the round is treated as `ReviewTimeout`-degraded.
+pub const THRESHOLD_REVIEW_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
+
+/// Per-HEAD remediation budget — number of Degraded rounds at the
+/// current HEAD we will tolerate before promoting to `Failed` and
+/// handing off to a human.
+pub const HEALTH_REMEDIATION_BUDGET: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CopilotReviewRound {
@@ -132,6 +178,13 @@ impl CopilotTier {
 /// `copilot_code_review` rule (i.e. Copilot is not configured for
 /// this repo at all). When configured, always returns `Some` even
 /// if Copilot has never engaged on this PR.
+///
+/// The parameter list is long because the copilot axis joins more
+/// observation sources than other axes (timeline, reviews, threads,
+/// requested reviewers, commits, plus a clock). Bundling into a
+/// "context" struct would only shift the surface area without
+/// shrinking it; the long list pays for itself in call-site clarity.
+#[allow(clippy::too_many_arguments)]
 pub fn orient_copilot(
     config: CopilotRepoConfig,
     events: &[IssueEvent],
@@ -139,6 +192,8 @@ pub fn orient_copilot(
     threads: &ReviewThreadsResponse,
     requested: &RequestedReviewers,
     head: &GitCommitSha,
+    commits: &[Commit],
+    now: Timestamp,
 ) -> Option<CopilotReport> {
     if !config.enabled {
         return None;
@@ -153,11 +208,12 @@ pub fn orient_copilot(
         })
         .collect();
 
-    let timeline = copilot_timeline(events);
+    let reviewer_events = copilot_reviewer_events(events);
+    let timeline = copilot_timeline(&reviewer_events);
     let rounds = correlate_rounds(&timeline, &copilot_reviews);
     let latest_reviewed_at = rounds.last().and_then(|r| r.reviewed_at);
     let thread_summary = count_bot_threads(threads, latest_reviewed_at.as_ref(), is_copilot);
-    let activity = derive_activity(&timeline, &rounds, requested);
+    let activity = derive_activity(&timeline, &rounds, requested, head, commits, now);
     let tier = score_tier(&rounds, &thread_summary, head);
     let fresh = is_fresh(&rounds, head);
 
@@ -169,6 +225,27 @@ pub fn orient_copilot(
         tier,
         fresh,
     })
+}
+
+/// Filter `events` to those that legitimately reflect the Copilot
+/// **reviewer** axis.
+//
+// Two GitHub Apps share the "Copilot" identity:
+// copilot-pull-request-reviewer (review path) and copilot-swe-agent
+// (coding-agent path). They emit identical event types. Filter at
+// the axis boundary; upstream consumers see only reviewer events.
+fn copilot_reviewer_events(events: &[IssueEvent]) -> Vec<&IssueEvent> {
+    const COPILOT_REVIEWER_APP: &str = "copilot-pull-request-reviewer";
+    events
+        .iter()
+        .filter(|e| match e.event.as_str() {
+            "copilot_work_started" | "copilot_work_finished" => e
+                .performed_via_github_app
+                .as_ref()
+                .is_some_and(|a| a.slug == COPILOT_REVIEWER_APP),
+            _ => true,
+        })
+        .collect()
 }
 
 // ── Body parsing ─────────────────────────────────────────────────────
@@ -213,7 +290,7 @@ enum TimelineKind {
     Ack,
 }
 
-fn copilot_timeline(events: &[IssueEvent]) -> Vec<TimelinePoint> {
+fn copilot_timeline(events: &[&IssueEvent]) -> Vec<TimelinePoint> {
     let mut points: Vec<TimelinePoint> = Vec::new();
     for e in events {
         let Some(at) = e.created_at else { continue };
@@ -425,11 +502,62 @@ fn is_fresh(rounds: &[CopilotReviewRound], head: &GitCommitSha) -> bool {
 
 // ── Activity derivation ──────────────────────────────────────────────
 
+/// Bare in-flight stage — what kind of pending work, divorced from
+/// health. `derive_activity` first computes this from the existing
+/// timeline/rounds/requested signals, then wraps in-flight stages
+/// with [`InFlightHealth`] derived from per-round timing.
+enum BareStage {
+    Idle,
+    Requested {
+        requested_at: Timestamp,
+    },
+    Working {
+        requested_at: Timestamp,
+        ack_at: Timestamp,
+    },
+    Reviewed {
+        latest: CopilotReviewRound,
+    },
+}
+
 fn derive_activity(
     timeline: &[TimelinePoint],
     rounds: &[CopilotReviewRound],
     requested: &RequestedReviewers,
+    head: &GitCommitSha,
+    commits: &[Commit],
+    now: Timestamp,
 ) -> CopilotActivity {
+    let stage = bare_stage(timeline, rounds, requested);
+    match stage {
+        BareStage::Idle => CopilotActivity::Idle,
+        BareStage::Reviewed { latest } => CopilotActivity::Reviewed { latest },
+        BareStage::Requested { requested_at } => {
+            let health = compute_in_flight_health(rounds, head, commits, now);
+            CopilotActivity::Requested {
+                requested_at,
+                health,
+            }
+        }
+        BareStage::Working {
+            requested_at,
+            ack_at,
+        } => {
+            let health = compute_in_flight_health(rounds, head, commits, now);
+            CopilotActivity::Working {
+                requested_at,
+                ack_at,
+                health,
+            }
+        }
+    }
+}
+
+fn bare_stage(
+    timeline: &[TimelinePoint],
+    rounds: &[CopilotReviewRound],
+    requested: &RequestedReviewers,
+) -> BareStage {
     let latest_review_ts: Option<&Timestamp> =
         rounds.iter().filter_map(|r| r.reviewed_at.as_ref()).max();
     let latest_ack: Option<&TimelinePoint> = timeline
@@ -474,7 +602,7 @@ fn derive_activity(
             .filter(|r| r.at <= ack.at)
             .map(|r| r.at)
             .unwrap_or_else(|| ack.at);
-        return CopilotActivity::Working {
+        return BareStage::Working {
             requested_at: req_at,
             ack_at: ack.at,
         };
@@ -493,11 +621,11 @@ fn derive_activity(
                 let req_at = latest_request
                     .map(|r| r.at)
                     .unwrap_or_else(|| latest.requested_at);
-                return CopilotActivity::Requested {
+                return BareStage::Requested {
                     requested_at: req_at,
                 };
             }
-            return CopilotActivity::Reviewed {
+            return BareStage::Reviewed {
                 latest: latest.clone(),
             };
         }
@@ -510,21 +638,21 @@ fn derive_activity(
             // Copilot activity requires Copilot to actually be in
             // the current requested_reviewers set.
             if currently_pending(requested) {
-                return CopilotActivity::Working {
+                return BareStage::Working {
                     requested_at: latest.requested_at,
                     ack_at: *ack,
                 };
             }
-            return CopilotActivity::Idle;
+            return BareStage::Idle;
         }
         // No ack on the latest round. Distinguish "still pending"
         // from "request withdrawn before ack".
         if currently_pending(requested) {
-            return CopilotActivity::Requested {
+            return BareStage::Requested {
                 requested_at: latest.requested_at,
             };
         }
-        return CopilotActivity::Idle;
+        return BareStage::Idle;
     }
     let pending = currently_pending(requested);
     if pending {
@@ -540,13 +668,125 @@ fn derive_activity(
             .last()
             .map(|p| p.at)
             .unwrap_or_else(|| Timestamp::parse("1970-01-01T00:00:00Z").unwrap());
-        return CopilotActivity::Requested { requested_at };
+        return BareStage::Requested { requested_at };
     }
-    CopilotActivity::Idle
+    BareStage::Idle
 }
 
 fn currently_pending(requested: &RequestedReviewers) -> bool {
     requested.users.iter().any(|u| is_copilot(u.login.as_str()))
+}
+
+// ── Health computation ───────────────────────────────────────────────
+
+/// Per-round seal: classify a round's terminal state given the
+/// chronological horizon `tau` (either the next round's request
+/// timestamp, for non-tail rounds, or `now` for the tail).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sealed {
+    Resolved,
+    Healthy,
+    Degraded(Symptom),
+    /// A non-tail round superseded by a later request before any
+    /// terminal signal (resolution or timeout) landed. Only emitted
+    /// for non-tail rounds — the tail has no next request by zip
+    /// construction.
+    Preempted,
+}
+
+fn seal(round: &CopilotReviewRound, next_req_at: Option<Timestamp>, tau: Timestamp) -> Sealed {
+    if round.reviewed_at.is_some() {
+        return Sealed::Resolved;
+    }
+    if let Some(ack) = round.ack_at {
+        if tau.at() - ack.at() >= THRESHOLD_REVIEW_TIMEOUT {
+            return Sealed::Degraded(Symptom::ReviewTimeout);
+        }
+    } else if tau.at() - round.requested_at.at() >= THRESHOLD_START_TIMEOUT {
+        return Sealed::Degraded(Symptom::StartTimeout);
+    }
+    if next_req_at.is_some() {
+        Sealed::Preempted
+    } else {
+        Sealed::Healthy
+    }
+}
+
+// SHA-equality partition; head_ref_force_pushed events are
+// unreliable (GitHub drops them under comment-burst conditions). The
+// stored HEAD SHA is the source of truth.
+fn filter_to_current_head<'a>(
+    rounds: &'a [CopilotReviewRound],
+    commits: &[Commit],
+    head: &GitCommitSha,
+) -> Vec<&'a CopilotReviewRound> {
+    rounds
+        .iter()
+        .filter(|r| head_at(commits, r.requested_at).as_ref() == Some(head))
+        .collect()
+}
+
+/// The HEAD SHA in flight at `t`: the most-recent commit whose
+/// `committed_date <= t`. `None` when `commits` is empty or every
+/// commit was authored after `t` (a pre-history request — treat as
+/// not-at-current-head).
+fn head_at(commits: &[Commit], t: Timestamp) -> Option<GitCommitSha> {
+    commits
+        .iter()
+        .filter(|c| c.committed_date <= t)
+        .max_by_key(|c| c.committed_date)
+        .map(|c| c.oid.clone())
+}
+
+fn compute_in_flight_health(
+    rounds: &[CopilotReviewRound],
+    head: &GitCommitSha,
+    commits: &[Commit],
+    now: Timestamp,
+) -> InFlightHealth {
+    let rounds_h = filter_to_current_head(rounds, commits, head);
+    if rounds_h.is_empty() {
+        // No round at current HEAD yet (e.g. eventual-consistency
+        // synthetic Requested). The in-flight stage exists but no
+        // round backs it — treat as Healthy; no timing signal to
+        // degrade on.
+        return InFlightHealth::Healthy;
+    }
+    let tail_idx = rounds_h.len() - 1;
+    // Walk back from the tail; for each round, tau is the next
+    // round's requested_at (non-tail) or `now` (tail). Stop at the
+    // first non-Degraded.
+    let mut degraded_run = 0usize;
+    for rev_idx in 0..rounds_h.len() {
+        let abs_idx = tail_idx - rev_idx;
+        let next_req_at = if abs_idx == tail_idx {
+            None
+        } else {
+            Some(rounds_h[abs_idx + 1].requested_at)
+        };
+        let tau = next_req_at.unwrap_or(now);
+        if matches!(
+            seal(rounds_h[abs_idx], next_req_at, tau),
+            Sealed::Degraded(_)
+        ) {
+            degraded_run += 1;
+        } else {
+            break;
+        }
+    }
+
+    let tail: &CopilotReviewRound = rounds_h[tail_idx];
+    match seal(tail, None, now) {
+        Sealed::Resolved => InFlightHealth::Healthy,
+        Sealed::Healthy => InFlightHealth::Healthy,
+        Sealed::Degraded(_) if degraded_run >= HEALTH_REMEDIATION_BUDGET => InFlightHealth::Failed,
+        Sealed::Degraded(_) => InFlightHealth::Degraded,
+        // Tail has no successor by construction — `next_req_at` we
+        // passed above is None, and `seal` only returns Preempted
+        // when `next_req_at.is_some()`. This arm is genuinely
+        // uninhabitable.
+        Sealed::Preempted => unreachable!("tail round has no next request by construction"),
+    }
 }
 
 #[cfg(test)]
@@ -626,6 +866,10 @@ mod tests {
                 login: GitHubLogin::parse(login).unwrap(),
             }),
             requested_team: None,
+            // review_requested events are NOT app-performed; only
+            // the copilot_work_* events are. Defaulting to None
+            // matches what GitHub returns on the wire.
+            performed_via_github_app: None,
         }
     }
     fn ack_event(at: &str) -> IssueEvent {
@@ -635,7 +879,45 @@ mod tests {
             created_at: Some(ts(at)),
             requested_reviewer: None,
             requested_team: None,
+            performed_via_github_app: Some(crate::observe::github::issue_events::GitHubAppRef {
+                slug: "copilot-pull-request-reviewer".into(),
+            }),
         }
+    }
+
+    /// Test-only fixed clock. All baseline tests place events around
+    /// 2026-04-23T10:00:00–10:05:00; this clock is later than every
+    /// in-flight event but well under the start/review timeouts, so
+    /// health computation reports Healthy unless a test deliberately
+    /// engineers a degraded scenario.
+    fn fixed_now() -> Timestamp {
+        ts("2026-04-23T10:02:00Z")
+    }
+
+    /// Test wrapper: pre-existing tests were written before clock and
+    /// commit injection landed. They construct events/rounds without
+    /// commits, so `head_at()` returns `None` and the per-HEAD round
+    /// list is empty — `compute_in_flight_health` returns Healthy by
+    /// default, preserving the original behavior. New scenario tests
+    /// pass `commits` and `now` directly to `orient_copilot`.
+    fn orient_copilot_test(
+        config: CopilotRepoConfig,
+        events: &[IssueEvent],
+        reviews: &[PullRequestReview],
+        threads: &ReviewThreadsResponse,
+        requested: &RequestedReviewers,
+        head: &GitCommitSha,
+    ) -> Option<CopilotReport> {
+        orient_copilot(
+            config,
+            events,
+            reviews,
+            threads,
+            requested,
+            head,
+            &[],
+            fixed_now(),
+        )
     }
     // ── identity ──
 
@@ -689,7 +971,7 @@ mod tests {
             review_on_push: false,
             review_draft_pull_requests: false,
         };
-        let r = orient_copilot(cfg, &[], &[], &empty_threads(), &empty_reqs(), &head());
+        let r = orient_copilot_test(cfg, &[], &[], &empty_threads(), &empty_reqs(), &head());
         assert!(r.is_none());
     }
 
@@ -697,7 +979,7 @@ mod tests {
 
     #[test]
     fn idle_when_no_rounds_and_no_pending() {
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &[],
             &[],
@@ -721,7 +1003,8 @@ mod tests {
             teams: vec![],
         };
         let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
+        let r =
+            orient_copilot_test(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(matches!(r.activity, CopilotActivity::Requested { .. }));
     }
 
@@ -740,7 +1023,8 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
+        let r =
+            orient_copilot_test(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(matches!(r.activity, CopilotActivity::Working { .. }));
         assert_eq!(r.rounds.len(), 1);
         assert!(r.rounds[0].ack_at.is_some());
@@ -768,7 +1052,7 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
         )];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -798,7 +1082,7 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r = orient_copilot(enabled(), &[], &[], &empty_threads(), &reqs, &head()).unwrap();
+        let r = orient_copilot_test(enabled(), &[], &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Requested { .. }),
             "pending reviewer with no events must be Requested, got {:?}",
@@ -815,7 +1099,7 @@ mod tests {
         // this, rounds is empty and currently_pending is false → Idle,
         // and decide() halts Success while Copilot is still reviewing.
         let events = vec![ack_event("2026-04-23T10:00:00Z")];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &[],
@@ -856,8 +1140,8 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r =
-            orient_copilot(enabled(), &events, &revs, &empty_threads(), &reqs, &head()).unwrap();
+        let r = orient_copilot_test(enabled(), &events, &revs, &empty_threads(), &reqs, &head())
+            .unwrap();
         assert!(
             matches!(r.activity, CopilotActivity::Requested { .. }),
             "Reviewed + currently_pending must be Requested (re-request just fired), got {:?}",
@@ -877,7 +1161,7 @@ mod tests {
             req_event("2026-04-23T10:00:00Z", "Copilot"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &[],
@@ -904,7 +1188,7 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
         )];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -930,7 +1214,7 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 0 comments.",
         )];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &[],
             &revs,
@@ -969,7 +1253,7 @@ mod tests {
                 "generated no new comments.",
             ),
         ];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -1010,7 +1294,7 @@ mod tests {
             copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "generated 0 comments."),
             copilot_review(HEAD_SHA, "2026-04-23T10:10:00Z", "generated 0 comments."),
         ];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -1055,8 +1339,8 @@ mod tests {
             }],
             teams: vec![],
         };
-        let r =
-            orient_copilot(enabled(), &events, &revs, &empty_threads(), &reqs, &head()).unwrap();
+        let r = orient_copilot_test(enabled(), &events, &revs, &empty_threads(), &reqs, &head())
+            .unwrap();
         assert_eq!(r.rounds.len(), 2);
         assert!(r.rounds[0].reviewed_at.is_some());
         assert!(r.rounds[0].ack_at.is_none());
@@ -1077,7 +1361,7 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated no new comments.",
         )];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -1101,7 +1385,7 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated no new comments.",
         )];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -1125,7 +1409,7 @@ mod tests {
             "2026-04-23T10:05:00Z",
             "generated 2 comments. Comments suppressed due to low confidence (3)",
         )];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -1183,8 +1467,8 @@ mod tests {
                 },
             },
         };
-        let r =
-            orient_copilot(enabled(), &events, &revs, &threads, &empty_reqs(), &head()).unwrap();
+        let r = orient_copilot_test(enabled(), &events, &revs, &threads, &empty_reqs(), &head())
+            .unwrap();
         assert_eq!(r.tier, CopilotTier::Bronze);
         assert_eq!(r.threads.unresolved, 1);
     }
@@ -1207,7 +1491,7 @@ mod tests {
                 "generated no new comments.",
             ),
         ];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &revs,
@@ -1226,7 +1510,7 @@ mod tests {
     #[test]
     fn non_copilot_review_requests_ignored_by_timeline() {
         let events = vec![req_event("2026-04-23T10:00:00Z", "alice")];
-        let r = orient_copilot(
+        let r = orient_copilot_test(
             enabled(),
             &events,
             &[],
@@ -1237,5 +1521,227 @@ mod tests {
         .unwrap();
         assert!(r.rounds.is_empty());
         assert_eq!(r.activity, CopilotActivity::Idle);
+    }
+
+    // ── health computation ──
+
+    fn commit_at(sha: &str, at: &str) -> Commit {
+        Commit {
+            oid: GitCommitSha::parse(sha).unwrap(),
+            committed_date: ts(at),
+        }
+    }
+
+    fn pending_copilot() -> RequestedReviewers {
+        RequestedReviewers {
+            users: vec![RequestedUser {
+                login: GitHubLogin::parse("Copilot").unwrap(),
+                user_type: UserType::Bot,
+            }],
+            teams: vec![],
+        }
+    }
+
+    #[test]
+    fn requested_healthy_within_start_window() {
+        let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
+        let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T10:05:00Z"),
+        )
+        .unwrap();
+        assert_eq!(
+            r.activity,
+            CopilotActivity::Requested {
+                requested_at: ts("2026-04-23T10:00:00Z"),
+                health: InFlightHealth::Healthy,
+            }
+        );
+    }
+
+    #[test]
+    fn requested_degraded_after_start_timeout() {
+        // Request placed at 10:00, no ack landed; now is 10:15 — 15
+        // minutes elapsed, past the 10-minute start threshold. Only
+        // one round at HEAD → degraded_run = 1 < BUDGET = 2 →
+        // Degraded, not Failed.
+        let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
+        let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T10:15:00Z"),
+        )
+        .unwrap();
+        assert_eq!(
+            r.activity,
+            CopilotActivity::Requested {
+                requested_at: ts("2026-04-23T10:00:00Z"),
+                health: InFlightHealth::Degraded,
+            }
+        );
+    }
+
+    #[test]
+    fn requested_failed_when_budget_exhausted() {
+        // Two consecutive Degraded rounds at HEAD: first request at
+        // 10:00, second at 10:20 (after the start-timeout cutoff for
+        // the first round). Now is 10:35 — 15 minutes past the
+        // second request, also past the threshold. degraded_run = 2,
+        // BUDGET = 2 → Failed.
+        let events = vec![
+            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:20:00Z", "Copilot"),
+        ];
+        let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T10:35:00Z"),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                r.activity,
+                CopilotActivity::Requested {
+                    health: InFlightHealth::Failed,
+                    ..
+                }
+            ),
+            "expected Failed, got {:?}",
+            r.activity
+        );
+    }
+
+    #[test]
+    fn working_degraded_after_review_timeout() {
+        // Ack landed at 10:01; no review by 10:35 — 34 minutes past
+        // ack, over the 30-minute review threshold.
+        let events = vec![
+            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            ack_event("2026-04-23T10:01:00Z"),
+        ];
+        let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T10:35:00Z"),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                r.activity,
+                CopilotActivity::Working {
+                    health: InFlightHealth::Degraded,
+                    ..
+                }
+            ),
+            "expected Working(Degraded), got {:?}",
+            r.activity
+        );
+    }
+
+    #[test]
+    fn swe_agent_events_filtered_at_axis_boundary() {
+        // `copilot_work_started` performed by the coding-agent app
+        // (slug = copilot-swe-agent) must NOT be treated as an ack
+        // on the reviewer axis. Without the filter, a coding-agent
+        // event would flip the reviewer state to Working.
+        use crate::observe::github::issue_events::GitHubAppRef;
+        let req = req_event("2026-04-23T10:00:00Z", "Copilot");
+        let swe_ack = IssueEvent {
+            event: "copilot_work_started".into(),
+            actor: None,
+            created_at: Some(ts("2026-04-23T10:01:00Z")),
+            requested_reviewer: None,
+            requested_team: None,
+            performed_via_github_app: Some(GitHubAppRef {
+                slug: "copilot-swe-agent".into(),
+            }),
+        };
+        let events = vec![req, swe_ack];
+        let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T10:05:00Z"),
+        )
+        .unwrap();
+        // Reviewer-axis state must remain Requested (no reviewer-app
+        // ack landed); the SWE-agent ack was filtered out.
+        assert!(
+            matches!(r.activity, CopilotActivity::Requested { .. }),
+            "SWE-agent ack must not flip reviewer axis to Working, got {:?}",
+            r.activity
+        );
+    }
+
+    #[test]
+    fn head_partition_excludes_pre_force_push_rounds() {
+        // Two rounds: one against OLD_SHA, one against HEAD_SHA. The
+        // OLD round should NOT count toward degraded_run for the
+        // HEAD round, so a single timed-out HEAD round stays
+        // Degraded (not Failed) even if the OLD round was also
+        // timed out — the budget is per-HEAD.
+        let events = vec![
+            req_event("2026-04-23T09:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "Copilot"),
+        ];
+        let commits = vec![
+            commit_at(OLD_SHA, "2026-04-23T08:50:00Z"),
+            // New HEAD landed between the two requests.
+            commit_at(HEAD_SHA, "2026-04-23T09:30:00Z"),
+        ];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T10:15:00Z"),
+        )
+        .unwrap();
+        // Only the second round is at HEAD; degraded_run = 1 →
+        // Degraded, not Failed.
+        assert!(
+            matches!(
+                r.activity,
+                CopilotActivity::Requested {
+                    health: InFlightHealth::Degraded,
+                    ..
+                }
+            ),
+            "expected Degraded (per-HEAD budget), got {:?}",
+            r.activity
+        );
     }
 }

@@ -3,10 +3,15 @@
 
 use crate::ids::BlockerKey;
 
-use crate::orient::copilot::{CopilotActivity, CopilotReport, CopilotTier};
+use crate::orient::copilot::{
+    CopilotActivity, CopilotReport, CopilotTier, InFlightHealth, Symptom,
+};
 
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
+// Health → Action mapping for the Copilot axis. Same shape will land
+// on decide_ci and any subsequent axis; lift the common
+// Healthy/Degraded/Failed branching when 3+ wear it.
 pub fn candidates(report: &CopilotReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
 
@@ -14,7 +19,10 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
         CopilotActivity::Idle => {
             // Absence of signal is not a blocker — don't emit anything.
         }
-        CopilotActivity::Requested { .. } => {
+        CopilotActivity::Requested {
+            health: InFlightHealth::Healthy,
+            ..
+        } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotAck,
                 effect: ActionEffect::Wait {
@@ -26,7 +34,10 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                 blocker: BlockerKey::tag("copilot_not_acked"),
             });
         }
-        CopilotActivity::Working { .. } => {
+        CopilotActivity::Working {
+            health: InFlightHealth::Healthy,
+            ..
+        } => {
             out.push(Action {
                 kind: ActionKind::WaitForCopilotReview,
                 effect: ActionEffect::Wait {
@@ -37,6 +48,30 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                 urgency: Urgency::BlockingWait,
                 blocker: BlockerKey::tag("copilot_reviewing"),
             });
+        }
+        CopilotActivity::Requested {
+            health: InFlightHealth::Degraded,
+            ..
+        } => {
+            out.push(degraded_rerequest(Symptom::StartTimeout));
+        }
+        CopilotActivity::Working {
+            health: InFlightHealth::Degraded,
+            ..
+        } => {
+            out.push(degraded_rerequest(Symptom::ReviewTimeout));
+        }
+        CopilotActivity::Requested {
+            health: InFlightHealth::Failed,
+            ..
+        } => {
+            out.push(failed_escalation(Symptom::StartTimeout));
+        }
+        CopilotActivity::Working {
+            health: InFlightHealth::Failed,
+            ..
+        } => {
+            out.push(failed_escalation(Symptom::ReviewTimeout));
         }
         CopilotActivity::Reviewed { latest } => {
             if report.tier == CopilotTier::Platinum {
@@ -63,7 +98,7 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
                     "Re-request Copilot review on HEAD to reach platinum".into()
                 };
                 out.push(Action {
-                    kind: ActionKind::RerequestCopilot,
+                    kind: ActionKind::RerequestCopilot { symptom: None },
                     effect: ActionEffect::Full { log: desc },
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Critical,
@@ -88,6 +123,60 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
     }
 
     out
+}
+
+/// Health-driven re-request. The blocker tag carries the symptom so
+/// the stall comparator separates "start" from "review" symptom
+/// stalls, and so the JSONL trace pinpoints which timeout fired.
+fn degraded_rerequest(symptom: Symptom) -> Action {
+    let (tag, log) = match symptom {
+        Symptom::StartTimeout => (
+            "copilot_degraded_start_timeout",
+            "Re-requesting Copilot — never started within the start timeout",
+        ),
+        Symptom::ReviewTimeout => (
+            "copilot_degraded_review_timeout",
+            "Re-requesting Copilot — started but no review within the review timeout",
+        ),
+    };
+    Action {
+        kind: ActionKind::RerequestCopilot {
+            symptom: Some(symptom),
+        },
+        effect: ActionEffect::Full { log: log.into() },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::BlockingFix,
+        blocker: BlockerKey::tag(tag),
+    }
+}
+
+/// Per-HEAD budget exhausted; humans must triage. No automatic side
+/// effect — the act layer never sees this; the runner consumes
+/// `Outcome::HandoffHuman` and exits.
+fn failed_escalation(symptom: Symptom) -> Action {
+    let (tag, headline) = match symptom {
+        Symptom::StartTimeout => (
+            "copilot_failed_start_timeout",
+            "Copilot has not started reviewing after repeated requests at this HEAD. \
+             Investigate the GitHub Copilot service status and re-trigger manually \
+             once the underlying issue is resolved.",
+        ),
+        Symptom::ReviewTimeout => (
+            "copilot_failed_review_timeout",
+            "Copilot started but failed to submit a review after repeated requests \
+             at this HEAD. Investigate the GitHub Copilot service status and \
+             re-trigger manually once the underlying issue is resolved.",
+        ),
+    };
+    Action {
+        kind: ActionKind::EscalateCopilotFailed { symptom },
+        effect: ActionEffect::Human {
+            prompt: ooda_core::HandoffPrompt::new(headline),
+        },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::BlockingHuman,
+        blocker: BlockerKey::tag(tag),
+    }
 }
 
 #[cfg(test)]
@@ -145,10 +234,11 @@ mod tests {
     }
 
     #[test]
-    fn requested_emits_wait_for_ack() {
+    fn requested_healthy_emits_wait_for_ack() {
         let r = report(
             CopilotActivity::Requested {
                 requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+                health: InFlightHealth::Healthy,
             },
             CopilotTier::Bronze,
             BotThreadSummary::default(),
@@ -183,7 +273,10 @@ mod tests {
             false, // not at HEAD
         );
         let cs = candidates(&r);
-        assert!(matches!(cs[0].kind, ActionKind::RerequestCopilot));
+        assert!(matches!(
+            cs[0].kind,
+            ActionKind::RerequestCopilot { symptom: None }
+        ));
         assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
     }
 
@@ -230,30 +323,60 @@ mod tests {
     // The copilot axis's per-variant baseline behavior: in the
     // most-progressive state (tier=Bronze, fresh at HEAD, no unresolved
     // threads, no stale replies, no suppressed comments) each
-    // `CopilotActivity` variant produces a deterministic candidate
+    // `CopilotActivity` variant — extended by `InFlightHealth` on
+    // the in-flight variants — produces a deterministic candidate
     // set. The Reviewed branch has sub-conditions exercised by the
     // scenario tests above (gold-not-fresh, silver-with-suppressed,
     // etc.); this property test pins the per-variant baseline.
     //
-    // The exhaustive match in `expected_copilot_baseline_behavior`
-    // is the contract. Adding a new `CopilotActivity` variant fails
-    // to compile here until the new arm is added.
+    // Exhaustive (CopilotActivity × InFlightHealth) coverage. New
+    // variants fail-to-compile here first; that's the contract
+    // working as designed.
 
     #[derive(Debug, PartialEq, Eq)]
     enum CopilotBaselineBehavior {
         NoCandidate,
         EmitWaitForAck,
         EmitWaitForReview,
+        EmitDegradedRerequest(Symptom),
+        EmitFailedEscalation(Symptom),
     }
 
-    /// What the copilot axis emits for each `CopilotActivity` variant
-    /// in the baseline state (Bronze tier, fresh, no stale, no
-    /// suppressed). Other states are exercised by the scenario tests.
+    /// What the copilot axis emits for each `(CopilotActivity,
+    /// InFlightHealth)` pair in the baseline state (Bronze tier,
+    /// fresh, no stale, no suppressed). Other states are exercised
+    /// by the scenario tests.
+    ///
+    /// The match below is structurally exhaustive — adding a new
+    /// `CopilotActivity` variant OR a new `InFlightHealth` variant
+    /// fails to compile here until a new arm is added.
     fn expected_copilot_baseline_behavior(activity: &CopilotActivity) -> CopilotBaselineBehavior {
         match activity {
             CopilotActivity::Idle => CopilotBaselineBehavior::NoCandidate,
-            CopilotActivity::Requested { .. } => CopilotBaselineBehavior::EmitWaitForAck,
-            CopilotActivity::Working { .. } => CopilotBaselineBehavior::EmitWaitForReview,
+            CopilotActivity::Requested {
+                health: InFlightHealth::Healthy,
+                ..
+            } => CopilotBaselineBehavior::EmitWaitForAck,
+            CopilotActivity::Working {
+                health: InFlightHealth::Healthy,
+                ..
+            } => CopilotBaselineBehavior::EmitWaitForReview,
+            CopilotActivity::Requested {
+                health: InFlightHealth::Degraded,
+                ..
+            } => CopilotBaselineBehavior::EmitDegradedRerequest(Symptom::StartTimeout),
+            CopilotActivity::Working {
+                health: InFlightHealth::Degraded,
+                ..
+            } => CopilotBaselineBehavior::EmitDegradedRerequest(Symptom::ReviewTimeout),
+            CopilotActivity::Requested {
+                health: InFlightHealth::Failed,
+                ..
+            } => CopilotBaselineBehavior::EmitFailedEscalation(Symptom::StartTimeout),
+            CopilotActivity::Working {
+                health: InFlightHealth::Failed,
+                ..
+            } => CopilotBaselineBehavior::EmitFailedEscalation(Symptom::ReviewTimeout),
             // Reviewed at Bronze tier, fresh, no stale, no suppressed:
             // nothing actionable at the copilot layer. Tier advancement
             // gates on the next code push (re-requests Copilot
@@ -263,15 +386,25 @@ mod tests {
     }
 
     fn all_copilot_activities() -> Vec<CopilotActivity> {
+        let req_at = Timestamp::parse("2026-04-23T10:00:00Z").unwrap();
+        let ack_at = Timestamp::parse("2026-04-23T10:01:00Z").unwrap();
+        let req = |health| CopilotActivity::Requested {
+            requested_at: req_at,
+            health,
+        };
+        let work = |health| CopilotActivity::Working {
+            requested_at: req_at,
+            ack_at,
+            health,
+        };
         vec![
             CopilotActivity::Idle,
-            CopilotActivity::Requested {
-                requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
-            },
-            CopilotActivity::Working {
-                requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
-                ack_at: Timestamp::parse("2026-04-23T10:01:00Z").unwrap(),
-            },
+            req(InFlightHealth::Healthy),
+            req(InFlightHealth::Degraded),
+            req(InFlightHealth::Failed),
+            work(InFlightHealth::Healthy),
+            work(InFlightHealth::Degraded),
+            work(InFlightHealth::Failed),
             CopilotActivity::Reviewed {
                 latest: round_at_head(),
             },
@@ -287,6 +420,15 @@ mod tests {
                 }
                 (ActionKind::WaitForCopilotReview, ActionEffect::Wait { .. }) => {
                     CopilotBaselineBehavior::EmitWaitForReview
+                }
+                (
+                    ActionKind::RerequestCopilot {
+                        symptom: Some(symptom),
+                    },
+                    ActionEffect::Full { .. },
+                ) => CopilotBaselineBehavior::EmitDegradedRerequest(*symptom),
+                (ActionKind::EscalateCopilotFailed { symptom }, ActionEffect::Human { .. }) => {
+                    CopilotBaselineBehavior::EmitFailedEscalation(*symptom)
                 }
                 (kind, effect) => panic!(
                     "copilot axis emitted unexpected (kind, effect) in baseline: \
@@ -305,11 +447,14 @@ mod tests {
         let activities = all_copilot_activities();
         assert_eq!(
             activities.len(),
-            4,
-            "`all_copilot_activities` must include one sample per \
-             `CopilotActivity` variant; adding a new variant requires \
-             adding both an arm in `expected_copilot_baseline_behavior` \
-             AND a sample here.",
+            8,
+            "`all_copilot_activities` must enumerate every \
+             (CopilotActivity × InFlightHealth) case: Idle (1) + \
+             Requested×3 + Working×3 + Reviewed (1) = 8. Adding a \
+             new `CopilotActivity` variant OR a new `InFlightHealth` \
+             variant requires updating this sample list, the \
+             exhaustive match in `expected_copilot_baseline_behavior`, \
+             AND this length sentinel.",
         );
         for activity in activities {
             let r = report(

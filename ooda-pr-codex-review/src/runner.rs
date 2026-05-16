@@ -24,7 +24,7 @@ use crate::act::{ActContext, ActError, act};
 use crate::decide::action::{Action, rate_limit_wait_action};
 use crate::decide::candidates;
 use crate::decide::decision::{Decision, HaltReason};
-use crate::ids::CodexReasoningLevel;
+use crate::ids::{CodexReasoningLevel, Timestamp};
 use crate::observe::codex::{CodexObservations, fetch_all as fetch_codex};
 use crate::observe::github::gh::GhError;
 use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
@@ -32,6 +32,16 @@ use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
 use ooda_core::decide_from_candidates;
+
+/// Read the wall-clock once per iteration. Axes that need a clock
+/// (copilot health, future CI queue-stall) take this as a parameter
+/// so behavior under test is deterministic.
+pub fn current_timestamp() -> Timestamp {
+    let now = chrono::Utc::now().to_rfc3339();
+    // `to_rfc3339` always produces a parseable RFC-3339 string;
+    // this round-trip cannot fail.
+    Timestamp::parse(&now).expect("chrono::Utc::now() round-trips through RFC-3339")
+}
 
 #[derive(Debug)]
 pub enum LoopError {
@@ -114,6 +124,11 @@ pub fn run_loop(
         IterStep::Halt(reason) => return Ok(reason),
         IterStep::Executed(action) => action,
     };
+    // Wait is stall-exempt; any axis adding health detection MUST
+    // emit a non-Wait action when degraded (see
+    // CopilotActivity::Requested(InFlightHealth::Degraded) →
+    // Full(RerequestCopilot)). Changing only the Wait's blocker tag
+    // is invisible here.
     let mut last_non_wait_key = if last_attempted.effect.is_wait() {
         None
     } else {
@@ -218,7 +233,8 @@ fn run_iter(
             None
         };
 
-    let oriented = orient(&obs, codex_obs.as_ref(), None);
+    let now = current_timestamp();
+    let oriented = orient(&obs, codex_obs.as_ref(), None, now);
     let candidates = candidates(&oriented);
     let decision = decide_from_candidates(candidates.clone(), obs.pr_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);

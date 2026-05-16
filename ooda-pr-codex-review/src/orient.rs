@@ -77,6 +77,10 @@ pub struct OrientedState {
 ///
 /// `last_commit_at` comes from outside the GitHub fetch bundle
 /// (typically `git log` on HEAD); pass `None` if unavailable.
+/// `now` is the wall-clock at the start of this orient pass — read
+/// once by the runner per iteration and threaded through axes that
+/// need a clock (currently: copilot health). Tests pass fixed
+/// values to keep behavior deterministic.
 ///
 /// `codex_obs` is `Some` only when the codex review axis is enabled
 /// (i.e. `--codex-review-ceiling != off`). When `None`, the
@@ -86,6 +90,7 @@ pub fn orient(
     obs: &GitHubObservations,
     codex_obs: Option<&CodexObservations>,
     last_commit_at: Option<Timestamp>,
+    now: Timestamp,
 ) -> OrientedState {
     let required =
         required_checks::required_check_names(&obs.branch_rules, obs.branch_protection.as_ref());
@@ -112,6 +117,8 @@ pub fn orient(
                 &obs.review_threads_page,
                 &obs.requested_reviewers,
                 &obs.pr_view.head_ref_oid,
+                &obs.pr_view.commits,
+                now,
             )
         });
     let cursor = orient_cursor(

@@ -72,16 +72,118 @@ pub fn resolve_stack_root(
             "--limit",
             "1",
         ])?;
-        let Some(first) = result.into_iter().next() else {
-            // No open PR with `current` as head → we're at the root.
-            return Ok(current);
-        };
-        if visited.contains(&first.base_ref_name) {
-            // Cycle (shouldn't happen, but bail safely).
-            return Ok(current);
+        match advance_root(current.clone(), result, &mut visited) {
+            AdvanceStep::Reached(branch) => return Ok(branch),
+            AdvanceStep::Continue(next) => current = next,
         }
-        visited.push(first.base_ref_name.clone());
-        current = first.base_ref_name;
     }
     Ok(current)
+}
+
+/// Result of one stack-walk step. Split out from the gh-bound loop
+/// body so cycle detection, empty-list termination, and the
+/// "advance to parent" branch are unit-testable without subprocesses.
+#[derive(Debug, PartialEq, Eq)]
+enum AdvanceStep {
+    /// Terminal: stop walking and return this branch.
+    Reached(BranchName),
+    /// Non-terminal: continue the walk with this branch as the new
+    /// current head.
+    Continue(BranchName),
+}
+
+fn advance_root(
+    current: BranchName,
+    parents: Vec<StackParent>,
+    visited: &mut Vec<BranchName>,
+) -> AdvanceStep {
+    let Some(first) = parents.into_iter().next() else {
+        // No open PR with `current` as head → we're at the root.
+        return AdvanceStep::Reached(current);
+    };
+    if visited.contains(&first.base_ref_name) {
+        // Cycle (shouldn't happen, but bail safely).
+        return AdvanceStep::Reached(current);
+    }
+    visited.push(first.base_ref_name.clone());
+    AdvanceStep::Continue(first.base_ref_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(name: &str) -> BranchName {
+        BranchName::parse(name).unwrap()
+    }
+
+    fn parent(base: &str) -> StackParent {
+        StackParent {
+            base_ref_name: branch(base),
+        }
+    }
+
+    // ── resolve_stack_root entry-time root short-circuit ──
+
+    #[test]
+    fn resolve_returns_master_immediately_without_gh_call() {
+        // Calling resolve_stack_root with `master` returns Ok
+        // synchronously — the early-return short-circuits the gh
+        // subprocess. The test verifies it does not panic / error
+        // (any subprocess attempt would fail in the test sandbox).
+        let slug = RepoSlug::parse("acme/widgets").unwrap();
+        let out = resolve_stack_root(&slug, &branch("master")).unwrap();
+        assert_eq!(out, branch("master"));
+    }
+
+    #[test]
+    fn resolve_returns_main_immediately_without_gh_call() {
+        let slug = RepoSlug::parse("acme/widgets").unwrap();
+        let out = resolve_stack_root(&slug, &branch("main")).unwrap();
+        assert_eq!(out, branch("main"));
+    }
+
+    // ── advance_root inner step (pure) ──
+
+    #[test]
+    fn advance_root_reaches_root_when_no_parents() {
+        let mut visited = vec![branch("feature/x")];
+        let step = advance_root(branch("feature/x"), vec![], &mut visited);
+        assert_eq!(step, AdvanceStep::Reached(branch("feature/x")));
+    }
+
+    #[test]
+    fn advance_root_continues_to_parent_branch() {
+        let mut visited = vec![branch("feature/x")];
+        let step = advance_root(
+            branch("feature/x"),
+            vec![parent("feature/parent")],
+            &mut visited,
+        );
+        assert_eq!(step, AdvanceStep::Continue(branch("feature/parent")));
+        assert!(visited.contains(&branch("feature/parent")));
+    }
+
+    #[test]
+    fn advance_root_bails_on_cycle() {
+        // visited already contains the proposed parent → cycle guard
+        // returns the current branch instead of advancing into a loop.
+        let mut visited = vec![branch("a"), branch("b"), branch("c")];
+        let step = advance_root(branch("c"), vec![parent("a")], &mut visited);
+        assert_eq!(step, AdvanceStep::Reached(branch("c")));
+    }
+
+    #[test]
+    fn advance_root_takes_first_parent_when_multiple() {
+        // `--limit 1` constrains gh to return at most one parent,
+        // but defensively the helper takes the first if multiple
+        // ever arrive on the wire.
+        let mut visited = vec![branch("feature/x")];
+        let step = advance_root(
+            branch("feature/x"),
+            vec![parent("feature/first"), parent("feature/second")],
+            &mut visited,
+        );
+        assert_eq!(step, AdvanceStep::Continue(branch("feature/first")));
+    }
 }

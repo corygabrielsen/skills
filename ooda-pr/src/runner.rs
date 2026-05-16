@@ -79,7 +79,7 @@ impl Default for LoopConfig {
 /// One iteration's typed outcome. The loop body produces either
 /// an early-halt (`Decision::Halt` or stall-detected) or a completed
 /// Execute that we keep as the running "last attempted" anchor.
-enum IterStep {
+pub(crate) enum IterStep {
     /// Loop must return this halt reason immediately.
     Halt(HaltReason),
     /// Iteration ran an action successfully; the action is the
@@ -101,14 +101,35 @@ pub fn run_loop(
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<HaltReason, LoopError> {
-    let max_iter = config.max_iterations.get();
+    run_loop_with(config, |iter, last_non_wait_key| {
+        run_iter(slug, pr, recorder, &mut on_state, iter, last_non_wait_key)
+    })
+}
 
+/// Pure loop driver core. The per-iteration `run_iter` callback is
+/// parameterized so tests can script decisions without spawning
+/// `gh`. Production callers go through [`run_loop`], which threads
+/// the gh-bound `run_iter` implementation.
+///
+/// Owns the iter-1-always-runs guarantee, the stall key tracking
+/// across non-Wait actions, the Wait stall-exemption, and the cap
+/// enforcement. The split exists so each invariant can be locked
+/// with a scripted-decision test.
+pub(crate) fn run_loop_with<F>(
+    config: LoopConfig,
+    mut run_iter_fn: F,
+) -> Result<HaltReason, LoopError>
+where
+    F: FnMut(
+        u32,
+        Option<&ooda_core::StallKey<crate::decide::action::ActionKind>>,
+    ) -> Result<IterStep, LoopError>,
+{
+    let max_iter = config.max_iterations.get();
     // Iter 1 is guaranteed to run by `max_iterations: NonZeroU32`.
-    // Run it explicitly so `last_attempted` can be initialized as a
-    // typed `Action` rather than `Option<Action>`. Stall detection
-    // is structurally impossible on iter 1 (no prior key), so we
-    // pass `None` for the stall comparator.
-    let mut last_attempted: Action = match run_iter(slug, pr, recorder, &mut on_state, 1, None)? {
+    // Stall detection is structurally impossible on iter 1 (no prior
+    // key), so we pass `None` for the stall comparator.
+    let mut last_attempted: Action = match run_iter_fn(1, None)? {
         IterStep::Halt(reason) => return Ok(reason),
         IterStep::Executed(action) => action,
     };
@@ -122,17 +143,9 @@ pub fn run_loop(
     } else {
         Some(last_attempted.stall_key())
     };
-
     // Subsequent iterations (if any). Stall check on every Execute.
     for iter in 2..=max_iter {
-        let step = run_iter(
-            slug,
-            pr,
-            recorder,
-            &mut on_state,
-            iter,
-            last_non_wait_key.as_ref(),
-        )?;
+        let step = run_iter_fn(iter, last_non_wait_key.as_ref())?;
         match step {
             IterStep::Halt(reason) => return Ok(reason),
             IterStep::Executed(action) => {
@@ -143,7 +156,6 @@ pub fn run_loop(
             }
         }
     }
-
     // `last_attempted: Action` here is structurally guaranteed —
     // iter 1 ran (NonZeroU32 max_iter) and either returned via the
     // `IterStep::Halt` arm above or assigned `last_attempted`.
@@ -231,5 +243,213 @@ fn run_iter(
             act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decide::action::{ActionEffect, ActionKind, TargetEffect, Urgency};
+    use crate::decide::decision::{DecisionHalt, Terminal};
+    use crate::ids::BlockerKey;
+    use ooda_core::PollingInterval;
+    use std::cell::RefCell;
+
+    fn cfg(max: u32) -> LoopConfig {
+        LoopConfig {
+            max_iterations: NonZeroU32::new(max).expect("nonzero"),
+        }
+    }
+
+    fn full_action(kind: ActionKind, blocker: &str) -> Action {
+        Action {
+            kind,
+            effect: ActionEffect::Full { log: "stub".into() },
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::BlockingFix,
+            blocker: BlockerKey::tag(blocker),
+        }
+    }
+
+    fn wait_action(kind: ActionKind, blocker: &str) -> Action {
+        Action {
+            kind,
+            effect: ActionEffect::Wait {
+                interval: PollingInterval::from_secs(1),
+                log: "stub".into(),
+            },
+            target_effect: TargetEffect::Neutral,
+            urgency: Urgency::BlockingWait,
+            blocker: BlockerKey::tag(blocker),
+        }
+    }
+
+    fn rebase() -> Action {
+        full_action(ActionKind::Rebase, "rebase-needed")
+    }
+
+    /// Scripted `run_iter` callback. Returns the i-th `IterStep`
+    /// from a fixed sequence, panicking if the loop reads past the
+    /// end — the test's expectation about iteration count IS what
+    /// fails. Mirrors the production `run_iter`'s pre-act stall
+    /// check: if the next-up `IterStep::Executed`'s stall key
+    /// matches the supplied `last_non_wait_key`, the wrapper
+    /// synthesizes a `Halt(Stalled)` instead. This keeps the test
+    /// fixture authoring shape ("emit these decisions in order")
+    /// natural while still exercising the loop's stall-detection
+    /// invariant.
+    fn scripted(
+        seq: Vec<IterStep>,
+    ) -> impl FnMut(u32, Option<&ooda_core::StallKey<ActionKind>>) -> Result<IterStep, LoopError>
+    {
+        let cell = RefCell::new(seq.into_iter());
+        move |_iter, last_non_wait_key| {
+            let next = cell
+                .borrow_mut()
+                .next()
+                .expect("run_loop_with called run_iter past the end of the scripted sequence");
+            match next {
+                IterStep::Executed(action) => {
+                    let current_key = action.stall_key();
+                    if last_non_wait_key == Some(&current_key) {
+                        Ok(IterStep::Halt(HaltReason::Stalled(action)))
+                    } else {
+                        Ok(IterStep::Executed(action))
+                    }
+                }
+                halt @ IterStep::Halt(_) => Ok(halt),
+            }
+        }
+    }
+
+    #[test]
+    fn iter_1_always_runs_at_max_one() {
+        // max_iter=1 + iter-1 halts → returns the halt directly.
+        // Validates the structural iter-1 guarantee.
+        let halt = run_loop_with(
+            cfg(1),
+            scripted(vec![IterStep::Halt(HaltReason::Decision(
+                DecisionHalt::Success,
+            ))]),
+        )
+        .unwrap();
+        assert!(matches!(halt, HaltReason::Decision(DecisionHalt::Success)));
+    }
+
+    #[test]
+    fn cap_reached_carries_typed_last_action() {
+        // Iter 1 executes Rebase; iter 2 executes a DIFFERENT
+        // action so stall doesn't fire; loop hits cap=2.
+        let halt = run_loop_with(
+            cfg(2),
+            scripted(vec![
+                IterStep::Executed(rebase()),
+                IterStep::Executed(full_action(ActionKind::MarkReady, "draft")),
+            ]),
+        )
+        .unwrap();
+        match halt {
+            HaltReason::CapReached(action) => {
+                assert!(matches!(action.kind, ActionKind::MarkReady));
+            }
+            other => panic!("expected CapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stall_detects_repeated_non_wait_action() {
+        // Two identical Rebase actions in a row → stall on iter 2.
+        let halt = run_loop_with(
+            cfg(10),
+            scripted(vec![
+                IterStep::Executed(rebase()),
+                IterStep::Executed(rebase()),
+            ]),
+        )
+        .unwrap();
+        match halt {
+            HaltReason::Stalled(action) => {
+                assert!(matches!(action.kind, ActionKind::Rebase));
+            }
+            other => panic!("expected Stalled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_actions_are_stall_exempt() {
+        // Three identical Wait actions; without exemption iter 2
+        // would stall. Loop runs to cap=3 instead.
+        let wait = || {
+            wait_action(
+                ActionKind::WaitForRateLimit {
+                    scope: ooda_core::RateLimitScope::GitHubGraphqlPrimary,
+                },
+                "rate-limit",
+            )
+        };
+        let halt = run_loop_with(
+            cfg(3),
+            scripted(vec![
+                IterStep::Executed(wait()),
+                IterStep::Executed(wait()),
+                IterStep::Executed(wait()),
+            ]),
+        )
+        .unwrap();
+        match halt {
+            HaltReason::CapReached(action) => {
+                assert!(action.effect.is_wait());
+            }
+            other => panic!("expected CapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_does_not_seed_stall_key_for_subsequent_non_wait() {
+        // Iter 1 Wait → stall key None.
+        // Iter 2 Rebase → stall comparator None ⇒ does NOT stall;
+        // stall key now set to Rebase's.
+        // Iter 3 Rebase again → stall fires.
+        let halt = run_loop_with(
+            cfg(5),
+            scripted(vec![
+                IterStep::Executed(wait_action(
+                    ActionKind::WaitForRateLimit {
+                        scope: ooda_core::RateLimitScope::GitHubGraphqlPrimary,
+                    },
+                    "rate-limit",
+                )),
+                IterStep::Executed(rebase()),
+                IterStep::Executed(rebase()),
+            ]),
+        )
+        .unwrap();
+        match halt {
+            HaltReason::Stalled(action) => {
+                assert!(matches!(action.kind, ActionKind::Rebase));
+            }
+            other => panic!("expected Stalled on iter 3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn halt_on_iter_n_returns_immediately() {
+        // Iter 1 executes; iter 2 halts terminal-aborted. Cap is 10
+        // — loop must return the halt without consuming further
+        // scripted steps.
+        let halt = run_loop_with(
+            cfg(10),
+            scripted(vec![
+                IterStep::Executed(rebase()),
+                IterStep::Halt(HaltReason::Decision(DecisionHalt::Terminal(
+                    Terminal::Aborted,
+                ))),
+            ]),
+        )
+        .unwrap();
+        assert!(matches!(
+            halt,
+            HaltReason::Decision(DecisionHalt::Terminal(Terminal::Aborted))
+        ));
     }
 }

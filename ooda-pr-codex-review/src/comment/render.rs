@@ -497,4 +497,71 @@ mod tests {
         );
         assert_eq!(r1.dedup_key, r2.dedup_key);
     }
+
+    // ── halt_summary fallback arms ──
+    //
+    // Direct render coverage for the Terminal::Aborted arm and the
+    // catch-all `_` arm. The `_` arm fires when AgentNeeded or
+    // HumanNeeded reach the empty-candidate path; in practice candidates
+    // are populated by the handoff path, but the fallback exists so a
+    // future halt variant that opts out of candidate emission still
+    // produces a non-empty body in the PR timeline.
+
+    fn handoff_action() -> ooda_core::HandoffAction<crate::decide::action::ActionKind> {
+        ooda_core::HandoffAction {
+            kind: ActionKind::Rebase,
+            prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
+            target_effect: TargetEffect::Blocks,
+            urgency: crate::decide::action::Urgency::BlockingFix,
+            blocker: BlockerKey::tag("rebase-needed"),
+        }
+    }
+
+    #[test]
+    fn render_terminal_aborted_yields_pr_closed_halt_line() {
+        let o = empty_oriented();
+        let r = render(
+            &slug(),
+            pr(),
+            Some(5),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)),
+        );
+        assert!(r.body.contains("PR closed"), "{}", r.body);
+        assert!(r.dedup_key.contains("halt:terminal"));
+    }
+
+    #[test]
+    fn render_agent_needed_with_empty_candidates_uses_fallback_summary() {
+        // Synthetic: empty candidates with an AgentNeeded halt
+        // (production-side AgentNeeded paths always populate
+        // candidates, but the fallback arm exists for resilience).
+        let o = empty_oriented();
+        let r = render(
+            &slug(),
+            pr(),
+            Some(4),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::AgentNeeded(handoff_action())),
+        );
+        assert!(r.body.contains("**Halt:** no candidates."), "{}", r.body);
+        assert!(r.dedup_key.contains("halt:agent"));
+    }
+
+    #[test]
+    fn render_human_needed_with_empty_candidates_uses_fallback_summary() {
+        let o = empty_oriented();
+        let r = render(
+            &slug(),
+            pr(),
+            Some(6),
+            &o,
+            &[],
+            &Decision::Halt(DecisionHalt::HumanNeeded(handoff_action())),
+        );
+        assert!(r.body.contains("**Halt:** no candidates."), "{}", r.body);
+        assert!(r.dedup_key.contains("halt:human"));
+    }
 }

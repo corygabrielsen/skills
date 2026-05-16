@@ -11,7 +11,7 @@ use crate::ids::RepoSlug;
 
 use super::gh::GhError;
 use super::rulesets::{
-    CopilotCodeReviewParams, RulesetEnforcement, fetch_ruleset, fetch_ruleset_list,
+    CopilotCodeReviewParams, Ruleset, RulesetEnforcement, fetch_ruleset, fetch_ruleset_list,
     ruleset_matches_branch,
 };
 
@@ -64,11 +64,23 @@ fn extract_copilot(
         Err(GhError::NotFound) => return Ok(None),
         Err(e) => return Err(e),
     };
+    Ok(extract_copilot_from_ruleset(ruleset, branch))
+}
+
+/// Pure post-fetch projection of a [`Ruleset`] into the Copilot
+/// code-review parameters, if any. Split out from [`extract_copilot`]
+/// so the branch logic (active gating, branch-scope match, missing-
+/// parameters fallback, unparseable-parameters skip) is unit-testable
+/// without a `gh` subprocess.
+pub(crate) fn extract_copilot_from_ruleset(
+    ruleset: Ruleset,
+    branch: &str,
+) -> Option<CopilotCodeReviewParams> {
     if ruleset.enforcement != RulesetEnforcement::Active {
-        return Ok(None);
+        return None;
     }
     if !ruleset_matches_branch(ruleset.conditions.as_ref(), branch) {
-        return Ok(None);
+        return None;
     }
     for rule in ruleset.rules {
         if rule.rule_type != "copilot_code_review" {
@@ -91,7 +103,147 @@ fn extract_copilot(
                 review_draft_pull_requests: false,
             },
         };
-        return Ok(Some(parsed));
+        return Some(parsed);
     }
-    Ok(None)
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::observe::github::rulesets::{RefNameCondition, RulesetConditions, RulesetRule};
+    use serde_json::json;
+
+    fn ruleset(
+        enforcement: RulesetEnforcement,
+        conditions: Option<RulesetConditions>,
+        rules: Vec<RulesetRule>,
+    ) -> Ruleset {
+        Ruleset {
+            id: 1,
+            name: "rs".to_string(),
+            enforcement,
+            conditions,
+            rules,
+        }
+    }
+
+    fn copilot_rule(params: Option<serde_json::Value>) -> RulesetRule {
+        RulesetRule {
+            rule_type: "copilot_code_review".to_string(),
+            parameters: params,
+        }
+    }
+
+    fn other_rule() -> RulesetRule {
+        RulesetRule {
+            rule_type: "required_status_checks".to_string(),
+            parameters: None,
+        }
+    }
+
+    fn match_all_conditions() -> RulesetConditions {
+        // ~ALL == default include `~ALL`, no excludes. Matches every branch.
+        RulesetConditions {
+            ref_name: Some(RefNameCondition {
+                include: vec!["~ALL".to_string()],
+                exclude: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn extract_from_ruleset_returns_none_when_disabled() {
+        let rs = ruleset(
+            RulesetEnforcement::Disabled,
+            Some(match_all_conditions()),
+            vec![copilot_rule(None)],
+        );
+        assert!(extract_copilot_from_ruleset(rs, "master").is_none());
+    }
+
+    #[test]
+    fn extract_from_ruleset_returns_none_for_branch_outside_scope() {
+        let rs = ruleset(
+            RulesetEnforcement::Active,
+            Some(RulesetConditions {
+                ref_name: Some(RefNameCondition {
+                    include: vec!["refs/heads/release/*".to_string()],
+                    exclude: vec![],
+                }),
+            }),
+            vec![copilot_rule(None)],
+        );
+        assert!(extract_copilot_from_ruleset(rs, "master").is_none());
+    }
+
+    #[test]
+    fn extract_from_ruleset_returns_defaults_when_parameters_missing() {
+        // Missing parameters → defaults. The regression-prone path
+        // called out at line 78 of the production source.
+        let rs = ruleset(
+            RulesetEnforcement::Active,
+            Some(match_all_conditions()),
+            vec![copilot_rule(None)],
+        );
+        let params = extract_copilot_from_ruleset(rs, "master").unwrap();
+        assert!(!params.review_on_push);
+        assert!(!params.review_draft_pull_requests);
+    }
+
+    #[test]
+    fn extract_from_ruleset_parses_parameters_when_present() {
+        let rs = ruleset(
+            RulesetEnforcement::Active,
+            Some(match_all_conditions()),
+            vec![copilot_rule(Some(json!({
+                "review_on_push": true,
+                "review_draft_pull_requests": true,
+            })))],
+        );
+        let params = extract_copilot_from_ruleset(rs, "master").unwrap();
+        assert!(params.review_on_push);
+        assert!(params.review_draft_pull_requests);
+    }
+
+    #[test]
+    fn extract_from_ruleset_skips_non_copilot_rules() {
+        let rs = ruleset(
+            RulesetEnforcement::Active,
+            Some(match_all_conditions()),
+            vec![other_rule()],
+        );
+        assert!(extract_copilot_from_ruleset(rs, "master").is_none());
+    }
+
+    #[test]
+    fn extract_from_ruleset_skips_rule_with_unparseable_parameters_and_continues() {
+        // First copilot rule has garbage params → continue; second has
+        // valid params → returned. Locks the "skip on parse error,
+        // don't bail" branch.
+        let rs = ruleset(
+            RulesetEnforcement::Active,
+            Some(match_all_conditions()),
+            vec![
+                copilot_rule(Some(json!({"review_on_push": "not-a-bool"}))),
+                copilot_rule(Some(json!({
+                    "review_on_push": true,
+                    "review_draft_pull_requests": false,
+                }))),
+            ],
+        );
+        let params = extract_copilot_from_ruleset(rs, "master").unwrap();
+        assert!(params.review_on_push);
+        assert!(!params.review_draft_pull_requests);
+    }
+
+    #[test]
+    fn extract_from_ruleset_returns_none_when_no_conditions_present() {
+        // Conditions absent → ruleset_matches_branch returns true
+        // (no scope restriction). Validate the active+matching path
+        // even without an explicit conditions block.
+        let rs = ruleset(RulesetEnforcement::Active, None, vec![copilot_rule(None)]);
+        let params = extract_copilot_from_ruleset(rs, "master").unwrap();
+        assert!(!params.review_on_push);
+    }
 }

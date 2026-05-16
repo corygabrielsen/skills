@@ -1302,4 +1302,30 @@ mod tests {
         .unwrap();
         assert!(!r.fresh);
     }
+
+    // ── reserved SkipReason variants ──
+    //
+    // `RepoConfig` and `Unknown` are part of the public contract but
+    // v1's classifier never emits them. Construct each variant and
+    // assert its serialized wire name to lock the JSONL shape against
+    // silent rename drift.
+
+    #[test]
+    fn skip_reason_repo_config_serializes_to_pascal_case() {
+        let json = serde_json::to_string(&SkipReason::RepoConfig).unwrap();
+        assert_eq!(json, "\"RepoConfig\"");
+    }
+
+    #[test]
+    fn skip_reason_unknown_serializes_to_pascal_case() {
+        let json = serde_json::to_string(&SkipReason::Unknown).unwrap();
+        assert_eq!(json, "\"Unknown\"");
+    }
+
+    #[test]
+    fn skip_reason_label_covers_all_variants() {
+        assert_eq!(skip_reason_label(SkipReason::AuthorClass), "author class");
+        assert_eq!(skip_reason_label(SkipReason::RepoConfig), "repo config");
+        assert_eq!(skip_reason_label(SkipReason::Unknown), "unknown");
+    }
 }

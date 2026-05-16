@@ -1238,4 +1238,162 @@ mod tests {
         assert!(events.contains(r#""kind":"outcome""#), "{events}");
         let _ = fs::remove_dir_all(root);
     }
+
+    // ── iteration_decided envelope golden ──
+    //
+    // Phase A (b272b80) added `dashboard_ref` as the 5th artifact in
+    // the on-disk `iteration_decided` event. The envelope contract is
+    // load-bearing for downstream readers — lock it with a golden so
+    // a future drop or reorder fails CI rather than silently breaking
+    // the caller surface.
+
+    fn ts(s: &str) -> crate::ids::Timestamp {
+        crate::ids::Timestamp::parse(s).unwrap()
+    }
+
+    fn empty_oriented_for_golden() -> OrientedState {
+        use crate::observe::github::pr_view::Mergeable;
+        use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
+        use crate::orient::reviews::{PendingReviews, ReviewSummary};
+        use crate::orient::state::PullRequestState;
+        OrientedState {
+            ci: CiReport {
+                summary: CiSummary {
+                    required: CheckBucket::default(),
+                    missing_names: vec![],
+                    completed_at: None,
+                    advisory: CheckBucket::default(),
+                },
+                activity: CiActivity::Resolved(ResolvedState::AllGreen),
+            },
+            state: PullRequestState {
+                conflict: Mergeable::Mergeable,
+                draft: false,
+                wip: false,
+                title_len: 30,
+                title_ok: true,
+                body: true,
+                summary: true,
+                test_plan: true,
+                content_label: true,
+                assignees: 1,
+                reviewers: 1,
+                merge_when_ready: false,
+                commits: 1,
+                behind: false,
+                has_open_parent_pr: false,
+                merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
+                updated_at: ts("2026-04-23T10:00:00Z"),
+                last_commit_at: None,
+            },
+            reviews: ReviewSummary {
+                decision: None,
+                threads_unresolved: 0,
+                threads_total: 0,
+                bot_comments: 0,
+                approvals_on_head: 0,
+                approvals_stale: 0,
+                pending_reviews: PendingReviews::default(),
+                bot_reviews: vec![],
+                requested_reviewers: crate::orient::reviews::RequestedReviewerSet::default(),
+                latest_human_changes_requested: None,
+            },
+            copilot: None,
+            cursor: None,
+            threads: vec![],
+            merge_base_delta: None,
+        }
+    }
+
+    #[test]
+    fn iteration_decided_event_carries_five_artifact_refs() {
+        let root = temp_root("iter-decided");
+        let _ = fs::remove_dir_all(&root);
+        let recorder = Recorder::open(RecorderConfig {
+            slug: RepoSlug::parse("example/widgets").unwrap(),
+            pr: PullRequestNumber::new(7).unwrap(),
+            mode: RunMode::Loop,
+            max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
+            status_comment: false,
+            state_root: Some(root.clone()),
+            legacy_trace: None,
+        })
+        .unwrap();
+
+        let oriented = empty_oriented_for_golden();
+        // Halt::Success → empty candidate set on disk; the 5-ref
+        // artifact envelope is still emitted because every observe/
+        // orient/decide call writes its full bundle regardless of
+        // halt/execute disposition.
+        let decision = Decision::Halt(crate::decide::decision::DecisionHalt::Success);
+
+        recorder.record_iteration(1, &serde_json::json!({}), &oriented, &[], &decision);
+
+        let pr_root = recorder.pr_root();
+        let events = fs::read_to_string(pr_root.join("events.jsonl")).unwrap();
+        let line = events
+            .lines()
+            .find(|l| l.contains(r#""kind":"iteration_decided""#))
+            .expect("iteration_decided event present");
+        let event: Value = serde_json::from_str(line).unwrap();
+
+        let artifacts = event.get("artifacts").expect("artifacts field");
+        let arr = artifacts.as_array().expect("artifacts is an array");
+        assert_eq!(
+            arr.len(),
+            5,
+            "iteration_decided envelope must carry 5 artifact refs \
+             (observations, oriented, candidates, decision, dashboard); \
+             adding a 6th artifact requires updating this golden AND \
+             downstream consumers.",
+        );
+        let paths: Vec<String> = arr
+            .iter()
+            .map(|a| {
+                a.get("path")
+                    .and_then(Value::as_str)
+                    .expect("artifact has path")
+                    .to_string()
+            })
+            .collect();
+        // Iteration-scoped artifacts under runs/<run_id>/iterations/0001/
+        // — only the basenames are asserted here. Path-shape locks are
+        // exercised in `outcome_artifact_is_linked_to_compressed_blob`.
+        let basenames: Vec<&str> = paths
+            .iter()
+            .map(|p| p.rsplit('/').next().expect("non-empty path"))
+            .collect();
+        assert_eq!(
+            basenames,
+            vec![
+                "normalized.json",
+                "oriented.json",
+                "candidates.json",
+                "decision.json",
+                "dashboard.json",
+            ],
+        );
+        // Phase A's new artifact — distinct from per-iter decision.json
+        // (the Execute/Halt envelope) and from latest/decision.json
+        // (the tier-grouped Dashboard projection copy).
+        assert!(
+            basenames.contains(&"dashboard.json"),
+            "dashboard_ref must appear in artifacts (Phase A contract)",
+        );
+
+        // Envelope-level fields the readers depend on.
+        assert_eq!(
+            event.get("kind").and_then(Value::as_str),
+            Some("iteration_decided")
+        );
+        assert!(event.get("data").is_some(), "data envelope present");
+        let data = &event["data"];
+        assert_eq!(data.get("candidate_count").and_then(Value::as_u64), Some(0));
+        assert!(
+            data.get("decision").is_some(),
+            "decision projection present"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -27,7 +27,7 @@ pub(crate) fn fetch_issue_comments(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<IssueComment>, GhError> {
-    let path = format!("repos/{slug}/issues/{pr}/comments");
+    let path = format!("repos/{slug}/issues/{pr}/comments?per_page=100");
     gh_json_paginate(&["api", &path, "--paginate", "--jq", COMMENT_JQ])
 }
 

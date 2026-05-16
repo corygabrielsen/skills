@@ -17,7 +17,7 @@ pub(crate) fn fetch_pull_request_reviews(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<PullRequestReview>, GhError> {
-    let path = format!("repos/{slug}/pulls/{pr}/reviews");
+    let path = format!("repos/{slug}/pulls/{pr}/reviews?per_page=100");
     gh_json_paginate(&["api", &path, "--paginate"])
 }
 

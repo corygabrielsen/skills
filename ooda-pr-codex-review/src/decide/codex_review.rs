@@ -78,7 +78,13 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
                 level.as_str()
             ),
         },
-        target_effect: TargetEffect::Neutral,
+        // Codex review structurally gates merge until the ladder
+        // is satisfied at ceiling. `Blocks` mirrors `WaitForCi`'s
+        // target_effect; `Neutral` would let `has_advancement_path`
+        // misclassify the await as non-advancing and the merge-
+        // policy fallback would emit a phantom ResolveMergePolicy
+        // candidate alongside the real one.
+        target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingWait,
         blocker: BlockerKey::tag(format!("codex_review_await:{}", level.as_str())),
     }

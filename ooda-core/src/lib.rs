@@ -31,6 +31,7 @@
 //! type spine and exit-code contract, nothing else.
 
 pub mod action;
+pub mod atomic_io;
 pub mod attest;
 pub mod blocker;
 pub mod decision;

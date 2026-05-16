@@ -164,6 +164,17 @@ PARTIAL_MIRROR_FILES=(
     "src/runner.rs"
 )
 
+# Per-binary divergent set: present in all 3 PR-side binaries but
+# legitimately differs across them. Listed explicitly so a future
+# contributor (or this contributor) doesn't cp-blast one over another
+# during a refactor — that mistake silently breaks the binary whose
+# content was clobbered. The diff_one comparator is skipped for these;
+# the script only verifies they exist with content in every binary.
+PER_BINARY_DIVERGENT_FILES=(
+    "src/main.rs"
+    "src/recorder.rs"
+)
+
 for file in "${STRICT_FILES[@]}"; do
     for mirror in "${MIRRORS[@]}"; do
         diff_one "$file" "$mirror"
@@ -174,6 +185,32 @@ done
 for file in "${PARTIAL_MIRROR_FILES[@]}"; do
     diff_one "$file" "ooda-prs"
 done
+
+# Per-binary divergent: just verify presence + content in all 3.
+for file in "${PER_BINARY_DIVERGENT_FILES[@]}"; do
+    for binary in "$CANON" "${MIRRORS[@]}"; do
+        path="$ROOT/$binary/$file"
+        if [ ! -s "$path" ]; then
+            report_fail "$binary/$file missing or empty (per-binary divergent: must exist with content in every binary)"
+        fi
+    done
+done
+
+# Coverage check: every .rs file in canonical ooda-pr/src/ must be
+# classified into exactly one of {STRICT, PARTIAL, PER_BINARY_DIVERGENT}.
+# Catches "new file added without tier assignment" — the failure mode
+# that silently lets cp-blasts clobber per-binary content.
+canon_files=$(cd "$ROOT/$CANON" && find src -name '*.rs' -type f | sort)
+classified=$(printf '%s\n' \
+    "${STRICT_FILES[@]}" \
+    "${PARTIAL_MIRROR_FILES[@]}" \
+    "${PER_BINARY_DIVERGENT_FILES[@]}" | sort -u)
+unclassified=$(comm -23 <(printf '%s\n' "$canon_files") <(printf '%s\n' "$classified"))
+if [ -n "$unclassified" ]; then
+    while IFS= read -r file; do
+        report_fail "$CANON/$file unclassified — add to STRICT_FILES, PARTIAL_MIRROR_FILES, or PER_BINARY_DIVERGENT_FILES"
+    done <<< "$unclassified"
+fi
 
 if [ "$fail" -ne 0 ]; then
     printf '\nMirror invariant violated. Re-sync the canonical and re-run.\n' >&2

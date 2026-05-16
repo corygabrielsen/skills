@@ -697,4 +697,48 @@ mod tests {
         let r: Result<RepoSlug, _> = serde_json::from_str("\"noslash\"");
         assert!(r.is_err());
     }
+
+    // ── CodexReasoningLevel ladder boundary cases ──
+
+    #[test]
+    fn codex_level_higher_climbs_one_rung() {
+        assert_eq!(
+            CodexReasoningLevel::Low.higher(),
+            Some(CodexReasoningLevel::Medium),
+        );
+        assert_eq!(
+            CodexReasoningLevel::Medium.higher(),
+            Some(CodexReasoningLevel::High),
+        );
+        assert_eq!(
+            CodexReasoningLevel::High.higher(),
+            Some(CodexReasoningLevel::Xhigh),
+        );
+    }
+
+    #[test]
+    fn codex_level_higher_at_ceiling_yields_none() {
+        assert_eq!(CodexReasoningLevel::Xhigh.higher(), None);
+    }
+
+    #[test]
+    fn codex_level_lower_drops_one_rung() {
+        assert_eq!(
+            CodexReasoningLevel::Xhigh.lower(),
+            Some(CodexReasoningLevel::High),
+        );
+        assert_eq!(
+            CodexReasoningLevel::High.lower(),
+            Some(CodexReasoningLevel::Medium),
+        );
+        assert_eq!(
+            CodexReasoningLevel::Medium.lower(),
+            Some(CodexReasoningLevel::Low),
+        );
+    }
+
+    #[test]
+    fn codex_level_lower_at_floor_yields_none() {
+        assert_eq!(CodexReasoningLevel::Low.lower(), None);
+    }
 }

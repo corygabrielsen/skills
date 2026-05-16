@@ -168,3 +168,50 @@ impl ActionKindName for ActionKind {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn higher_climbs_one_rung() {
+        assert_eq!(
+            CodexReasoningLevel::Low.higher(),
+            Some(CodexReasoningLevel::Medium),
+        );
+        assert_eq!(
+            CodexReasoningLevel::Medium.higher(),
+            Some(CodexReasoningLevel::High),
+        );
+        assert_eq!(
+            CodexReasoningLevel::High.higher(),
+            Some(CodexReasoningLevel::Xhigh),
+        );
+    }
+
+    #[test]
+    fn higher_at_ceiling_yields_none() {
+        assert_eq!(CodexReasoningLevel::Xhigh.higher(), None);
+    }
+
+    #[test]
+    fn lower_drops_one_rung() {
+        assert_eq!(
+            CodexReasoningLevel::Xhigh.lower(),
+            Some(CodexReasoningLevel::High),
+        );
+        assert_eq!(
+            CodexReasoningLevel::High.lower(),
+            Some(CodexReasoningLevel::Medium),
+        );
+        assert_eq!(
+            CodexReasoningLevel::Medium.lower(),
+            Some(CodexReasoningLevel::Low),
+        );
+    }
+
+    #[test]
+    fn lower_at_floor_yields_none() {
+        assert_eq!(CodexReasoningLevel::Low.lower(), None);
+    }
+}

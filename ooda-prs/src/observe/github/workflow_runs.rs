@@ -281,4 +281,31 @@ mod tests {
             Some(WorkflowRunConclusion::ActionRequired)
         );
     }
+
+    // ── reserved CancelledDisposition variants ──
+    //
+    // `Superseded` and `Terminal` are reserved for the upcoming
+    // Resolved-cancelled disambiguation path. No v1 code path
+    // constructs them. Lock the wire names so the JSONL contract
+    // stays stable as consumers come online.
+
+    #[test]
+    fn cancelled_disposition_superseded_serializes_to_pascal_case() {
+        let json = serde_json::to_string(&CancelledDisposition::Superseded).unwrap();
+        assert_eq!(json, "\"Superseded\"");
+    }
+
+    #[test]
+    fn cancelled_disposition_terminal_serializes_to_pascal_case() {
+        let json = serde_json::to_string(&CancelledDisposition::Terminal).unwrap();
+        assert_eq!(json, "\"Terminal\"");
+    }
+
+    #[test]
+    fn cancelled_disposition_distinguishes_variants() {
+        assert_ne!(
+            CancelledDisposition::Superseded,
+            CancelledDisposition::Terminal,
+        );
+    }
 }

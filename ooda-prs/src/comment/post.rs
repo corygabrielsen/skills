@@ -50,6 +50,28 @@ pub fn post_if_changed(
     recorder: &Recorder,
     iteration: Option<u32>,
 ) -> Result<bool, PostError> {
+    let pr_s = pr.to_string();
+    let slug_s = slug.to_string();
+    let body = rendered.body.clone();
+    post_if_changed_with(rendered, recorder, iteration, move || {
+        gh_run(&["pr", "comment", &pr_s, "-R", &slug_s, "--body", &body])
+    })
+}
+
+/// Test-friendly inner form. Takes a `post` closure that performs
+/// the actual delivery (production wires it to `gh_run`); the
+/// dedup-skip, post-then-write-state, and post-error branches are
+/// driven by the closure's return value. Keeping the production
+/// entry point as a thin shim preserves the caller surface.
+fn post_if_changed_with<F>(
+    rendered: &Rendered,
+    recorder: &Recorder,
+    iteration: Option<u32>,
+    post: F,
+) -> Result<bool, PostError>
+where
+    F: FnOnce() -> Result<(), GhError>,
+{
     let key_path = recorder.dedup_path();
     let prior = read_prior_hash(&key_path).map_err(PostError::Hash)?;
     let key = hash_str(&rendered.dedup_key);
@@ -65,17 +87,7 @@ pub fn post_if_changed(
         return Ok(false);
     }
 
-    let pr_s = pr.to_string();
-    let slug_s = slug.to_string();
-    if let Err(e) = gh_run(&[
-        "pr",
-        "comment",
-        &pr_s,
-        "-R",
-        &slug_s,
-        "--body",
-        &rendered.body,
-    ]) {
+    if let Err(e) = post() {
         let result = PostResult {
             prior_hash: prior,
             new_hash: key,
@@ -163,6 +175,8 @@ fn hash_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recorder::{Recorder, RecorderConfig, RunMode};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn hash_str_is_stable() {
@@ -191,5 +205,132 @@ mod tests {
     fn parse_prior_hash_accepts_legacy_plain_hash() {
         let hash = parse_prior_hash("abc\n");
         assert_eq!(hash.as_deref(), Some("abc"));
+    }
+
+    // ── post_if_changed_with branch coverage ──
+    //
+    // The dedup-skip, post-then-write-state, and post-error branches
+    // are driven via the injected `post` closure so behavior is
+    // deterministic without spawning `gh`.
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        // Per-test unique dir (process id + per-test monotonic counter)
+        // — concurrent test runs must not race on the same recorder
+        // tree.
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "ooda-pr-post-test-{label}-{}-{seq}",
+            std::process::id()
+        ))
+    }
+
+    fn open_recorder(root: &std::path::Path) -> Recorder {
+        let _ = fs::remove_dir_all(root);
+        Recorder::open(RecorderConfig {
+            slug: RepoSlug::parse("acme/widgets").unwrap(),
+            pr: PullRequestNumber::new(42).unwrap(),
+            mode: RunMode::Loop,
+            max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
+            status_comment: true,
+            state_root: Some(root.to_path_buf()),
+            legacy_trace: None,
+        })
+        .unwrap()
+    }
+
+    fn sample_rendered() -> Rendered {
+        Rendered {
+            body: "## OODA · acme/widgets#42\nstuff".to_string(),
+            dedup_key: "ci:pass|reviews:none|exec".to_string(),
+        }
+    }
+
+    #[test]
+    fn post_if_changed_with_skips_when_dedup_key_matches() {
+        let root = temp_root("skip");
+        let recorder = open_recorder(&root);
+        // Pre-seed the dedup file with the matching hash.
+        let rendered = sample_rendered();
+        let key = hash_str(&rendered.dedup_key);
+        let dedup = DedupState {
+            hash: key.clone(),
+            dedup_key: rendered.dedup_key.clone(),
+            updated_at: "prior".to_string(),
+        };
+        let dedup_path = recorder.dedup_path();
+        if let Some(parent) = dedup_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&dedup_path, serde_json::to_vec(&dedup).unwrap()).unwrap();
+
+        // Track whether the post closure was invoked. Skip branch
+        // must never call it.
+        let invoked = std::cell::Cell::new(false);
+        let posted = post_if_changed_with(&rendered, &recorder, Some(1), || {
+            invoked.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(!posted, "dedup-skip must report Ok(false)");
+        assert!(!invoked.get(), "dedup-skip must not invoke the poster");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn post_if_changed_with_posts_and_writes_dedup_on_miss() {
+        let root = temp_root("post");
+        let recorder = open_recorder(&root);
+        let rendered = sample_rendered();
+        let dedup_path = recorder.dedup_path();
+        // No prior file present → dedup miss.
+        assert!(!dedup_path.exists());
+
+        let invoked = std::cell::Cell::new(false);
+        let posted = post_if_changed_with(&rendered, &recorder, Some(1), || {
+            invoked.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(posted, "successful post returns Ok(true)");
+        assert!(invoked.get(), "poster must be invoked on dedup miss");
+        assert!(
+            dedup_path.exists(),
+            "dedup state must be written after post"
+        );
+
+        let body = fs::read_to_string(&dedup_path).unwrap();
+        let stored: DedupState = serde_json::from_str(&body).unwrap();
+        assert_eq!(stored.hash, hash_str(&rendered.dedup_key));
+        assert_eq!(stored.dedup_key, rendered.dedup_key);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn post_if_changed_with_propagates_post_error_and_skips_state_write() {
+        let root = temp_root("err");
+        let recorder = open_recorder(&root);
+        let rendered = sample_rendered();
+        let dedup_path = recorder.dedup_path();
+        assert!(!dedup_path.exists());
+
+        let err = post_if_changed_with(&rendered, &recorder, Some(1), || {
+            Err(GhError::NonZero {
+                code: Some(1),
+                stderr: "synthetic failure".to_string(),
+            })
+        })
+        .unwrap_err();
+        match err {
+            PostError::Gh(GhError::NonZero { code, .. }) => assert_eq!(code, Some(1)),
+            other => panic!("expected Gh(NonZero), got {other:?}"),
+        }
+        assert!(
+            !dedup_path.exists(),
+            "dedup state must not be written when post errors",
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

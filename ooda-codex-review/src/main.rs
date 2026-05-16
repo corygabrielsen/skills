@@ -616,7 +616,13 @@ fn count_current_batch_issues(recorder: &Recorder, level: CodexReasoningLevel) -
     match observe::codex::batch::scan_batch(&recorder.batch_dir(), level, batch_size) {
         Ok(observe::codex::batch::BatchState::Complete { verdicts }) => verdicts
             .iter()
-            .filter(|v| matches!(v.class, observe::codex::VerdictClass::HasIssues))
+            .filter(|v| {
+                matches!(
+                    v.class,
+                    observe::codex::VerdictClass::HasIssues
+                        | observe::codex::VerdictClass::Indeterminate
+                )
+            })
             .count() as u32,
         _ => 0,
     }

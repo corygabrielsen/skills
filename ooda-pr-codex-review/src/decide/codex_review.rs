@@ -38,7 +38,12 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
         CodexReviewStatus::Address { level, verdicts } => {
             let issues: Vec<&crate::observe::codex::VerdictRecord> = verdicts
                 .iter()
-                .filter(|v| matches!(v.class, VerdictClass::HasIssues))
+                .filter(|v| {
+                    matches!(
+                        v.class,
+                        VerdictClass::HasIssues | VerdictClass::Indeterminate
+                    )
+                })
                 .collect();
             let count = issues.len() as u32;
             vec![mk_address(*level, count, &issues)]

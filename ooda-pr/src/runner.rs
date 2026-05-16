@@ -129,10 +129,7 @@ pub(crate) fn run_loop_with<F>(
     mut run_iter_fn: F,
 ) -> Result<HaltReason, LoopError>
 where
-    F: FnMut(
-        u32,
-        Option<&ooda_core::StallKey<crate::decide::action::ActionKind>>,
-    ) -> Result<IterStep, LoopError>,
+    F: FnMut(u32, Option<&ooda_core::StallKey>) -> Result<IterStep, LoopError>,
 {
     let max_iter = config.max_iterations.get();
     // Iter 1 is guaranteed to run by `max_iterations: NonZeroU32`.
@@ -181,7 +178,7 @@ fn run_iter(
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
     iter: u32,
-    last_non_wait_key: Option<&ooda_core::StallKey<crate::decide::action::ActionKind>>,
+    last_non_wait_key: Option<&ooda_core::StallKey>,
 ) -> Result<IterStep, LoopError> {
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
@@ -310,8 +307,7 @@ mod tests {
     /// invariant.
     fn scripted(
         seq: Vec<IterStep>,
-    ) -> impl FnMut(u32, Option<&ooda_core::StallKey<ActionKind>>) -> Result<IterStep, LoopError>
-    {
+    ) -> impl FnMut(u32, Option<&ooda_core::StallKey>) -> Result<IterStep, LoopError> {
         let cell = RefCell::new(seq.into_iter());
         move |_iter, last_non_wait_key| {
             let next = cell

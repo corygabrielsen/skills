@@ -171,7 +171,7 @@ fn run_iter(
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
     iter: u32,
-    last_non_wait_key: Option<&ooda_core::StallKey<crate::decide::action::ActionKind>>,
+    last_non_wait_key: Option<&ooda_core::StallKey>,
 ) -> Result<IterStep, LoopError> {
     let slug = ctx.slug.clone();
     let pr = ctx.pr;

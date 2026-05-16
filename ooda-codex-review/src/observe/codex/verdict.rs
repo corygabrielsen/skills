@@ -93,14 +93,22 @@ pub fn classify(verdict: &str) -> VerdictClass {
 }
 
 fn has_issue_markers(normalized: &str) -> bool {
+    // Retained markers have semantic grounding: review-comment
+    // headers and priority tags (`[P0]`/`[P1]`/...) are emitted by
+    // `codex review` when it has something to flag.
+    //
+    // The conjunction words ` but ` and ` however ` were previously
+    // listed here and over-triggered on hedging language in clean
+    // verdicts ("did not find any issues, but consider X" / "looks
+    // good. however, ..."), routing them to HasIssues. They are
+    // not semantic markers — they are common English connectives —
+    // so they were removed.
     normalized.contains("review comment:")
         || normalized.contains("full review comments:")
         || normalized.contains("\n- [p")
         || normalized.starts_with("- [p")
         || normalized.contains("\n[p")
         || normalized.starts_with("[p")
-        || normalized.contains(" but ")
-        || normalized.contains(" however ")
 }
 
 #[cfg(test)]
@@ -305,5 +313,37 @@ mod tests {
         let body = "The TypeScript replacement appears to preserve the deploy workflow. \
                     However, the external health check now exits before restoring state.";
         assert_eq!(classify(body), VerdictClass::HasIssues);
+    }
+
+    #[test]
+    fn classify_clean_hedged_with_but_is_clean() {
+        // Hedged clean verdict: a recognized clean phrasing followed
+        // by an English `but ...` continuation. The conjunction must
+        // not flip the classification.
+        assert_eq!(
+            classify("I did not find any correctness issues, but consider renaming foo."),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_hedged_with_however_is_clean() {
+        // Hedged clean verdict using "however" as the connective.
+        assert_eq!(
+            classify("No actionable findings. However, the naming of foo could be tightened."),
+            VerdictClass::Clean
+        );
+    }
+
+    #[test]
+    fn classify_clean_did_not_find_with_but_is_clean() {
+        // Long-form clean verdict that contains ` but ` in body prose.
+        assert_eq!(
+            classify(
+                "I did not identify any correctness regressions in this diff, \
+                 but the helper module could be split for readability."
+            ),
+            VerdictClass::Clean
+        );
     }
 }

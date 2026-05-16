@@ -84,7 +84,7 @@ mod tests {
             effect: ActionEffect::Full { log: desc.into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag(blocker),
+            blocker: BlockerKey::for_test(blocker),
         }
     }
 

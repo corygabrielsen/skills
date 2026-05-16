@@ -36,9 +36,9 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
         attest_path: attest_path.to_path_buf(),
     };
     let blocker = match oriented.doc_review {
-        DocReview::Drift { .. } => BlockerKey::tag("doc_review_drift"),
-        DocReview::NeverAttested => BlockerKey::tag("doc_review_never_attested"),
-        DocReview::Synced => BlockerKey::tag("doc_review_synced"),
+        DocReview::Drift { .. } => BlockerKey::from_static("doc_review_drift"),
+        DocReview::NeverAttested => BlockerKey::from_static("doc_review_never_attested"),
+        DocReview::Synced => BlockerKey::from_static("doc_review_synced"),
     };
     vec![Action {
         kind,

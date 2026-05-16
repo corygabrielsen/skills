@@ -481,6 +481,11 @@ impl fmt::Display for CheckName {
     }
 }
 
+// CheckName names a single CI check. Same check → same name across
+// iterations; distinct checks → distinct names. Gate-stable by
+// construction.
+impl ooda_core::GateIdentity for CheckName {}
+
 // -- Timestamp -------------------------------------------------------
 
 /// An RFC-3339 / ISO-8601 timestamp parsed into a structured

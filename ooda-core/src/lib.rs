@@ -47,7 +47,7 @@ pub mod stall_key;
 pub mod state_root;
 
 pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
-pub use blocker::{BlockerKey, BlockerKeyError};
+pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};
 pub use decision::{
     Decision, DecisionHalt, HaltReason, Terminal, classify, decide_from_candidates,
 };

@@ -39,7 +39,7 @@ mod tests {
             effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("rebase-needed"),
+            blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
 
@@ -49,7 +49,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("h"),
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("not-approved"),
+            blocker: BlockerKey::from_static("not-approved"),
         }
     }
 

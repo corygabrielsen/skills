@@ -1109,7 +1109,7 @@ mod tests {
             effect,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("rebase-needed"),
+            blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
 

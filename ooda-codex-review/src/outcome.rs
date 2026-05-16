@@ -53,7 +53,7 @@ mod tests {
             effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Advances,
             urgency: Urgency::Critical,
-            blocker: BlockerKey::tag("not-started"),
+            blocker: BlockerKey::from_static("not-started"),
         }
     }
 
@@ -63,7 +63,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("h"),
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("address-failed"),
+            blocker: BlockerKey::from_static("address-failed"),
         }
     }
 

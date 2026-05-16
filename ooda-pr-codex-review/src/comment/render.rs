@@ -373,7 +373,7 @@ mod tests {
             },
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            blocker: BlockerKey::tag("rebase-needed"),
+            blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
 
@@ -586,7 +586,7 @@ mod tests {
             prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
             target_effect: TargetEffect::Blocks,
             urgency: crate::decide::action::Urgency::BlockingFix,
-            blocker: BlockerKey::tag("rebase-needed"),
+            blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
 

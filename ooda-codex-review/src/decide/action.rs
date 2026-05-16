@@ -50,7 +50,18 @@ impl CodexReasoningLevel {
             Self::Xhigh => "xhigh",
         }
     }
+}
 
+impl std::fmt::Display for CodexReasoningLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// 4-variant enum; same level → same string. Gate-stable.
+impl ooda_core::GateIdentity for CodexReasoningLevel {}
+
+impl CodexReasoningLevel {
     /// Next level up the ladder, or `None` at ceiling.
     pub fn higher(self) -> Option<Self> {
         match self {

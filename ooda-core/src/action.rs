@@ -227,7 +227,7 @@ mod tests {
             effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("test:blocker"),
+            blocker: BlockerKey::from_static("test:blocker"),
         }
     }
 

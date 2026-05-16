@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn blocker_key_tag_panics_on_empty() {
-        let result = std::panic::catch_unwind(|| BlockerKey::tag(""));
+        let result = std::panic::catch_unwind(|| BlockerKey::from_static(""));
         assert!(result.is_err());
     }
 }

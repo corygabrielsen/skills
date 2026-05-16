@@ -229,7 +229,7 @@ mod tests {
             effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("t"),
+            blocker: BlockerKey::from_static("t"),
         }
     }
 
@@ -239,7 +239,7 @@ mod tests {
             prompt: HandoffPrompt::new("handoff"),
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("t"),
+            blocker: BlockerKey::from_static("t"),
         }
     }
 
@@ -315,7 +315,7 @@ mod tests {
             effect,
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("t"),
+            blocker: BlockerKey::from_static("t"),
         }
     }
 

@@ -35,7 +35,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
-            blocker: BlockerKey::tag("draft"),
+            blocker: BlockerKey::from_static("draft"),
         });
     }
     if state.wip {
@@ -46,7 +46,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Critical,
-            blocker: BlockerKey::tag("wip_label"),
+            blocker: BlockerKey::from_static("wip_label"),
         });
     }
     if !state.title_ok {
@@ -65,7 +65,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("title_too_long"),
+            blocker: BlockerKey::from_static("title_too_long"),
         });
     }
 
@@ -80,7 +80,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag("mergeability_unknown"),
+            blocker: BlockerKey::from_static("mergeability_unknown"),
         });
     } else if state.conflict == Mergeable::Conflicting {
         out.push(Action {
@@ -95,7 +95,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("merge_conflict"),
+            blocker: BlockerKey::from_static("merge_conflict"),
         });
     } else if state.behind {
         out.push(Action {
@@ -110,7 +110,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            blocker: BlockerKey::tag("behind_base"),
+            blocker: BlockerKey::from_static("behind_base"),
         });
     }
 
@@ -319,7 +319,7 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            blocker: BlockerKey::tag("merge_blocked_unmodeled"),
+            blocker: BlockerKey::from_static("merge_blocked_unmodeled"),
         }],
         MergeStateStatus::HasHooks => vec![Action {
             kind: ActionKind::WaitForMergeability,
@@ -329,7 +329,7 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag("merge_state_has_hooks"),
+            blocker: BlockerKey::from_static("merge_state_has_hooks"),
         }],
         MergeStateStatus::Unknown => vec![Action {
             kind: ActionKind::WaitForMergeability,
@@ -339,7 +339,7 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            blocker: BlockerKey::tag("merge_state_unknown"),
+            blocker: BlockerKey::from_static("merge_state_unknown"),
         }],
         // Clean / Behind / Dirty / Draft / Unstable / HasHooks
         // handled by other axes or non-blocking by definition.

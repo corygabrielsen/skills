@@ -68,7 +68,7 @@ pub(super) fn candidates(report: &CiReport) -> Vec<Action> {
                     },
                     target_effect: TargetEffect::Blocks,
                     urgency: Urgency::BlockingFix,
-                    blocker: BlockerKey::tag(format!("ci_fail: {}", f.name)),
+                    blocker: BlockerKey::typed("ci_fail", &f.name),
                 });
             }
             // TriageWait does NOT fire in HasFailures — a required
@@ -121,7 +121,7 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             // the action payload + handoff prompt. Stall-exempt by
             // Human automation but invariant-violating to embed
             // mutating names in the key.
-            blocker: BlockerKey::tag("ci_failed"),
+            blocker: BlockerKey::from_static("ci_failed"),
         });
         return;
     }
@@ -161,7 +161,15 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             // (re-run-loop, symptom_class) tuple. Affected check
             // names live on the action payload; the blocker key
             // names the gate, not the current cohort.
-            blocker: BlockerKey::tag(format!("ci_degraded_{symptom_tag}")),
+            // symptom_tag is one of the two static literals matched
+            // above. from_static composes the prefix + variant
+            // suffix at the call site (rather than format!) so the
+            // produced key is type-witnessed `&'static str`.
+            blocker: match symptom_tag {
+                "run_timeout" => BlockerKey::from_static("ci_degraded_run_timeout"),
+                "queue_timeout" => BlockerKey::from_static("ci_degraded_queue_timeout"),
+                _ => unreachable!("symptom_tag is statically one of the two literals above"),
+            },
         });
         return;
     }
@@ -203,7 +211,7 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
             urgency: Urgency::BlockingWait,
             // Stable across iterations: gate is "≥1 required check
             // pending". Cohort is on the action payload.
-            blocker: BlockerKey::tag("ci_pending"),
+            blocker: BlockerKey::from_static("ci_pending"),
         });
     }
     if let Some(names) = NonEmpty::try_from_vec(summary.missing_names.clone()) {
@@ -222,7 +230,7 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
             urgency: Urgency::BlockingWait,
             // Stable across iterations: gate is "≥1 required check
             // missing". Cohort is on the action payload.
-            blocker: BlockerKey::tag("ci_missing"),
+            blocker: BlockerKey::from_static("ci_missing"),
         });
     }
 }
@@ -256,7 +264,7 @@ fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<
         // payload. Agent automation reaches stall comparator, so
         // a volatile key here would defeat the second-fire stall
         // trip.
-        blocker: BlockerKey::tag("ci_triage"),
+        blocker: BlockerKey::from_static("ci_triage"),
     });
 }
 

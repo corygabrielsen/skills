@@ -37,7 +37,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                blocker: BlockerKey::tag("copilot_not_acked"),
+                blocker: BlockerKey::from_static("copilot_not_acked"),
             });
         }
         CopilotActivity::Working {
@@ -52,7 +52,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::BlockingWait,
-                blocker: BlockerKey::tag("copilot_reviewing"),
+                blocker: BlockerKey::from_static("copilot_reviewing"),
             });
         }
         CopilotActivity::Requested {
@@ -123,7 +123,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                     effect: ActionEffect::Full { log: desc },
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Critical,
-                    blocker: BlockerKey::tag(format!("copilot_tier_{}", report.tier.slug())),
+                    blocker: BlockerKey::typed("copilot_tier", &report.tier),
                 });
             } else if report.tier == CopilotTier::Silver && suppressed > 0 {
                 out.push(Action {
@@ -137,7 +137,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                     },
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Advancing,
-                    blocker: BlockerKey::tag("copilot_tier_silver"),
+                    blocker: BlockerKey::from_static("copilot_tier_silver"),
                 });
             }
         }
@@ -167,7 +167,7 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
         effect: ActionEffect::Full { log: log.into() },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        blocker: BlockerKey::tag(tag),
+        blocker: BlockerKey::for_test(tag),
     }
 }
 
@@ -222,7 +222,7 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
-        blocker: BlockerKey::tag(tag),
+        blocker: BlockerKey::for_test(tag),
     }
 }
 

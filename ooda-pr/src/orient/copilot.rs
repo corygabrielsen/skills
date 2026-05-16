@@ -215,6 +215,17 @@ impl CopilotTier {
     }
 }
 
+impl std::fmt::Display for CopilotTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.slug())
+    }
+}
+
+// CopilotTier is a finite enum (4 variants); its slug is gate-
+// stable per variant. Same tier → same string; distinct tiers →
+// distinct strings.
+impl ooda_core::GateIdentity for CopilotTier {}
+
 // ── Public entry point ───────────────────────────────────────────────
 
 /// Returns `None` iff the repo ruleset has no active

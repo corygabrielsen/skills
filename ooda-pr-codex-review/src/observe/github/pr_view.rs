@@ -16,7 +16,7 @@ pub use ooda_core::PrState;
 /// the `PullRequestView` struct below.
 const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
      mergeStateStatus,headRefOid,baseRefName,updatedAt,closedAt,mergedAt,\
-     labels,assignees,reviewRequests,reviewDecision,commits";
+     labels,assignees,reviewRequests,reviewDecision,commits,author";
 
 // `commits` returns an object with `oid` and `committedDate` (among
 // other fields); we deserialize the subset we consume below.
@@ -54,6 +54,40 @@ pub struct PullRequestView {
     pub review_requests: Vec<ReviewRequest>,
     #[serde(default)]
     pub commits: Vec<Commit>,
+    /// PR author. `None` when the original user was deleted (`gh`
+    /// returns `{"is_bot": false, "login": "ghost"}` in that case
+    /// but historical wire shapes also emit a null object). The
+    /// Cursor axis reads this to detect bot-class authorship
+    /// (Dependabot / Renovate) — Cursor declines those PRs
+    /// server-side, so absence-of-check is expected, not a stall.
+    #[serde(default)]
+    pub author: Option<PullRequestAuthor>,
+}
+
+/// PR author identity. Just the login — `gh` returns more fields
+/// (`name`, `id`, `is_bot`) but the bot-class detection runs against
+/// the login slug, so we keep the wire model narrow.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct PullRequestAuthor {
+    /// `gh pr view --json author` emits an empty string when the
+    /// upstream user was deleted; deserialize it as `None` so the
+    /// orient layer can treat "no author" identically to a missing
+    /// `author` field.
+    #[serde(default, deserialize_with = "deserialize_optional_login")]
+    pub login: Option<GitHubLogin>,
+}
+
+fn deserialize_optional_login<'de, D>(d: D) -> Result<Option<GitHubLogin>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(d)?;
+    match raw.as_deref() {
+        None | Some("") => Ok(None),
+        Some(s) => GitHubLogin::parse(s)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 // GraphQL's `Mergeable` enum has a variant literally named

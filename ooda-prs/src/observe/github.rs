@@ -5,6 +5,7 @@ pub mod branch_rules;
 pub mod checks;
 pub mod comments;
 pub mod copilot_config;
+pub mod cursor_status;
 pub mod gh;
 pub mod issue_events;
 pub mod pr_view;
@@ -29,6 +30,7 @@ use branch_rules::{BranchRule, fetch_branch_rules};
 use checks::{PullRequestCheck, fetch_pr_checks};
 use comments::{IssueComment, fetch_issue_comments};
 use copilot_config::fetch_copilot_config;
+use cursor_status::{CursorStatus, fetch_cursor_status};
 use gh::GhError;
 use issue_events::{IssueEvent, fetch_issue_events};
 use pr_view::{PrState, PullRequestView, fetch_pr_view};
@@ -90,6 +92,13 @@ pub struct GitHubObservations {
     /// re-run budget). Bounded N — a single HEAD typically has 0-30
     /// runs.
     pub workflow_runs: Vec<WorkflowRun>,
+    /// Cursor's check_suite + check_run on the current HEAD. Distinct
+    /// from `checks` (which aggregates by check name and drops
+    /// suite-level state) and from `workflow_runs` (Cursor is a
+    /// third-party app, not a GHA workflow). Source of the
+    /// stuck-suite stall signal — `gh pr checks` can't see a
+    /// check_suite that never spawned a child check_run.
+    pub cursor_status: CursorStatus,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -155,6 +164,10 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
             let head_for_runs = head_sha.clone();
             s.spawn(move || fetch_workflow_runs_for_head(slug, &head_for_runs))
         };
+        let h_cursor_status = {
+            let head_for_cursor = head_sha.clone();
+            s.spawn(move || fetch_cursor_status(slug, &head_for_cursor))
+        };
 
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pr_view,
@@ -190,6 +203,11 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
                     .join()
                     .expect("fetch_workflow_runs_for_head panicked")
             ),
+            cursor_status: try_fetch!(
+                h_cursor_status
+                    .join()
+                    .expect("fetch_cursor_status panicked")
+            ),
         })))
     })
 }
@@ -218,5 +236,9 @@ fn terminal_observations(
         copilot_config: None,
         rate_limit_budget,
         workflow_runs: vec![],
+        cursor_status: CursorStatus {
+            suite: None,
+            run: None,
+        },
     }
 }

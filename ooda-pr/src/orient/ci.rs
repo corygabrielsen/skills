@@ -6,8 +6,8 @@
 //!      Backs the comment renderer and the legacy decide paths.
 //!   2. `CiActivity` — Idle | InFlight(checks) | Resolved(state).
 //!      Carries per-check `CheckHealth` so decide can branch on
-//!      Healthy (Wait), Degraded (ReRunWorkflow), or Failed
-//!      (EscalateCiFailed). Mirrors `CopilotActivity`'s shape.
+//!      Healthy (Wait), Degraded (`ReRunWorkflow`), or Failed
+//!      (`EscalateCiFailed`). Mirrors `CopilotActivity`'s shape.
 
 use std::collections::HashMap;
 
@@ -161,7 +161,7 @@ pub enum CiActivity {
     /// No required checks observed (e.g. repo with no branch
     /// protection or stacked-PR with Graphite filter active).
     Idle,
-    /// At least one required check is queued or in_progress. The
+    /// At least one required check is queued or `in_progress`. The
     /// non-empty invariant is structural; an empty vec routes to
     /// `Resolved` instead.
     InFlight(Vec<PendingCheck>),
@@ -235,7 +235,7 @@ pub fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisSignal> 
 fn join_check_names(names: &[CheckName]) -> String {
     names
         .iter()
-        .map(|n| n.as_str())
+        .map(super::super::ids::CheckName::as_str)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -256,9 +256,9 @@ fn join_check_names(names: &[CheckName]) -> String {
 /// PRs (or non-stacked PRs) keep the check as required.
 ///
 /// `workflow_runs` and `head` together drive the per-check health
-/// projection: timing comes from the workflow_run's `created_at` /
+/// projection: timing comes from the `workflow_run`'s `created_at` /
 /// `run_started_at`, and the per-(name, HEAD) attempt count
-/// (re-run budget) comes from counting runs on the same head_sha.
+/// (re-run budget) comes from counting runs on the same `head_sha`.
 pub fn orient_ci(
     checks: &[PullRequestCheck],
     required_names: &[CheckName],

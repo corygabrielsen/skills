@@ -6,7 +6,7 @@
 //!     {--uncommitted, --base, --commit, --pr} required
 //!   * Per-flag value parsing (--level, -n, --max-iter)
 //!   * Unknown args → exit 64
-//!   * Smoke: end-to-end RunReviews with a missing `codex` binary
+//!   * Smoke: end-to-end `RunReviews` with a missing `codex` binary
 //!     surfaces as `BinaryError` (exit 6)
 
 use std::process::Command;

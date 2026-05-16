@@ -2,7 +2,7 @@
 //!
 //! Mission 1 / Phase A — assembles the on-disk surfaces (`next.md`,
 //! `blockers.md`, `latest/decision.json`) that human callers consume
-//! between OODA iterations. Phases B (HandoffPrompt preamble) and C
+//! between OODA iterations. Phases B (`HandoffPrompt` preamble) and C
 //! (PR status comment) reuse the same types.
 //!
 //! Name dance: the spec calls this struct `Decision`, but
@@ -78,7 +78,7 @@ pub struct AxisSignal {
 }
 
 /// Per-axis health icon. Five-bucket coarse projection — the spec
-/// table at the top of the IMPLEMENTATION_SPEC fixes the mapping.
+/// table at the top of the `IMPLEMENTATION_SPEC` fixes the mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SignalIcon {
     Ok,
@@ -91,7 +91,7 @@ pub enum SignalIcon {
 impl SignalIcon {
     /// Single-char glyph for compact rendering. The renderer pairs
     /// this with the axis name and summary.
-    pub fn glyph(&self) -> &'static str {
+    pub fn glyph(self) -> &'static str {
         match self {
             Self::Ok => "✓",
             Self::InFlight => "·",
@@ -113,7 +113,7 @@ pub enum AxisName {
 }
 
 impl AxisName {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Copilot => "copilot",
             Self::Ci => "ci",
@@ -343,7 +343,7 @@ impl Dashboard {
             for bucket in lower {
                 let label = urgency_label(bucket.urgency);
                 for c in &bucket.candidates {
-                    writeln!(out, "- _{label}_ — {}: {}", c.action_name, c.action_log,)
+                    writeln!(out, "- _{label}_ — {}: {}", c.action_name, c.action_log)
                         .expect("write to String");
                 }
             }
@@ -546,7 +546,7 @@ mod tests {
         }
     }
 
-    fn dashboard_from_candidates(cs: Vec<Action>) -> Dashboard {
+    fn dashboard_from_candidates(cs: &[Action]) -> Dashboard {
         let candidates: Vec<RankedCandidate> =
             cs.iter().map(RankedCandidate::from_action).collect();
         let blockers = collect_blockers(&candidates);
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn next_md_single_winner_alone_in_tier() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot()]);
         let md = d.render_next_md();
         assert!(md.starts_with("# Next\n"), "{md}");
         assert!(md.contains("## Recommended (critical)"), "{md}");
@@ -614,7 +614,7 @@ mod tests {
             "state:rebase",
             "rebase onto base",
         );
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), other]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), other]);
         let md = d.render_next_md();
         assert!(md.contains("## Also at this tier"), "{md}");
         assert!(md.contains("- Rebase: rebase onto base"), "{md}");
@@ -623,7 +623,7 @@ mod tests {
 
     #[test]
     fn next_md_winner_with_lower_tier_candidate() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), wait_for_ci()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), wait_for_ci()]);
         let md = d.render_next_md();
         assert!(md.contains("## Recommended (critical)"), "{md}");
         assert!(!md.contains("## Also at this tier"), "{md}");
@@ -686,7 +686,7 @@ mod tests {
 
     #[test]
     fn blockers_md_lists_each_blocker() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), wait_for_ci()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), wait_for_ci()]);
         let md = d.render_blockers_md();
         assert!(md.starts_with("# Blockers\n"), "{md}");
         assert!(md.contains("`copilot:rerequest`: RerequestCopilot"), "{md}");
@@ -714,7 +714,7 @@ mod tests {
             "copilot:rerequest",
             "rerequest copilot again",
         );
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), dup, wait_for_ci()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), dup, wait_for_ci()]);
         assert_eq!(d.blockers.len(), 2);
         assert_eq!(d.blockers[0].tag.as_str(), "copilot:rerequest");
         assert_eq!(d.blockers[1].tag.as_str(), "ci:wait");
@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn status_comment_single_winner_alone_in_tier() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot()]);
         let body = d.render_status_comment();
         assert!(
             body.starts_with("**Recommended (critical):** RerequestCopilot: rerequest copilot\n"),
@@ -798,7 +798,7 @@ mod tests {
             "state:rebase",
             "rebase onto base",
         );
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), other]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), other]);
         let body = d.render_status_comment();
         assert!(body.contains("**Recommended (critical):**"), "{body}");
         assert!(body.contains("**Also at this tier:**"), "{body}");
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn status_comment_winner_with_lower_tier_candidate() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), wait_for_ci()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), wait_for_ci()]);
         let body = d.render_status_comment();
         assert!(body.contains("**Recommended (critical):**"), "{body}");
         assert!(!body.contains("**Also at this tier:**"), "{body}");
@@ -944,7 +944,7 @@ mod tests {
 
     #[test]
     fn preamble_single_winner_alone() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot()]);
         let text = preamble_text(&d);
         assert!(
             text.contains("Recommended (critical): RerequestCopilot: rerequest copilot"),
@@ -969,7 +969,7 @@ mod tests {
             "state:rebase",
             "rebase onto base",
         );
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), other]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), other]);
         let text = preamble_text(&d);
         assert!(text.contains("Recommended (critical)"), "{text}");
         assert!(text.contains("Also at this tier (critical)"), "{text}");
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn preamble_winner_with_lower_tier_candidate() {
-        let d = dashboard_from_candidates(vec![rerequest_copilot(), wait_for_ci()]);
+        let d = dashboard_from_candidates(&[rerequest_copilot(), wait_for_ci()]);
         let text = preamble_text(&d);
         assert!(text.contains("Recommended (critical)"), "{text}");
         assert!(!text.contains("Also at this tier"), "{text}");
@@ -1114,7 +1114,7 @@ mod tests {
 
     // ── Signal projection exhaustive enumeration ──────────────────
 
-    /// Walk every (CopilotActivity, CiActivity, CursorActivity)
+    /// Walk every (`CopilotActivity`, `CiActivity`, `CursorActivity`)
     /// combination that the per-axis signal projections classify, and
     /// assert each yields the spec-table icon. Adding a variant to
     /// any activity enum breaks compilation in the matches below.

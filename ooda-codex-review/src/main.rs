@@ -1,8 +1,9 @@
 //! ooda-codex-review — anti-DRY copy of /ooda-pr retargeted at
 //! `codex review`. Drives n parallel reviews per reasoning level,
 //! halts for AddressBatch/Retrospective handoffs to the outer
-//! Claude session. See project_ooda_codex_review.md for the plan.
+//! Claude session. See `project_ooda_codex_review.md` for the plan.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -72,7 +73,7 @@ enum SideEffect {
     /// `--drop-level` — drop one rung, clamp at floor. Idle at
     /// floor.
     DropLevel,
-    /// `--restart-from-floor` — reset current_level to floor.
+    /// `--restart-from-floor` — reset `current_level` to floor.
     RestartFromFloor,
     /// `--mark-retro-clean` — orchestrator reports the
     /// retrospective produced no architectural changes. Records
@@ -134,6 +135,10 @@ fn parse_positive_u32(flag: &str, raw: &str) -> Result<std::num::NonZeroU32, Out
     std::num::NonZeroU32::new(n).ok_or_else(|| usage(format!("{flag} must be ≥ 1; got 0")))
 }
 
+// Flat per-flag arg-parser table: length IS the spec, one arm per
+// known flag with its parse rules and error messages inline. Splitting
+// into helpers would scatter the flag contract across files.
+#[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, Outcome> {
     if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
         print_usage(&mut std::io::stdout());
@@ -231,7 +236,7 @@ fn parse_args() -> Result<Args, Outcome> {
             "--advance-level" => set_side_effect(&mut side_effect, SideEffect::AdvanceLevel)?,
             "--drop-level" => set_side_effect(&mut side_effect, SideEffect::DropLevel)?,
             "--restart-from-floor" => {
-                set_side_effect(&mut side_effect, SideEffect::RestartFromFloor)?
+                set_side_effect(&mut side_effect, SideEffect::RestartFromFloor)?;
             }
             "--mark-retro-clean" => set_side_effect(&mut side_effect, SideEffect::MarkRetroClean)?,
             "--mark-retro-changes" => {
@@ -239,7 +244,7 @@ fn parse_args() -> Result<Args, Outcome> {
                 set_side_effect(&mut side_effect, SideEffect::MarkRetroChanges(v))?;
             }
             "--mark-address-passed" => {
-                set_side_effect(&mut side_effect, SideEffect::MarkAddressPassed)?
+                set_side_effect(&mut side_effect, SideEffect::MarkAddressPassed)?;
             }
             "--mark-address-failed" => {
                 let v = next_value(&mut iter, "--mark-address-failed")?;
@@ -379,11 +384,11 @@ fn sha256_prefix(input: &str, hex_chars: usize) -> String {
     h.update(input.as_bytes());
     let digest = h.finalize();
     let mut s = String::with_capacity(hex_chars);
-    for b in digest.iter() {
+    for b in &digest {
         if s.len() >= hex_chars {
             break;
         }
-        s.push_str(&format!("{b:02x}"));
+        write!(s, "{b:02x}").expect("writing to String never fails");
     }
     s.truncate(hex_chars);
     s
@@ -391,7 +396,7 @@ fn sha256_prefix(input: &str, hex_chars: usize) -> String {
 
 // ----- orchestration ---------------------------------------------------
 
-fn run_session(args: Args) -> Outcome {
+fn run_session(args: &Args) -> Outcome {
     let repo_root = match discover_repo_root() {
         Ok(p) => p,
         Err(e) => return Outcome::binary_error(e),
@@ -410,7 +415,7 @@ fn run_session(args: Args) -> Outcome {
         None
     };
 
-    let (mut recorder, _open_mode) = match Recorder::open(RecorderConfig {
+    let (mut recorder, _open_mode) = match Recorder::open(&RecorderConfig {
         state_root: args.state_root.clone(),
         repo_id: repo_id.clone(),
         target: args.target.clone(),
@@ -476,12 +481,12 @@ fn run_session(args: Args) -> Outcome {
 /// it.
 ///
 /// Outcome map:
-///   AdvanceLevel / DropLevel / RestartFromFloor    -> Idle
-///   MarkRetroClean (below ceiling)                 -> Idle
-///   MarkRetroClean (at ceiling)                    -> DoneFixedPoint
-///   MarkRetroChanges                               -> Idle
-///   MarkAddressPassed                              -> Idle
-///   MarkAddressFailed                              -> HandoffHuman
+///   `AdvanceLevel` / `DropLevel` / `RestartFromFloor`    -> Idle
+///   `MarkRetroClean` (below ceiling)                 -> Idle
+///   `MarkRetroClean` (at ceiling)                    -> `DoneFixedPoint`
+///   `MarkRetroChanges`                               -> Idle
+///   `MarkAddressPassed`                              -> Idle
+///   `MarkAddressFailed`                              -> `HandoffHuman`
 fn apply_side_effect(
     recorder: &mut Recorder,
     ceiling: CodexReasoningLevel,
@@ -490,25 +495,25 @@ fn apply_side_effect(
     let from = recorder.manifest().current_level;
     match side_effect {
         SideEffect::AdvanceLevel => match recorder.advance_level() {
-            Ok(Some(to)) => log_idle(format!(
+            Ok(Some(to)) => log_idle(&format!(
                 "advanced level: {} -> {}",
                 from.as_str(),
                 to.as_str()
             )),
-            Ok(None) => log_idle(format!("at ladder edge ({}); no advance", from.as_str())),
+            Ok(None) => log_idle(&format!("at ladder edge ({}); no advance", from.as_str())),
             Err(e) => Outcome::binary_error(format!("recorder advance: {e}")),
         },
         SideEffect::DropLevel => match recorder.drop_level() {
-            Ok(Some(to)) => log_idle(format!(
+            Ok(Some(to)) => log_idle(&format!(
                 "dropped level: {} -> {}",
                 from.as_str(),
                 to.as_str()
             )),
-            Ok(None) => log_idle(format!("at floor ({}); no drop", from.as_str())),
+            Ok(None) => log_idle(&format!("at floor ({}); no drop", from.as_str())),
             Err(e) => Outcome::binary_error(format!("recorder drop: {e}")),
         },
         SideEffect::RestartFromFloor => match recorder.restart_from_floor() {
-            Ok(to) => log_idle(format!(
+            Ok(to) => log_idle(&format!(
                 "restarted from floor: {} -> {}",
                 from.as_str(),
                 to.as_str()
@@ -516,13 +521,13 @@ fn apply_side_effect(
             Err(e) => Outcome::binary_error(format!("recorder restart: {e}")),
         },
         SideEffect::MarkRetroClean => apply_mark_retro_clean(recorder, ceiling, from),
-        SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(recorder, from, reason),
+        SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(recorder, from, &reason),
         SideEffect::MarkAddressPassed => apply_mark_address_passed(recorder, from),
-        SideEffect::MarkAddressFailed(details) => mk_handoff_human_test_failed(from, details),
+        SideEffect::MarkAddressFailed(details) => mk_handoff_human_test_failed(from, &details),
     }
 }
 
-fn log_idle(msg: String) -> Outcome {
+fn log_idle(msg: &str) -> Outcome {
     let _ = writeln!(std::io::stdout(), "{msg}");
     Outcome::Paused
 }
@@ -544,12 +549,12 @@ fn apply_mark_retro_clean(
         return Outcome::DoneSucceeded;
     }
     match recorder.advance_level() {
-        Ok(Some(to)) => log_idle(format!(
+        Ok(Some(to)) => log_idle(&format!(
             "retrospective clean at {}; advanced to {}",
             current.as_str(),
             to.as_str()
         )),
-        Ok(None) => log_idle(format!(
+        Ok(None) => log_idle(&format!(
             "retrospective clean at {}; ladder edge xhigh reached, no advance",
             current.as_str()
         )),
@@ -560,16 +565,16 @@ fn apply_mark_retro_clean(
 fn apply_mark_retro_changes(
     recorder: &mut Recorder,
     current: CodexReasoningLevel,
-    reason: String,
+    reason: &str,
 ) -> Outcome {
     if let Err(e) = recorder.record_outcome(LevelOutcome::RetrospectiveChanges {
         level: current,
-        reason: reason.clone(),
+        reason: reason.to_string(),
     }) {
         return Outcome::binary_error(format!("recorder record-outcome: {e}"));
     }
     match recorder.restart_from_floor() {
-        Ok(to) => log_idle(format!(
+        Ok(to) => log_idle(&format!(
             "retrospective surfaced changes at {} (\"{}\"); restarted from floor {}",
             current.as_str(),
             reason,
@@ -588,14 +593,14 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: CodexReasoningLev
         return Outcome::binary_error(format!("recorder record-outcome: {e}"));
     }
     match recorder.drop_level() {
-        Ok(Some(to)) => log_idle(format!(
+        Ok(Some(to)) => log_idle(&format!(
             "address passed at {} ({} review(s) with issues); dropped to {}",
             current.as_str(),
             issue_count,
             to.as_str()
         )),
         Ok(None) => match recorder.start_next_batch_at_current_level() {
-            Ok(batch) => log_idle(format!(
+            Ok(batch) => log_idle(&format!(
                 "address passed at floor {} ({} review(s) with issues); no drop; advanced to batch {}",
                 current.as_str(),
                 issue_count,
@@ -614,21 +619,24 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: CodexReasoningLev
 fn count_current_batch_issues(recorder: &Recorder, level: CodexReasoningLevel) -> u32 {
     let batch_size = recorder.manifest().batch_size;
     match observe::codex::batch::scan_batch(&recorder.batch_dir(), level, batch_size) {
-        Ok(observe::codex::batch::BatchState::Complete { verdicts }) => verdicts
-            .iter()
-            .filter(|v| {
-                matches!(
-                    v.class,
-                    observe::codex::VerdictClass::HasIssues
-                        | observe::codex::VerdictClass::Indeterminate
-                )
-            })
-            .count() as u32,
+        Ok(observe::codex::batch::BatchState::Complete { verdicts }) => u32::try_from(
+            verdicts
+                .iter()
+                .filter(|v| {
+                    matches!(
+                        v.class,
+                        observe::codex::VerdictClass::HasIssues
+                            | observe::codex::VerdictClass::Indeterminate
+                    )
+                })
+                .count(),
+        )
+        .expect("verdict count fits in u32"),
         _ => 0,
     }
 }
 
-fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: String) -> Outcome {
+fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: &str) -> Outcome {
     let handoff = ooda_core::HandoffAction {
         kind: ActionKind::TestsFailedTriage,
         prompt: ooda_core::HandoffPrompt::new(format!(
@@ -646,7 +654,7 @@ fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: String) -> 
 
 fn main() -> ExitCode {
     let outcome = match parse_args() {
-        Ok(args) => run_session(args),
+        Ok(args) => run_session(&args),
         Err(e) => e,
     };
     let code = outcome.exit_code();

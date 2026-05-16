@@ -196,7 +196,7 @@ fn main() -> ExitCode {
             }) {
                 Ok(r) => r,
                 Err(e) => {
-                    return finish(Outcome::binary_error(format!("recorder: {e}")), None);
+                    return finish(&Outcome::binary_error(format!("recorder: {e}")), None);
                 }
             };
             recorder.install_process_recorder();
@@ -204,11 +204,11 @@ fn main() -> ExitCode {
                 Mode::Inspect => run_inspect(&args, &recorder),
                 Mode::Loop => run_full(&args, &recorder),
             };
-            return finish(outcome, Some(recorder));
+            return finish(&outcome, Some(recorder));
         }
         Err(usage_outcome) => usage_outcome,
     };
-    finish(outcome, None)
+    finish(&outcome, None)
 }
 
 fn run_mode(mode: Mode) -> RunMode {
@@ -218,18 +218,18 @@ fn run_mode(mode: Mode) -> RunMode {
     }
 }
 
-fn finish(outcome: Outcome, recorder: Option<Recorder>) -> ExitCode {
+fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
     let code = outcome.exit_code();
-    render_outcome(&mut std::io::stderr(), &outcome);
+    render_outcome(&mut std::io::stderr(), outcome);
     if let Some(recorder) = recorder {
         let mut rendered = Vec::new();
-        render_outcome(&mut rendered, &outcome);
+        render_outcome(&mut rendered, outcome);
         if let Ok(text) = String::from_utf8(rendered) {
             for line in text.lines() {
                 recorder.write_trace_line(line);
             }
         }
-        recorder.record_outcome(&outcome, code);
+        recorder.record_outcome(outcome, code);
     }
     ExitCode::from(code)
 }
@@ -635,7 +635,7 @@ fn write_prompt_block(out: &mut dyn std::io::Write, description: &str) {
     let _ = writeln!(out, "  prompt: {description}");
 }
 
-/// Format `ActionEffect` for the WouldAdvance stderr render.
+/// Format `ActionEffect` for the `WouldAdvance` stderr render.
 /// `Wait{interval, ..}` becomes `Wait(<duration>)` with the duration
 /// in the smallest sensible compound unit (s, m, m+s). The log/prompt
 /// payload is intentionally omitted — that's what `write_prompt_block`
@@ -699,8 +699,8 @@ mod tests {
 
     #[test]
     fn format_duration_minutes() {
-        assert_eq!(format_duration(Duration::from_secs(60)), "1m");
-        assert_eq!(format_duration(Duration::from_secs(120)), "2m");
+        assert_eq!(format_duration(Duration::from_mins(1)), "1m");
+        assert_eq!(format_duration(Duration::from_mins(2)), "2m");
         assert_eq!(format_duration(Duration::from_secs(90)), "1m30s");
         assert_eq!(format_duration(Duration::from_secs(3661)), "61m1s");
     }
@@ -921,7 +921,7 @@ mod tests {
 
     // ── Phase B: dashboard preamble injection ─────────────────────
 
-    fn snapshot_with_dashboard(candidates: Vec<decide::action::Action>) -> HandoffSnapshot {
+    fn snapshot_with_dashboard(candidates: &[decide::action::Action]) -> HandoffSnapshot {
         use dashboard::{Dashboard, RankedCandidate};
         // Build a Dashboard directly from a candidate list — the
         // boundary-time helper `Dashboard::from_iteration` requires
@@ -1039,7 +1039,7 @@ mod tests {
             urgency: decide::action::Urgency::BlockingHuman,
             blocker: ids::BlockerKey::tag("not_approved"),
         };
-        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
         let decorated = decorate_handoff_human(
@@ -1083,7 +1083,7 @@ mod tests {
             urgency: decide::action::Urgency::BlockingFix,
             blocker: ids::BlockerKey::tag("behind_base"),
         };
-        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
         let decorated = decorate_handoff_human(
@@ -1124,7 +1124,7 @@ mod tests {
             urgency: decide::action::Urgency::BlockingFix,
             blocker: ids::BlockerKey::tag("changes_requested_summary"),
         };
-        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("1").unwrap();
         let decorated = decorate_handoff_human(

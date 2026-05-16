@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn from_secs_constructs_positive() {
         let p = PollingInterval::from_secs(60);
-        assert_eq!(p.as_duration(), Duration::from_secs(60));
+        assert_eq!(p.as_duration(), Duration::from_mins(1));
     }
 
     #[test]

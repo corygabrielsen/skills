@@ -192,7 +192,7 @@ impl Recorder {
     /// Open a recorder for this invocation. Tries to resume the
     /// run referenced by `<target_root>/latest` when `cfg.fresh` is
     /// false; falls back to a fresh run otherwise.
-    pub fn open(cfg: RecorderConfig) -> Result<(Self, OpenMode), RecorderError> {
+    pub fn open(cfg: &RecorderConfig) -> Result<(Self, OpenMode), RecorderError> {
         let target_root = compute_target_root(&cfg.state_root, &cfg.repo_id, &cfg.target);
         fs::create_dir_all(&target_root)?;
 
@@ -218,7 +218,7 @@ impl Recorder {
         }
 
         if !cfg.fresh
-            && let Some((run_dir, manifest, mode)) = try_resume(&target_root, &cfg)?
+            && let Some((run_dir, manifest, mode)) = try_resume(&target_root, cfg)?
         {
             let recorder = Self {
                 target_root,
@@ -418,9 +418,8 @@ fn try_resume(
         return Ok(None);
     }
     let manifest_path = run_dir.join("manifest.json");
-    let manifest_bytes = match fs::read(&manifest_path) {
-        Ok(b) => b,
-        Err(_) => return Ok(None),
+    let Ok(manifest_bytes) = fs::read(&manifest_path) else {
+        return Ok(None);
     };
     let manifest: RunManifest = match serde_json::from_slice(&manifest_bytes) {
         Ok(m) => m,
@@ -449,9 +448,8 @@ fn classify_resume_failure(target_root: &Path) -> FreshReason {
         return FreshReason::LatestDangling;
     }
     let manifest_path = run_dir.join("manifest.json");
-    let bytes = match fs::read(&manifest_path) {
-        Ok(b) => b,
-        Err(_) => return FreshReason::ManifestUnreadable,
+    let Ok(bytes) = fs::read(&manifest_path) else {
+        return FreshReason::ManifestUnreadable;
     };
     if serde_json::from_slice::<RunManifest>(&bytes).is_err() {
         return FreshReason::ManifestUnreadable;
@@ -620,7 +618,7 @@ mod tests {
     #[test]
     fn open_creates_run_dir_and_writes_manifest() {
         let root = temp_state_root("open");
-        let (rec, mode) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (rec, mode) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         assert_eq!(mode, OpenMode::Fresh(FreshReason::NoLatestPointer));
         assert!(rec.current_run_dir().exists(), "run dir must exist");
@@ -644,7 +642,7 @@ mod tests {
     #[test]
     fn open_writes_latest_pointer_with_run_id() {
         let root = temp_state_root("latest-pointer");
-        let (rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         let latest = rec.target_root().join("latest");
         let id_from_pointer = fs::read_to_string(&latest).unwrap();
@@ -665,7 +663,7 @@ mod tests {
     #[test]
     fn batch_dir_includes_run_id_level_and_batch_number() {
         let root = temp_state_root("batch-dir");
-        let (rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         let bd = rec.batch_dir();
         let expected_suffix = format!("runs/{}/levels/level-low/batch-1", rec.manifest().run_id);
@@ -682,7 +680,7 @@ mod tests {
     #[test]
     fn second_open_resumes_same_run_when_target_and_level_match() {
         let root = temp_state_root("resume-hit");
-        let (first, m1) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (first, m1) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         let first_id = first.manifest().run_id.clone();
         assert_eq!(m1, OpenMode::Fresh(FreshReason::NoLatestPointer));
         // Drop the first recorder to release its state-dir lock before
@@ -697,7 +695,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         );
-        let (second, m2) = Recorder::open(cfg).unwrap();
+        let (second, m2) = Recorder::open(&cfg).unwrap();
         assert_eq!(m2, OpenMode::Resumed);
         assert_eq!(second.manifest().run_id, first_id);
 
@@ -707,7 +705,7 @@ mod tests {
     #[test]
     fn fresh_flag_forces_new_run_even_with_valid_latest() {
         let root = temp_state_root("resume-fresh-forced");
-        let (first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (first, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         let first_id = first.manifest().run_id.clone();
         drop(first);
 
@@ -718,7 +716,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         );
-        let (second, mode) = Recorder::open(cfg).unwrap();
+        let (second, mode) = Recorder::open(&cfg).unwrap();
         assert_eq!(mode, OpenMode::Fresh(FreshReason::Forced));
         assert_ne!(second.manifest().run_id, first_id);
 
@@ -728,7 +726,7 @@ mod tests {
     #[test]
     fn level_mismatch_forces_fresh_run() {
         let root = temp_state_root("resume-level-mismatch");
-        let (first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (first, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         drop(first);
 
         let mut cfg = dummy_cfg(root.clone());
@@ -738,7 +736,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
         );
-        let (rec, mode) = Recorder::open(cfg).unwrap();
+        let (rec, mode) = Recorder::open(&cfg).unwrap();
         assert_eq!(mode, OpenMode::Fresh(FreshReason::LevelMismatch));
         assert_eq!(rec.manifest().start_level, CodexReasoningLevel::High);
 
@@ -752,14 +750,14 @@ mod tests {
     #[test]
     fn second_open_blocks_while_first_recorder_alive() {
         let root = temp_state_root("lock-blocks-concurrent");
-        let (first, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
-        let blocked = Recorder::open(dummy_cfg(root.clone()));
+        let (first, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
+        let blocked = Recorder::open(&dummy_cfg(root.clone()));
         assert!(
             matches!(blocked, Err(RecorderError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock),
             "expected WouldBlock from concurrent open, got {blocked:?}"
         );
         drop(first);
-        let (resumed, mode) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (resumed, mode) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         assert_eq!(mode, OpenMode::Resumed);
         assert!(resumed.current_run_dir().is_dir());
 
@@ -776,7 +774,7 @@ mod tests {
         fs::create_dir_all(&target_root).unwrap();
         fs::write(target_root.join("latest"), "ghost-run-id").unwrap();
 
-        let (rec, mode) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (rec, mode) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         assert_eq!(mode, OpenMode::Fresh(FreshReason::LatestDangling));
         assert!(rec.current_run_dir().is_dir());
 
@@ -794,7 +792,7 @@ mod tests {
         fs::write(bad_run.join("manifest.json"), b"not json{").unwrap();
         fs::write(target_root.join("latest"), "bad-run").unwrap();
 
-        let (_rec, mode) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (_rec, mode) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         assert_eq!(mode, OpenMode::Fresh(FreshReason::ManifestUnreadable));
 
         let _ = fs::remove_dir_all(&root);
@@ -805,7 +803,7 @@ mod tests {
     #[test]
     fn advance_level_climbs_one_rung_and_persists() {
         let root = temp_state_root("advance");
-        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (mut rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Low);
 
         let next = rec.advance_level().unwrap();
@@ -826,7 +824,7 @@ mod tests {
         let root = temp_state_root("advance-ceiling");
         let mut cfg = dummy_cfg(root.clone());
         cfg.start_level = CodexReasoningLevel::Xhigh;
-        let (mut rec, _) = Recorder::open(cfg).unwrap();
+        let (mut rec, _) = Recorder::open(&cfg).unwrap();
 
         assert_eq!(rec.advance_level().unwrap(), None);
         assert_eq!(rec.manifest().current_level, CodexReasoningLevel::Xhigh);
@@ -839,7 +837,7 @@ mod tests {
         let root = temp_state_root("drop-clamp");
         let mut cfg = dummy_cfg(root.clone());
         cfg.start_level = CodexReasoningLevel::Medium;
-        let (mut rec, _) = Recorder::open(cfg).unwrap();
+        let (mut rec, _) = Recorder::open(&cfg).unwrap();
 
         // Climb so we have somewhere to drop to.
         rec.advance_level().unwrap();
@@ -862,7 +860,7 @@ mod tests {
         let root = temp_state_root("restart");
         let mut cfg = dummy_cfg(root.clone());
         cfg.start_level = CodexReasoningLevel::Low;
-        let (mut rec, _) = Recorder::open(cfg).unwrap();
+        let (mut rec, _) = Recorder::open(&cfg).unwrap();
 
         rec.advance_level().unwrap(); // medium
         rec.advance_level().unwrap(); // high
@@ -879,7 +877,7 @@ mod tests {
     #[test]
     fn record_outcome_appends_and_persists() {
         let root = temp_state_root("record-outcome");
-        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (mut rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         rec.record_outcome(LevelOutcome::Clean {
             level: CodexReasoningLevel::Low,
@@ -917,7 +915,7 @@ mod tests {
     #[test]
     fn batch_dir_uses_current_level_after_advance() {
         let root = temp_state_root("batch-dir-advance");
-        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (mut rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
         rec.advance_level().unwrap();
 
         let bd = rec.batch_dir();
@@ -933,7 +931,7 @@ mod tests {
     #[test]
     fn revisiting_a_level_uses_next_unused_batch_number() {
         let root = temp_state_root("batch-dir-revisit");
-        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (mut rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         rec.advance_level().unwrap(); // medium, batch 1
         fs::create_dir_all(rec.batch_dir()).unwrap();
@@ -951,7 +949,7 @@ mod tests {
     #[test]
     fn restart_from_floor_uses_next_unused_floor_batch() {
         let root = temp_state_root("restart-next-batch");
-        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (mut rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         fs::create_dir_all(rec.batch_dir()).unwrap(); // low/batch-1 exists
         rec.advance_level().unwrap(); // medium
@@ -967,7 +965,7 @@ mod tests {
     #[test]
     fn can_start_next_batch_without_changing_level() {
         let root = temp_state_root("same-level-next-batch");
-        let (mut rec, _) = Recorder::open(dummy_cfg(root.clone())).unwrap();
+        let (mut rec, _) = Recorder::open(&dummy_cfg(root.clone())).unwrap();
 
         fs::create_dir_all(rec.batch_dir()).unwrap(); // low/batch-1 exists
         let next = rec.start_next_batch_at_current_level().unwrap();

@@ -135,7 +135,7 @@ impl ActionEffect {
     /// Render the payload as a single `String` regardless of variant.
     /// Call sites that just need "the human-readable payload as text"
     /// (comment renderer, JSONL emission, stderr prompt block) use
-    /// this; sites that match on structure (decorate_handoff_*) use
+    /// this; sites that match on structure (`decorate_handoff`_*) use
     /// [`Self::prompt_mut`].
     #[must_use]
     pub fn rendered_message(&self) -> String {

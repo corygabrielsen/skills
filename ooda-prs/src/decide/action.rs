@@ -146,7 +146,7 @@ pub enum ActionKind {
         /// Health-driven remediation carries the triggering symptom;
         /// tier-advancement re-requests (no health degradation) pass
         /// `None`. The variant is the same — the side effect is
-        /// identical (POST requested_reviewers).
+        /// identical (POST `requested_reviewers`).
         symptom: Option<Symptom>,
     },
     /// Per-HEAD health budget exhausted; humans must triage. No
@@ -161,7 +161,7 @@ pub enum ActionKind {
         count: u32,
     },
     WaitForCursorReview,
-    /// Cursor's check_suite is stalled past STALL_TIMEOUT on Cursor's
+    /// Cursor's `check_suite` is stalled past `STALL_TIMEOUT` on Cursor's
     /// backend and there is no remediation API (posting a `cursor
     /// review` comment does not unstick Cursor's own queue). Hand off
     /// to a human; no side effect — decide emits this via

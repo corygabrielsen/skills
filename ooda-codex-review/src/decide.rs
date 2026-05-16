@@ -65,15 +65,20 @@ pub fn decide(oriented: &OrientedState) -> Decision {
             mk_retrospective(oriented.current_level)
         }
         BatchState::Complete { verdicts } => {
-            let has_issues_count = verdicts
-                .iter()
-                .filter(|v| {
-                    matches!(
-                        v.class,
-                        VerdictClass::HasIssues | VerdictClass::Indeterminate
-                    )
-                })
-                .count() as u32;
+            // Verdict count per batch is bounded by reviewer fan-out;
+            // fits in u32.
+            let has_issues_count = u32::try_from(
+                verdicts
+                    .iter()
+                    .filter(|v| {
+                        matches!(
+                            v.class,
+                            VerdictClass::HasIssues | VerdictClass::Indeterminate
+                        )
+                    })
+                    .count(),
+            )
+            .expect("verdict count fits in u32");
             mk_address_batch(oriented.current_level, has_issues_count)
         }
     };
@@ -208,7 +213,7 @@ mod tests {
                 assert!(matches!(action.effect, ActionEffect::Full { .. }));
                 assert_eq!(action.urgency, Urgency::Critical);
             }
-            other => panic!("expected Execute(RunReviews), got {other:?}"),
+            other @ Decision::Halt(_) => panic!("expected Execute(RunReviews), got {other:?}"),
         }
     }
 
@@ -231,7 +236,7 @@ mod tests {
                 ));
                 assert!(matches!(action.effect, ActionEffect::Wait { .. }));
             }
-            other => panic!("expected Execute(AwaitReviews), got {other:?}"),
+            other @ Decision::Halt(_) => panic!("expected Execute(AwaitReviews), got {other:?}"),
         }
     }
 
@@ -353,7 +358,7 @@ mod tests {
                 ActionKind::AwaitReviews { pending, .. } => assert_eq!(pending, 0),
                 other => panic!("expected AwaitReviews, got {other:?}"),
             },
-            other => panic!("expected Execute, got {other:?}"),
+            other @ Decision::Halt(_) => panic!("expected Execute, got {other:?}"),
         }
     }
 
@@ -435,7 +440,9 @@ mod tests {
                     panic!("decide emitted unexpected AgentNeeded kind in baseline: {other:?}")
                 }
             },
-            other => panic!("decide emitted unexpected Decision in baseline: {other:?}"),
+            other @ Decision::Halt(_) => {
+                panic!("decide emitted unexpected Decision in baseline: {other:?}")
+            }
         }
     }
 

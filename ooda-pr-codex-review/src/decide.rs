@@ -1,4 +1,4 @@
-//! Decide stage: take an OrientedState, generate candidate actions
+//! Decide stage: take an `OrientedState`, generate candidate actions
 //! per axis, rank, and emit a Decision (Execute or Halt).
 //!
 //! Per the design conversation: halt is a *predicate over the

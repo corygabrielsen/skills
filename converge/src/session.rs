@@ -184,25 +184,25 @@ mod tests {
     #[test]
     fn known_epoch_2026_04_17_noon() {
         // 2026-04-17T12:00:00Z = 1776427200 epoch seconds.
-        assert_eq!(epoch_to_iso(1776427200), "2026-04-17T12:00:00Z");
+        assert_eq!(epoch_to_iso(1_776_427_200), "2026-04-17T12:00:00Z");
     }
 
     #[test]
     fn leap_year_feb_29() {
         // 2024-02-29T00:00:00Z = 1709164800 epoch seconds.
-        assert_eq!(epoch_to_iso(1709164800), "2024-02-29T00:00:00Z");
+        assert_eq!(epoch_to_iso(1_709_164_800), "2024-02-29T00:00:00Z");
     }
 
     #[test]
     fn end_of_day() {
         // 2026-04-17T23:59:59Z = 1776470399 epoch seconds.
-        assert_eq!(epoch_to_iso(1776470399), "2026-04-17T23:59:59Z");
+        assert_eq!(epoch_to_iso(1_776_470_399), "2026-04-17T23:59:59Z");
     }
 
     #[test]
     fn year_2000_leap_century() {
         // 2000-03-01T00:00:00Z = 951868800 epoch seconds.
         // 2000 is a leap year (divisible by 400).
-        assert_eq!(epoch_to_iso(951868800), "2000-03-01T00:00:00Z");
+        assert_eq!(epoch_to_iso(951_868_800), "2000-03-01T00:00:00Z");
     }
 }

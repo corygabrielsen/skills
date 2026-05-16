@@ -34,7 +34,7 @@ pub fn extract_verdict(log: &str) -> Option<String> {
 
 /// Did the reviewer find anything to flag?
 ///
-/// Ternary algebra: structural HasIssues signals (codex's own
+/// Ternary algebra: structural `HasIssues` signals (codex's own
 /// schema — priority bullets, review-comment headers) are
 /// authoritative. Clean is recognized via an empirically-tuned
 /// phrasing list. Anything else is Indeterminate — the classifier
@@ -46,10 +46,10 @@ pub enum VerdictClass {
     Clean,
     /// Body contains codex's structural issue markers
     /// (`[P1]`/`[P2]`/`[P3]` bullets, `Review comment:` headers);
-    /// needs an AddressBatch halt to verify and fix.
+    /// needs an `AddressBatch` halt to verify and fix.
     HasIssues,
     /// Prose with neither structural markers nor recognized clean
-    /// phrasing. Decide-layer policy: route like HasIssues
+    /// phrasing. Decide-layer policy: route like `HasIssues`
     /// (operationally identical), but recorder JSONL surfaces it
     /// distinctly for post-hoc observability.
     Indeterminate,
@@ -59,7 +59,7 @@ pub enum VerdictClass {
 ///
 /// Evaluation order — structural markers (codex's own grammar)
 /// before prose phrase-matching, so a `[P*]` bullet in an otherwise
-/// clean-leaning summary still classifies as HasIssues.
+/// clean-leaning summary still classifies as `HasIssues`.
 pub fn classify(verdict: &str) -> VerdictClass {
     let body = verdict.trim();
     if body.is_empty() {

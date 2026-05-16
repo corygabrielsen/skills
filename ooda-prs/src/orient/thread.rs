@@ -308,7 +308,7 @@ mod tests {
             .unwrap();
         match t.author {
             ThreadAuthor::Human(l) => assert_eq!(l.as_str(), "alice"),
-            other => panic!("expected Human, got {other:?}"),
+            other @ ThreadAuthor::Bot(_) => panic!("expected Human, got {other:?}"),
         }
     }
 

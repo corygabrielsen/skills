@@ -76,7 +76,7 @@ impl CodexReasoningLevel {
 pub enum ActionKind {
     /// Spawn `n` parallel `codex review` subprocesses at the
     /// given reasoning level. Full automation (returns immediately
-    /// after spawn; AwaitReviews polls on subsequent iterations).
+    /// after spawn; `AwaitReviews` polls on subsequent iterations).
     RunReviews { level: CodexReasoningLevel, n: u32 },
 
     /// Poll the in-flight review subprocesses for completion.

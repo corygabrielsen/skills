@@ -306,7 +306,7 @@ impl fmt::Display for GitHubLogin {
 /// halt the loop with `Stalled`. The key MUST NOT embed varying
 /// counts or progress markers — the comment in `decide/reviews.rs`
 /// (`AddressThreads { count }`) calls this out explicitly: "count
-/// lives in ActionKind, never in the blocker string."
+/// lives in `ActionKind`, never in the blocker string."
 ///
 /// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
 /// constructor, and infallible `tag` live in the shared crate.

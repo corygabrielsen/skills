@@ -158,7 +158,7 @@ impl From<ExitCode> for u8 {
 
 impl From<ExitCode> for i32 {
     fn from(c: ExitCode) -> Self {
-        (c as u8) as i32
+        i32::from(c as u8)
     }
 }
 

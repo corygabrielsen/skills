@@ -4,6 +4,7 @@
 //! into a caller-supplied type. Auth, pagination, and transport
 //! concerns live with `gh`; this module is purely process + JSON.
 
+use std::fmt::Write as _;
 use std::process::Command;
 
 use ooda_core::{PollingInterval, RateLimitHit, RateLimitScope};
@@ -43,7 +44,7 @@ impl std::fmt::Display for GhError {
                 hit.retry_after.as_duration()
             ),
             Self::NonZero { code, stderr } => {
-                let code = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
+                let code = code.map_or_else(|| "?".into(), |c| c.to_string());
                 write!(f, "`gh` exited {code}: {}", stderr.trim())
             }
             Self::Parse(e) => write!(f, "failed to parse `gh` output: {e}"),
@@ -132,7 +133,7 @@ pub fn encode_path_segment(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => write!(out, "%{b:02X}").expect("writing to String never fails"),
         }
     }
     out
@@ -274,7 +275,7 @@ mod tests {
             stderr: "bad credentials\n".into(),
         };
         let s = err.to_string();
-        assert!(s.contains("2"), "display should include exit code: {s}");
+        assert!(s.contains('2'), "display should include exit code: {s}");
         assert!(
             s.contains("bad credentials"),
             "display should include stderr: {s}"
@@ -299,7 +300,7 @@ mod tests {
         assert_eq!(hit.scope, RateLimitScope::GitHubRestPrimary);
         assert_eq!(
             hit.retry_after.as_duration(),
-            std::time::Duration::from_secs(15 * 60)
+            std::time::Duration::from_mins(15)
         );
     }
 

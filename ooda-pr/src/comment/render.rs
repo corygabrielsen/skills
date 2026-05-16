@@ -1,4 +1,4 @@
-//! Render an OrientedState + Decision into a PR comment.
+//! Render an `OrientedState` + Decision into a PR comment.
 //!
 //! Returns both the full markdown body and a stable dedup key
 //! (axis lines + decision-kind tag, no prose) so that count-only
@@ -104,7 +104,7 @@ fn header_line(slug: &RepoSlug, pr: PullRequestNumber, iteration: Option<u32>) -
 
 /// Concise halt-line for the empty-candidate case (terminal halts
 /// only; agent/human handoffs populate candidates and never hit this
-/// branch). Mirrors the decision_block strings used pre-Phase-C so
+/// branch). Mirrors the `decision_block` strings used pre-Phase-C so
 /// the PR timeline still gets the same halt message.
 fn halt_summary(d: &Decision) -> String {
     match d {
@@ -184,7 +184,7 @@ fn ci_line(o: &OrientedState) -> String {
             .required
             .failed_names()
             .iter()
-            .map(|n| n.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         format!(
             "❌ CI · {} failing: {}",
@@ -197,7 +197,11 @@ fn ci_line(o: &OrientedState) -> String {
             crate::text::count(ci.required.pending(), "required check"),
         )
     } else if ci.missing() > 0 {
-        let names: Vec<String> = ci.missing_names.iter().map(|n| n.to_string()).collect();
+        let names: Vec<String> = ci
+            .missing_names
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         format!(
             "❓ CI · {} not started: {}",
             crate::text::count(ci.missing(), "required check"),

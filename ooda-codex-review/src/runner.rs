@@ -49,6 +49,7 @@ impl std::fmt::Display for LoopError {
 
 impl std::error::Error for LoopError {}
 
+#[derive(Clone, Copy)]
 pub struct LoopConfig {
     /// Iteration cap. `NonZeroU32` so the driver's "iter 1
     /// always runs" guarantee is structural.
@@ -70,7 +71,7 @@ impl Default for LoopConfig {
 }
 
 /// One iteration's typed outcome. The loop body produces either
-/// an early-halt (Decision::Halt or stall-detected) or a completed
+/// an early-halt (`Decision::Halt` or stall-detected) or a completed
 /// Execute that we keep as the running "last attempted" anchor.
 enum IterStep {
     Halt(HaltReason),

@@ -3,7 +3,7 @@
 //! `run_loop` detects stalls by comparing the *current* iteration's
 //! action against the *previous* non-`Wait` action on two fields:
 //! its kind and its `BlockerKey`. Other fields (urgency, description,
-//! automation, target_effect) intentionally don't participate —
+//! automation, `target_effect`) intentionally don't participate —
 //! they're derived from kind+blocker plus per-iteration observation,
 //! and equality on them would either be redundant or would cause
 //! spurious "not stalled" verdicts when only the description text

@@ -1,17 +1,17 @@
 //! CI candidate generation.
 //!
 //! Top-level match on `CiActivity`:
-//!   - Idle / Resolved::AllGreen → no candidate (delegate to next axis)
-//!   - InFlight → worst-of aggregation over per-check health:
+//!   - Idle / `Resolved::AllGreen` → no candidate (delegate to next axis)
+//!   - `InFlight` → worst-of aggregation over per-check health:
 //!     Failed > Degraded > Healthy.
-//!     Failed → EscalateCiFailed (Human, exit 3).
-//!     Degraded → ReRunWorkflow (Full, blocking).
-//!     Healthy → WaitForCi (Wait).
-//!   - Resolved::HasFailures → existing FixCi-per-failure path.
-//!   - Resolved::MissingRequired → WaitForCi (missing).
+//!     Failed → `EscalateCiFailed` (Human, exit 3).
+//!     Degraded → `ReRunWorkflow` (Full, blocking).
+//!     Healthy → `WaitForCi` (Wait).
+//!   - `Resolved::HasFailures` → existing FixCi-per-failure path.
+//!   - `Resolved::MissingRequired` → `WaitForCi` (missing).
 //!
-//! TriageWait fires only on advisory failures concurrent with a
-//! blocked-required set — kept as a sibling branch to InFlight that
+//! `TriageWait` fires only on advisory failures concurrent with a
+//! blocked-required set — kept as a sibling branch to `InFlight` that
 //! suppresses the Healthy Wait when an advisory genuinely needs an
 //! agent to look.
 
@@ -173,8 +173,8 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
     triage_or_wait(summary, &pending_names, out);
 }
 
-/// Emit either TriageWait (advisory failure concurrent with blocked
-/// required) or one or two WaitForCi candidates (pending + missing).
+/// Emit either `TriageWait` (advisory failure concurrent with blocked
+/// required) or one or two `WaitForCi` candidates (pending + missing).
 fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Vec<Action>) {
     let blocked: Vec<CheckName> = pending_names
         .iter()
@@ -224,7 +224,7 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
     }
 }
 
-/// MissingRequired branch: no pending; emit Triage or Missing-Wait.
+/// `MissingRequired` branch: no pending; emit Triage or Missing-Wait.
 fn triage_or_missing(summary: &CiSummary, names: &[CheckName], out: &mut Vec<Action>) {
     // Reuse the shared helper with an empty pending list — the
     // missing-only path emits exactly the same blocker tags as
@@ -593,9 +593,9 @@ mod tests {
     /// What the CI axis emits for each `CiActivity` baseline.
     ///
     /// For `InFlight(checks)` the contract is parametric in
-    /// `CheckHealth`: a single-check InFlight with a particular
+    /// `CheckHealth`: a single-check `InFlight` with a particular
     /// health value drives a specific action. The match below is
-    /// exhaustive over both CheckHealth and CiActivity — adding a
+    /// exhaustive over both `CheckHealth` and `CiActivity` — adding a
     /// new variant requires a new arm here.
     fn expected_ci_baseline_behavior(activity: &CiActivity) -> CiBaselineBehavior {
         // Intentional exhaustive match per axis pattern; arms are
@@ -617,8 +617,8 @@ mod tests {
         }
     }
 
-    /// Enumerates every (CiActivity × CheckHealth) baseline case on
-    /// the InFlight variant, plus one representative per Resolved
+    /// Enumerates every (`CiActivity` × `CheckHealth`) baseline case on
+    /// the `InFlight` variant, plus one representative per Resolved
     /// variant and Idle. New variants (or new Symptom variants) fail
     /// to compile against the exhaustive match in
     /// `expected_ci_baseline_behavior`.

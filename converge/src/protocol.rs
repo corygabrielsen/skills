@@ -140,8 +140,11 @@ mod tests {
         }"#;
 
         let report: FitnessReport = serde_json::from_str(json).unwrap();
-        assert_eq!(report.score, 0.75);
-        assert_eq!(report.target, 1.0);
+        // 0.75 and 1.0 are exactly representable in f64; bit-equal
+        // comparison is sound here. Same below for the minimal-report
+        // test (0.5 and 1.0).
+        assert!((report.score - 0.75).abs() < f64::EPSILON);
+        assert!((report.target - 1.0).abs() < f64::EPSILON);
         assert_eq!(report.actions.len(), 1);
         assert_eq!(report.actions[0].kind, "rebase");
         assert_eq!(report.actions[0].automation, Automation::Full);
@@ -181,8 +184,8 @@ mod tests {
         }"#;
 
         let report: FitnessReport = serde_json::from_str(json).unwrap();
-        assert_eq!(report.score, 0.5);
-        assert_eq!(report.target, 1.0);
+        assert!((report.score - 0.5).abs() < f64::EPSILON);
+        assert!((report.target - 1.0).abs() < f64::EPSILON);
         assert!(report.actions.is_empty());
         assert!(report.status.is_none());
         assert!(report.score_display.is_none());

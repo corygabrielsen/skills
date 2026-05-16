@@ -5,7 +5,7 @@
 //! downstream stages can classify it. `requested_reviewer` and
 //! `requested_team` are only populated on
 //! `review_requested` / `review_request_removed` events; other
-//! events leave them null. Extra REST fields (id, node_id, url, …)
+//! events leave them null. Extra REST fields (id, `node_id`, url, …)
 //! are ignored.
 
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,7 @@ pub struct TeamRef {
 
 /// Subset of REST's `performed_via_github_app` we consume. Only the
 /// slug matters at the axis boundary; the rest of the app payload
-/// (id, client_id, owner, permissions) is ignored.
+/// (id, `client_id`, owner, permissions) is ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GitHubAppRef {
     pub slug: String,

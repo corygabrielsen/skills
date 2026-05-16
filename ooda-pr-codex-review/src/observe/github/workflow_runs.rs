@@ -5,7 +5,7 @@
 //! history. The CI health detector needs all three for per-check
 //! timing and per-(name, HEAD) attempt counting. Fetch the workflow
 //! runs scoped to the current HEAD here; orient joins by workflow
-//! name + head_sha at decide time.
+//! name + `head_sha` at decide time.
 //
 // gh pr checks does not surface created_at/run_started_at; fetch via
 // /actions/runs?head_sha=. Bounded N (only runs on current HEAD,
@@ -53,7 +53,7 @@ impl std::fmt::Display for WorkflowRunId {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum CancelledDisposition {
-    /// Auto-cancel-by-concurrency: another run on the same head_sha
+    /// Auto-cancel-by-concurrency: another run on the same `head_sha`
     /// supersedes this one. The health detector ignores these — they
     /// represent normal developer push churn, not a failure mode.
     Superseded,
@@ -157,7 +157,7 @@ struct WorkflowRunsEnvelope {
 
 /// Fetch every workflow run on `head_sha` for `slug`. The set is
 /// bounded — typically 0-30 rows on a single commit — so a single
-/// page suffices (per_page=100).
+/// page suffices (`per_page=100`).
 pub fn fetch_workflow_runs_for_head(
     slug: &RepoSlug,
     head_sha: &GitCommitSha,
@@ -206,7 +206,7 @@ mod tests {
     }
 
     /// Regression for the reported wire-type bug. GitHub returns
-    /// workflow_run `id` as a JSON integer (real value observed:
+    /// `workflow_run` `id` as a JSON integer (real value observed:
     /// 25961405250); the previous `String`-typed `WorkflowRunId`
     /// aborted observe with `invalid type: integer ..., expected a
     /// string` on every PR that had a workflow run, blocking the

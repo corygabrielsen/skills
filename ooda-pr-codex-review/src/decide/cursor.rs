@@ -1,14 +1,14 @@
 //! Cursor candidates.
 //!
-//! Six logical arms over the (CursorActivity × InFlightHealth) cross
+//! Six logical arms over the (`CursorActivity` × `InFlightHealth`) cross
 //! product:
 //!
-//!   NotApplicable          → no candidate (delegate)
+//!   `NotApplicable`          → no candidate (delegate)
 //!   Skipped(_)             → no candidate (delegate; reason in JSONL)
-//!   InFlight(Healthy)      → WaitForCursorReview (60s)
-//!   InFlight(Failed)       → EscalateCursorStalled (Human handoff)
+//!   InFlight(Healthy)      → `WaitForCursorReview` (60s)
+//!   InFlight(Failed)       → `EscalateCursorStalled` (Human handoff)
 //!   Reviewed(Clean)        → no candidate (delegate)
-//!   Reviewed(HasFindings)  → no candidate (the generic AddressThreads
+//!   Reviewed(HasFindings)  → no candidate (the generic `AddressThreads`
 //!                            on the reviews axis owns thread
 //!                            remediation; Cursor stays silent here)
 //!

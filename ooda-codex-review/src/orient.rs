@@ -23,7 +23,7 @@ pub struct OrientedState {
     /// `Terminal(Succeeded)` (the codex-review fixed point at the
     /// ceiling) instead of emitting a `Retrospective` handoff.
     pub ceiling: CodexReasoningLevel,
-    /// Filesystem-derived batch state (NotStarted / Running /
+    /// Filesystem-derived batch state (`NotStarted` / Running /
     /// Complete) for `current_level`.
     pub batch_state: BatchState,
     /// Configured `n` — how many reviews `RunReviews` was

@@ -80,7 +80,7 @@ pub struct GitHubObservations {
     pub stack_root_branch: crate::ids::BranchName,
     /// `None` when no active ruleset has a `copilot_code_review`
     /// rule. Resolved by walking ruleset summaries + details during
-    /// fetch_all.
+    /// `fetch_all`.
     pub copilot_config: Option<CopilotCodeReviewParams>,
     /// Snapshot of remaining GitHub quota across the buckets the
     /// loop uses. Fetched via the free `/rate_limit` endpoint; today
@@ -94,12 +94,12 @@ pub struct GitHubObservations {
     /// re-run budget). Bounded N — a single HEAD typically has 0-30
     /// runs.
     pub workflow_runs: Vec<WorkflowRun>,
-    /// Cursor's check_suite + check_run on the current HEAD. Distinct
+    /// Cursor's `check_suite` + `check_run` on the current HEAD. Distinct
     /// from `checks` (which aggregates by check name and drops
     /// suite-level state) and from `workflow_runs` (Cursor is a
     /// third-party app, not a GHA workflow). Source of the
     /// stuck-suite stall signal — `gh pr checks` can't see a
-    /// check_suite that never spawned a child check_run.
+    /// `check_suite` that never spawned a child `check_run`.
     pub cursor_status: CursorStatus,
     /// Merge-base delta between the PR head and its immediate base —
     /// commits behind, files master touched since base, and the
@@ -120,7 +120,7 @@ pub struct GitHubObservations {
 ///      hit `rules/branches/{base}` which 404s when the base
 ///      branch was deleted post-merge; without this short-circuit,
 ///      every merged-PR observation fails as a transport error
-///      instead of decide()'s documented `Halt::Terminal`.
+///      instead of `decide()`'s documented `Halt::Terminal`.
 ///   3. Parallel aux fetch — the remaining nine calls fan out
 ///      concurrently. Fail-fast on the first error.
 pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome, GhError> {
@@ -240,7 +240,7 @@ pub fn fetch_all(slug: &RepoSlug, pr: PullRequestNumber) -> Result<FetchOutcome,
     })
 }
 
-/// Stub bundle for terminal (merged/closed) PRs. decide() will
+/// Stub bundle for terminal (merged/closed) PRs. `decide()` will
 /// short-circuit on `pr_view.state` before reading any of the
 /// empty aux fields, so semantic correctness is preserved while
 /// avoiding the deleted-base-branch 404 that the auxiliary

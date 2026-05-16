@@ -77,6 +77,11 @@ struct Args {
 /// anywhere (including after a malformed `--max-iter` etc.), usage
 /// is printed to stdout and the process exits 0. This matches the
 /// SKILL.md promise that `--help` is honored regardless of position.
+//
+// Flat per-flag arg-parser table: length IS the spec, one arm per
+// known flag with its parse rules and error messages inline. Splitting
+// into helpers would scatter the flag contract across files.
+#[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
     // Pre-scan: --help wins over any other parse failure.
     if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
@@ -301,8 +306,7 @@ fn infer_cwd_slug() -> Result<RepoSlug, String> {
         let code = out
             .status
             .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "?".into());
+            .map_or_else(|| "?".into(), |c| c.to_string());
         return Err(format!(
             "cwd is not a github repo; specify <owner/repo> explicitly (gh exit {code}: {})",
             stderr.trim().replace('\n', " ")
@@ -330,7 +334,7 @@ fn main() -> ExitCode {
             // Open the suite-level Recorder before any PR thread
             // spawns so the manifest exists at audit time even if a
             // worker panics mid-run.
-            let suite_recorder = match SuiteRecorder::open(SuiteRecorderConfig {
+            let suite_recorder = match SuiteRecorder::open(&SuiteRecorderConfig {
                 suite: args.suite.clone(),
                 mode: run_mode(args.mode),
                 max_iter: args.max_iter,
@@ -926,7 +930,7 @@ fn write_prompt_block(out: &mut dyn std::io::Write, description: &str) {
     let _ = writeln!(out, "  prompt: {description}");
 }
 
-/// Format `ActionEffect` for the WouldAdvance stderr render.
+/// Format `ActionEffect` for the `WouldAdvance` stderr render.
 /// `Wait{interval, ..}` becomes `Wait(<duration>)` with the duration
 /// in the smallest sensible compound unit (s, m, m+s). The log/prompt
 /// payload is intentionally omitted — that's what `write_prompt_block`
@@ -990,8 +994,8 @@ mod tests {
 
     #[test]
     fn format_duration_minutes() {
-        assert_eq!(format_duration(Duration::from_secs(60)), "1m");
-        assert_eq!(format_duration(Duration::from_secs(120)), "2m");
+        assert_eq!(format_duration(Duration::from_mins(1)), "1m");
+        assert_eq!(format_duration(Duration::from_mins(2)), "2m");
         assert_eq!(format_duration(Duration::from_secs(90)), "1m30s");
         assert_eq!(format_duration(Duration::from_secs(3661)), "61m1s");
     }
@@ -1365,7 +1369,7 @@ mod tests {
 
     // ── Phase B: dashboard preamble injection ─────────────────────
 
-    fn snapshot_with_dashboard(candidates: Vec<decide::action::Action>) -> HandoffSnapshot {
+    fn snapshot_with_dashboard(candidates: &[decide::action::Action]) -> HandoffSnapshot {
         use dashboard::{Dashboard, RankedCandidate};
         // Build a Dashboard directly from a candidate list — the
         // boundary-time helper `Dashboard::from_iteration` requires
@@ -1483,7 +1487,7 @@ mod tests {
             urgency: decide::action::Urgency::BlockingHuman,
             blocker: ids::BlockerKey::tag("not_approved"),
         };
-        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
         let decorated = decorate_handoff_human(
@@ -1527,7 +1531,7 @@ mod tests {
             urgency: decide::action::Urgency::BlockingFix,
             blocker: ids::BlockerKey::tag("behind_base"),
         };
-        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("42").unwrap();
         let decorated = decorate_handoff_human(
@@ -1568,7 +1572,7 @@ mod tests {
             urgency: decide::action::Urgency::BlockingFix,
             blocker: ids::BlockerKey::tag("changes_requested_summary"),
         };
-        let snap = snapshot_with_dashboard(vec![rebase_action()]);
+        let snap = snapshot_with_dashboard(&[rebase_action()]);
         let slug = RepoSlug::parse("acme/widget").unwrap();
         let pr = PullRequestNumber::parse("1").unwrap();
         let decorated = decorate_handoff_human(

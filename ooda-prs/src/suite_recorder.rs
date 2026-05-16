@@ -116,7 +116,7 @@ struct OutcomeFile<'a> {
 }
 
 impl SuiteRecorder {
-    pub fn open(cfg: SuiteRecorderConfig) -> Result<Self, RecorderError> {
+    pub fn open(cfg: &SuiteRecorderConfig) -> Result<Self, RecorderError> {
         let state_root = resolve_state_root(cfg.state_root.as_deref());
         let now = Utc::now();
         let suite_id = make_run_id(now);
@@ -134,8 +134,7 @@ impl SuiteRecorder {
             status_comment: cfg.status_comment,
             concurrency: cfg.concurrency,
             cwd: std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "<unknown>".into()),
+                .map_or_else(|_| "<unknown>".into(), |p| p.display().to_string()),
             argv: std::env::args().collect(),
             suite: cfg
                 .suite
@@ -165,8 +164,7 @@ impl SuiteRecorder {
             cfg.max_iter,
             cfg.status_comment,
             cfg.concurrency
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "unbounded".into()),
+                .map_or_else(|| "unbounded".into(), |c| c.to_string()),
             cfg.suite
                 .iter()
                 .map(|(s, p)| format!("{s}#{p}"))
@@ -266,8 +264,7 @@ impl Inner {
             self.pointers
                 .iter()
                 .find(|p| p.slug == slug && p.pr == pr)
-                .map(|p| p.run_id.as_str())
-                .unwrap_or("(no run_id; recorder open failed)")
+                .map_or("(no run_id; recorder open failed)", |p| p.run_id.as_str())
         };
 
         writeln!(trace, "## Per-PR results")?;
@@ -355,7 +352,7 @@ mod tests {
     fn open_writes_manifest_and_trace_header() {
         let root = temp_root("open");
         let _ = fs::remove_dir_all(&root);
-        let rec = SuiteRecorder::open(SuiteRecorderConfig {
+        let rec = SuiteRecorder::open(&SuiteRecorderConfig {
             suite: vec![(slug("a/b"), pr(1)), (slug("a/b"), pr(2))],
             mode: RunMode::Loop,
             max_iter: std::num::NonZeroU32::new(10).expect("non-zero"),
@@ -387,7 +384,7 @@ mod tests {
     fn register_pr_writes_pointers_json() {
         let root = temp_root("register");
         let _ = fs::remove_dir_all(&root);
-        let rec = SuiteRecorder::open(SuiteRecorderConfig {
+        let rec = SuiteRecorder::open(&SuiteRecorderConfig {
             suite: vec![(slug("a/b"), pr(1))],
             mode: RunMode::Inspect,
             max_iter: std::num::NonZeroU32::new(1).expect("non-zero"),
@@ -413,7 +410,7 @@ mod tests {
         use crate::multi_outcome::ProcessOutcome;
         let root = temp_root("record");
         let _ = fs::remove_dir_all(&root);
-        let rec = SuiteRecorder::open(SuiteRecorderConfig {
+        let rec = SuiteRecorder::open(&SuiteRecorderConfig {
             suite: vec![(slug("a/b"), pr(1)), (slug("a/b"), pr(2))],
             mode: RunMode::Loop,
             max_iter: std::num::NonZeroU32::new(50).expect("non-zero"),

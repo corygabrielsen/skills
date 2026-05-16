@@ -12,6 +12,12 @@ use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 // Health → Action mapping for the Copilot axis. Same shape will land
 // on decide_ci and any subsequent axis; lift the common
 // Healthy/Degraded/Failed branching when 3+ wear it.
+//
+// Flat decision table over `CopilotActivity` variants: length is the
+// spec. Each arm names its action, blocker tag, and rationale inline;
+// refactoring into helpers would split that 1:1 mapping across files
+// and harm the auditability the table provides.
+#[allow(clippy::too_many_lines)]
 pub fn candidates(report: &CopilotReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
 
@@ -171,7 +177,7 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
 ///
 /// `timing` carries the per-round timestamps from the matched
 /// `CopilotActivity` variant; the prompt surfaces them so the human
-/// sees exactly when the request was filed (and, for ReviewTimeout,
+/// sees exactly when the request was filed (and, for `ReviewTimeout`,
 /// when Copilot ack'd) instead of a generic "investigate Copilot"
 /// instruction. `report` carries `rounds.len()` for the attempt
 /// count and `tier.slug()` for the current tier label.
@@ -212,6 +218,7 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
 /// Subset of the matched `CopilotActivity` variant's timestamps the
 /// failure escalation prompt needs. `ack_at` is `None` for the
 /// `Requested` variant (Copilot never started), `Some` for `Working`.
+#[derive(Clone, Copy)]
 struct FailedTiming {
     requested_at: crate::ids::Timestamp,
     ack_at: Option<crate::ids::Timestamp>,

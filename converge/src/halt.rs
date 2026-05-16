@@ -49,7 +49,7 @@ pub struct ActionSummary {
     pub automation: Automation,
 }
 
-/// Structured cause for error and fitness_unavailable halts.
+/// Structured cause for error and `fitness_unavailable` halts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorCause {
     pub source: String,

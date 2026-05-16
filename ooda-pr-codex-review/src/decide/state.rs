@@ -52,7 +52,10 @@ pub fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
     if !state.title_ok {
         out.push(Action {
             kind: ActionKind::ShortenTitle {
-                current_len: state.title_len as u32,
+                // PR title byte-length fits in u32: GitHub caps titles
+                // at 256 chars; usize → u32 is structurally safe.
+                current_len: u32::try_from(state.title_len)
+                    .expect("PR title byte-length fits in u32"),
             },
             effect: ActionEffect::Agent {
                 prompt: ooda_core::HandoffPrompt::new(format!(
@@ -460,8 +463,8 @@ mod tests {
 
     // ─── Rebase prompt enrichment tests ─────────────────────────────
 
-    fn rebase_prompt_for(oriented: OrientedState) -> String {
-        let cs = blocking_candidates(&oriented);
+    fn rebase_prompt_for(oriented: &OrientedState) -> String {
+        let cs = blocking_candidates(oriented);
         let rebase = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::Rebase))
@@ -477,7 +480,7 @@ mod tests {
             live_thread_with_line("src/foo.rs", 42, "use ? not unwrap", "T1"),
             live_thread_with_line("src/bar.rs", 108, "off-by-one", "T2"),
         ];
-        let rendered = rebase_prompt_for(oriented_with(s, threads, None));
+        let rendered = rebase_prompt_for(&oriented_with(s, threads, None));
         assert!(
             rendered.contains("Open review threads"),
             "headline paragraph missing: {rendered}"
@@ -499,7 +502,7 @@ mod tests {
             "already addressed",
             "T_r",
         )];
-        let rendered = rebase_prompt_for(oriented_with(s, threads, None));
+        let rendered = rebase_prompt_for(&oriented_with(s, threads, None));
         assert!(
             !rendered.contains("Open review threads"),
             "must not emit the witnesses preamble when none are live: {rendered}"
@@ -520,7 +523,7 @@ mod tests {
             conflict_surface: vec!["src/b.rs".into()],
             oldest_master_commit_at: Some(Timestamp::parse("2026-05-10T09:00:00Z").unwrap()),
         };
-        let rendered = rebase_prompt_for(oriented_with(s, vec![], Some(delta)));
+        let rendered = rebase_prompt_for(&oriented_with(s, vec![], Some(delta)));
         assert!(
             rendered.contains("Behind base by 5 commits"),
             "commits-behind headline missing: {rendered}"
@@ -545,7 +548,7 @@ mod tests {
             conflict_surface: vec![],
             oldest_master_commit_at: Some(Timestamp::parse("2026-05-12T11:00:00Z").unwrap()),
         };
-        let rendered = rebase_prompt_for(oriented_with(s, vec![], Some(delta)));
+        let rendered = rebase_prompt_for(&oriented_with(s, vec![], Some(delta)));
         assert!(
             rendered.contains("clean rebase, just go"),
             "missing clean-rebase recommendation: {rendered}"
@@ -577,7 +580,7 @@ mod tests {
     enum FallbackBehavior {
         /// Either Clean (mergeable, no blocker) or handled by another
         /// axis (state.behind → Rebase; state.conflict → Rebase;
-        /// state.draft → MarkReady; Unstable → advisory CI surface).
+        /// state.draft → `MarkReady`; Unstable → advisory CI surface).
         Empty,
         /// `Blocked` — unmodeled merge policy (deployment protection,
         /// signed commits, custom ruleset). Hand off to a human.

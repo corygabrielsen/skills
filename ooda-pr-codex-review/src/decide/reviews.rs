@@ -142,8 +142,8 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     out
 }
 
-/// Build the AddressChangeRequest prompt. When the latest human
-/// CHANGES_REQUESTED review is observed, inline its author, timestamp,
+/// Build the `AddressChangeRequest` prompt. When the latest human
+/// `CHANGES_REQUESTED` review is observed, inline its author, timestamp,
 /// and full body as a `Witness` so the agent does not need a
 /// `gh pr view --json reviews` round-trip to see what was asked. When
 /// the projection found no human review (bots-only change request, or
@@ -159,8 +159,7 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
             let when = h
                 .submitted_at
                 .as_ref()
-                .map(Timestamp::to_string)
-                .unwrap_or_else(|| "unknown time".to_string());
+                .map_or_else(|| "unknown time".to_string(), Timestamp::to_string);
             let label = SingleLineString::new(format!("{} @ {when}", h.author));
             let body = if h.body.trim().is_empty() {
                 "   > (review body was empty)".to_string()
@@ -195,7 +194,7 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
     prompt
 }
 
-/// Build the RequestApproval prompt. Surfaces who must approve
+/// Build the `RequestApproval` prompt. Surfaces who must approve
 /// (required reviewers from `requested_reviewers`) and the current
 /// `approvals_on_head` ratio so the human handoff knows exactly which
 /// approval signature is missing. When no required reviewers have
@@ -223,7 +222,7 @@ fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
             .requested_reviewers
             .all()
             .iter()
-            .map(|r| r.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
         prompt.push_paragraph(format!("Required reviewers: {names}."));
@@ -238,7 +237,7 @@ fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
     prompt
 }
 
-/// Build the AddressThreads prompt with the threads themselves
+/// Build the `AddressThreads` prompt with the threads themselves
 /// inlined as witnesses. Structure:
 ///
 /// * `headline` — count, with a Live/Outdated breakdown when the

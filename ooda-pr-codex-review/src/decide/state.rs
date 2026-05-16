@@ -250,6 +250,50 @@ fn push_merge_base_delta_sections(prompt: &mut ooda_core::HandoffPrompt, delta: 
     }
 }
 
+/// Compose the human-facing prompt for `merge_blocked_unmodeled`.
+/// Headline is the generic "GitHub reports BLOCKED" prose; the three
+/// optional sections (active ruleset rules, required check names,
+/// missing-on-HEAD) are appended only when their backing projection
+/// field is non-empty. When all three are empty the prompt is the
+/// generic headline alone.
+fn merge_blocked_unmodeled_prompt(state: &PullRequestProjection) -> ooda_core::HandoffPrompt {
+    use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString};
+
+    let mut prompt = HandoffPrompt::new(
+        "GitHub reports BLOCKED but no modeled axis explains the blockage \
+         — likely an unmodeled merge requirement (deployment protection, signed \
+         commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
+         the specific gate.",
+    );
+
+    if let Some(rule_types) = NonEmpty::try_from_vec(
+        state
+            .active_branch_rule_types
+            .iter()
+            .map(|s| SingleLineString::new(s.clone()))
+            .collect(),
+    ) {
+        prompt.push_paragraph("Active ruleset rules on this branch:".to_string());
+        prompt.push_numbered_list(rule_types);
+    }
+
+    if !state.required_check_names_per_ruleset.is_empty() {
+        prompt.push_paragraph(format!(
+            "Required check names from ruleset: {}",
+            state.required_check_names_per_ruleset.join(", "),
+        ));
+    }
+
+    if !state.missing_required_check_names_on_head.is_empty() {
+        prompt.push_paragraph(format!(
+            "Missing on HEAD: {}",
+            state.missing_required_check_names_on_head.join(", "),
+        ));
+    }
+
+    prompt
+}
+
 /// Fallback merge-state blocker for when GitHub reports a non-clean
 /// `mergeStateStatus` and *no other axis has emitted a blocker*.
 ///
@@ -271,12 +315,7 @@ pub fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action
         MergeStateStatus::Blocked => vec![Action {
             kind: ActionKind::ResolveMergePolicy,
             effect: ActionEffect::Human {
-                prompt: ooda_core::HandoffPrompt::new(
-                    "GitHub reports BLOCKED but no modeled axis explains the blockage \
-                     — likely an unmodeled merge requirement (deployment protection, signed \
-                     commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
-                     the specific gate.",
-                ),
+                prompt: merge_blocked_unmodeled_prompt(state),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
@@ -339,6 +378,9 @@ mod tests {
             merge_state_status: MergeStateStatus::Clean,
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             last_commit_at: None,
+            active_branch_rule_types: vec![],
+            required_check_names_per_ruleset: vec![],
+            missing_required_check_names_on_head: vec![],
         }
     }
 
@@ -377,7 +419,6 @@ mod tests {
             copilot: None,
             cursor: None,
             threads: vec![],
-            codex_review: None,
             merge_base_delta: None,
             pull_request_metadata:
                 crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
@@ -386,6 +427,7 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            codex_review: None,
         }
     }
 
@@ -401,7 +443,6 @@ mod tests {
             copilot: None,
             cursor: None,
             threads,
-            codex_review: None,
             merge_base_delta: delta,
             pull_request_metadata:
                 crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
@@ -410,6 +451,7 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            codex_review: None,
         }
     }
 
@@ -680,6 +722,11 @@ mod tests {
         for status in statuses {
             let mut s = clean();
             s.merge_state_status = status;
+            // Enrichment fields populated; behavior contract must
+            // hold regardless of their content.
+            s.active_branch_rule_types = vec!["required_status_checks".into()];
+            s.required_check_names_per_ruleset = vec!["Mergeability Check".into()];
+            s.missing_required_check_names_on_head = vec!["Mergeability Check".into()];
             let actual = observed_fallback_behavior(&s);
             let expected = expected_fallback_behavior(status);
             assert_eq!(
@@ -687,5 +734,112 @@ mod tests {
                 "fallback_merge_state_blocker contract violated for {status:?}",
             );
         }
+    }
+
+    fn blocked_with(
+        active: Vec<String>,
+        required: Vec<String>,
+        missing: Vec<String>,
+    ) -> PullRequestProjection {
+        let mut s = clean();
+        s.merge_state_status = MergeStateStatus::Blocked;
+        s.active_branch_rule_types = active;
+        s.required_check_names_per_ruleset = required;
+        s.missing_required_check_names_on_head = missing;
+        s
+    }
+
+    fn rendered_blocked_prompt(state: &PullRequestProjection) -> String {
+        let cs = fallback_merge_state_blocker(state);
+        assert_eq!(cs.len(), 1, "Blocked must emit exactly one candidate");
+        cs[0].rendered_payload()
+    }
+
+    #[test]
+    fn fallback_includes_active_rule_types_when_present() {
+        let s = blocked_with(
+            vec!["copilot_code_review".into(), "required_signatures".into()],
+            vec![],
+            vec![],
+        );
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(
+            rendered.contains("Active ruleset rules on this branch"),
+            "header missing: {rendered}",
+        );
+        assert!(rendered.contains("1. copilot_code_review"));
+        assert!(rendered.contains("2. required_signatures"));
+    }
+
+    #[test]
+    fn fallback_omits_active_rules_section_when_empty() {
+        let s = blocked_with(vec![], vec![], vec![]);
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(
+            !rendered.contains("Active ruleset rules"),
+            "must not emit ruleset header when empty: {rendered}",
+        );
+    }
+
+    #[test]
+    fn fallback_includes_required_check_names_when_present() {
+        let s = blocked_with(
+            vec!["required_status_checks".into()],
+            vec!["Mergeability Check".into(), "Build".into()],
+            vec![],
+        );
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(
+            rendered.contains("Required check names from ruleset: Mergeability Check, Build"),
+            "required-names line missing or malformed: {rendered}",
+        );
+    }
+
+    #[test]
+    fn fallback_omits_required_check_names_when_empty() {
+        let s = blocked_with(vec!["required_signatures".into()], vec![], vec![]);
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(
+            !rendered.contains("Required check names"),
+            "must not emit required-names line when empty: {rendered}",
+        );
+    }
+
+    #[test]
+    fn fallback_includes_missing_on_head_when_present() {
+        let s = blocked_with(
+            vec!["required_status_checks".into()],
+            vec!["Mergeability Check".into(), "Build".into()],
+            vec!["Build".into()],
+        );
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(
+            rendered.contains("Missing on HEAD: Build"),
+            "missing-on-HEAD line missing or malformed: {rendered}",
+        );
+    }
+
+    #[test]
+    fn fallback_omits_missing_on_head_when_empty() {
+        let s = blocked_with(
+            vec!["required_status_checks".into()],
+            vec!["Mergeability Check".into()],
+            vec![],
+        );
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(
+            !rendered.contains("Missing on HEAD"),
+            "must not emit missing-on-HEAD line when empty: {rendered}",
+        );
+    }
+
+    #[test]
+    fn fallback_emits_generic_prompt_only_when_all_enrichment_empty() {
+        let s = blocked_with(vec![], vec![], vec![]);
+        let rendered = rendered_blocked_prompt(&s);
+        assert!(rendered.contains("GitHub reports BLOCKED"));
+        assert!(!rendered.contains("Active ruleset rules"));
+        assert!(!rendered.contains("Required check names"));
+        assert!(!rendered.contains("Missing on HEAD"));
     }
 }

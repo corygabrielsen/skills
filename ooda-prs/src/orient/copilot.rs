@@ -96,6 +96,49 @@ pub enum CopilotActivity {
     },
 }
 
+/// Project Copilot activity onto a dashboard signal. `Idle` returns
+/// `None` — the axis is dormant and should not emit a row. Every
+/// other variant emits the icon+summary the spec table fixes.
+pub fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashboard::AxisSignal> {
+    use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
+    let (icon, summary) = match activity {
+        CopilotActivity::Idle => return None,
+        CopilotActivity::Requested {
+            health: InFlightHealth::Healthy,
+            ..
+        } => (SignalIcon::InFlight, "review requested"),
+        CopilotActivity::Requested {
+            health: InFlightHealth::Degraded,
+            ..
+        } => (
+            SignalIcon::Warn,
+            "request received but no review yet (degraded)",
+        ),
+        CopilotActivity::Requested {
+            health: InFlightHealth::Failed,
+            ..
+        } => (SignalIcon::Failed, "request not picked up — escalating"),
+        CopilotActivity::Working {
+            health: InFlightHealth::Healthy,
+            ..
+        } => (SignalIcon::InFlight, "reviewing"),
+        CopilotActivity::Working {
+            health: InFlightHealth::Degraded,
+            ..
+        } => (SignalIcon::Warn, "review running long (degraded)"),
+        CopilotActivity::Working {
+            health: InFlightHealth::Failed,
+            ..
+        } => (SignalIcon::Failed, "review stalled — escalating"),
+        CopilotActivity::Reviewed { .. } => (SignalIcon::Ok, "review complete"),
+    };
+    Some(AxisSignal {
+        axis: AxisName::Copilot,
+        icon,
+        summary: summary.to_string(),
+    })
+}
+
 // Per-axis health projection. CI axis (queue stalls) and any
 // subsequent reviewer axis will wear the same shape. On the third
 // axis, lift to ooda_core::AxisHealth<S>.

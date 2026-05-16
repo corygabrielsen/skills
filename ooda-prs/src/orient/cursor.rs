@@ -172,6 +172,45 @@ pub enum ReviewedState {
     HasFindings,
 }
 
+/// Project Cursor activity onto a dashboard signal. `NotApplicable`
+/// returns `None` — repo/PR has no Cursor signal at all.
+pub fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboard::AxisSignal> {
+    use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
+    let (icon, summary) = match activity {
+        CursorActivity::NotApplicable => return None,
+        CursorActivity::Skipped(reason) => (
+            SignalIcon::NotApplicable,
+            format!("skipped ({})", skip_reason_label(*reason)),
+        ),
+        CursorActivity::InFlight(InFlightHealth::Healthy) => {
+            (SignalIcon::InFlight, "reviewing".to_string())
+        }
+        CursorActivity::InFlight(InFlightHealth::Failed) => (
+            SignalIcon::Failed,
+            "check_suite stalled — escalating".to_string(),
+        ),
+        CursorActivity::Reviewed(ReviewedState::Clean) => {
+            (SignalIcon::Ok, "no findings".to_string())
+        }
+        CursorActivity::Reviewed(ReviewedState::HasFindings) => {
+            (SignalIcon::Warn, "findings to address".to_string())
+        }
+    };
+    Some(AxisSignal {
+        axis: AxisName::Cursor,
+        icon,
+        summary,
+    })
+}
+
+fn skip_reason_label(r: SkipReason) -> &'static str {
+    match r {
+        SkipReason::AuthorClass => "author class",
+        SkipReason::RepoConfig => "repo config",
+        SkipReason::Unknown => "unknown",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CursorReviewRound {
     /// 1-indexed within this PR's Cursor review history.

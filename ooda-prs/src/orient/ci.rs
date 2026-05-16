@@ -179,6 +179,67 @@ pub struct CiReport {
     pub activity: CiActivity,
 }
 
+/// Project CI activity onto a dashboard signal. `Idle` returns
+/// `None` — repo has no required checks active on this PR.
+pub fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisSignal> {
+    use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
+    let (icon, summary) = match activity {
+        CiActivity::Idle => return None,
+        CiActivity::InFlight(pending) => {
+            let worst_rank = pending
+                .iter()
+                .map(|p| match p.health {
+                    CheckHealth::Healthy => 0,
+                    CheckHealth::Degraded(_) => 1,
+                    CheckHealth::Failed(_) => 2,
+                })
+                .max()
+                .unwrap_or(0);
+            let label = match worst_rank {
+                0 => "healthy",
+                1 => "degraded",
+                _ => "failed",
+            };
+            (
+                SignalIcon::InFlight,
+                format!("{} checks pending (worst: {})", pending.len(), label),
+            )
+        }
+        CiActivity::Resolved(ResolvedState::AllGreen) => {
+            (SignalIcon::Ok, "all required checks passing".to_string())
+        }
+        CiActivity::Resolved(ResolvedState::HasFailures(names)) => (
+            SignalIcon::Failed,
+            format!(
+                "{} required checks failed: {}",
+                names.len(),
+                join_check_names(names),
+            ),
+        ),
+        CiActivity::Resolved(ResolvedState::MissingRequired(names)) => (
+            SignalIcon::Warn,
+            format!(
+                "{} required checks missing: {}",
+                names.len(),
+                join_check_names(names),
+            ),
+        ),
+    };
+    Some(AxisSignal {
+        axis: AxisName::Ci,
+        icon,
+        summary,
+    })
+}
+
+fn join_check_names(names: &[CheckName]) -> String {
+    names
+        .iter()
+        .map(|n| n.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // ── Orient entry point ──────────────────────────────────────────────
 
 /// Orient observed checks against the required-name set.

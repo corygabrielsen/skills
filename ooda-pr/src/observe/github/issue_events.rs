@@ -20,7 +20,7 @@ pub(crate) fn fetch_issue_events(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<IssueEvent>, GhError> {
-    let path = format!("repos/{slug}/issues/{pr}/events");
+    let path = format!("repos/{slug}/issues/{pr}/events?per_page=100");
     gh_json_paginate(&["api", &path, "--paginate"])
 }
 

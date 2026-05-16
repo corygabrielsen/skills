@@ -28,7 +28,15 @@ pub enum ClaudeReview {
     NoActivity,
     Addressed,
     Fresh {
+        /// Max timestamp across all Claude surfaces. Drives drift
+        /// detection against the attestation.
         latest_claude_at: DateTime<Utc>,
+        /// Timestamp of the SELECTED body (review submission's
+        /// `submitted_at` when the body comes from a review;
+        /// otherwise the issue comment's `created_at`). Drives the
+        /// Witness label so the reader sees the timestamp of the
+        /// content they are about to read, not the drift signal.
+        body_at: DateTime<Utc>,
         latest_claude_body: String,
         latest_claude_url: String,
         inline_thread_count: usize,
@@ -51,6 +59,7 @@ pub fn orient_claude_review(obs: &ClaudeReviewObservation) -> ClaudeReview {
     }
     ClaudeReview::Fresh {
         latest_claude_at: latest_at,
+        body_at: obs.body_at.unwrap_or(latest_at),
         latest_claude_body: obs.latest_claude_body.clone().unwrap_or_default(),
         latest_claude_url: obs.latest_claude_url.clone().unwrap_or_default(),
         inline_thread_count: obs.inline_thread_count,
@@ -96,6 +105,7 @@ mod tests {
             commits_behind: None,
             attest_path: None,
             latest_claude_at: None,
+            body_at: None,
             latest_claude_body: None,
             latest_claude_url: None,
             inline_thread_count: 0,
@@ -117,6 +127,7 @@ mod tests {
             commits_behind: None,
             attest_path: None,
             latest_claude_at: Some(posted),
+            body_at: Some(posted),
             latest_claude_body: Some("nit".into()),
             latest_claude_url: Some("https://example".into()),
             inline_thread_count: 0,
@@ -135,6 +146,7 @@ mod tests {
             commits_behind: None,
             attest_path: None,
             latest_claude_at: Some(when),
+            body_at: Some(when),
             latest_claude_body: None,
             latest_claude_url: None,
             inline_thread_count: 0,
@@ -156,6 +168,7 @@ mod tests {
             commits_behind: None,
             attest_path: None,
             latest_claude_at: Some(posted),
+            body_at: Some(posted),
             latest_claude_body: Some("important finding".into()),
             latest_claude_url: Some("https://example/r/1".into()),
             inline_thread_count: 2,
@@ -163,6 +176,7 @@ mod tests {
         match orient_claude_review(&obs) {
             ClaudeReview::Fresh {
                 latest_claude_at,
+                body_at,
                 latest_claude_body,
                 latest_claude_url,
                 inline_thread_count,
@@ -170,6 +184,7 @@ mod tests {
                 head_sha,
             } => {
                 assert_eq!(latest_claude_at, posted);
+                assert_eq!(body_at, posted);
                 assert_eq!(latest_claude_body, "important finding");
                 assert_eq!(latest_claude_url, "https://example/r/1");
                 assert_eq!(inline_thread_count, 2);
@@ -191,6 +206,7 @@ mod tests {
             commits_behind: None,
             attest_path: None,
             latest_claude_at: Some(posted),
+            body_at: Some(posted),
             latest_claude_body: Some("first review".into()),
             latest_claude_url: Some("https://example/r/2".into()),
             inline_thread_count: 0,

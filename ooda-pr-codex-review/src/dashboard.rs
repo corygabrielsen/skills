@@ -1394,10 +1394,12 @@ mod tests {
 
     #[test]
     fn claude_review_signal_fresh_renders_warn_with_thread_count() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
         let sig = claude_review_signal(&ClaudeReview::Fresh {
-            latest_claude_at: chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
-                .unwrap()
-                .with_timezone(&chrono::Utc),
+            latest_claude_at: at,
+            body_at: at,
             latest_claude_body: String::new(),
             latest_claude_url: String::new(),
             inline_thread_count: 3,

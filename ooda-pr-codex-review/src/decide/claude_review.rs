@@ -16,7 +16,7 @@ use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 #[must_use]
 pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     let ClaudeReview::Fresh {
-        latest_claude_at,
+        body_at,
         latest_claude_body,
         latest_claude_url,
         inline_thread_count,
@@ -31,7 +31,7 @@ pub fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action
 
     let prompt = build_address_claude_review_prompt(
         pr,
-        *latest_claude_at,
+        *body_at,
         latest_claude_body,
         latest_claude_url,
         *inline_thread_count,
@@ -139,10 +139,12 @@ mod tests {
     }
 
     fn fresh() -> ClaudeReview {
+        let at = DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
         ClaudeReview::Fresh {
-            latest_claude_at: DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
+            latest_claude_at: at,
+            body_at: at,
             latest_claude_body: "🔴 important".into(),
             latest_claude_url: "https://example/r/1".into(),
             inline_thread_count: 1,

@@ -32,7 +32,13 @@ pub struct ClaudeReviewObservation {
     /// serialization stays uniform.
     pub commits_behind: Option<usize>,
     pub attest_path: Option<PathBuf>,
+    /// Max timestamp across all Claude surfaces — drives drift
+    /// detection against the attestation.
     pub latest_claude_at: Option<DateTime<Utc>>,
+    /// Timestamp of the SELECTED body (review's `submitted_at` when
+    /// the body comes from a review; otherwise the issue comment's
+    /// `created_at`). Drives the Witness label in the act layer.
+    pub body_at: Option<DateTime<Utc>>,
     pub latest_claude_body: Option<String>,
     pub latest_claude_url: Option<String>,
     pub inline_thread_count: usize,
@@ -71,6 +77,7 @@ pub fn observe_claude_review(
         commits_behind: None,
         attest_path: path,
         latest_claude_at: aggregate.latest_at,
+        body_at: aggregate.body_at,
         latest_claude_body: aggregate.latest_body,
         latest_claude_url: aggregate.latest_url,
         inline_thread_count: aggregate.inline_thread_count,
@@ -79,6 +86,7 @@ pub fn observe_claude_review(
 
 struct ClaudeAggregate {
     latest_at: Option<DateTime<Utc>>,
+    body_at: Option<DateTime<Utc>>,
     latest_body: Option<String>,
     latest_url: Option<String>,
     inline_thread_count: usize,
@@ -105,27 +113,32 @@ fn aggregate_claude_content(
         .max_by_key(|c| c.created_at.at());
     let latest_issue_at = latest_issue.map(|c| c.created_at.at());
 
-    let (latest_at_overall, latest_body, latest_url) = match (latest_review, latest_issue) {
+    let (latest_at_overall, body_at, latest_body, latest_url) = match (latest_review, latest_issue)
+    {
         (Some((rt, rev)), Some(ic)) => {
             let combined_max = std::cmp::max(rt.at(), ic.created_at.at());
             // Body / URL priority: review submission wins when present.
+            // body_at therefore tracks the review's submission time.
             (
                 Some(combined_max),
+                Some(rt.at()),
                 Some(rev.body.clone()),
                 Some(rev.html_url.clone()),
             )
         }
-        (Some((_, rev)), None) => (
+        (Some((rt, rev)), None) => (
             latest_review_at,
+            Some(rt.at()),
             Some(rev.body.clone()),
             Some(rev.html_url.clone()),
         ),
         (None, Some(ic)) => (
             latest_issue_at,
+            Some(ic.created_at.at()),
             Some(ic.body.clone()),
             Some(ic.html_url.clone()),
         ),
-        (None, None) => (None, None, None),
+        (None, None) => (None, None, None, None),
     };
 
     let inline_thread_count = threads
@@ -146,6 +159,7 @@ fn aggregate_claude_content(
 
     ClaudeAggregate {
         latest_at: latest_at_overall,
+        body_at,
         latest_body,
         latest_url,
         inline_thread_count,
@@ -162,6 +176,7 @@ mod tests {
         ReviewThreadsPage, ReviewThreadsPr, ReviewThreadsRepo, ThreadComment, ThreadComments,
     };
     use crate::observe::github::reviews::{PullRequestReview, ReviewState, ReviewUser};
+    use crate::orient::claude_review::{ClaudeReview, orient_claude_review};
     use ooda_core::attest::{CLAUDE_REVIEW_SCHEMA_VERSION, write_claude_review_atomic};
     use tempfile::tempdir;
 
@@ -366,12 +381,10 @@ mod tests {
 
     #[test]
     fn review_body_wins_even_when_issue_is_newer() {
-        let r = claude_review(
-            "2026-05-01T10:00:00Z",
-            "structured review",
-            "https://example/r/2",
-        );
-        let c = claude_issue("2026-05-05T10:00:00Z", "newer issue", "https://example/c/4");
+        let review_at_s = "2026-05-01T10:00:00Z";
+        let issue_at_s = "2026-05-05T10:00:00Z";
+        let r = claude_review(review_at_s, "structured review", "https://example/r/2");
+        let c = claude_issue(issue_at_s, "newer issue", "https://example/c/4");
         let obs = observe_claude_review(None, pr(), &head(), &[r], &[c], &empty_threads());
         // Body priority is review-over-issue; the latest_at is still
         // the maximum across surfaces so freshness comparison sees
@@ -381,13 +394,52 @@ mod tests {
             obs.latest_claude_url.as_deref(),
             Some("https://example/r/2")
         );
+        let review_at = chrono::DateTime::parse_from_rfc3339(review_at_s)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let issue_at = chrono::DateTime::parse_from_rfc3339(issue_at_s)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        // latest_claude_at is the drift signal: max across surfaces.
         assert_eq!(
             obs.latest_claude_at,
-            Some(
-                chrono::DateTime::parse_from_rfc3339("2026-05-05T10:00:00Z")
-                    .unwrap()
-                    .with_timezone(&chrono::Utc)
-            ),
+            Some(std::cmp::max(review_at, issue_at))
+        );
+        // body_at is the timestamp of the SELECTED body — the review.
+        assert_eq!(obs.body_at, Some(review_at));
+
+        // Confirm the Witness label uses body_at (review_at), not
+        // latest_claude_at (issue_at).
+        let oriented = orient_claude_review(&obs);
+        let ClaudeReview::Fresh {
+            body_at: fresh_body_at,
+            latest_claude_at: fresh_latest,
+            latest_claude_body,
+            latest_claude_url,
+            inline_thread_count,
+            ..
+        } = oriented
+        else {
+            panic!("expected Fresh");
+        };
+        assert_eq!(fresh_body_at, review_at);
+        assert_eq!(fresh_latest, issue_at);
+        let prompt = crate::act::address_claude_review::build_address_claude_review_prompt(
+            pr(),
+            fresh_body_at,
+            &latest_claude_body,
+            &latest_claude_url,
+            inline_thread_count,
+            None,
+        );
+        let s = prompt.to_string();
+        assert!(
+            s.contains(&review_at.to_string()),
+            "label should contain body_at (review timestamp): {s}",
+        );
+        assert!(
+            !s.contains(&issue_at.to_string()),
+            "label should NOT contain latest_claude_at (issue timestamp): {s}",
         );
     }
 

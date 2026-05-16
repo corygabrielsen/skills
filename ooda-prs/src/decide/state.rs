@@ -160,7 +160,11 @@ fn build_rebase_prompt(
                 .map(|line| format!("   > {line}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            Witness { label, body }
+            Witness {
+                label,
+                body,
+                url: None,
+            }
         });
         prompt.push_witnesses(witnesses);
     }

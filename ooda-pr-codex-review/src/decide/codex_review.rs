@@ -104,6 +104,7 @@ fn mk_address(
         .map(|v| Witness {
             label: SingleLineString::new(format!("— slot {} —", v.slot)),
             body: v.body.trim_end().to_string(),
+            url: None,
         })
         .collect();
     // `mk_address` is only invoked when at least one verdict has

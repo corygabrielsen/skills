@@ -5,7 +5,6 @@
 //! exits. This module only builds the prompt body the recipient agent
 //! reads.
 
-use std::fmt::Write;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -15,6 +14,9 @@ use crate::ids::PullRequestNumber;
 
 /// Build the `AddressClaudeReview` handoff prompt body.
 ///
+/// `body_at` is the timestamp of the selected body (review submission
+/// when present, else issue comment); it labels the Witness so the
+/// reader sees the timestamp of the content they are about to read.
 /// The latest Claude review body is inlined as a [`Witness`] so the
 /// recipient agent does not need a `gh` round-trip to read the
 /// review material. `attest_path` is recovered to the state-root for
@@ -23,7 +25,7 @@ use crate::ids::PullRequestNumber;
 #[must_use]
 pub fn build_address_claude_review_prompt(
     pr: PullRequestNumber,
-    latest_claude_at: DateTime<Utc>,
+    body_at: DateTime<Utc>,
     latest_claude_body: &str,
     latest_claude_url: &str,
     inline_thread_count: usize,
@@ -49,14 +51,20 @@ pub fn build_address_claude_review_prompt(
     ));
 
     let label = SingleLineString::new(format!(
-        "claude main review @ {latest_claude_at} ({})",
+        "claude main review @ {body_at} ({})",
         thread_count_label(inline_thread_count),
     ));
-    let witness_body = witness_body(latest_claude_body, latest_claude_url);
-    prompt.push_witnesses(NonEmpty::singleton(Witness {
-        label,
-        body: witness_body,
-    }));
+    let url = if latest_claude_url.is_empty() {
+        None
+    } else {
+        Some(latest_claude_url.to_string())
+    };
+    let body = if latest_claude_body.trim().is_empty() {
+        "(review body was empty)".to_string()
+    } else {
+        latest_claude_body.to_string()
+    };
+    prompt.push_witnesses(NonEmpty::singleton(Witness { label, body, url }));
 
     prompt.push_paragraph(format!(
         "Step 2 — run the attestation CLI:\n\n    {}\n\nThis reads HEAD \
@@ -76,19 +84,6 @@ fn thread_count_label(n: usize) -> String {
     } else {
         format!("{n} inline threads")
     }
-}
-
-fn witness_body(body: &str, url: &str) -> String {
-    let mut s = String::new();
-    if !url.is_empty() {
-        let _ = write!(s, "URL: {url}\n\n");
-    }
-    if body.trim().is_empty() {
-        s.push_str("(review body was empty)");
-    } else {
-        s.push_str(body);
-    }
-    s
 }
 
 fn cli_invocation(pr: PullRequestNumber, attest_path: Option<&Path>) -> String {

@@ -154,34 +154,32 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
     let mut prompt =
         HandoffPrompt::new("Address summary-only change-request review (no inline threads).");
 
-    match latest {
-        Some(h) => {
-            let when = h
-                .submitted_at
-                .as_ref()
-                .map_or_else(|| "unknown time".to_string(), Timestamp::to_string);
-            let label = SingleLineString::new(format!("{} @ {when}", h.author));
-            let body = if h.body.trim().is_empty() {
-                "   > (review body was empty)".to_string()
-            } else {
-                h.body
-                    .lines()
-                    .map(|line| format!("   > {line}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            prompt.push_paragraph("Latest CHANGES_REQUESTED review:".to_string());
-            prompt.push_witnesses(NonEmpty::singleton(Witness { label, body }));
-        }
-        None => {
-            prompt.push_paragraph(
-                "No human CHANGES_REQUESTED review observed in the reviews \
-                 projection (rare bot-only path or REST/GraphQL race). Read \
-                 the latest CHANGES_REQUESTED review body via \
-                 `gh pr view --json reviews` and address the requested \
-                 changes.",
-            );
-        }
+    if let Some(h) = latest {
+        let when = h
+            .submitted_at
+            .as_ref()
+            .map_or_else(|| "unknown time".to_string(), Timestamp::to_string);
+        let label = SingleLineString::new(format!("{} @ {when}", h.author));
+        let body = if h.body.trim().is_empty() {
+            "   > (review body was empty)".to_string()
+        } else {
+            h.body
+                .lines()
+                .map(|line| format!("   > {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        prompt.push_paragraph("Latest CHANGES_REQUESTED review:".to_string());
+        prompt.push_witnesses(NonEmpty::singleton(Witness { label, body }));
+    } else {
+        prompt.push_paragraph(
+            "No human CHANGES_REQUESTED review observed in the reviews \
+             projection (rare bot-only path or REST/GraphQL race).",
+        );
+        prompt
+            .push_paragraph("Step 1 — fetch the latest CHANGES_REQUESTED review body:".to_string());
+        prompt.push_paragraph("gh pr view --json reviews".to_string());
+        prompt.push_paragraph("Step 2 — address the requested changes.".to_string());
     }
 
     prompt.push_paragraph(
@@ -321,35 +319,43 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
     prompt.push_witnesses(witnesses);
 
     prompt.push_paragraph(
-        "For each issue, think deeply about the entire class of issue, in \
-         general, and solve the general form of the issue across all relevant \
+        "Step 1 — for each issue, think deeply about the entire class of issue, \
+         in general, and solve the general form of the issue across all relevant \
          code. This ensures the entire category of each issue is solved in \
-         general.",
+         general, not just the specific instance the reviewer flagged.",
     );
 
     if outdated_count > 0 {
         prompt.push_paragraph(
-            "For threads marked [outdated]: GitHub's `isOutdated` flag is \
-             positional, not content-relevance — the diff hunk that anchored \
-             the thread has moved (typically due to a refactor or rebase), \
-             so the comment no longer renders inline, but the logical \
-             feedback may still apply to the current code. For each outdated \
-             thread, locate the current code that the comment is about (often \
-             near the original `path:line` after a small refactor; sometimes \
-             elsewhere) and decide whether the feedback still applies. If it \
-             does, address it as you would a live thread. If it does not, \
-             resolve the thread with a brief reply explaining why.",
+            "Step 1a (outdated threads only) — GitHub's `isOutdated` flag is \
+             positional, not content-relevance: the diff hunk that anchored the \
+             thread has moved (typically due to a refactor or rebase), so the \
+             comment no longer renders inline, but the logical feedback may \
+             still apply to the current code. For each outdated thread, locate \
+             the current code that the comment is about (often near the original \
+             `path:line` after a small refactor; sometimes elsewhere) and decide \
+             whether the feedback still applies. If it does, address it as you \
+             would a live thread. If it does not, resolve the thread with a \
+             brief reply explaining why.",
         );
     }
 
     prompt.push_paragraph(
-        "After addressing (or judging not-applicable) each thread, mark it \
-         resolved on GitHub:\n  \
-         gh api graphql -f query='mutation { resolveReviewThread(input: \
-         { threadId: \"<thread_id>\" }) { thread { id } } }'\n\
-         (Substitute the per-thread `thread_id` shown in each entry above. \
-         The mutation is idempotent — already-resolved threads succeed as a \
-         no-op.)",
+        "Step 2 — after addressing (or judging not-applicable) each thread, mark \
+         it resolved on GitHub by running:"
+            .to_string(),
+    );
+
+    prompt.push_paragraph(
+        "gh api graphql -f query='mutation { resolveReviewThread(input: \
+         { threadId: \"<thread_id>\" }) { thread { id } } }'"
+            .to_string(),
+    );
+
+    prompt.push_paragraph(
+        "Substitute the per-thread `thread_id` shown in each entry above. The \
+         mutation is idempotent — already-resolved threads succeed as a no-op."
+            .to_string(),
     );
 
     prompt
@@ -987,5 +993,61 @@ mod tests {
         assert!(rendered.contains("No human CHANGES_REQUESTED review observed"));
         assert!(rendered.contains("gh pr view --json reviews"));
         assert!(rendered.contains("think deeply about the entire class of issue"));
+    }
+
+    #[test]
+    fn address_change_request_fallback_uses_step_form_with_command_adjacent() {
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ChangesRequested);
+        let cs = candidates(&oriented_with(r));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
+            .expect("AddressChangeRequest must fire");
+        let rendered = action.rendered_payload();
+        let step1 = rendered.find("Step 1").expect("step 1 present");
+        let command = rendered
+            .find("gh pr view --json reviews")
+            .expect("command present");
+        let step2 = rendered.find("Step 2").expect("step 2 present");
+        assert!(step1 < command, "command should follow Step 1 header");
+        assert!(
+            command < step2,
+            "command should sit between Step 1 and Step 2, not after",
+        );
+    }
+
+    #[test]
+    fn address_threads_prompt_orders_resolve_command_after_step_2_header() {
+        let r = clean_reviews();
+        let threads = vec![live_thread("src/a.rs", 1, "x")];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        let rendered = cs[0].rendered_payload();
+        let step1 = rendered.find("Step 1").expect("step 1 present");
+        let step2 = rendered.find("Step 2").expect("step 2 present");
+        let resolve = rendered
+            .find("resolveReviewThread")
+            .expect("resolve mutation present");
+        let idempotency = rendered
+            .find("idempotent")
+            .expect("idempotency note present");
+        assert!(step1 < step2, "Step 1 must precede Step 2");
+        assert!(step2 < resolve, "resolve command should follow Step 2");
+        assert!(
+            resolve < idempotency,
+            "idempotency note should follow the command, not precede it",
+        );
+    }
+
+    #[test]
+    fn address_threads_outdated_uses_step_1a_label() {
+        let r = clean_reviews();
+        let threads = vec![outdated_thread("src/a.rs", 1, "stale", "T_o")];
+        let cs = candidates(&oriented_with_threads(r, threads));
+        let rendered = cs[0].rendered_payload();
+        assert!(
+            rendered.contains("Step 1a"),
+            "outdated sub-step should be labeled Step 1a: {rendered}",
+        );
     }
 }

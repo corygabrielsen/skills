@@ -8,9 +8,8 @@
 //!      the **thread-local** tool-call sink (see
 //!      `recorder::THREAD_RECORDER`).
 //!   2. Runs the configured mode (`Loop` or `Inspect`).
-//!   3. Renders its `Outcome` to stderr (serialized via a shared
-//!      stderr mutex so per-PR variant blocks don't interleave
-//!      mid-line) and records it on its own Recorder.
+//!   3. Renders its `Outcome` to stderr and records it on its own
+//!      Recorder.
 //!
 //! Joins at scope exit. Per-PR Outcomes are collected in input order
 //! and returned to `main` for `MultiOutcome::Bundle` construction.
@@ -28,21 +27,17 @@
 //! each task is independent. mpsc + crossbeam would add a dependency
 //! and a wider API surface for no behavioral gain.
 //!
-//! ## Stderr serialization
+//! ## Stderr interleaving
 //!
-//! Without a mutex, per-iteration log lines from N threads would
-//! interleave mid-byte on stderr (because `eprintln!` makes no
-//! atomicity promises across calls). Each thread's diagnostic line
-//! prefix `[<slug>#<pr>] ...` makes the log human-disentangle-able
-//! once per-line atomicity is preserved.
-//!
-//! For now, the existing per-iteration logging in `run_inspect` /
-//! `run_full` (in `main.rs`) writes via `eprintln!`. The Mutex below
-//! is held briefly around `render_outcome` calls (the variant
-//! block) so the final per-PR header + prompt block stays
-//! contiguous. Per-iteration line interleaving is left as
-//! human-tractable noise; if it becomes a problem we'll route all
-//! `eprintln!`s through this mutex.
+//! Stderr is **not** serialized across workers. Per-iteration log
+//! lines and per-PR variant blocks (`render_outcome` header +
+//! `Handoff*` prompt) from N threads can interleave on stderr —
+//! consistent with the SKILL contract under `--concurrency > 1`.
+//! The authoritative per-PR audit trail lives in
+//! `runs/<run-id>/trace.md` and the JSONL stream on stdout, not on
+//! stderr. The per-thread diagnostic line prefix
+//! `[<slug>#<pr>] ...` keeps stderr human-disentangle-able for
+//! casual triage.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};

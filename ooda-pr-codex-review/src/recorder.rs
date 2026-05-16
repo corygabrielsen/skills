@@ -17,9 +17,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
 use crate::decide::decision::Decision;
 use crate::ids::{PullRequestNumber, RepoSlug};
+use crate::orient::OrientedState;
 use crate::outcome::Outcome;
 use ooda_core::ExitCode;
 
@@ -250,17 +252,17 @@ impl Recorder {
         });
     }
 
-    pub fn record_iteration<TObs, TOriented>(
+    pub fn record_iteration<TObs>(
         &self,
         iteration: u32,
         observations: &TObs,
-        oriented: &TOriented,
+        oriented: &OrientedState,
         candidates: &[Action],
         decision: &Decision,
     ) where
         TObs: Serialize,
-        TOriented: Serialize,
     {
+        let dashboard = Dashboard::from_iteration(oriented, candidates, decision);
         self.best_effort(|inner| {
             inner.current_iteration = Some(iteration);
             let obs_ref = inner.write_json_artifact(
@@ -287,9 +289,25 @@ impl Recorder {
                 decision,
                 "application/json",
             )?;
+            // Per spec: `latest/decision.json` carries the new
+            // tier-grouped dashboard projection, not the executor
+            // envelope. Keep per-iter `decision.json` (the
+            // Execute/Halt envelope) for internal cross-referencing;
+            // surface the human-shaped Dashboard at `latest/`.
+            let dashboard_ref = inner.write_json_artifact(
+                Some(iteration),
+                "dashboard.json",
+                &dashboard,
+                "application/json",
+            )?;
 
             inner.copy_latest("state.json", &oriented_ref)?;
-            inner.copy_latest("decision.json", &decision_ref)?;
+            inner.copy_latest("decision.json", &dashboard_ref)?;
+            // Serialize whichever payload the decision carries
+            // (Action for Execute / Stuck-equivalents; HandoffAction
+            // for AgentNeeded/HumanNeeded). Both implement Serialize
+            // with their own schema; downstream tooling discriminates
+            // by the surrounding decision-projection record.
             let action_ref = match decision {
                 Decision::Execute(action) => Some(inner.write_json_artifact(
                     Some(iteration),
@@ -314,10 +332,16 @@ impl Recorder {
                 inner.remove_latest("action.json")?;
             }
             inner.write_latest_markdown(iteration, decision)?;
-            inner.write_blockers_markdown(decision)?;
-            inner.write_next_markdown(decision)?;
+            inner.write_blockers_markdown(&dashboard)?;
+            inner.write_next_markdown(&dashboard)?;
 
-            let artifacts = vec![obs_ref, oriented_ref, candidates_ref, decision_ref];
+            let artifacts = vec![
+                obs_ref,
+                oriented_ref,
+                candidates_ref,
+                decision_ref,
+                dashboard_ref,
+            ];
             inner.append_event(
                 Some(iteration),
                 "iteration_decided",
@@ -727,30 +751,14 @@ impl Inner {
         Ok(())
     }
 
-    fn write_blockers_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
-        let body = match decision_payload(decision) {
-            Some(p) => format!(
-                "# Blockers\n\n- `{}` via `{}`\n",
-                p.blocker(),
-                p.kind_name()
-            ),
-            None => "# Blockers\n\nNo current blocker.\n".to_string(),
-        };
+    fn write_blockers_markdown(&self, dashboard: &Dashboard) -> Result<(), RecorderError> {
+        let body = dashboard.render_blockers_md();
         write_bytes_at(&self.pr_root.join("latest/blockers.md"), body.as_bytes())?;
         Ok(())
     }
 
-    fn write_next_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
-        let body = match decision_payload(decision) {
-            Some(p) => format!(
-                "# Next\n\n{}\n\n- action: `{}`\n- effect: `{}`\n- blocker: `{}`\n",
-                p.rendered(),
-                p.kind_name(),
-                p.effect_debug(),
-                p.blocker(),
-            ),
-            None => "# Next\n\nNo action selected.\n".to_string(),
-        };
+    fn write_next_markdown(&self, dashboard: &Dashboard) -> Result<(), RecorderError> {
+        let body = dashboard.render_next_md();
         write_bytes_at(&self.pr_root.join("latest/next.md"), body.as_bytes())?;
         Ok(())
     }
@@ -973,53 +981,6 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-/// Projection over a `Decision`'s payload — `Mechanical` for
-/// Execute, `Handoff` for Agent/Human halts. Accessors expose
-/// the cross-cutting fields (kind, blocker, rendered payload)
-/// uniformly.
-enum DecisionPayload<'a> {
-    Mechanical(&'a Action),
-    Handoff(&'a ooda_core::HandoffAction<crate::decide::action::ActionKind>),
-}
-
-impl<'a> DecisionPayload<'a> {
-    fn kind_name(&self) -> &'static str {
-        match self {
-            Self::Mechanical(a) => a.kind.name(),
-            Self::Handoff(h) => h.kind.name(),
-        }
-    }
-    fn blocker(&self) -> &ooda_core::BlockerKey {
-        match self {
-            Self::Mechanical(a) => &a.blocker,
-            Self::Handoff(h) => &h.blocker,
-        }
-    }
-    fn rendered(&self) -> String {
-        match self {
-            Self::Mechanical(a) => a.rendered_payload(),
-            Self::Handoff(h) => h.prompt.to_string(),
-        }
-    }
-    fn effect_debug(&self) -> String {
-        match self {
-            Self::Mechanical(a) => format!("{:?}", a.effect),
-            Self::Handoff(_) => "Handoff".to_string(),
-        }
-    }
-}
-
-fn decision_payload(decision: &Decision) -> Option<DecisionPayload<'_>> {
-    match decision {
-        Decision::Execute(a) => Some(DecisionPayload::Mechanical(a)),
-        Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(h))
-        | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(h)) => {
-            Some(DecisionPayload::Handoff(h))
-        }
-        Decision::Halt(_) => None,
-    }
 }
 
 fn decision_summary(decision: &Decision) -> String {

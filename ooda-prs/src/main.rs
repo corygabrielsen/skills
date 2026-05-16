@@ -4,6 +4,7 @@ use std::time::Duration;
 
 mod act;
 mod comment;
+mod dashboard;
 mod decide;
 mod ids;
 mod multi_outcome;

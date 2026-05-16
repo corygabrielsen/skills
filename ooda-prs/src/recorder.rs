@@ -18,9 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
 use crate::decide::decision::Decision;
 use crate::ids::{PullRequestNumber, RepoSlug};
+use crate::orient::OrientedState;
 use crate::outcome::Outcome;
 use ooda_core::ExitCode;
 
@@ -275,17 +277,17 @@ impl Recorder {
         });
     }
 
-    pub fn record_iteration<TObs, TOriented>(
+    pub fn record_iteration<TObs>(
         &self,
         iteration: u32,
         observations: &TObs,
-        oriented: &TOriented,
+        oriented: &OrientedState,
         candidates: &[Action],
         decision: &Decision,
     ) where
         TObs: Serialize,
-        TOriented: Serialize,
     {
+        let dashboard = Dashboard::from_iteration(oriented, candidates, decision);
         self.best_effort(|inner| {
             inner.current_iteration = Some(iteration);
             let obs_ref = inner.write_json_artifact(
@@ -312,13 +314,25 @@ impl Recorder {
                 decision,
                 "application/json",
             )?;
+            // Per spec: `latest/decision.json` carries the new
+            // tier-grouped dashboard projection, not the executor
+            // envelope. Keep per-iter `decision.json` (the
+            // Execute/Halt envelope) for internal cross-referencing;
+            // surface the human-shaped Dashboard at `latest/`.
+            let dashboard_ref = inner.write_json_artifact(
+                Some(iteration),
+                "dashboard.json",
+                &dashboard,
+                "application/json",
+            )?;
 
             inner.copy_latest("state.json", &oriented_ref)?;
-            inner.copy_latest("decision.json", &decision_ref)?;
+            inner.copy_latest("decision.json", &dashboard_ref)?;
             // Serialize whichever payload the decision carries
-            // (Action for Execute; HandoffAction for AgentNeeded
-            // /HumanNeeded). Both implement Serialize with their
-            // own schema.
+            // (Action for Execute / Stuck-equivalents; HandoffAction
+            // for AgentNeeded/HumanNeeded). Both implement Serialize
+            // with their own schema; downstream tooling discriminates
+            // by the surrounding decision-projection record.
             let action_ref = match decision {
                 Decision::Execute(action) => Some(inner.write_json_artifact(
                     Some(iteration),
@@ -343,10 +357,16 @@ impl Recorder {
                 inner.remove_latest("action.json")?;
             }
             inner.write_latest_markdown(iteration, decision)?;
-            inner.write_blockers_markdown(decision)?;
-            inner.write_next_markdown(decision)?;
+            inner.write_blockers_markdown(&dashboard)?;
+            inner.write_next_markdown(&dashboard)?;
 
-            let artifacts = vec![obs_ref, oriented_ref, candidates_ref, decision_ref];
+            let artifacts = vec![
+                obs_ref,
+                oriented_ref,
+                candidates_ref,
+                decision_ref,
+                dashboard_ref,
+            ];
             inner.append_event(
                 Some(iteration),
                 "iteration_decided",
@@ -756,30 +776,14 @@ impl Inner {
         Ok(())
     }
 
-    fn write_blockers_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
-        let body = match decision_payload(decision) {
-            Some(p) => format!(
-                "# Blockers\n\n- `{}` via `{}`\n",
-                p.blocker(),
-                p.kind_name()
-            ),
-            None => "# Blockers\n\nNo current blocker.\n".to_string(),
-        };
+    fn write_blockers_markdown(&self, dashboard: &Dashboard) -> Result<(), RecorderError> {
+        let body = dashboard.render_blockers_md();
         write_bytes_at(&self.pr_root.join("latest/blockers.md"), body.as_bytes())?;
         Ok(())
     }
 
-    fn write_next_markdown(&self, decision: &Decision) -> Result<(), RecorderError> {
-        let body = match decision_payload(decision) {
-            Some(p) => format!(
-                "# Next\n\n{}\n\n- action: `{}`\n- effect: `{}`\n- blocker: `{}`\n",
-                p.rendered(),
-                p.kind_name(),
-                p.effect_debug(),
-                p.blocker(),
-            ),
-            None => "# Next\n\nNo action selected.\n".to_string(),
-        };
+    fn write_next_markdown(&self, dashboard: &Dashboard) -> Result<(), RecorderError> {
+        let body = dashboard.render_next_md();
         write_bytes_at(&self.pr_root.join("latest/next.md"), body.as_bytes())?;
         Ok(())
     }
@@ -1003,55 +1007,6 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-/// Projection over a `Decision`'s carried payload. `Execute`
-/// carries a full `Action`; the handoff halts carry
-/// `HandoffAction`s (typed projection with prompt hoisted out of
-/// the effect enum). Callers that only need cross-cutting fields
-/// use the accessors; renderers that need payload specifics match
-/// the variants directly.
-enum DecisionPayload<'a> {
-    Mechanical(&'a Action),
-    Handoff(&'a ooda_core::HandoffAction<crate::decide::action::ActionKind>),
-}
-
-impl<'a> DecisionPayload<'a> {
-    fn kind_name(&self) -> &'static str {
-        match self {
-            Self::Mechanical(a) => a.kind.name(),
-            Self::Handoff(h) => h.kind.name(),
-        }
-    }
-    fn blocker(&self) -> &ooda_core::BlockerKey {
-        match self {
-            Self::Mechanical(a) => &a.blocker,
-            Self::Handoff(h) => &h.blocker,
-        }
-    }
-    fn rendered(&self) -> String {
-        match self {
-            Self::Mechanical(a) => a.rendered_payload(),
-            Self::Handoff(h) => h.prompt.to_string(),
-        }
-    }
-    fn effect_debug(&self) -> String {
-        match self {
-            Self::Mechanical(a) => format!("{:?}", a.effect),
-            Self::Handoff(_) => "Handoff".to_string(),
-        }
-    }
-}
-
-fn decision_payload(decision: &Decision) -> Option<DecisionPayload<'_>> {
-    match decision {
-        Decision::Execute(a) => Some(DecisionPayload::Mechanical(a)),
-        Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(h))
-        | Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(h)) => {
-            Some(DecisionPayload::Handoff(h))
-        }
-        Decision::Halt(_) => None,
-    }
-}
-
 fn decision_summary(decision: &Decision) -> String {
     match decision {
         Decision::Execute(action) => action_summary(action),
@@ -1109,11 +1064,10 @@ fn action_summary(action: &Action) -> String {
 fn action_projection(action: &Action) -> Value {
     json!({
         "kind": action.kind.name(),
-        "effect": &action.effect,
         "target_effect": format!("{:?}", action.target_effect),
         "urgency": format!("{:?}", action.urgency),
         "blocker": action.blocker.to_string(),
-        "description": action.rendered_payload(),
+        "effect": &action.effect,
     })
 }
 
@@ -1128,11 +1082,10 @@ fn handoff_action_projection(
 ) -> Value {
     json!({
         "kind": handoff.kind.name(),
-        "prompt": &handoff.prompt,
         "target_effect": format!("{:?}", handoff.target_effect),
         "urgency": format!("{:?}", handoff.urgency),
         "blocker": handoff.blocker.to_string(),
-        "description": handoff.prompt.to_string(),
+        "prompt": &handoff.prompt,
     })
 }
 
@@ -1190,17 +1143,17 @@ mod tests {
         };
         json!({
             "kind": action.kind.name(),
-            "effect": effect_json,
             "target_effect": format!("{:?}", action.target_effect),
             "urgency": format!("{:?}", action.urgency),
             "blocker": action.blocker.to_string(),
-            "description": action.rendered_payload(),
+            "effect": effect_json,
         })
     }
 
     /// `HandoffPrompt` serializes as its struct shape (headline +
-    /// sections array). For the simple sample prompts used here the
-    /// sections vector is empty.
+    /// sections array). For these goldens the headline is a single
+    /// `SingleLineString` rendered as a JSON string; the sections
+    /// vector is empty for the simple sample prompts used here.
     fn prompt_golden(prompt: &HandoffPrompt) -> Value {
         json!({
             "headline": prompt.headline.as_str(),
@@ -1208,6 +1161,9 @@ mod tests {
         })
     }
 
+    /// One sample `ActionEffect` per variant. Hand-maintained; the
+    /// length sentinel in `recorder_action_projection_schema_goldens`
+    /// catches drift.
     fn recorder_sample_effects() -> Vec<ActionEffect> {
         vec![
             ActionEffect::Full {
@@ -1226,6 +1182,11 @@ mod tests {
         ]
     }
 
+    /// One golden assertion per `ActionEffect` variant.
+    /// Compile-checked exhaustiveness lives in
+    /// `recorder_action_golden`'s match arm and serde's derived
+    /// `Serialize` impl on `ActionEffect`. Adding a new variant
+    /// requires updating both this test and the producer.
     #[test]
     fn recorder_action_projection_schema_goldens() {
         let samples = recorder_sample_effects();
@@ -1279,7 +1240,7 @@ mod tests {
             slug: RepoSlug::parse("example/widgets").unwrap(),
             pr: PullRequestNumber::new(7).unwrap(),
             mode: RunMode::Inspect,
-            max_iter: std::num::NonZeroU32::new(1).expect("non-zero"),
+            max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
             status_comment: false,
             state_root: Some(root.clone()),
             legacy_trace: None,

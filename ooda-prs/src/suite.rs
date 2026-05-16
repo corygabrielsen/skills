@@ -1,6 +1,6 @@
 //! Parallel suite spawn loop.
 //!
-//! `drive_suite` runs the per-PR pipeline (`drive_one_pr` in
+//! `drive_suite` runs the per-PR pipeline (`drive_one_pull_request` in
 //! `main.rs`) in parallel under `std::thread::scope`. Each PR is
 //! handled by exactly one thread. The thread:
 //!
@@ -55,7 +55,7 @@ use crate::outcome::Outcome;
 /// once per `(slug, pr)` on its own thread; the closure is
 /// responsible for opening its per-PR recorder, running the
 /// pipeline, rendering stderr, and recording the outcome — see
-/// `main::drive_one_pr`.
+/// `main::drive_one_pull_request`.
 ///
 /// `cap` is the maximum number of simultaneously-active PRs.
 /// `cap = 0` is clamped to `1`; `cap > suite.len()` is clamped to
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn drives_each_pr_exactly_once() {
+    fn drives_each_pull_request_exactly_once() {
         // Verify the atomic counter visits each index exactly once.
         let s: Vec<_> = (1..=10).map(|n| (slug("x/y"), pr(n))).collect();
         let counter = AtomicU32::new(0);

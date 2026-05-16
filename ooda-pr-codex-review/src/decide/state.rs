@@ -5,7 +5,7 @@
 use crate::ids::BlockerKey;
 
 use crate::observe::github::compare::MergeBaseDelta;
-use crate::observe::github::pr_view::{MergeStateStatus, Mergeable};
+use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable};
 use crate::orient::OrientedState;
 use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadState};
@@ -375,7 +375,8 @@ mod tests {
             threads: vec![],
             codex_review: None,
             merge_base_delta: None,
-            pr_metadata: crate::orient::pr_meta::PrMetadata::NeverAttested,
+            pull_request_metadata:
+                crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
             attest_path: None,
         }
     }
@@ -394,7 +395,8 @@ mod tests {
             threads,
             codex_review: None,
             merge_base_delta: delta,
-            pr_metadata: crate::orient::pr_meta::PrMetadata::NeverAttested,
+            pull_request_metadata:
+                crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
             attest_path: None,
         }
     }

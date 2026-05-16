@@ -6,7 +6,7 @@
 
 mod ci;
 mod copilot;
-pub mod sync_pr_meta;
+pub mod sync_pull_request_metadata;
 
 use std::thread;
 

@@ -8,7 +8,7 @@
 
 use crate::ids::{GitCommitSha, GitHubLogin, Reviewer, TeamName, Timestamp};
 use crate::observe::github::comments::IssueComment;
-use crate::observe::github::pr_view::{PullRequestView, ReviewDecision};
+use crate::observe::github::pull_request_view::{PullRequestView, ReviewDecision};
 use crate::observe::github::requested_reviewers::{RequestedReviewers, UserType};
 use crate::observe::github::review_threads::{RequestedReviewer, ReviewThreadsResponse};
 use crate::observe::github::reviews::{PullRequestReview, ReviewState};
@@ -264,7 +264,9 @@ mod tests {
     use super::*;
     use crate::ids::PullRequestNumber;
     use crate::observe::github::comments::{CommentUser, IssueComment};
-    use crate::observe::github::pr_view::{MergeStateStatus, Mergeable, PrState, PullRequestView};
+    use crate::observe::github::pull_request_view::{
+        MergeStateStatus, Mergeable, PullRequestState, PullRequestView,
+    };
     use crate::observe::github::review_threads::{
         CommentAuthor, PageInfo, RequestedReviewer, ReviewRequestNode, ReviewRequestsPage,
         ReviewThread, ReviewThreadsData, ReviewThreadsPage, ReviewThreadsPr, ReviewThreadsRepo,
@@ -281,7 +283,7 @@ mod tests {
             number: PullRequestNumber::new(1).unwrap(),
             url: "u".into(),
             body: None,
-            state: PrState::Open,
+            state: PullRequestState::Open,
             is_draft: false,
             mergeable: Mergeable::Mergeable,
             merge_state_status: MergeStateStatus::Clean,

@@ -81,7 +81,7 @@ fn happy_path_writes_attestation_for_head() {
 }
 
 #[test]
-fn invalid_pr_id_exits_64() {
+fn invalid_pull_request_id_exits_64() {
     let repo = TempDir::new().unwrap();
     init_git_repo(repo.path());
     let state_root = TempDir::new().unwrap();

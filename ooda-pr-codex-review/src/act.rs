@@ -13,7 +13,7 @@
 
 mod ci;
 mod copilot;
-pub mod sync_pr_meta;
+pub mod sync_pull_request_metadata;
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -75,7 +75,7 @@ impl From<GhError> for ActError {
 /// from each iteration's observe so the batch directory naming and
 /// the `head_sha.txt` stamp track the PR's head, and the spawned
 /// `codex review --base <base>` argv stays consistent with what
-/// the PR's `pr_view.base_ref_name` reports.
+/// the PR's `pull_request_view.base_ref_name` reports.
 ///
 /// `_lock` is an advisory `flock(2)` on `<codex_pr_root>/.lock`
 /// held for the duration of the invocation; concurrent

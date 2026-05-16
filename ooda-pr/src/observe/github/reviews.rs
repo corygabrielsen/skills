@@ -13,7 +13,7 @@ use super::gh::{GhError, gh_json_paginate};
 
 /// Fetch all reviews on a PR. `gh api --paginate` emits one JSON
 /// array per page; `gh_json_paginate` concatenates them.
-pub fn fetch_pr_reviews(
+pub fn fetch_pull_request_reviews(
     slug: &RepoSlug,
     pr: PullRequestNumber,
 ) -> Result<Vec<PullRequestReview>, GhError> {

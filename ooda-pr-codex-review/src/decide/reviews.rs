@@ -3,7 +3,7 @@
 
 use crate::ids::{BlockerKey, Timestamp};
 
-use crate::observe::github::pr_view::ReviewDecision;
+use crate::observe::github::pull_request_view::ReviewDecision;
 use crate::orient::OrientedState;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
@@ -380,7 +380,7 @@ fn count_by_author(threads: &[ReviewThread]) -> Vec<(ThreadAuthor, usize)> {
 mod tests {
     use super::*;
     use crate::ids::{GitHubLogin, Reviewer, Timestamp};
-    use crate::observe::github::pr_view::Mergeable;
+    use crate::observe::github::pull_request_view::Mergeable;
     use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestProjection;
@@ -429,7 +429,7 @@ mod tests {
             commits: 1,
             behind: false,
             has_open_parent_pr: false,
-            merge_state_status: crate::observe::github::pr_view::MergeStateStatus::Clean,
+            merge_state_status: crate::observe::github::pull_request_view::MergeStateStatus::Clean,
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             last_commit_at: None,
         }
@@ -449,7 +449,8 @@ mod tests {
             threads,
             codex_review: None,
             merge_base_delta: None,
-            pr_metadata: crate::orient::pr_meta::PrMetadata::Synced,
+            pull_request_metadata:
+                crate::orient::pull_request_metadata::PullRequestMetadata::Synced,
             attest_path: None,
         }
     }

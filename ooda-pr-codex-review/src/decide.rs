@@ -13,7 +13,7 @@ mod codex_review;
 mod copilot;
 mod cursor;
 pub mod decision;
-mod pr_meta;
+mod pull_request_metadata;
 mod reviews;
 mod state;
 
@@ -70,7 +70,7 @@ pub(crate) fn candidates(
     // firing alone when it is the only outstanding axis. Always
     // append after the mechanical / health axes so the urgency
     // sort settles it at the bottom.
-    out.extend(pr_meta::candidates(oriented, pr));
+    out.extend(pull_request_metadata::candidates(oriented, pr));
     // Fallback merge-state blocker: only fires when NO axis can
     // already advance or unblock the PR. Catches unmodeled policy
     // gates (deployment protection, signed commits, custom

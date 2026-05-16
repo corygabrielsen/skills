@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn pr_number_rejects_zero() {
+    fn pull_request_number_rejects_zero() {
         assert!(PullRequestNumber::new(0).is_err());
         assert_eq!(PullRequestNumber::new(614).unwrap().get(), 614);
         assert_eq!(PullRequestNumber::parse("614").unwrap().get(), 614);

@@ -1,6 +1,6 @@
-//! Compose the `SyncPrMeta` handoff prompt.
+//! Compose the `SyncPullRequestMetadata` handoff prompt.
 //!
-//! `SyncPrMeta` is `ActionEffect::Agent` — `act()` never executes
+//! `SyncPullRequestMetadata` is `ActionEffect::Agent` — `act()` never executes
 //! it; the runner converts it to `Outcome::HandoffAgent` and exits.
 //! This module only builds the prompt body the recipient agent
 //! reads.
@@ -10,9 +10,9 @@ use std::path::Path;
 use ooda_core::HandoffPrompt;
 
 use crate::ids::PullRequestNumber;
-use crate::orient::pr_meta::PrMetadata;
+use crate::orient::pull_request_metadata::PullRequestMetadata;
 
-/// Build the `SyncPrMeta` handoff prompt body.
+/// Build the `SyncPullRequestMetadata` handoff prompt body.
 ///
 /// `state` and `attest_path` together let the prompt pick the
 /// right "why" preamble (`Drift` cites commit count; `NeverAttested`
@@ -23,9 +23,9 @@ use crate::orient::pr_meta::PrMetadata;
 /// `--state-root`; the prompt then falls back to a placeholder
 /// invocation that asks the agent to supply the path.
 #[must_use]
-pub fn build_sync_pr_meta_prompt(
+pub fn build_sync_pull_request_metadata_prompt(
     pr: PullRequestNumber,
-    state: &PrMetadata,
+    state: &PullRequestMetadata,
     attest_path: Option<&Path>,
 ) -> HandoffPrompt {
     let headline = "PR metadata sync needed.";
@@ -55,17 +55,17 @@ pub fn build_sync_pr_meta_prompt(
     prompt
 }
 
-fn why_paragraph(state: &PrMetadata) -> &'static str {
+fn why_paragraph(state: &PullRequestMetadata) -> &'static str {
     match state {
-        PrMetadata::Drift { .. } => {
+        PullRequestMetadata::Drift { .. } => {
             "The PR title, description, and labels are currently out of sync \
              with HEAD."
         }
-        PrMetadata::NeverAttested => {
+        PullRequestMetadata::NeverAttested => {
             "The PR title, description, and labels have not yet been attested \
              as synced with HEAD."
         }
-        PrMetadata::Synced => {
+        PullRequestMetadata::Synced => {
             "PR metadata is already synced; re-attesting because a downstream \
              axis requested it."
         }
@@ -104,8 +104,8 @@ mod tests {
         PullRequestNumber::parse("753").unwrap()
     }
 
-    fn drift() -> PrMetadata {
-        PrMetadata::Drift {
+    fn drift() -> PullRequestMetadata {
+        PullRequestMetadata::Drift {
             attested_sha: "a".repeat(40),
             head_sha: "b".repeat(40),
             commits_behind: 4,
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn prompt_for_drift_explains_out_of_sync() {
         let path = std::path::PathBuf::from("/state/753/pr_meta_attest.json");
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), Some(&path));
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), Some(&path));
         let s = p.to_string();
         assert!(s.contains("out of sync with HEAD"), "{s}");
         assert!(s.starts_with("PR metadata sync needed."), "{s}");
@@ -124,7 +124,11 @@ mod tests {
     #[test]
     fn prompt_for_never_attested_uses_attestation_language() {
         let path = std::path::PathBuf::from("/state/753/pr_meta_attest.json");
-        let p = build_sync_pr_meta_prompt(pr(), &PrMetadata::NeverAttested, Some(&path));
+        let p = build_sync_pull_request_metadata_prompt(
+            pr(),
+            &PullRequestMetadata::NeverAttested,
+            Some(&path),
+        );
         let s = p.to_string();
         assert!(s.contains("not yet been attested"), "{s}");
     }
@@ -132,7 +136,7 @@ mod tests {
     #[test]
     fn prompt_includes_literal_ooda_attest_command_with_state_root() {
         let path = std::path::PathBuf::from("/state/753/pr_meta_attest.json");
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), Some(&path));
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), Some(&path));
         let s = p.to_string();
         assert!(
             s.contains("ooda-attest pr-meta --pr-id 753 --state-root /state"),
@@ -142,7 +146,7 @@ mod tests {
 
     #[test]
     fn prompt_falls_back_to_placeholder_when_no_attest_path() {
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), None);
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), None);
         let s = p.to_string();
         assert!(
             s.contains("ooda-attest pr-meta --pr-id 753 --state-root"),
@@ -154,13 +158,13 @@ mod tests {
 
     #[test]
     fn prompt_mentions_contributing_md() {
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), None);
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), None);
         assert!(p.to_string().contains("CONTRIBUTING.md"));
     }
 
     #[test]
     fn prompt_explains_squash_merge_rationale() {
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), None);
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), None);
         let s = p.to_string();
         assert!(s.contains("squash-merge"), "{s}");
         assert!(s.contains("commit message"), "{s}");
@@ -168,7 +172,7 @@ mod tests {
 
     #[test]
     fn prompt_warns_against_verbosity() {
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), None);
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), None);
         let s = p.to_string();
         assert!(s.contains("Keep it tight"), "{s}");
         assert!(s.contains("rot and verbosity"), "{s}");
@@ -176,7 +180,7 @@ mod tests {
 
     #[test]
     fn prompt_explains_binary_writes_atomically_without_json_or_sha_work() {
-        let p = build_sync_pr_meta_prompt(pr(), &drift(), None);
+        let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), None);
         let s = p.to_string();
         assert!(s.contains("writes the attestation file"), "{s}");
         assert!(s.contains("atomically"), "{s}");
@@ -186,7 +190,7 @@ mod tests {
     #[test]
     fn prompt_orders_command_immediately_after_step_2_header() {
         let path = std::path::PathBuf::from("/state/753/pr_meta_attest.json");
-        let s = build_sync_pr_meta_prompt(pr(), &drift(), Some(&path)).to_string();
+        let s = build_sync_pull_request_metadata_prompt(pr(), &drift(), Some(&path)).to_string();
         let step2 = s.find("Step 2").expect("step 2 present");
         let command = s.find("ooda-attest pr-meta").expect("command present");
         let automatic = s

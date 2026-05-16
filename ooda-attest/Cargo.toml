@@ -1,0 +1,22 @@
+[package]
+name = "ooda-attest"
+version = "0.1.0"
+edition = "2024"
+description = "CLI wrapper around ooda_core::attest for recording PR-meta attestations"
+
+[[bin]]
+name = "ooda-attest"
+path = "src/main.rs"
+
+[dependencies]
+ooda-core = { path = "../ooda-core" }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+serde_json = "1"
+tempfile = "3"
+
+[lints.clippy]
+pedantic = "deny"

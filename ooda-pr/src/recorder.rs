@@ -1302,6 +1302,8 @@ mod tests {
             cursor: None,
             threads: vec![],
             merge_base_delta: None,
+            pr_metadata: crate::orient::pr_meta::PrMetadata::Synced,
+            attest_path: None,
         }
     }
 

@@ -31,6 +31,7 @@
 //! type spine and exit-code contract, nothing else.
 
 pub mod action;
+pub mod attest;
 pub mod blocker;
 pub mod decision;
 pub mod exit_code;

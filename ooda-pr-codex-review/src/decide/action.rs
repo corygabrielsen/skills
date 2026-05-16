@@ -215,6 +215,17 @@ pub enum ActionKind {
         level: crate::ids::CodexReasoningLevel,
         count: u32,
     },
+
+    // ── PR metadata attestation ──
+    /// PR title / description / labels are out of sync with HEAD
+    /// (Drift) or have never been attested for this PR
+    /// (`NeverAttested`). Hand off to an agent to refresh PR meta and
+    /// re-run `ooda-attest pr-meta` to write a fresh attestation.
+    /// Payload carries the absolute path of the attestation file so
+    /// the prompt can surface the exact CLI invocation.
+    SyncPrMeta {
+        attest_path: std::path::PathBuf,
+    },
 }
 
 impl ActionKind {
@@ -262,6 +273,7 @@ impl ActionKindName for ActionKind {
             Self::RunCodexReviewBatch { .. } => "RunCodexReviewBatch",
             Self::AwaitCodexReviewBatch { .. } => "AwaitCodexReviewBatch",
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
+            Self::SyncPrMeta { .. } => "SyncPrMeta",
         }
     }
 }

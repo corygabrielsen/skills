@@ -442,6 +442,8 @@ mod tests {
             cursor: None,
             threads,
             merge_base_delta: None,
+            pr_metadata: crate::orient::pr_meta::PrMetadata::Synced,
+            attest_path: None,
         }
     }
 

@@ -1226,6 +1226,8 @@ mod tests {
                 approvals_stale: 0,
                 pending_reviews: PendingReviews::default(),
                 bot_reviews: vec![],
+                requested_reviewers: crate::orient::reviews::RequestedReviewerSet::default(),
+                latest_human_changes_requested: None,
             },
             copilot: None,
             cursor: None,

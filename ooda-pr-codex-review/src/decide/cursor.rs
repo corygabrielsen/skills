@@ -45,7 +45,7 @@ pub fn candidates(report: &CursorReport) -> Vec<Action> {
             });
         }
         CursorActivity::InFlight(InFlightHealth::Failed) => {
-            out.push(failed_escalation());
+            out.push(failed_escalation(report));
         }
         CursorActivity::Reviewed(ReviewedState::Clean) => {
             // Cursor reviewed and reports no findings.
@@ -62,20 +62,33 @@ pub fn candidates(report: &CursorReport) -> Vec<Action> {
 /// Stall escalation. No symptom payload (Cursor has a single failure
 /// mode) and no act-layer side effect — the runner consumes
 /// `Outcome::HandoffHuman` and exits.
-fn failed_escalation() -> Action {
+///
+/// Surfaces the suite's `created_at` (and elapsed minutes since)
+/// when known, plus the per-PR Cursor round count. Both come from the
+/// already-projected `CursorReport` — no new observation needed.
+fn failed_escalation(report: &CursorReport) -> Action {
+    let stall_min = crate::orient::cursor::STALL_TIMEOUT.num_minutes();
     let headline = format!(
-        "Cursor Bugbot has not produced a review within {} minutes of the suite \
+        "Cursor Bugbot has not produced a review within {stall_min} minutes of the suite \
          opening at this HEAD. Cursor's check_suite appears stalled on Cursor's \
          backend; there is no rerequest API that unsticks it. Investigate Cursor's \
          service status (cursor.com/status) and push a new commit once the underlying \
          issue is resolved — Cursor auto-runs on every push.",
-        crate::orient::cursor::STALL_TIMEOUT.num_minutes(),
     );
+    let mut prompt = ooda_core::HandoffPrompt::new(headline);
+
+    if let Some(created_at) = report.suite_created_at {
+        prompt.push_paragraph(format!("Suite opened at: {created_at}."));
+    }
+    prompt.push_paragraph(format!(
+        "Prior Cursor review rounds on this PR: {} (tier: {}).",
+        report.rounds.len(),
+        report.tier.slug(),
+    ));
+
     Action {
         kind: ActionKind::EscalateCursorStalled,
-        effect: ActionEffect::Human {
-            prompt: ooda_core::HandoffPrompt::new(headline),
-        },
+        effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
         blocker: BlockerKey::tag("cursor_failed_stall"),
@@ -99,6 +112,7 @@ mod tests {
             severity: CursorSeverityBreakdown::default(),
             tier,
             fresh: false,
+            suite_created_at: None,
         }
     }
 
@@ -256,5 +270,81 @@ mod tests {
                 "cursor-axis contract violated for activity = {activity:?}",
             );
         }
+    }
+
+    // ── prompt-enrichment tests ─────────────────────────────────────
+
+    use crate::ids::{GitCommitSha, Timestamp};
+    use crate::orient::cursor::CursorReviewRound;
+
+    fn report_with(
+        activity: CursorActivity,
+        tier: CursorTier,
+        suite_created_at: Option<Timestamp>,
+        rounds: Vec<CursorReviewRound>,
+    ) -> CursorReport {
+        CursorReport {
+            activity,
+            rounds,
+            threads: BotThreadSummary::default(),
+            severity: CursorSeverityBreakdown::default(),
+            tier,
+            fresh: false,
+            suite_created_at,
+        }
+    }
+
+    fn ts(s: &str) -> Timestamp {
+        Timestamp::parse(s).unwrap()
+    }
+
+    fn cursor_round(at: &str, sha: &str) -> CursorReviewRound {
+        CursorReviewRound {
+            round: 1,
+            reviewed_at: ts(at),
+            commit: GitCommitSha::parse(sha).unwrap(),
+            findings_count: 0,
+        }
+    }
+
+    #[test]
+    fn escalate_cursor_stalled_prompt_surfaces_suite_age_and_round_count() {
+        let r = report_with(
+            CursorActivity::InFlight(InFlightHealth::Failed),
+            CursorTier::Silver,
+            Some(ts("2026-05-15T08:00:00Z")),
+            vec![
+                cursor_round("2026-05-10T10:00:00Z", &"a".repeat(40)),
+                cursor_round("2026-05-12T10:00:00Z", &"b".repeat(40)),
+            ],
+        );
+        let cs = candidates(&r);
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Cursor Bugbot has not produced a review"));
+        assert!(
+            rendered.contains("Suite opened at: 2026-05-15T08:00:00+00:00"),
+            "missing suite_created_at: {rendered}",
+        );
+        assert!(
+            rendered.contains("Prior Cursor review rounds on this PR: 2 (tier: silver)"),
+            "missing round count + tier: {rendered}",
+        );
+    }
+
+    #[test]
+    fn escalate_cursor_stalled_prompt_omits_suite_age_when_absent() {
+        // Defensive path: a Failed in-flight activity normally implies
+        // a suite exists, but the projection is optional so the prompt
+        // must still render usefully without it.
+        let r = report_with(
+            CursorActivity::InFlight(InFlightHealth::Failed),
+            CursorTier::Bronze,
+            None,
+            vec![],
+        );
+        let cs = candidates(&r);
+        let rendered = cs[0].rendered_payload();
+        assert!(!rendered.contains("Suite opened at:"));
+        assert!(rendered.contains("Prior Cursor review rounds on this PR: 0 (tier: bronze)"));
     }
 }

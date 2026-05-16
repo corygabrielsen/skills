@@ -1,13 +1,15 @@
 //! Review candidates: address threads, wait on pending reviewers,
 //! request approval.
 
-use crate::ids::BlockerKey;
+use crate::ids::{BlockerKey, Timestamp};
 
 use crate::observe::github::pr_view::ReviewDecision;
 use crate::orient::OrientedState;
+use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
 use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
+use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
 /// Comma-join a slice of any `Display` for human-readable rendering.
 fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
@@ -98,7 +100,7 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::RequestApproval,
             effect: ActionEffect::Human {
-                prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+                prompt: request_approval_prompt(reviews),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
@@ -127,7 +129,9 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
         out.push(Action {
             kind: ActionKind::AddressChangeRequest,
             effect: ActionEffect::Agent {
-                prompt: address_change_request_prompt(),
+                prompt: address_change_request_prompt(
+                    reviews.latest_human_changes_requested.as_ref(),
+                ),
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
@@ -138,16 +142,100 @@ pub fn candidates(oriented: &OrientedState) -> Vec<Action> {
     out
 }
 
-fn address_change_request_prompt() -> ooda_core::HandoffPrompt {
-    ooda_core::HandoffPrompt::new(
-        "Address summary-only change-request review (no inline threads). \
-         Read the latest CHANGES_REQUESTED review body via `gh pr view \
-         --json reviews` and address the requested changes. \
-         For each issue, think deeply about the entire class of issue, in \
+/// Build the AddressChangeRequest prompt. When the latest human
+/// CHANGES_REQUESTED review is observed, inline its author, timestamp,
+/// and full body as a `Witness` so the agent does not need a
+/// `gh pr view --json reviews` round-trip to see what was asked. When
+/// the projection found no human review (bots-only change request, or
+/// a race between the GraphQL `review_decision` and the REST reviews
+/// feed) the prompt falls back to the prior fetch-it-yourself
+/// instruction.
+fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt {
+    let mut prompt =
+        HandoffPrompt::new("Address summary-only change-request review (no inline threads).");
+
+    match latest {
+        Some(h) => {
+            let when = h
+                .submitted_at
+                .as_ref()
+                .map(Timestamp::to_string)
+                .unwrap_or_else(|| "unknown time".to_string());
+            let label = SingleLineString::new(format!("{} @ {when}", h.author,));
+            let body = if h.body.trim().is_empty() {
+                "   > (review body was empty)".to_string()
+            } else {
+                h.body
+                    .lines()
+                    .map(|line| format!("   > {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            prompt.push_paragraph("Latest CHANGES_REQUESTED review:".to_string());
+            prompt.push_witnesses(NonEmpty::singleton(Witness { label, body }));
+        }
+        None => {
+            prompt.push_paragraph(
+                "No human CHANGES_REQUESTED review observed in the reviews \
+                 projection (rare bot-only path or REST/GraphQL race). Read \
+                 the latest CHANGES_REQUESTED review body via \
+                 `gh pr view --json reviews` and address the requested \
+                 changes.",
+            );
+        }
+    }
+
+    prompt.push_paragraph(
+        "For each issue, think deeply about the entire class of issue, in \
          general, and solve the general form of the issue across all relevant \
          code. This ensures the entire category of each issue is solved in \
          general.",
-    )
+    );
+
+    prompt
+}
+
+/// Build the RequestApproval prompt. Surfaces who must approve
+/// (required reviewers from `requested_reviewers`) and the current
+/// `approvals_on_head` ratio so the human handoff knows exactly which
+/// approval signature is missing. When no required reviewers have
+/// been recorded yet, the headline alone covers the situation —
+/// CODEOWNERS- or branch-rule-derived requirements may not be present
+/// on the `requested_reviewers` REST endpoint until GitHub fans them
+/// in.
+fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
+    let denom = reviews.requested_reviewers.bots.len() + reviews.requested_reviewers.humans.len();
+    let headline = if denom == 0 {
+        format!(
+            "Request or self-approve ({}/? approvals on HEAD).",
+            reviews.approvals_on_head,
+        )
+    } else {
+        format!(
+            "Request or self-approve ({}/{denom} approvals on HEAD).",
+            reviews.approvals_on_head,
+        )
+    };
+    let mut prompt = HandoffPrompt::new(headline);
+
+    if !reviews.requested_reviewers.is_empty() {
+        let names = reviews
+            .requested_reviewers
+            .all()
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        prompt.push_paragraph(format!("Required reviewers: {names}."));
+    }
+    if reviews.approvals_stale > 0 {
+        prompt.push_paragraph(format!(
+            "{} on prior HEADs — a new push invalidated those approvals.",
+            crate::text::count(reviews.approvals_stale, "stale approval"),
+        ));
+    }
+
+    prompt
 }
 
 /// Build the AddressThreads prompt with the threads themselves
@@ -314,6 +402,8 @@ mod tests {
             approvals_stale: 0,
             pending_reviews: PendingReviews::default(),
             bot_reviews: vec![],
+            requested_reviewers: crate::orient::reviews::RequestedReviewerSet::default(),
+            latest_human_changes_requested: None,
         }
     }
 
@@ -776,5 +866,121 @@ mod tests {
                 "review-axis contract violated for decision = {decision:?}",
             );
         }
+    }
+
+    // ── prompt-enrichment tests ─────────────────────────────────────
+
+    #[test]
+    fn request_approval_prompt_lists_required_reviewers_and_approval_ratio() {
+        use crate::ids::TeamName;
+        use crate::orient::reviews::RequestedReviewerSet;
+
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ReviewRequired);
+        r.approvals_on_head = 0;
+        r.requested_reviewers = RequestedReviewerSet {
+            bots: vec![GitHubLogin::parse("copilot[bot]").unwrap()],
+            humans: vec![
+                Reviewer::User(GitHubLogin::parse("alice").unwrap()),
+                Reviewer::Team(TeamName::parse("backend").unwrap()),
+            ],
+        };
+        let cs = candidates(&oriented_with(r));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::RequestApproval))
+            .expect("RequestApproval must fire");
+        let rendered = action.rendered_payload();
+        assert!(
+            rendered.contains("0/3 approvals on HEAD"),
+            "missing approval ratio: {rendered}",
+        );
+        assert!(
+            rendered.contains("Required reviewers: copilot[bot], alice, backend"),
+            "missing reviewers list: {rendered}",
+        );
+    }
+
+    #[test]
+    fn request_approval_prompt_surfaces_stale_approvals() {
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ReviewRequired);
+        r.approvals_stale = 2;
+        let cs = candidates(&oriented_with(r));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::RequestApproval))
+            .expect("RequestApproval must fire");
+        let rendered = action.rendered_payload();
+        assert!(
+            rendered.contains("2 stale approvals on prior HEADs"),
+            "missing stale-approvals line: {rendered}",
+        );
+    }
+
+    #[test]
+    fn request_approval_prompt_omits_reviewers_section_when_none_required() {
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ReviewRequired);
+        let cs = candidates(&oriented_with(r));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::RequestApproval))
+            .expect("RequestApproval must fire");
+        let rendered = action.rendered_payload();
+        assert!(
+            rendered.contains("0/? approvals on HEAD"),
+            "missing approval ratio with unknown denominator: {rendered}",
+        );
+        assert!(!rendered.contains("Required reviewers:"));
+    }
+
+    #[test]
+    fn address_change_request_prompt_inlines_review_body_when_observed() {
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ChangesRequested);
+        r.latest_human_changes_requested = Some(HumanReview {
+            author: GitHubLogin::parse("alice").unwrap(),
+            submitted_at: Some(Timestamp::parse("2026-05-15T12:34:56Z").unwrap()),
+            body: "Please factor the duplicated parsing logic\ninto a shared helper.".into(),
+        });
+        let cs = candidates(&oriented_with(r));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
+            .expect("AddressChangeRequest must fire");
+        let rendered = action.rendered_payload();
+        assert!(rendered.contains("Address summary-only change-request review"));
+        assert!(rendered.contains("Latest CHANGES_REQUESTED review:"));
+        assert!(
+            rendered.contains("alice @ 2026-05-15T12:34:56+00:00"),
+            "missing witness label: {rendered}",
+        );
+        assert!(
+            rendered.contains("> Please factor the duplicated parsing logic"),
+            "missing first body line: {rendered}",
+        );
+        assert!(
+            rendered.contains("> into a shared helper."),
+            "missing second body line: {rendered}",
+        );
+        // Generalization preamble preserved.
+        assert!(rendered.contains("think deeply about the entire class of issue"));
+    }
+
+    #[test]
+    fn address_change_request_prompt_falls_back_when_no_human_review_observed() {
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ChangesRequested);
+        // latest_human_changes_requested intentionally None.
+        let cs = candidates(&oriented_with(r));
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
+            .expect("AddressChangeRequest must fire");
+        let rendered = action.rendered_payload();
+        assert!(rendered.contains("No human CHANGES_REQUESTED review observed"));
+        assert!(rendered.contains("gh pr view --json reviews"));
+        assert!(rendered.contains("think deeply about the entire class of issue"));
     }
 }

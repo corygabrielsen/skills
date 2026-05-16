@@ -62,16 +62,31 @@ pub fn candidates(report: &CopilotReport) -> Vec<Action> {
             out.push(degraded_rerequest(Symptom::ReviewTimeout));
         }
         CopilotActivity::Requested {
+            requested_at,
             health: InFlightHealth::Failed,
-            ..
         } => {
-            out.push(failed_escalation(Symptom::StartTimeout));
+            out.push(failed_escalation(
+                Symptom::StartTimeout,
+                FailedTiming {
+                    requested_at: *requested_at,
+                    ack_at: None,
+                },
+                report,
+            ));
         }
         CopilotActivity::Working {
+            requested_at,
+            ack_at,
             health: InFlightHealth::Failed,
-            ..
         } => {
-            out.push(failed_escalation(Symptom::ReviewTimeout));
+            out.push(failed_escalation(
+                Symptom::ReviewTimeout,
+                FailedTiming {
+                    requested_at: *requested_at,
+                    ack_at: Some(*ack_at),
+                },
+                report,
+            ));
         }
         CopilotActivity::Reviewed { latest } => {
             if report.tier == CopilotTier::Platinum {
@@ -153,7 +168,14 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
 /// Per-HEAD budget exhausted; humans must triage. No automatic side
 /// effect — the act layer never sees this; the runner consumes
 /// `Outcome::HandoffHuman` and exits.
-fn failed_escalation(symptom: Symptom) -> Action {
+///
+/// `timing` carries the per-round timestamps from the matched
+/// `CopilotActivity` variant; the prompt surfaces them so the human
+/// sees exactly when the request was filed (and, for ReviewTimeout,
+/// when Copilot ack'd) instead of a generic "investigate Copilot"
+/// instruction. `report` carries `rounds.len()` for the attempt
+/// count and `tier.slug()` for the current tier label.
+fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotReport) -> Action {
     let (tag, headline) = match symptom {
         Symptom::StartTimeout => (
             "copilot_failed_start_timeout",
@@ -168,15 +190,31 @@ fn failed_escalation(symptom: Symptom) -> Action {
              re-trigger manually once the underlying issue is resolved.",
         ),
     };
+    let mut prompt = ooda_core::HandoffPrompt::new(headline);
+    prompt.push_paragraph(format!("Requested at: {}.", timing.requested_at,));
+    if let Some(ack_at) = timing.ack_at {
+        prompt.push_paragraph(format!("Ack at: {ack_at}."));
+    }
+    prompt.push_paragraph(format!(
+        "Attempt count at this HEAD: {} (tier: {}).",
+        report.rounds.len(),
+        report.tier.slug(),
+    ));
     Action {
         kind: ActionKind::EscalateCopilotFailed { symptom },
-        effect: ActionEffect::Human {
-            prompt: ooda_core::HandoffPrompt::new(headline),
-        },
+        effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingHuman,
         blocker: BlockerKey::tag(tag),
     }
+}
+
+/// Subset of the matched `CopilotActivity` variant's timestamps the
+/// failure escalation prompt needs. `ack_at` is `None` for the
+/// `Requested` variant (Copilot never started), `Some` for `Working`.
+struct FailedTiming {
+    requested_at: crate::ids::Timestamp,
+    ack_at: Option<crate::ids::Timestamp>,
 }
 
 #[cfg(test)]
@@ -471,5 +509,72 @@ mod tests {
                 "copilot baseline contract violated for activity = {activity:?}",
             );
         }
+    }
+
+    // ── prompt-enrichment tests ─────────────────────────────────────
+
+    fn report_with_rounds(
+        activity: CopilotActivity,
+        tier: CopilotTier,
+        rounds: Vec<CopilotReviewRound>,
+    ) -> CopilotReport {
+        CopilotReport {
+            config: enabled(),
+            activity,
+            rounds,
+            threads: BotThreadSummary::default(),
+            tier,
+            fresh: false,
+        }
+    }
+
+    #[test]
+    fn escalate_copilot_failed_start_timeout_surfaces_requested_at_and_tier() {
+        let req_at = Timestamp::parse("2026-05-15T09:00:00Z").unwrap();
+        let r = report_with_rounds(
+            CopilotActivity::Requested {
+                requested_at: req_at,
+                health: InFlightHealth::Failed,
+            },
+            CopilotTier::Bronze,
+            vec![round_at_head(), round_at_head()],
+        );
+        let cs = candidates(&r);
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Copilot has not started reviewing"));
+        assert!(
+            rendered.contains("Requested at: 2026-05-15T09:00:00+00:00"),
+            "missing requested_at: {rendered}",
+        );
+        // StartTimeout has no Ack — must not render an Ack paragraph.
+        assert!(!rendered.contains("Ack at:"));
+        assert!(
+            rendered.contains("Attempt count at this HEAD: 2 (tier: bronze)"),
+            "missing attempt count + tier: {rendered}",
+        );
+    }
+
+    #[test]
+    fn escalate_copilot_failed_review_timeout_surfaces_ack_at() {
+        let req_at = Timestamp::parse("2026-05-15T09:00:00Z").unwrap();
+        let ack_at = Timestamp::parse("2026-05-15T09:02:00Z").unwrap();
+        let r = report_with_rounds(
+            CopilotActivity::Working {
+                requested_at: req_at,
+                ack_at,
+                health: InFlightHealth::Failed,
+            },
+            CopilotTier::Silver,
+            vec![round_at_head()],
+        );
+        let cs = candidates(&r);
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Copilot started but failed to submit a review"));
+        assert!(rendered.contains("Requested at: 2026-05-15T09:00:00+00:00"));
+        assert!(
+            rendered.contains("Ack at: 2026-05-15T09:02:00+00:00"),
+            "missing ack_at: {rendered}",
+        );
+        assert!(rendered.contains("Attempt count at this HEAD: 1 (tier: silver)"));
     }
 }

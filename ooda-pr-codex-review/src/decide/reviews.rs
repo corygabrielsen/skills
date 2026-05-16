@@ -353,6 +353,7 @@ mod tests {
             cursor: None,
             codex_review: None,
             threads,
+            merge_base_delta: None,
         }
     }
 

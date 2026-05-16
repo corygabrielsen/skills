@@ -346,6 +346,7 @@ mod tests {
             cursor: None,
             codex_review: None,
             threads: vec![],
+            merge_base_delta: None,
         }
     }
 

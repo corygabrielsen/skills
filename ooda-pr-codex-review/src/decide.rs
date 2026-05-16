@@ -49,7 +49,7 @@ pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     // won't even start until it's marked ready, and CI failures on
     // a conflicted/behind branch are noise until the merge base is
     // resolved.
-    out.extend(state::blocking_candidates(&oriented.state));
+    out.extend(state::blocking_candidates(oriented));
     out.extend(ci::candidates(&oriented.ci));
     out.extend(reviews::candidates(oriented));
     if let Some(c) = &oriented.copilot {

@@ -345,6 +345,7 @@ mod tests {
             copilot: None,
             cursor: None,
             threads: vec![],
+            merge_base_delta: None,
         }
     }
 

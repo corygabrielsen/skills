@@ -430,6 +430,20 @@ impl Dashboard {
     /// header (it depends on identifiers the projection does not
     /// carry). Empty candidate list ⇒ empty body, leaving the
     /// caller to substitute a halt summary.
+    ///
+    /// # Markdown escape discipline
+    ///
+    /// Interpolated fields (`action_name`, `blocker.tag`) currently
+    /// flow from typed sources: `ActionKindName::name` and
+    /// `BlockerKey::from_static` both return `&'static str`, so no
+    /// markdown-control character can reach the rendered body.
+    /// `action_log` is the one field whose source includes a
+    /// `HandoffPrompt.headline` path — today that headline is a
+    /// `SingleLineString` carrying only internally-built strings.
+    /// If a future caller threads user-controlled content
+    /// (review-thread body, claude review text) into `action_log`,
+    /// wrap it with [`ooda_core::md_escape::md_inline_escape`] at
+    /// the interpolation site.
     pub(crate) fn render_status_comment(&self) -> String {
         let Some(winner) = self.candidates.first() else {
             return String::new();

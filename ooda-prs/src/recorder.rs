@@ -40,8 +40,69 @@ use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
 use crate::decide::decision::Decision;
 use crate::ids::{PullRequestNumber, RepoSlug};
-use crate::orient::OrientedState;
+use crate::observe::github::compare::MergeBaseDelta;
+use crate::orient::ci::CiReport;
+use crate::orient::claude_review::ClaudeReview;
+use crate::orient::closeout::Closeout;
+use crate::orient::copilot::CopilotReport;
+use crate::orient::cursor::CursorReport;
+use crate::orient::doc_review::DocReview;
+use crate::orient::pull_request_metadata::PullRequestMetadata;
+use crate::orient::reviews::ReviewSummary;
+use crate::orient::state::PullRequestProjection;
+use crate::orient::thread::ReviewThread;
 use crate::outcome::Outcome;
+
+/// Per-consumer input slice for [`Recorder::record_iteration`].
+/// Each field declares a typed dep ref. The struct is the function
+/// signature reified; it is not a god-struct in the
+/// [`crate::orient::OrientedState`] sense — its scope is exactly
+/// what this one consumer reads (dashboard inputs + the
+/// `oriented.json` snapshot serialization).
+///
+/// Field order mirrors `OrientedState` so the derived `Serialize`
+/// impl produces byte-identical JSON for the `oriented.json`
+/// artifact.
+#[derive(Serialize)]
+pub(crate) struct RecorderInputs<'a> {
+    pub ci: &'a CiReport,
+    pub state: &'a PullRequestProjection,
+    pub reviews: &'a ReviewSummary,
+    pub copilot: Option<&'a CopilotReport>,
+    pub cursor: Option<&'a CursorReport>,
+    pub threads: &'a [ReviewThread],
+    pub merge_base_delta: Option<&'a MergeBaseDelta>,
+    pub pull_request_metadata: &'a PullRequestMetadata,
+    pub attest_path: Option<&'a Path>,
+    pub doc_review: &'a DocReview,
+    pub doc_review_attest_path: Option<&'a Path>,
+    pub claude_review: &'a ClaudeReview,
+    pub claude_review_attest_path: Option<&'a Path>,
+    pub closeout: &'a Closeout,
+    pub closeout_attest_path: Option<&'a Path>,
+}
+
+impl<'a> From<&'a crate::orient::OrientedState> for RecorderInputs<'a> {
+    fn from(o: &'a crate::orient::OrientedState) -> Self {
+        Self {
+            ci: &o.ci,
+            state: &o.state,
+            reviews: &o.reviews,
+            copilot: o.copilot.as_ref(),
+            cursor: o.cursor.as_ref(),
+            threads: &o.threads,
+            merge_base_delta: o.merge_base_delta.as_ref(),
+            pull_request_metadata: &o.pull_request_metadata,
+            attest_path: o.attest_path.as_deref(),
+            doc_review: &o.doc_review,
+            doc_review_attest_path: o.doc_review_attest_path.as_deref(),
+            claude_review: &o.claude_review,
+            claude_review_attest_path: o.claude_review_attest_path.as_deref(),
+            closeout: &o.closeout,
+            closeout_attest_path: o.closeout_attest_path.as_deref(),
+        }
+    }
+}
 use ooda_core::{CURRENT_MANIFEST_SCHEMA_VERSION, CurrentManifest, ExitCode};
 
 const SCHEMA_VERSION: u32 = 1;
@@ -336,19 +397,19 @@ impl Recorder {
         &self,
         iteration: u32,
         observations: &TObs,
-        oriented: &OrientedState,
+        inputs: &RecorderInputs<'_>,
         candidates: &[Action],
         decision: &Decision,
     ) where
         TObs: Serialize,
     {
         let dashboard = Dashboard::from_iteration(
-            &oriented.ci,
-            oriented.cursor.as_ref(),
-            oriented.copilot.as_ref(),
-            &oriented.pull_request_metadata,
-            &oriented.doc_review,
-            &oriented.claude_review,
+            inputs.ci,
+            inputs.cursor,
+            inputs.copilot,
+            inputs.pull_request_metadata,
+            inputs.doc_review,
+            inputs.claude_review,
             candidates,
             decision,
         );
@@ -364,7 +425,7 @@ impl Recorder {
             let oriented_ref = inner.write_json_artifact(
                 Some(iteration),
                 "oriented.json",
-                oriented,
+                inputs,
                 "application/json",
             )?;
             let candidates_ref = inner.write_json_artifact(
@@ -1500,12 +1561,12 @@ mod tests {
         crate::ids::Timestamp::parse(s).unwrap()
     }
 
-    fn empty_oriented_for_golden() -> OrientedState {
+    fn empty_oriented_for_golden() -> crate::orient::OrientedState {
         use crate::observe::github::pull_request_view::Mergeable;
         use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
         use crate::orient::reviews::{PendingReviews, ReviewSummary};
         use crate::orient::state::PullRequestProjection;
-        OrientedState {
+        crate::orient::OrientedState {
             ci: CiReport {
                 summary: CiSummary {
                     required: CheckBucket::default(),
@@ -1585,7 +1646,13 @@ mod tests {
         let oriented = empty_oriented_for_golden();
         let decision = Decision::Halt(crate::decide::decision::DecisionHalt::Success);
 
-        recorder.record_iteration(1, &serde_json::json!({}), &oriented, &[], &decision);
+        recorder.record_iteration(
+            1,
+            &serde_json::json!({}),
+            &RecorderInputs::from(&oriented),
+            &[],
+            &decision,
+        );
 
         let pr_root = recorder.pull_request_root();
         let events = fs::read_to_string(pr_root.join("events.jsonl")).unwrap();

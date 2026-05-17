@@ -180,17 +180,16 @@ impl RunId {
     }
 
     /// Generate a fresh run id from current UTC timestamp,
-    /// subsecond-nanosecond entropy, and pid. Matches the
-    /// `<YYYYMMDDTHHMMSSZ>-<entropy>-p<pid>` pattern v1 uses
-    /// for run dirs.
+    /// subsecond-nanosecond entropy, and pid. The format is
+    /// `<YYYYMMDDTHHMMSSZ>-<entropy>-p<pid>`.
     #[must_use]
     pub fn generate() -> Self {
         let now = Utc::now();
         let ts = now.format("%Y%m%dT%H%M%SZ");
-        // Entropy via system clock subsecond nanos; for v2's purposes
-        // (run-id local uniqueness within one machine within one
-        // second) this is sufficient. A future revision could lift
-        // to a UUID v7 or pull from /dev/urandom.
+        // Entropy via system clock subsecond nanos: enough for
+        // run-id local uniqueness within one machine within one
+        // second. A future revision could lift to a UUID v7 or
+        // pull from /dev/urandom.
         let entropy = now.timestamp_subsec_nanos();
         let pid = std::process::id();
         Self(format!("{ts}-{entropy:09}-p{pid}"))
@@ -353,8 +352,8 @@ pub enum EventBody {
     RunStalled { last_action: String },
     /// Iteration cap reached without halting.
     RunCapReached { last_action: String },
-    /// Catch-all for domains that need an event the v2 vocabulary
-    /// doesn't yet model. `kind_suffix` is appended for human
+    /// Catch-all for domains that need an event the typed
+    /// vocabulary doesn't model. `kind_suffix` is appended for human
     /// triage; `payload` is opaque JSON.
     DomainSpecific {
         kind_suffix: String,
@@ -427,7 +426,7 @@ fn nonempty_env_path(name: &str) -> Option<PathBuf> {
 
 // ── State root ───────────────────────────────────────────────────────
 
-/// Handle to a v2 state root. Methods create the layout on demand;
+/// Handle to a state root. Methods create the layout on demand;
 /// callers can keep one handle for the lifetime of the process.
 #[derive(Debug, Clone)]
 pub struct StateRoot {
@@ -641,8 +640,8 @@ impl RunWriter {
             return Ok(blob);
         }
         // tmp+rename: write to a sibling temp, then atomically
-        // rename into place. Skipping fsync here for v1; can be
-        // tightened if durability matters across power loss.
+        // rename into place. No fsync — can be tightened if
+        // durability across power loss becomes a requirement.
         let tmp = blob_path.with_extension(format!("{ext}.tmp"));
         {
             let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;

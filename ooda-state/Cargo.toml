@@ -2,7 +2,7 @@
 name = "ooda-state"
 version = "0.1.0"
 edition = "2024"
-description = "OODA state-tree v2 — domain-agnostic on-disk model (writer + reader)"
+description = "OODA state-tree — domain-agnostic on-disk model (writer + reader)"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

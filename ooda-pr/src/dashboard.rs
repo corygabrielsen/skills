@@ -198,7 +198,11 @@ impl RankedCandidate {
     fn from_action(action: &Action) -> Self {
         Self {
             action_name: ActionKindName::name(&action.kind),
-            action_log: action.rendered_payload(),
+            // One-line summary, not the full body: the dashboard
+            // embeds this inline in a `Recommended: <kind>: <log>`
+            // sentence. The full body is in the handoff prompt
+            // and reaches the user via the handoff surface.
+            action_log: action.rendered_summary(),
             effect_debug: format!("{:?}", action.effect),
             urgency: action.urgency,
             blocker: action.blocker.clone(),

@@ -115,7 +115,7 @@ mod tests {
         let p = build_review_docs_prompt(pr(), &drift(), Some(&path));
         let s = p.to_string();
         assert!(s.contains("advanced past"), "{s}");
-        assert!(s.starts_with("Doc/comment review needed."), "{s}");
+        assert!(s.starts_with("# Doc/comment review needed."), "{s}");
     }
 
     #[test]

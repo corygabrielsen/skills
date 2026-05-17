@@ -112,7 +112,7 @@ mod tests {
         let p = build_sync_pull_request_metadata_prompt(pr(), &drift(), Some(&path));
         let s = p.to_string();
         assert!(s.contains("out of sync with HEAD"), "{s}");
-        assert!(s.starts_with("PR metadata sync needed."), "{s}");
+        assert!(s.starts_with("# PR metadata sync needed."), "{s}");
     }
 
     #[test]

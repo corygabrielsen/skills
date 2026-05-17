@@ -24,7 +24,7 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
         .join(", ")
 }
 
-pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
+pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     let reviews = &oriented.reviews;
     let ci = &oriented.ci.summary;
     let mut out: Vec<Action> = Vec::new();

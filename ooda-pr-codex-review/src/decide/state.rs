@@ -18,7 +18,7 @@ use super::action::{Action, ActionEffect, ActionKind, MidTier, NonEmpty, TargetE
 /// before the PR can merge at all. Composed over the whole
 /// oriented state so per-action prompts can pull witness data
 /// from any axis without further signature changes.
-pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
+pub(crate) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
     let state = &oriented.state;
     let mut out: Vec<Action> = Vec::new();
 

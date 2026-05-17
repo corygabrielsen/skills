@@ -42,7 +42,7 @@ pub(crate) struct ActContext {
 }
 
 #[derive(Debug)]
-pub enum ActError {
+pub(crate) enum ActError {
     /// Agent or Human effect routed to act. Decide must halt
     /// these; reaching act is an invariant violation.
     UnsupportedAutomation,

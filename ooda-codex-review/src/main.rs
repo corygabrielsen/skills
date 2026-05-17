@@ -6,6 +6,16 @@
 //! machine (see [`decide`]); fixed point at the configured ceiling
 //! halts terminally, otherwise the loop hands off to an outer
 //! orchestrator for address-batch or retrospective work.
+//!
+//! # State model
+//!
+//! Each invocation creates a fresh run under
+//! `<state-root>/runs/<run-id>/` via [`ooda_state`]. The run
+//! captures the per-iteration observe/orient/decide/act event
+//! stream in `events.jsonl`; bulky snapshots (observations,
+//! handoff prompts) are content-addressed in `blobs/`. In-flight
+//! codex review subprocess logs live in a per-run scratch
+//! directory; observe scans them on each iteration.
 
 use ooda_core::MidTier;
 use std::fmt::Write as _;
@@ -18,16 +28,15 @@ mod ids;
 mod observe;
 mod orient;
 mod outcome;
-mod recorder;
 mod runner;
 
 use act::ActContext;
 use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
+use ooda_state::{EventBody, RunId, RunWriter, StateRoot};
 use outcome::Outcome;
-use recorder::{LevelOutcome, Recorder, RecorderConfig};
-use runner::{LoopConfig, run_loop};
+use runner::{EventSink, LoopConfig, run_loop};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
@@ -42,9 +51,9 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Mode (exactly one required):\n  --uncommitted       review working-tree changes vs HEAD\n  --base BRANCH       review current branch vs BRANCH\n  --commit SHA        review a specific commit (40-hex SHA)\n  --pr NUM            review a specific PR's changes\n\
          \n\
-         Options:\n  --level LVL                  reasoning level (= floor): low|medium|high|xhigh (default low)\n  --ceiling LVL                top of the ladder; all-clean here halts DoneFixedPoint (default xhigh, must be >= --level)\n  -n N                         parallel review count (default 3, must be ≥ 1)\n  --max-iter N                 loop iteration cap (default 50, must be ≥ 1)\n  --state-root PATH            directory for batch logs (default $TMPDIR/ooda-codex-review)\n  --codex-bin PATH             path to the `codex` binary (default `codex`)\n  --criteria STRING            unsupported with current `codex review` target modes; always UsageError\n  --fresh                      ignore the latest pointer; start a new run\n  -h, --help                   show this help and exit\n\
+         Options:\n  --level LVL                  reasoning level (= floor): low|medium|high|xhigh (default low)\n  --ceiling LVL                top of the ladder; all-clean here halts DoneFixedPoint (default xhigh, must be >= --level)\n  -n N                         parallel review count (default 3, must be ≥ 1)\n  --max-iter N                 loop iteration cap (default 50, must be ≥ 1)\n  --state-root PATH            OODA state-tree root (default $OODA_STATE_HOME or $XDG_STATE_HOME/ooda or $HOME/.local/state/ooda)\n  --codex-bin PATH             path to the `codex` binary (default `codex`)\n  --criteria STRING            unsupported with current `codex review` target modes; always UsageError\n  -h, --help                   show this help and exit\n\
          \n\
-         Side-effect flags (skip the loop, mutate the recorder, exit immediately. Mutually exclusive):\n  --advance-level              climb one rung (Idle at ceiling)\n  --drop-level                 drop one rung, clamp at floor (Idle at floor)\n  --restart-from-floor         reset current_level to floor\n  --mark-retro-clean           record Clean outcome; advance, or DoneFixedPoint at ceiling\n  --mark-retro-changes REASON  record RetrospectiveChanges outcome; restart from floor\n  --mark-address-passed        record Addressed outcome; drop one rung\n  --mark-address-failed DETAILS  emit HandoffHuman with DETAILS as prompt\n\
+         Side-effect flags (skip the loop, emit a single ladder-transition event run, exit immediately. Mutually exclusive):\n  --advance-level              climb one rung (Idle at ceiling)\n  --drop-level                 drop one rung, clamp at floor (Idle at floor)\n  --restart-from-floor         reset current_level to floor\n  --mark-retro-clean           record Clean outcome; advance, or DoneFixedPoint at ceiling\n  --mark-retro-changes REASON  record RetrospectiveChanges outcome; restart from floor\n  --mark-address-passed        record Addressed outcome; drop one rung\n  --mark-address-failed DETAILS  emit HandoffHuman with DETAILS as prompt\n\
          \n\
          Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneFixedPoint    1 Idle               2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent      5 DoneAborted        6 StuckRepeated     7 StuckCapReached\n  64 UsageError       70 BinaryError       (130 SIGINT, 143 SIGTERM reserved)"
     );
@@ -58,19 +67,24 @@ struct Args {
     ceiling: CodexReasoningLevel,
     n: std::num::NonZeroU32,
     max_iter: std::num::NonZeroU32,
-    state_root: PathBuf,
+    /// Explicit state-root override; `None` defers to
+    /// [`ooda_state::resolve_state_root`].
+    state_root: Option<PathBuf>,
     codex_bin: PathBuf,
-    fresh: bool,
     /// Side-effect requested by the orchestrator. `None` runs the
-    /// OODA loop; `Some(_)` skips the loop and applies one recorder
-    /// mutation, returning the variant's documented Outcome.
+    /// OODA loop; `Some(_)` skips the loop and emits a single
+    /// ladder-transition event before halting.
     side_effect: Option<SideEffect>,
 }
 
-/// Out-of-band recorder mutations the orchestrator may apply
+/// Out-of-band ladder transitions the orchestrator may request
 /// instead of running the loop. Mutually exclusive per invocation.
-/// Each opens the recorder (resuming the prior run), performs one
-/// mutation, and returns a documented [`Outcome`].
+/// Each opens a fresh run, emits one decision/handoff event
+/// recording the requested transition, and halts with the
+/// documented [`Outcome`]. No state is carried across invocations:
+/// the orchestrator passes the current ladder position via
+/// `--level` and reads the resulting Outcome to know what to
+/// pass next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SideEffect {
     /// `--advance-level` — climb one rung; idempotent at ceiling.
@@ -96,10 +110,6 @@ enum SideEffect {
     /// failed. No state transition; emits a human handoff with
     /// the details as the prompt.
     MarkAddressFailed(String),
-}
-
-fn default_state_root() -> PathBuf {
-    std::env::temp_dir().join("ooda-codex-review")
 }
 
 fn parse_level(s: &str) -> Result<CodexReasoningLevel, String> {
@@ -153,7 +163,6 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut state_root: Option<PathBuf> = None;
     let mut codex_bin: PathBuf = PathBuf::from("codex");
-    let mut fresh = false;
     let mut side_effect: Option<SideEffect> = None;
 
     let set_side_effect = |slot: &mut Option<SideEffect>, new: SideEffect| -> Result<(), Outcome> {
@@ -231,9 +240,6 @@ fn parse_args() -> Result<Args, Outcome> {
                     "--criteria is not supported by the current `codex review` CLI when a target mode is used; omit it and use codex's built-in review criteria",
                 ));
             }
-            "--fresh" => {
-                fresh = true;
-            }
             "--advance-level" => set_side_effect(&mut side_effect, SideEffect::AdvanceLevel)?,
             "--drop-level" => set_side_effect(&mut side_effect, SideEffect::DropLevel)?,
             "--restart-from-floor" => {
@@ -267,25 +273,14 @@ fn parse_args() -> Result<Args, Outcome> {
         )));
     }
 
-    // `--fresh` + side-effect has no coherent semantics: a
-    // side-effect mutates state that was just emptied by `--fresh`,
-    // producing a manifest with no review history to justify the
-    // mutation. Reject the combination at parse time.
-    if fresh && side_effect.is_some() {
-        return Err(usage(
-            "--fresh cannot be combined with a side-effect flag (--mark-* / --advance-level / --drop-level / --restart-from-floor): the side-effect would mutate a brand-new manifest with no review history",
-        ));
-    }
-
     Ok(Args {
         target,
         level,
         ceiling,
         n,
         max_iter,
-        state_root: state_root.unwrap_or_else(default_state_root),
+        state_root,
         codex_bin,
-        fresh,
         side_effect,
     })
 }
@@ -365,9 +360,9 @@ fn compute_repo_id(repo_root: &Path) -> Result<RepoId, String> {
         .filter(|s| !s.is_empty());
 
     // Mix the canonical worktree path into the hash so parallel
-    // worktrees of one repo get distinct repo_ids; same-worktree
-    // sequential invocations still resume because the toplevel
-    // path is symlink-resolved and stable.
+    // worktrees of one repo hash distinct; same-worktree sequential
+    // invocations stay stable because the toplevel path is
+    // symlink-resolved and stable.
     let toplevel = repo_root.display().to_string();
     let key = match url {
         Some(u) => format!("{u}@{toplevel}"),
@@ -392,6 +387,32 @@ fn sha256_prefix(input: &str, hex_chars: usize) -> String {
     s
 }
 
+// ----- run-started target payload --------------------------------------
+
+/// Build the `target` payload for the `run_started` event. The
+/// shape carries this binary's domain identity (review mode +
+/// value, ladder bounds) without leaking PR-domain concepts like
+/// repo slugs or PR numbers — those live in the orchestrator's
+/// own event stream when needed.
+fn build_target_payload(
+    target: &ReviewTarget,
+    floor: CodexReasoningLevel,
+    ceiling: CodexReasoningLevel,
+) -> serde_json::Value {
+    let (mode, value) = match target {
+        ReviewTarget::Uncommitted => ("uncommitted", None),
+        ReviewTarget::Base(b) => ("base", Some(b.as_str().to_string())),
+        ReviewTarget::Commit(s) => ("commit", Some(s.as_str().to_string())),
+        ReviewTarget::Pr(n) => ("pr", Some(n.to_string())),
+    };
+    serde_json::json!({
+        "mode": mode,
+        "value": value,
+        "floor": floor.as_str(),
+        "ceiling": ceiling.as_str(),
+    })
+}
+
 // ----- orchestration ---------------------------------------------------
 
 fn run_session(args: &Args) -> Outcome {
@@ -413,25 +434,39 @@ fn run_session(args: &Args) -> Outcome {
         None
     };
 
-    let (mut recorder, _open_mode) = match Recorder::open(&RecorderConfig {
-        state_root: args.state_root.clone(),
-        repo_id: repo_id.clone(),
-        target: args.target.clone(),
-        start_level: args.level,
-        batch_size: args.n.get(),
-        fresh: args.fresh,
-        now: None,
-    }) {
-        Ok(pair) => pair,
-        Err(e) => return Outcome::binary_error(format!("recorder open: {e}")),
+    let state_root_path = ooda_state::resolve_state_root(args.state_root.as_deref());
+    let state = match StateRoot::new(state_root_path) {
+        Ok(s) => s,
+        Err(e) => return Outcome::binary_error(format!("state root open: {e}")),
     };
-
-    if let Some(side_effect) = args.side_effect.clone() {
-        return apply_side_effect(&mut recorder, args.ceiling, side_effect);
+    let run_id = RunId::generate();
+    let mut writer = match state.create_run(run_id.clone()) {
+        Ok(w) => w,
+        Err(e) => return Outcome::binary_error(format!("create run: {e}")),
+    };
+    if let Err(e) = writer.start(EventBody::RunStarted {
+        domain: "codex-review".into(),
+        target: build_target_payload(&args.target, args.level, args.ceiling),
+    }) {
+        return Outcome::binary_error(format!("emit run_started: {e}"));
     }
 
-    let batch_dir = recorder.batch_dir();
-    let current_level = recorder.manifest().current_level;
+    if let Some(side_effect) = args.side_effect.clone() {
+        let outcome = apply_side_effect(&mut writer, args.level, args.ceiling, side_effect);
+        finalize(&mut writer, &outcome);
+        return outcome;
+    }
+
+    // Loop mode: spawn codex review subprocesses into a per-run
+    // scratch dir. The dir lives beside `events.jsonl` and `blobs/`
+    // inside this run; if the invocation halts with subprocesses
+    // still writing, the scratch artifacts remain on disk attached
+    // to the dead run (no cross-run sharing).
+    let batch_dir = state
+        .path()
+        .join("runs")
+        .join(run_id.as_str())
+        .join("scratch");
 
     let ctx = ActContext {
         batch_dir: batch_dir.clone(),
@@ -440,7 +475,7 @@ fn run_session(args: &Args) -> Outcome {
         codex_bin: args.codex_bin.clone(),
     };
 
-    let level = current_level;
+    let level = args.level;
     let n = args.n.get();
     let observe_target = args.target.clone();
     let observe_repo_id = repo_id.clone();
@@ -455,6 +490,7 @@ fn run_session(args: &Args) -> Outcome {
         .map_err(|e| e.to_string())
     };
 
+    let mut sink = EventSink::new(&mut writer);
     let result = run_loop(
         &repo_id,
         &args.target,
@@ -464,18 +500,57 @@ fn run_session(args: &Args) -> Outcome {
         },
         &ctx,
         observe,
-        |_iter, _oriented, _decision| {},
+        &mut sink,
     );
 
-    match result {
+    let outcome = match result {
         Ok(halt) => Outcome::from(halt),
         Err(e) => Outcome::from(e),
+    };
+    finalize(&mut writer, &outcome);
+    outcome
+}
+
+/// Emit the terminal event for this run and release the live
+/// marker. Errors are swallowed: the outcome has already been
+/// computed and the caller needs it back regardless of whether
+/// the audit-trail close succeeded.
+fn finalize(writer: &mut RunWriter, outcome: &Outcome) {
+    let body = match outcome {
+        Outcome::StuckRepeated(action) => EventBody::RunStalled {
+            last_action: action.kind.name().to_string(),
+        },
+        Outcome::StuckCapReached(action) => EventBody::RunCapReached {
+            last_action: action.kind.name().to_string(),
+        },
+        other => EventBody::RunHalted {
+            outcome: outcome_name(other).to_string(),
+            exit_code: i32::from(other.exit_code().as_u8()),
+        },
+    };
+    let _ = writer.halt(body);
+}
+
+fn outcome_name(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::DoneSucceeded => "DoneFixedPoint",
+        Outcome::Paused => "Idle",
+        Outcome::DoneAborted => "DoneAborted",
+        Outcome::WouldAdvance(_) => "WouldAdvance",
+        Outcome::HandoffHuman(_) => "HandoffHuman",
+        Outcome::HandoffAgent(_) => "HandoffAgent",
+        Outcome::StuckRepeated(_) => "StuckRepeated",
+        Outcome::StuckCapReached(_) => "StuckCapReached",
+        Outcome::UsageError(_) => "UsageError",
+        Outcome::BinaryError(_) => "BinaryError",
     }
 }
 
-/// Apply one side-effect against the recorder and return the
-/// documented Outcome. Each command writes a human-readable line
-/// to stdout describing what changed.
+/// Emit the side-effect's transition event(s) and return the
+/// documented Outcome. Each side-effect maps to one
+/// `iteration_decided` event recording the requested transition;
+/// `MarkAddressFailed` additionally writes the handoff prompt
+/// blob and emits `iteration_handoff`.
 ///
 /// Outcome map (see [`SideEffect`] for the per-variant rationale):
 ///
@@ -488,155 +563,128 @@ fn run_session(args: &Args) -> Outcome {
 /// | `MarkAddressPassed` | `Paused` |
 /// | `MarkAddressFailed` | `HandoffHuman` |
 fn apply_side_effect(
-    recorder: &mut Recorder,
+    writer: &mut RunWriter,
+    from: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
     side_effect: SideEffect,
 ) -> Outcome {
-    let from = recorder.manifest().current_level;
     match side_effect {
-        SideEffect::AdvanceLevel => match recorder.advance_level() {
-            Ok(Some(to)) => log_idle(&format!(
-                "advanced level: {} -> {}",
-                from.as_str(),
-                to.as_str()
-            )),
-            Ok(None) => log_idle(&format!("at ladder edge ({}); no advance", from.as_str())),
-            Err(e) => Outcome::binary_error(format!("recorder advance: {e}")),
+        SideEffect::AdvanceLevel => match from.higher() {
+            Some(to) => emit_transition(
+                writer,
+                "AdvanceLevel",
+                &format!("advanced level: {} -> {}", from.as_str(), to.as_str()),
+            ),
+            None => emit_transition(
+                writer,
+                "AdvanceLevel",
+                &format!("at ladder edge ({}); no advance", from.as_str()),
+            ),
         },
-        SideEffect::DropLevel => match recorder.drop_level() {
-            Ok(Some(to)) => log_idle(&format!(
-                "dropped level: {} -> {}",
-                from.as_str(),
-                to.as_str()
-            )),
-            Ok(None) => log_idle(&format!("at floor ({}); no drop", from.as_str())),
-            Err(e) => Outcome::binary_error(format!("recorder drop: {e}")),
+        SideEffect::DropLevel => match from.lower() {
+            Some(to) => emit_transition(
+                writer,
+                "DropLevel",
+                &format!("dropped level: {} -> {}", from.as_str(), to.as_str()),
+            ),
+            None => emit_transition(
+                writer,
+                "DropLevel",
+                &format!("at floor ({}); no drop", from.as_str()),
+            ),
         },
-        SideEffect::RestartFromFloor => match recorder.restart_from_floor() {
-            Ok(to) => log_idle(&format!(
+        SideEffect::RestartFromFloor => emit_transition(
+            writer,
+            "RestartFromFloor",
+            &format!(
                 "restarted from floor: {} -> {}",
                 from.as_str(),
-                to.as_str()
-            )),
-            Err(e) => Outcome::binary_error(format!("recorder restart: {e}")),
-        },
-        SideEffect::MarkRetroClean => apply_mark_retro_clean(recorder, ceiling, from),
-        SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(recorder, from, &reason),
-        SideEffect::MarkAddressPassed => apply_mark_address_passed(recorder, from),
-        SideEffect::MarkAddressFailed(details) => mk_handoff_human_test_failed(from, &details),
+                from.as_str()
+            ),
+        ),
+        SideEffect::MarkRetroClean => apply_mark_retro_clean(writer, ceiling, from),
+        SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(writer, from, &reason),
+        SideEffect::MarkAddressPassed => apply_mark_address_passed(writer, from),
+        SideEffect::MarkAddressFailed(details) => apply_mark_address_failed(writer, from, &details),
     }
 }
 
-fn log_idle(msg: &str) -> Outcome {
-    let _ = writeln!(std::io::stdout(), "{msg}");
+fn emit_transition(writer: &mut RunWriter, decision_kind: &str, log_line: &str) -> Outcome {
+    let _ = writeln!(std::io::stdout(), "{log_line}");
+    if let Err(e) = writer.append(EventBody::IterationDecided {
+        iteration: 1,
+        decision_kind: decision_kind.to_string(),
+    }) {
+        return Outcome::binary_error(format!("emit iteration_decided: {e}"));
+    }
     Outcome::Paused
 }
 
 fn apply_mark_retro_clean(
-    recorder: &mut Recorder,
+    writer: &mut RunWriter,
     ceiling: CodexReasoningLevel,
     current: CodexReasoningLevel,
 ) -> Outcome {
-    if let Err(e) = recorder.record_outcome(LevelOutcome::Clean { level: current }) {
-        return Outcome::binary_error(format!("recorder record-outcome: {e}"));
-    }
     if current == ceiling {
         let _ = writeln!(
             std::io::stdout(),
             "retrospective clean at ceiling ({}); fixed point reached",
             current.as_str()
         );
+        if let Err(e) = writer.append(EventBody::IterationDecided {
+            iteration: 1,
+            decision_kind: "RetroClean::Terminal".into(),
+        }) {
+            return Outcome::binary_error(format!("emit iteration_decided: {e}"));
+        }
         return Outcome::DoneSucceeded;
     }
-    match recorder.advance_level() {
-        Ok(Some(to)) => log_idle(&format!(
+    let log_line = match current.higher() {
+        Some(to) => format!(
             "retrospective clean at {}; advanced to {}",
             current.as_str(),
             to.as_str()
-        )),
-        Ok(None) => log_idle(&format!(
+        ),
+        None => format!(
             "retrospective clean at {}; ladder edge xhigh reached, no advance",
             current.as_str()
-        )),
-        Err(e) => Outcome::binary_error(format!("recorder advance: {e}")),
-    }
+        ),
+    };
+    emit_transition(writer, "RetroClean::Advance", &log_line)
 }
 
 fn apply_mark_retro_changes(
-    recorder: &mut Recorder,
+    writer: &mut RunWriter,
     current: CodexReasoningLevel,
     reason: &str,
 ) -> Outcome {
-    if let Err(e) = recorder.record_outcome(LevelOutcome::RetrospectiveChanges {
-        level: current,
-        reason: reason.to_string(),
-    }) {
-        return Outcome::binary_error(format!("recorder record-outcome: {e}"));
-    }
-    match recorder.restart_from_floor() {
-        Ok(to) => log_idle(&format!(
-            "retrospective surfaced changes at {} (\"{}\"); restarted from floor: {} -> {}",
-            current.as_str(),
-            reason,
+    let log_line = format!(
+        "retrospective surfaced changes at {} (\"{}\"); restarted from floor: {} -> {}",
+        current.as_str(),
+        reason,
+        current.as_str(),
+        current.as_str()
+    );
+    emit_transition(writer, "RetroChanges::RestartFromFloor", &log_line)
+}
+
+fn apply_mark_address_passed(writer: &mut RunWriter, current: CodexReasoningLevel) -> Outcome {
+    let log_line = match current.lower() {
+        Some(to) => format!(
+            "address passed at {}; dropped to {}",
             current.as_str(),
             to.as_str()
-        )),
-        Err(e) => Outcome::binary_error(format!("recorder restart: {e}")),
-    }
+        ),
+        None => format!("address passed at floor {}; no drop", current.as_str()),
+    };
+    emit_transition(writer, "AddressPassed", &log_line)
 }
 
-fn apply_mark_address_passed(recorder: &mut Recorder, current: CodexReasoningLevel) -> Outcome {
-    let issue_count = count_current_batch_issues(recorder, current);
-    if let Err(e) = recorder.record_outcome(LevelOutcome::Addressed {
-        level: current,
-        issue_count,
-    }) {
-        return Outcome::binary_error(format!("recorder record-outcome: {e}"));
-    }
-    match recorder.drop_level() {
-        Ok(Some(to)) => log_idle(&format!(
-            "address passed at {} ({} review(s) with issues); dropped to {}",
-            current.as_str(),
-            issue_count,
-            to.as_str()
-        )),
-        Ok(None) => match recorder.start_next_batch_at_current_level() {
-            Ok(batch) => log_idle(&format!(
-                "address passed at floor {} ({} review(s) with issues); no drop; advanced to batch {}",
-                current.as_str(),
-                issue_count,
-                batch
-            )),
-            Err(e) => Outcome::binary_error(format!("recorder next-batch: {e}")),
-        },
-        Err(e) => Outcome::binary_error(format!("recorder drop: {e}")),
-    }
-}
-
-/// Count how many reviewers in the current batch flagged issues.
-/// Observational only: read errors collapse to 0 so the
-/// side-effect path stays total over filesystem transients.
-fn count_current_batch_issues(recorder: &Recorder, level: CodexReasoningLevel) -> u32 {
-    let batch_size = recorder.manifest().batch_size;
-    match observe::codex::batch::scan_batch(&recorder.batch_dir(), level, batch_size) {
-        Ok(observe::codex::batch::BatchState::Complete { verdicts }) => u32::try_from(
-            verdicts
-                .iter()
-                .filter(|v| {
-                    matches!(
-                        v.class,
-                        observe::codex::VerdictClass::HasIssues
-                            | observe::codex::VerdictClass::Indeterminate
-                    )
-                })
-                .count(),
-        )
-        .expect("verdict count fits in u32"),
-        _ => 0,
-    }
-}
-
-fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: &str) -> Outcome {
+fn apply_mark_address_failed(
+    writer: &mut RunWriter,
+    level: CodexReasoningLevel,
+    details: &str,
+) -> Outcome {
     let handoff = ooda_core::HandoffAction {
         kind: ActionKind::TestsFailedTriage,
         prompt: ooda_core::HandoffPrompt::new(format!(
@@ -649,6 +697,22 @@ fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: &str) -> Ou
         urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("address-failed"),
     };
+    // Stash the prompt body as a blob so the audit trail captures
+    // the verbatim handoff text without inlining it on the event.
+    let prompt_bytes = handoff.prompt.to_string().into_bytes();
+    match writer.write_blob(&prompt_bytes, "md") {
+        Ok(blob) => {
+            if let Err(e) = writer.append(EventBody::IterationHandoff {
+                iteration: 1,
+                variant: "HandoffHuman".into(),
+                action_kind: handoff.kind.name().to_string(),
+                blob,
+            }) {
+                return Outcome::binary_error(format!("emit iteration_handoff: {e}"));
+            }
+        }
+        Err(e) => return Outcome::binary_error(format!("write handoff blob: {e}")),
+    }
     Outcome::HandoffHuman(Box::new(handoff))
 }
 
@@ -735,10 +799,9 @@ mod tests {
     }
 
     /// Two worktrees of the same remote at different toplevel
-    /// paths must hash to distinct `repo_id`s so their state dirs
-    /// stay isolated. The test reproduces the key-construction
-    /// shape inline rather than invoking the git-shelling
-    /// production path.
+    /// paths must hash to distinct `repo_id`s. The test reproduces
+    /// the key-construction shape inline rather than invoking the
+    /// git-shelling production path.
     #[test]
     fn worktree_path_disambiguates_repo_id_hash() {
         let url = "git@example.invalid:org/repo.git";
@@ -748,5 +811,29 @@ mod tests {
         let h_b = sha256_prefix(&key_b, 12);
         assert_ne!(h_a, h_b, "different worktree paths must hash differently");
         assert_eq!(h_a, sha256_prefix(&key_a, 12), "same key, same hash");
+    }
+
+    #[test]
+    fn target_payload_carries_mode_and_ladder_bounds() {
+        let payload = build_target_payload(
+            &ReviewTarget::Uncommitted,
+            CodexReasoningLevel::Low,
+            CodexReasoningLevel::Xhigh,
+        );
+        assert_eq!(payload["mode"], "uncommitted");
+        assert!(payload["value"].is_null());
+        assert_eq!(payload["floor"], "low");
+        assert_eq!(payload["ceiling"], "xhigh");
+
+        let branch = BranchName::parse("master").unwrap();
+        let payload = build_target_payload(
+            &ReviewTarget::Base(branch),
+            CodexReasoningLevel::Medium,
+            CodexReasoningLevel::High,
+        );
+        assert_eq!(payload["mode"], "base");
+        assert_eq!(payload["value"], "master");
+        assert_eq!(payload["floor"], "medium");
+        assert_eq!(payload["ceiling"], "high");
     }
 }

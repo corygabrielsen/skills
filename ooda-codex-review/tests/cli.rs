@@ -141,14 +141,6 @@ fn invalid_ceiling_value_is_usage_error() {
 }
 
 #[test]
-fn fresh_with_side_effect_is_usage_error() {
-    let (code, _, stderr) = run(&["--uncommitted", "--fresh", "--mark-retro-clean"]);
-    assert_eq!(code, 64);
-    assert!(stderr.contains("--fresh"));
-    assert!(stderr.contains("side-effect"));
-}
-
-#[test]
 fn criteria_is_usage_error_until_codex_cli_supports_target_prompts() {
     let (code, _, stderr) = run(&["--uncommitted", "--criteria", "check auth"]);
     assert_eq!(code, 64);
@@ -599,7 +591,7 @@ Review comment: src/foo.rs:42\\nRegression detected.\\n'\n",
         "--mark-address-passed",
     ]);
     assert_eq!(code, 1, "stderr={stderr}");
-    assert!(stdout.contains("advanced to batch 2"), "stdout: {stdout:?}");
+    assert!(stdout.contains("no drop"), "stdout: {stdout:?}");
 
     let _ = std::fs::remove_dir_all(&state_root);
 }
@@ -619,14 +611,11 @@ fn mark_retro_changes_requires_a_reason() {
 }
 
 #[test]
-fn fresh_flag_creates_a_new_run() {
-    // Run once with a missing codex bin (exits fast with
-    // BinaryError but still creates the run dir + latest pointer).
-    // Then re-run with --fresh and confirm the latest pointer
-    // changed. We don't test the *resume* path here because it
-    // would hit a real AwaitReviews 30s wait (the partial log from
-    // the first failed spawn looks like an in-flight review). The
-    // recorder unit tests cover resume thoroughly.
+fn each_invocation_creates_a_fresh_run() {
+    // Two back-to-back invocations against the same state root
+    // must land in distinct `runs/<run-id>/` directories — the
+    // new state model has no resume protocol; every invocation
+    // gets its own opaque run id.
     let state_root = std::env::temp_dir().join(format!(
         "ooda-codex-review-cli-fresh-test-{}",
         std::process::id()
@@ -644,23 +633,19 @@ fn fresh_flag_creates_a_new_run() {
     ];
 
     let (_, _, _) = run(&common);
-    let target_root_glob = std::fs::read_dir(&state_root)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path()
-        .join("uncommitted");
-    let latest_path = target_root_glob.join("latest");
-    let first_id = std::fs::read_to_string(&latest_path).unwrap();
+    let (_, _, _) = run(&common);
 
-    let mut fresh_args = common.clone();
-    fresh_args.push("--fresh");
-    let (_, _, _) = run(&fresh_args);
-    let after_fresh = std::fs::read_to_string(&latest_path).unwrap();
-    assert_ne!(
-        after_fresh, first_id,
-        "--fresh should create a new run; latest pointer should change"
+    let runs_dir = state_root.join("runs");
+    let run_ids: Vec<_> = std::fs::read_dir(&runs_dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+    assert_eq!(
+        run_ids.len(),
+        2,
+        "expected 2 distinct runs under {}; got {:?}",
+        runs_dir.display(),
+        run_ids
     );
 
     let _ = std::fs::remove_dir_all(&state_root);

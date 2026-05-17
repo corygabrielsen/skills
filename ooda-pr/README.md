@@ -9,8 +9,8 @@ and exit-code taxonomy see `SKILL.md`. For implementation see `src/`.
 ## Top Level
 
 ```
-ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder ⊕ outcome
-        ⊕ ooda-core (sibling crate)
+ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ state ⊕ outcome
+        ⊕ ooda-core ⊕ ooda-state (sibling crates)
 
 run_loop : RepoSlug × PullRequestNumber × LoopConfig × Recorder × OnState
         → Result⟨HaltReason, LoopError⟩
@@ -19,18 +19,20 @@ main : Argv → Outcome → ExitCode
 ExitCode = Outcome.exit_code()       (1:1 variant → code; see Outcome)
 ```
 
-`recorder` is the always-on local memory harness. Keyed by
-forge + repo + PR; writes under the configured state root.
-Invariants it establishes:
+`state.rs` is a thin adapter over the shared `ooda-state` crate.
+The PR-specific event vocabulary (`action_started`,
+`status_comment_rendered`, `tool_call_finished`, …) lives here;
+the generic on-disk layout (events.jsonl plus content-addressed
+blobs) is owned by `ooda-state`. Invariants the underlying state
+model establishes:
 
-- **Append-only causality**: events are written monotonically;
-  readers truncate at the last good record.
-- **Content-addressed write-once**: large artifacts are stored
-  by hash, so a torn write is detectable and regeneratable.
-- **Mutable pointer over immutable history**: a single
-  atomically-replaced pointer file names the current
-  per-iteration immutable directory; per-iteration artifacts
-  never move once written. Agents enter via the pointer.
+- **Append-only causality**: events appended to `events.jsonl`
+  under `PIPE_BUF` are atomic w.r.t. concurrent readers.
+- **Content-addressed write-once**: every payload is written via
+  `tmp+rename` to `blobs/<sha>.<ext>`; identical bytes dedup.
+- **Atomic live marker**: `live/<run-id>` is created via
+  `O_CREAT|O_EXCL` at run start and `unlink`-ed at halt; presence
+  is the source of truth for "active".
 
 ### Shared boundary types (`ooda-core` crate)
 
@@ -44,7 +46,7 @@ instantiated locally via a type alias
 so call sites stay non-generic. The PR-domain `ActionKind` enum
 and its `ActionKindName::name()` implementation stay in
 `decide/action.rs`. Per-binary `LoopError`, `runner.rs`, and
-`recorder.rs` are not lifted (see `ooda-core/README.md`).
+`state.rs` are not lifted (see `ooda-core/README.md`).
 
 **Variant name ≠ stderr header.** The Rust variant names
 (`DoneSucceeded`, `DoneAborted`, `Paused`) are neutral verbs
@@ -477,9 +479,9 @@ Outcome, no exception type).
 
 `render_outcome : &Outcome → write to stderr`. Each variant emits
 exactly one header line; `Handoff*` variants additionally emit a
-single `see:` pointer to the per-iteration `handoff.md` under
-`runs/<run-id>/iterations/<NNNN>/`. See `SKILL.md` for the
-per-variant header format.
+single `see:` pointer to a content-addressed handoff blob at
+`runs/<run-id>/blobs/<sha>.md`. See `SKILL.md` for the per-variant
+header format.
 
 ```
 header(Outcome) ::=                      ← left: variant; right: emitted stderr text
@@ -495,9 +497,9 @@ header(Outcome) ::=                      ← left: variant; right: emitted stder
     UsageError(msg)                      "UsageError: {msg}" + usage text
 
 see-pointer ::= "  see: {abs-path}"                        ← 7-byte prefix is contract
-                                                            (path is the per-iteration
-                                                             runs/<run-id>/iterations/<NNNN>/handoff.md;
-                                                             also CURRENT.json's artifacts.handoff;
+                                                            (path is a content-addressed
+                                                             handoff blob at
+                                                             runs/<run-id>/blobs/<sha>.md;
                                                              prompt body is in the file)
 ```
 

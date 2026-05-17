@@ -55,7 +55,12 @@ pub(crate) fn candidates(
         oriented.merge_base_delta.as_ref(),
     ));
     out.extend(ci::candidates(&oriented.ci));
-    out.extend(reviews::candidates(oriented));
+    out.extend(reviews::candidates(
+        &oriented.reviews,
+        &oriented.ci,
+        oriented.copilot.as_ref(),
+        &oriented.threads,
+    ));
     if let Some(c) = &oriented.copilot {
         out.extend(copilot::candidates(c));
     }
@@ -70,14 +75,32 @@ pub(crate) fn candidates(
     // position; appending here keeps them out of the way of the
     // higher-tier candidates without losing the ability to fire
     // alone when they are the only outstanding axis.
-    out.extend(pull_request_metadata::candidates(oriented, pr));
-    out.extend(doc_review::candidates(oriented, pr));
-    out.extend(claude_review::candidates(oriented, pr));
+    out.extend(pull_request_metadata::candidates(
+        &oriented.state,
+        &oriented.pull_request_metadata,
+        oriented.attest_path.as_deref(),
+        pr,
+    ));
+    out.extend(doc_review::candidates(
+        &oriented.state,
+        &oriented.doc_review,
+        oriented.doc_review_attest_path.as_deref(),
+        pr,
+    ));
+    out.extend(claude_review::candidates(
+        &oriented.claude_review,
+        oriented.claude_review_attest_path.as_deref(),
+        pr,
+    ));
     // Closeout occupies the least-urgent tier — strictly below
     // every other axis. The urgency sort therefore selects it
     // only on global quiescence, which is precisely the condition
     // under which a pre-handoff sign-off makes sense.
-    out.extend(closeout::candidates(oriented, pr));
+    out.extend(closeout::candidates(
+        &oriented.closeout,
+        oriented.closeout_attest_path.as_deref(),
+        pr,
+    ));
     // Fallback for an unmodeled merge gate: a Human handoff that
     // fires only when no other axis has produced an advancement
     // path. Suppression keys on whether any candidate either

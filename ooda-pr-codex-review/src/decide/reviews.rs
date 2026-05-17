@@ -8,7 +8,8 @@
 use crate::ids::{BlockerKey, Timestamp};
 
 use crate::observe::github::pull_request_view::ReviewDecision;
-use crate::orient::OrientedState;
+use crate::orient::ci::CiReport;
+use crate::orient::copilot::CopilotReport;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
@@ -24,13 +25,19 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
         .join(", ")
 }
 
-pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
-    let reviews = &oriented.reviews;
-    let ci = &oriented.ci.summary;
+/// Declared deps: own review report + CI report (for
+/// `ci_clean` gate) + bot-review-axis presence (for shadow
+/// filter) + threads.
+pub(crate) fn candidates(
+    reviews: &ReviewSummary,
+    ci: &CiReport,
+    copilot: Option<&CopilotReport>,
+    threads: &[ReviewThread],
+) -> Vec<Action> {
+    let ci = &ci.summary;
     let mut out: Vec<Action> = Vec::new();
 
-    let unresolved_threads: Vec<ReviewThread> = oriented
-        .threads
+    let unresolved_threads: Vec<ReviewThread> = threads
         .iter()
         .filter(|t| t.state != ThreadState::Resolved)
         .cloned()
@@ -61,7 +68,7 @@ pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     // emit colliding waits in the same tier and the more granular
     // one is not shadowed by axis-order tiebreaking. Generic bots
     // and bots-on-repos-without-the-axis are unaffected.
-    let bots_filtered: Vec<_> = if oriented.copilot.is_some() {
+    let bots_filtered: Vec<_> = if copilot.is_some() {
         reviews
             .pending_reviews
             .bots
@@ -116,10 +123,7 @@ pub(crate) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     // thread is still unresolved feedback (anchor moved, content
     // may still apply), so any approval-closing candidate must
     // wait for the resolved state on every thread.
-    let threads_clean = !oriented
-        .threads
-        .iter()
-        .any(|t| t.state != ThreadState::Resolved);
+    let threads_clean = !threads.iter().any(|t| t.state != ThreadState::Resolved);
     if needs_approval && ci_clean && threads_clean {
         out.push(Action {
             kind: ActionKind::RequestApproval,
@@ -395,10 +399,8 @@ fn count_by_author(threads: &[ReviewThread]) -> Vec<(ThreadAuthor, usize)> {
 mod tests {
     use super::*;
     use crate::ids::{GitHubLogin, Reviewer, Timestamp};
-    use crate::observe::github::pull_request_view::Mergeable;
     use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
-    use crate::orient::state::PullRequestProjection;
 
     fn clean_ci() -> CiReport {
         CiReport {
@@ -427,56 +429,13 @@ mod tests {
         }
     }
 
-    fn clean_state() -> PullRequestProjection {
-        PullRequestProjection {
-            conflict: Mergeable::Mergeable,
-            draft: false,
-            wip: false,
-            title_len: 30,
-            title_ok: true,
-            body: true,
-            summary: true,
-            test_plan: true,
-            content_label: true,
-            assignees: 1,
-            reviewers: 1,
-            merge_when_ready: false,
-            commits: 1,
-            behind: false,
-            has_open_parent_pr: false,
-            merge_state_status: crate::observe::github::pull_request_view::MergeStateStatus::Clean,
-            updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
-            last_commit_at: None,
-            active_branch_rule_types: vec![],
-            required_check_names_per_ruleset: vec![],
-            missing_required_check_names_on_head: vec![],
-        }
+    /// Test helper: invoke `candidates` with default CI / no copilot / no threads.
+    fn cands_with(reviews: &ReviewSummary) -> Vec<Action> {
+        cands_with_threads(reviews, &[])
     }
 
-    fn oriented_with(reviews: ReviewSummary) -> OrientedState {
-        oriented_with_threads(reviews, vec![])
-    }
-
-    fn oriented_with_threads(reviews: ReviewSummary, threads: Vec<ReviewThread>) -> OrientedState {
-        OrientedState {
-            ci: clean_ci(),
-            state: clean_state(),
-            reviews,
-            copilot: None,
-            cursor: None,
-            threads,
-            codex_review: None,
-            merge_base_delta: None,
-            pull_request_metadata:
-                crate::orient::pull_request_metadata::PullRequestMetadata::Synced,
-            attest_path: None,
-            doc_review: crate::orient::doc_review::DocReview::Synced,
-            doc_review_attest_path: None,
-            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
-            claude_review_attest_path: None,
-            closeout: crate::orient::closeout::Closeout::Synced,
-            closeout_attest_path: None,
-        }
+    fn cands_with_threads(reviews: &ReviewSummary, threads: &[ReviewThread]) -> Vec<Action> {
+        candidates(reviews, &clean_ci(), None, threads)
     }
 
     fn thread_in_state(
@@ -514,7 +473,7 @@ mod tests {
 
     #[test]
     fn clean_reviews_yield_no_candidates() {
-        assert!(candidates(&oriented_with(clean_reviews())).is_empty());
+        assert!(cands_with(&clean_reviews()).is_empty());
     }
 
     #[test]
@@ -525,7 +484,7 @@ mod tests {
             live_thread("src/b.rs", 2, "second"),
             live_thread("src/c.rs", 3, "third"),
         ];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         match &cs[0].kind {
             ActionKind::AddressThreads { threads } => {
                 assert_eq!(threads.len(), 3);
@@ -542,7 +501,7 @@ mod tests {
             live_thread("src/foo.rs", 42, "unwrap should be ?"),
             live_thread("src/bar.rs", 99, "missing error context"),
         ];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         let desc = &cs[0].rendered_payload();
         // Headline + per-author breakdown
         assert!(desc.contains("Address 2 unresolved review threads."));
@@ -568,7 +527,7 @@ mod tests {
             "still wrong even after move",
             "T_outdated",
         )];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
@@ -583,7 +542,7 @@ mod tests {
             live_thread("src/a.rs", 1, "live concern"),
             outdated_thread("src/b.rs", 2, "outdated concern", "T_outdated"),
         ];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
@@ -612,7 +571,7 @@ mod tests {
             outdated_thread("src/a.rs", 1, "first", "T_a"),
             outdated_thread("src/b.rs", 2, "second", "T_b"),
         ];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         let desc = &cs[0].rendered_payload();
         assert!(desc.contains("Address 2 unresolved review threads (all outdated"));
         // Live/outdated breakdown only appears when mixed.
@@ -626,7 +585,7 @@ mod tests {
             resolved_thread("src/a.rs", 1, "already done", "T_a"),
             resolved_thread("src/b.rs", 2, "also done", "T_b"),
         ];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
@@ -655,13 +614,8 @@ mod tests {
         }
     }
 
-    fn oriented_with_copilot(
-        reviews: ReviewSummary,
-        copilot: Option<crate::orient::copilot::CopilotReport>,
-    ) -> OrientedState {
-        let mut o = oriented_with(reviews);
-        o.copilot = copilot;
-        o
+    fn cands_with_copilot(reviews: &ReviewSummary, copilot: Option<&CopilotReport>) -> Vec<Action> {
+        candidates(reviews, &clean_ci(), copilot, &[])
     }
 
     #[test]
@@ -670,7 +624,7 @@ mod tests {
         // flows through unfiltered.
         let mut r = clean_reviews();
         r.pending_reviews.bots = vec![GitHubLogin::parse("copilot-pull-request-reviewer").unwrap()];
-        let cs = candidates(&oriented_with_copilot(r, None));
+        let cs = cands_with_copilot(&r, None);
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::WaitForBotReview { .. })),
@@ -686,7 +640,7 @@ mod tests {
         // emission (because Copilot was the only pending bot).
         let mut r = clean_reviews();
         r.pending_reviews.bots = vec![GitHubLogin::parse("copilot-pull-request-reviewer").unwrap()];
-        let cs = candidates(&oriented_with_copilot(r, Some(copilot_active_report())));
+        let cs = cands_with_copilot(&r, Some(&copilot_active_report()));
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::WaitForBotReview { .. })),
@@ -705,7 +659,7 @@ mod tests {
             GitHubLogin::parse("copilot-pull-request-reviewer").unwrap(),
             GitHubLogin::parse("renovate[bot]").unwrap(),
         ];
-        let cs = candidates(&oriented_with_copilot(r, Some(copilot_active_report())));
+        let cs = cands_with_copilot(&r, Some(&copilot_active_report()));
         let wait_for_bot = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::WaitForBotReview { .. }))
@@ -725,7 +679,7 @@ mod tests {
     fn pending_humans_marked_human_automation() {
         let mut r = clean_reviews();
         r.pending_reviews.humans = vec![Reviewer::User(GitHubLogin::parse("alice").unwrap())];
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let h = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::WaitForHumanReview { .. }))
@@ -737,14 +691,14 @@ mod tests {
     fn approval_request_only_when_ci_and_threads_clean() {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ReviewRequired);
-        let cs = candidates(&oriented_with(r.clone()));
+        let cs = cands_with(&r.clone());
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::RequestApproval))
         );
 
         let threads = vec![live_thread("src/a.rs", 1, "x")];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::RequestApproval))
@@ -760,7 +714,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ReviewRequired);
         let threads = vec![outdated_thread("src/a.rs", 1, "x", "T_o")];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::RequestApproval)),
@@ -781,7 +735,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ReviewRequired);
         let threads = vec![resolved_thread("src/a.rs", 1, "done", "T_r")];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::RequestApproval))
@@ -792,7 +746,7 @@ mod tests {
     fn no_approval_when_decision_is_none() {
         let mut r = clean_reviews();
         r.decision = None;
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::RequestApproval))
@@ -808,7 +762,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         r.threads_unresolved = 0;
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest)),
@@ -834,7 +788,7 @@ mod tests {
             live_thread("src/a.rs", 1, "x"),
             live_thread("src/b.rs", 2, "y"),
         ];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
@@ -850,7 +804,7 @@ mod tests {
     fn approved_decision_does_not_emit_change_request() {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::Approved);
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
@@ -863,13 +817,13 @@ mod tests {
         // summary-only candidate fires on the review axis alone.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
-        let mut o = oriented_with(r);
-        o.ci.summary.required.failed = vec![crate::orient::ci::FailedCheck {
+        let mut ci = clean_ci();
+        ci.summary.required.failed = vec![crate::orient::ci::FailedCheck {
             name: crate::ids::CheckName::parse("Lint").unwrap(),
             description: String::new(),
             link: String::new(),
         }];
-        let cs = candidates(&o);
+        let cs = candidates(&r, &ci, None, &[]);
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
@@ -884,7 +838,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         r.pending_reviews.humans = vec![Reviewer::User(GitHubLogin::parse("alice").unwrap())];
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest)),
@@ -969,7 +923,7 @@ mod tests {
         for decision in decisions {
             let mut r = clean_reviews();
             r.decision = decision;
-            let cs = candidates(&oriented_with(r));
+            let cs = cands_with(&r);
             let actual = observed_review_axis_behavior(&cs);
             let expected = expected_review_axis_behavior(decision);
             assert_eq!(
@@ -996,7 +950,7 @@ mod tests {
                 Reviewer::Team(TeamName::parse("backend").unwrap()),
             ],
         };
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::RequestApproval))
@@ -1017,7 +971,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ReviewRequired);
         r.approvals_stale = 2;
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::RequestApproval))
@@ -1033,7 +987,7 @@ mod tests {
     fn request_approval_prompt_omits_reviewers_section_when_none_required() {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ReviewRequired);
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::RequestApproval))
@@ -1055,7 +1009,7 @@ mod tests {
             submitted_at: Some(Timestamp::parse("2026-05-15T12:34:56Z").unwrap()),
             body: "Please factor the duplicated parsing logic\ninto a shared helper.".into(),
         });
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
@@ -1084,7 +1038,7 @@ mod tests {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         // latest_human_changes_requested intentionally None.
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
@@ -1099,7 +1053,7 @@ mod tests {
     fn address_change_request_fallback_uses_step_form_with_command_adjacent() {
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
-        let cs = candidates(&oriented_with(r));
+        let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
@@ -1121,7 +1075,7 @@ mod tests {
     fn address_threads_prompt_orders_resolve_command_after_step_2_header() {
         let r = clean_reviews();
         let threads = vec![live_thread("src/a.rs", 1, "x")];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         let rendered = cs[0].rendered_payload();
         let step1 = rendered.find("Step 1").expect("step 1 present");
         let step2 = rendered.find("Step 2").expect("step 2 present");
@@ -1143,7 +1097,7 @@ mod tests {
     fn address_threads_outdated_uses_step_1a_label() {
         let r = clean_reviews();
         let threads = vec![outdated_thread("src/a.rs", 1, "stale", "T_o")];
-        let cs = candidates(&oriented_with_threads(r, threads));
+        let cs = cands_with_threads(&r, &threads);
         let rendered = cs[0].rendered_payload();
         assert!(
             rendered.contains("Step 1a"),

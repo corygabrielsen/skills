@@ -1,19 +1,18 @@
 //! `CloseoutAxis` — pre-handoff sign-off convergence gate as an
 //! `Axis` impl.
 //!
-//! Reads across the entire [`OrientedState`]: closeout fires only
-//! when every other axis is quiescent. The candidate emitter
-//! lives in `decide::closeout::candidates`; this wrapper is
-//! pure delegation.
+//! Declared deps: own report + attest-path location + PR number
+//! (for prompt rendering).
 
 use crate::decide::action::{Action, ActionKind};
 use crate::ids::PullRequestNumber;
-use crate::orient::OrientedState;
+use crate::orient::closeout::Closeout;
 use ooda_core::Axis;
 
 #[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CloseoutObservation<'a> {
-    pub oriented: &'a OrientedState,
+    pub closeout: &'a Closeout,
+    pub attest_path: Option<&'a std::path::Path>,
     pub pr: PullRequestNumber,
 }
 
@@ -24,6 +23,6 @@ impl<'a> Axis<CloseoutObservation<'a>> for CloseoutAxis {
     type ActionKind = ActionKind;
 
     fn candidates(&self, obs: &CloseoutObservation<'a>) -> Vec<Action> {
-        crate::decide::closeout::candidates(obs.oriented, obs.pr)
+        crate::decide::closeout::candidates(obs.closeout, obs.attest_path, obs.pr)
     }
 }

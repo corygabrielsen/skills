@@ -17,7 +17,6 @@
 //! path). The runner threads one through per invocation.
 
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -123,7 +122,7 @@ fn spawn_codex_reviews(
     n: u32,
     ctx: &ActContext,
 ) -> Result<(), ActError> {
-    std::fs::create_dir_all(&ctx.batch_dir)
+    ooda_core::atomic_io::secure_create_dir_all(&ctx.batch_dir)
         .map_err(|source| ActError::Spawn { slot: 0, source })?;
 
     if should_preflight_path(&ctx.codex_bin) && !ctx.codex_bin.exists() {
@@ -143,11 +142,7 @@ fn spawn_codex_reviews(
         let exit_path = ctx
             .batch_dir
             .join(format!("{}-{slot}.exit", level.as_str()));
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&log_path)
+        ooda_core::atomic_io::open_secure_truncate(&log_path)
             .map_err(|source| ActError::Spawn { slot, source })?;
         if let Err(source) = std::fs::remove_file(&exit_path)
             && source.kind() != std::io::ErrorKind::NotFound

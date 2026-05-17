@@ -20,18 +20,13 @@ impl Session {
     /// Open (or create) a session directory. Acquires a lock file.
     pub(crate) fn open(session_id: &str) -> Result<Self, String> {
         let dir = PathBuf::from(BASE_DIR).join(session_id);
-        fs::create_dir_all(&dir)
+        ooda_core::atomic_io::secure_create_dir_all(&dir)
             .map_err(|e| format!("cannot create session dir {}: {e}", dir.display()))?;
 
         let lock_path = dir.join("lock");
         // Atomic lock via O_CREAT|O_EXCL — no TOCTOU race.
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
+        match ooda_core::atomic_io::open_secure_create_new(&lock_path) {
             Ok(mut f) => {
-                use std::io::Write;
                 let _ = write!(f, "{}", std::process::id());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -52,10 +47,7 @@ impl Session {
 
     pub(crate) fn append_history(&mut self, entry: IterLog) -> Result<(), String> {
         let path = self.dir.join("history.jsonl");
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+        let mut file = ooda_core::atomic_io::open_secure_append(&path)
             .map_err(|e| format!("cannot open history: {e}"))?;
         let line = serde_json::to_string(&entry)
             .map_err(|e| format!("cannot serialize history entry: {e}"))?;
@@ -100,7 +92,7 @@ fn load_history(dir: &Path) -> Vec<IterLog> {
 
 fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
     let json = serde_json::to_string_pretty(value).map_err(|e| format!("cannot serialize: {e}"))?;
-    fs::write(path, format!("{json}\n"))
+    ooda_core::atomic_io::write_atomic(path, format!("{json}\n").as_bytes())
         .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 

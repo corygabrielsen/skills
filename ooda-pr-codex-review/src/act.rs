@@ -19,7 +19,6 @@ pub(crate) mod review_docs;
 pub(crate) mod sync_pull_request_metadata;
 
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -168,12 +167,9 @@ fn spawn_codex_review_batch(
     n: u32,
 ) -> Result<(), ActError> {
     let dir = codex_batch_dir(&codex.codex_pr_root, level, &codex.head_sha);
-    std::fs::create_dir_all(&dir).map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
-    let mut sha_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(dir.join("head_sha.txt"))
+    ooda_core::atomic_io::secure_create_dir_all(&dir)
+        .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
+    let mut sha_file = ooda_core::atomic_io::open_secure_truncate(&dir.join("head_sha.txt"))
         .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
     sha_file
         .write_all(codex.head_sha.as_bytes())
@@ -194,11 +190,7 @@ fn spawn_codex_review_batch(
     for slot in 1..=n {
         let log_path = dir.join(format!("{}-{slot}.log", level.as_str()));
         let exit_path = dir.join(format!("{}-{slot}.exit", level.as_str()));
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&log_path)
+        ooda_core::atomic_io::open_secure_truncate(&log_path)
             .map_err(|source| ActError::CodexSpawn { slot, source })?;
         if let Err(source) = std::fs::remove_file(&exit_path)
             && source.kind() != std::io::ErrorKind::NotFound

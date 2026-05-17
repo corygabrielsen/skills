@@ -12,7 +12,7 @@
       body {
         margin: 0;
         padding: 2rem;
-        max-width: 56rem;
+        max-width: 64rem;
       }
       h1 {
         font-weight: 600;
@@ -28,23 +28,39 @@
       }
       #feed {
         margin-top: 1.5rem;
-        white-space: pre-wrap;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 0.85rem;
+        font-size: 0.82rem;
         border: 1px solid color-mix(in oklab, currentColor 20%, transparent);
         border-radius: 0.5em;
-        padding: 1rem;
-        max-height: 60vh;
+        padding: 0.5rem 1rem;
+        max-height: 70vh;
         overflow: auto;
       }
       #feed .ev {
-        padding: 0.25rem 0;
+        padding: 0.4rem 0;
         border-bottom: 1px dashed color-mix(in oklab, currentColor 12%, transparent);
+        display: grid;
+        grid-template-columns: 11ch 18ch 18ch 1fr;
+        gap: 0.75rem;
+        align-items: baseline;
       }
-      #feed .ev:last-child { border-bottom: 0; }
+      #feed .ev:last-child {
+        border-bottom: 0;
+      }
+      #feed .ts {
+        color: color-mix(in oklab, currentColor 50%, transparent);
+      }
+      #feed .run {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       #feed .kind {
         font-weight: 600;
-        margin-right: 0.5em;
+      }
+      #feed .payload {
+        color: color-mix(in oklab, currentColor 75%, transparent);
+        overflow-wrap: anywhere;
       }
       #status {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -56,11 +72,13 @@
   <body>
     <h1>Cockpit</h1>
     <p class="hint">
-      V1 daemon: live mutation feed from the OODA state tree. The React frontend
-      lands in a follow-up — this placeholder proves the SSE pipeline end-to-end.
+      Live event feed from the OODA state tree. The React frontend lands in a
+      follow-up — this placeholder proves the SSE pipeline end-to-end and shows
+      the typed event shape Cockpit forwards to the browser.
     </p>
     <p class="hint">
-      JSON: <code>GET /api/health</code> · <code>GET /api/events</code> (SSE)
+      JSON: <code>GET /api/health</code> · <code>GET /api/events</code> (SSE,
+      <code>mutation</code> events)
     </p>
     <p id="status">connecting…</p>
     <div id="feed"></div>
@@ -68,24 +86,65 @@
       const feed = document.getElementById("feed");
       const status = document.getElementById("status");
       const es = new EventSource("/api/events");
+
+      // Fields cockpit fans out per event: { run_id, ts, kind, ...body }.
+      // The "body" fields vary per `kind`; for the placeholder UI we
+      // strip the framing fields and show whatever payload remains as
+      // compact JSON so any event variant renders without per-kind code.
+      const FRAMING_FIELDS = new Set(["run_id", "ts", "kind"]);
+
+      function payloadOf(event) {
+        const out = {};
+        for (const [k, v] of Object.entries(event)) {
+          if (!FRAMING_FIELDS.has(k)) out[k] = v;
+        }
+        return Object.keys(out).length ? JSON.stringify(out) : "";
+      }
+
+      function shortRun(id) {
+        // Run ids are timestamp+entropy+pid (~30 chars). Truncate the
+        // entropy/pid suffix so the column stays scannable.
+        return id.length > 17 ? id.slice(0, 17) + "…" : id;
+      }
+
       es.addEventListener("open", () => {
-        status.textContent = "connected — waiting for state-tree mutations…";
+        status.textContent = "connected — waiting for state-tree events…";
       });
       es.addEventListener("error", () => {
         status.textContent = "disconnected (browser will retry)";
       });
       es.addEventListener("mutation", (ev) => {
-        const m = JSON.parse(ev.data);
+        let m;
+        try {
+          m = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
         const row = document.createElement("div");
         row.className = "ev";
+
+        const ts = document.createElement("span");
+        ts.className = "ts";
+        // ooda_state Event ts is RFC3339; show HH:MM:SS only.
+        ts.textContent = (m.ts || "").slice(11, 19);
+
+        const run = document.createElement("span");
+        run.className = "run";
+        run.textContent = shortRun(m.run_id || "");
+        run.title = m.run_id || "";
+
         const kind = document.createElement("span");
         kind.className = "kind";
-        kind.textContent = m.kind;
-        row.appendChild(kind);
-        row.append(m.paths.join("\n"));
+        kind.textContent = m.kind || "?";
+
+        const payload = document.createElement("span");
+        payload.className = "payload";
+        payload.textContent = payloadOf(m);
+
+        row.append(ts, run, kind, payload);
         feed.insertBefore(row, feed.firstChild);
         // Cap visible events so the page doesn't grow unbounded.
-        while (feed.childNodes.length > 200) feed.removeChild(feed.lastChild);
+        while (feed.childNodes.length > 500) feed.removeChild(feed.lastChild);
       });
     </script>
   </body>

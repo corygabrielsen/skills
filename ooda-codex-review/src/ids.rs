@@ -218,40 +218,7 @@ impl fmt::Display for RepoId {
     }
 }
 
-// -- ReviewMode + ReviewTarget --------------------------------------
-
-/// Which slice of changes the review is invoked against. Mutually
-/// exclusive within one invocation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum ReviewMode {
-    /// Working-tree changes vs HEAD.
-    Uncommitted,
-    /// Current branch vs a named base branch.
-    Base,
-    /// A specific commit.
-    Commit,
-    /// User-facing PR sugar. The PR's base branch is resolved
-    /// upstream; the underlying review CLI sees only the Base form.
-    Pr,
-}
-
-impl ReviewMode {
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Uncommitted => "uncommitted",
-            Self::Base => "base",
-            Self::Commit => "commit",
-            Self::Pr => "pr",
-        }
-    }
-}
-
-impl fmt::Display for ReviewMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+// -- ReviewTarget ----------------------------------------------------
 
 /// The mode tag fused with its associated value. Each variant
 /// carries the validation-strong typed value its mode requires
@@ -262,28 +229,6 @@ pub(crate) enum ReviewTarget {
     Base(BranchName),
     Commit(GitCommitSha),
     Pr(u64),
-}
-
-impl ReviewTarget {
-    pub(crate) fn mode(&self) -> ReviewMode {
-        match self {
-            Self::Uncommitted => ReviewMode::Uncommitted,
-            Self::Base(_) => ReviewMode::Base,
-            Self::Commit(_) => ReviewMode::Commit,
-            Self::Pr(_) => ReviewMode::Pr,
-        }
-    }
-
-    /// Path-safe key for recorder layout. `<mode>/<value>` or
-    /// bare `<mode>` for value-less variants.
-    pub(crate) fn path_key(&self) -> String {
-        match self {
-            Self::Uncommitted => "uncommitted".to_string(),
-            Self::Base(b) => format!("base/{b}"),
-            Self::Commit(s) => format!("commit/{s}"),
-            Self::Pr(n) => format!("pr/{n}"),
-        }
-    }
 }
 
 impl fmt::Display for ReviewTarget {
@@ -345,19 +290,6 @@ mod tests {
             RepoId::parse("ooda-codex-review-abc123").unwrap().as_str(),
             "ooda-codex-review-abc123"
         );
-    }
-
-    #[test]
-    fn review_target_path_key_shapes() {
-        assert_eq!(ReviewTarget::Uncommitted.path_key(), "uncommitted");
-        let b = BranchName::parse("master").unwrap();
-        assert_eq!(ReviewTarget::Base(b).path_key(), "base/master");
-        let s = GitCommitSha::parse(&"a".repeat(40)).unwrap();
-        assert_eq!(
-            ReviewTarget::Commit(s).path_key(),
-            format!("commit/{}", "a".repeat(40))
-        );
-        assert_eq!(ReviewTarget::Pr(42).path_key(), "pr/42");
     }
 
     #[test]

@@ -31,6 +31,8 @@ STRICT_FILES=(
     "src/act/address_claude_review.rs"
     "src/act/ci.rs"
     "src/act/closeout.rs"
+    "src/axis_impls/ci.rs"
+    "src/axis_impls/mod.rs"
     "src/act/copilot.rs"
     "src/act/review_docs.rs"
     "src/act/sync_pull_request_metadata.rs"

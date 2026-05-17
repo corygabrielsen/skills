@@ -1,50 +1,53 @@
-//! Doc-review candidates.
+//! Closeout candidates.
 //!
-//! Emit `ReviewDocs` when the orient axis is `Drift` or `NeverAttested`
-//! AND the PR has at least one commit. Same guards as
-//! `SyncPullRequestMetadata`. Information-tier (Hygiene urgency) —
-//! advisory; never preempts a mechanical merge blocker.
+//! Emit `Closeout` when the axis is `Drift` or `NeverAttested`, at
+//! `Urgency::Closeout` — strictly the least-urgent tier so the
+//! reducer outranks Closeout with any other axis's candidate. The
+//! gate fires only when every other axis is silent, making
+//! `HandoffHuman` conditional on an agent-signed attestation at
+//! current HEAD.
+//!
+//! No commit-count guard: Closeout fires on zero-commit PRs too.
+//! The closeout is about pre-handoff sign-off, not hygiene-when-
+//! there's-work.
 
 use std::path::Path;
 
-use crate::act::review_docs::build_review_docs_prompt;
+use crate::act::closeout::build_closeout_prompt;
 use crate::ids::{BlockerKey, PullRequestNumber};
 use crate::orient::OrientedState;
-use crate::orient::doc_review::DocReview;
+use crate::orient::closeout::Closeout;
 
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 #[must_use]
 pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
-    if oriented.state.commits == 0 {
-        return Vec::new();
-    }
-    let needs_review = matches!(
-        oriented.doc_review,
-        DocReview::Drift { .. } | DocReview::NeverAttested,
+    let needs_closeout = matches!(
+        oriented.closeout,
+        Closeout::Drift { .. } | Closeout::NeverAttested,
     );
-    if !needs_review {
+    if !needs_closeout {
         return Vec::new();
     }
-    let Some(attest_path) = oriented.doc_review_attest_path.as_deref() else {
+    let Some(attest_path) = oriented.closeout_attest_path.as_deref() else {
         return Vec::new();
     };
 
     let attest_path_opt: Option<&Path> = Some(attest_path);
-    let prompt = build_review_docs_prompt(pr, &oriented.doc_review, attest_path_opt);
-    let kind = ActionKind::ReviewDocs {
+    let prompt = build_closeout_prompt(pr, &oriented.closeout, attest_path_opt);
+    let kind = ActionKind::Closeout {
         attest_path: attest_path.to_path_buf(),
     };
-    let blocker = match oriented.doc_review {
-        DocReview::Drift { .. } => BlockerKey::from_static("doc_review_drift"),
-        DocReview::NeverAttested => BlockerKey::from_static("doc_review_never_attested"),
-        DocReview::Synced => BlockerKey::from_static("doc_review_synced"),
+    let blocker = match oriented.closeout {
+        Closeout::Drift { .. } => BlockerKey::from_static("closeout_drift"),
+        Closeout::NeverAttested => BlockerKey::from_static("closeout_never_attested"),
+        Closeout::Synced => BlockerKey::from_static("closeout_synced"),
     };
     vec![Action {
         kind,
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Neutral,
-        urgency: Urgency::Hygiene,
+        urgency: Urgency::Closeout,
         blocker,
     }]
 }
@@ -116,7 +119,7 @@ mod tests {
         }
     }
 
-    fn oriented(commits: usize, doc_review: DocReview) -> OrientedState {
+    fn oriented(commits: usize, closeout: Closeout) -> OrientedState {
         OrientedState {
             ci: ci_report(),
             state: pull_request_state(commits),
@@ -127,19 +130,18 @@ mod tests {
             merge_base_delta: None,
             pull_request_metadata: PullRequestMetadata::Synced,
             attest_path: None,
-            doc_review,
-            doc_review_attest_path: Some(std::path::PathBuf::from(
-                "/state/753/doc_review_attest.json",
-            )),
+            doc_review: crate::orient::doc_review::DocReview::Synced,
+            doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
-            closeout: crate::orient::closeout::Closeout::Synced,
-            closeout_attest_path: None,
+            codex_review: None,
+            closeout,
+            closeout_attest_path: Some(std::path::PathBuf::from("/state/753/closeout_attest.json")),
         }
     }
 
-    fn drift() -> DocReview {
-        DocReview::Drift {
+    fn drift() -> Closeout {
+        Closeout::Drift {
             attested_sha: GitCommitSha::parse(&"a".repeat(40))
                 .unwrap()
                 .as_str()
@@ -148,65 +150,69 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .to_string(),
-            commits_behind: Some(2),
         }
     }
 
     #[test]
-    fn drift_with_commits_emits_review_docs() {
+    fn drift_emits_closeout_at_closeout_urgency() {
         let cs = candidates(&oriented(3, drift()), pr());
         assert_eq!(cs.len(), 1);
-        assert!(matches!(cs[0].kind, ActionKind::ReviewDocs { .. }));
+        assert!(matches!(cs[0].kind, ActionKind::Closeout { .. }));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
-        assert_eq!(cs[0].urgency, Urgency::Hygiene);
+        assert_eq!(cs[0].urgency, Urgency::Closeout);
         assert_eq!(cs[0].target_effect, TargetEffect::Neutral);
-        assert_eq!(cs[0].blocker.as_str(), "doc_review_drift");
+        assert_eq!(cs[0].blocker.as_str(), "closeout_drift");
     }
 
     #[test]
-    fn never_attested_with_commits_emits_review_docs() {
-        let cs = candidates(&oriented(1, DocReview::NeverAttested), pr());
+    fn never_attested_emits_closeout() {
+        let cs = candidates(&oriented(1, Closeout::NeverAttested), pr());
         assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].blocker.as_str(), "doc_review_never_attested");
+        assert_eq!(cs[0].blocker.as_str(), "closeout_never_attested");
     }
 
     #[test]
-    fn never_attested_with_zero_commits_emits_nothing() {
-        let cs = candidates(&oriented(0, DocReview::NeverAttested), pr());
-        assert!(cs.is_empty());
+    fn never_attested_with_zero_commits_still_emits() {
+        // Distinct from PR-metadata / doc-review: Closeout fires even
+        // on a zero-commit PR. The closeout is about pre-handoff sign-
+        // off, not hygiene-when-there's-work.
+        let cs = candidates(&oriented(0, Closeout::NeverAttested), pr());
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].blocker.as_str(), "closeout_never_attested");
     }
 
     #[test]
-    fn drift_with_zero_commits_emits_nothing() {
+    fn drift_with_zero_commits_still_emits() {
         let cs = candidates(&oriented(0, drift()), pr());
-        assert!(cs.is_empty());
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].blocker.as_str(), "closeout_drift");
     }
 
     #[test]
     fn synced_emits_nothing() {
-        let cs = candidates(&oriented(3, DocReview::Synced), pr());
+        let cs = candidates(&oriented(3, Closeout::Synced), pr());
         assert!(cs.is_empty());
     }
 
     #[test]
-    fn review_docs_carries_attest_path_in_payload() {
+    fn closeout_carries_attest_path_in_payload() {
         let cs = candidates(&oriented(3, drift()), pr());
-        let ActionKind::ReviewDocs { attest_path } = &cs[0].kind else {
-            panic!("expected ReviewDocs");
+        let ActionKind::Closeout { attest_path } = &cs[0].kind else {
+            panic!("expected Closeout");
         };
         assert_eq!(
             attest_path,
-            std::path::Path::new("/state/753/doc_review_attest.json")
+            std::path::Path::new("/state/753/closeout_attest.json")
         );
     }
 
     #[test]
-    fn review_docs_stall_key_distinguishes_drift_from_never_attested() {
+    fn closeout_stall_key_distinguishes_drift_from_never_attested() {
         let drift_action = candidates(&oriented(2, drift()), pr())
             .into_iter()
             .next()
             .unwrap();
-        let never_action = candidates(&oriented(2, DocReview::NeverAttested), pr())
+        let never_action = candidates(&oriented(2, Closeout::NeverAttested), pr())
             .into_iter()
             .next()
             .unwrap();
@@ -214,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn review_docs_stall_key_equal_to_itself() {
+    fn closeout_stall_key_equal_to_itself() {
         let a = candidates(&oriented(2, drift()), pr())
             .into_iter()
             .next()
@@ -229,23 +235,36 @@ mod tests {
     #[test]
     fn drift_with_no_attest_path_emits_nothing() {
         let mut o = oriented(3, drift());
-        o.doc_review_attest_path = None;
+        o.closeout_attest_path = None;
         assert!(candidates(&o, pr()).is_empty());
     }
 
     #[test]
     fn never_attested_with_no_attest_path_emits_nothing() {
-        let mut o = oriented(3, DocReview::NeverAttested);
-        o.doc_review_attest_path = None;
+        let mut o = oriented(3, Closeout::NeverAttested);
+        o.closeout_attest_path = None;
         assert!(candidates(&o, pr()).is_empty());
     }
 
     #[test]
-    fn review_docs_action_name_is_review_docs() {
+    fn closeout_action_name_is_closeout() {
         let a = candidates(&oriented(2, drift()), pr())
             .into_iter()
             .next()
             .unwrap();
-        assert_eq!(a.kind.name(), "ReviewDocs");
+        assert_eq!(a.kind.name(), "Closeout");
+    }
+
+    #[test]
+    fn closeout_is_strictly_least_urgent_in_decide() {
+        let a = candidates(&oriented(2, drift()), pr())
+            .into_iter()
+            .next()
+            .unwrap();
+        // The reducer's `max` over urgency will only select Closeout
+        // when no other axis emitted anything; this assertion documents
+        // the structural invariant.
+        assert!(Urgency::Hygiene < a.urgency);
+        assert!(Urgency::Critical < a.urgency);
     }
 }

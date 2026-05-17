@@ -1,8 +1,8 @@
 //! `ooda-attest` — CLI wrapper around `ooda_core::attest`.
 //!
-//! Subcommands: `pr-meta`, `doc-review`, `claude-review`. Each looks
-//! up HEAD via `git rev-parse` in the current working directory, then
-//! writes the corresponding attestation file at
+//! Subcommands: `pr-meta`, `doc-review`, `claude-review`, `closeout`.
+//! Each looks up HEAD via `git rev-parse` in the current working
+//! directory, then writes the corresponding attestation file at
 //! `<state-root>/<pr-id>/<file>.json`.
 //!
 //! `--state-root` is optional. When omitted, the state root is
@@ -25,7 +25,7 @@ use std::process::{Command, ExitCode};
 
 use clap::{Parser, Subcommand};
 use ooda_core::attest::{
-    AttestError, write_claude_review_atomic, write_doc_review_atomic,
+    AttestError, write_claude_review_atomic, write_closeout_atomic, write_doc_review_atomic,
     write_pull_request_metadata_atomic,
 };
 use ooda_core::state_root::resolve_ooda_pr_state_root;
@@ -38,6 +38,7 @@ const EXIT_FALLBACK: u8 = 1;
 const PULL_REQUEST_METADATA_FILE: &str = "pr_meta_attest.json";
 const DOC_REVIEW_FILE: &str = "doc_review_attest.json";
 const CLAUDE_REVIEW_FILE: &str = "claude_review_attest.json";
+const CLOSEOUT_FILE: &str = "closeout_attest.json";
 
 #[derive(Parser, Debug)]
 #[command(name = "ooda-attest", about = "Write OODA attestation files", version)]
@@ -90,6 +91,21 @@ enum SubCmd {
         #[arg(long)]
         state_root: Option<PathBuf>,
     },
+
+    /// Attest that the PR has been swept end-to-end at current HEAD
+    /// and is ready for human handoff. Only meaningful when every
+    /// other axis is silent — the OODA loop fires the closeout
+    /// handoff after convergence.
+    #[command(name = "closeout")]
+    Closeout {
+        /// PR number (digits only).
+        #[arg(long)]
+        pr_id: String,
+
+        /// State-root directory; see `pr-meta` for resolution rules.
+        #[arg(long)]
+        state_root: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -112,6 +128,12 @@ fn main() -> ExitCode {
             state_root.as_deref(),
             CLAUDE_REVIEW_FILE,
             write_claude_review_atomic,
+        ),
+        SubCmd::Closeout { pr_id, state_root } => run_attest(
+            &pr_id,
+            state_root.as_deref(),
+            CLOSEOUT_FILE,
+            write_closeout_atomic,
         ),
     }
 }

@@ -10,6 +10,7 @@
 pub(crate) mod action;
 mod ci;
 mod claude_review;
+mod closeout;
 mod codex_review;
 mod copilot;
 mod cursor;
@@ -75,6 +76,12 @@ pub(crate) fn candidates(
     out.extend(pull_request_metadata::candidates(oriented, pr));
     out.extend(doc_review::candidates(oriented, pr));
     out.extend(claude_review::candidates(oriented, pr));
+    // Closeout sits at the bottom of the urgency lattice — the
+    // reducer's sort by urgency naturally outranks it with any
+    // other axis's candidate. Closeout wins only on global
+    // quiescence, making HandoffHuman conditional on an agent-
+    // signed attestation at current HEAD.
+    out.extend(closeout::candidates(oriented, pr));
     // Fallback merge-state blocker: only fires when NO axis can
     // already advance or unblock the PR. Catches unmodeled policy
     // gates (deployment protection, signed commits, custom

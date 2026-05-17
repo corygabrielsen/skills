@@ -4,6 +4,7 @@ pub(crate) mod branch_protection;
 pub(crate) mod branch_rules;
 pub(crate) mod checks;
 pub(crate) mod claude_review_attest;
+pub(crate) mod closeout_attest;
 pub(crate) mod comments;
 pub(crate) mod compare;
 pub(crate) mod copilot_config;
@@ -33,6 +34,7 @@ use branch_protection::{
 use branch_rules::{BranchRule, fetch_branch_rules};
 use checks::{PullRequestCheck, fetch_pull_request_checks};
 use claude_review_attest::{ClaudeReviewObservation, observe_claude_review};
+use closeout_attest::{CloseoutObservation, observe_closeout};
 use comments::{IssueComment, fetch_issue_comments};
 use compare::{MergeBaseDelta, fetch_merge_base_delta};
 use copilot_config::fetch_copilot_config;
@@ -131,6 +133,11 @@ pub(crate) struct GitHubObservations {
     /// content across `reviews`, `issue_comments`, `review_threads_page`.
     /// Drives the `ClaudeReview` orient axis.
     pub claude_review: ClaudeReviewObservation,
+    /// Closeout attestation snapshot. SHA-keyed like
+    /// `pull_request_metadata` and `doc_review`, minus the
+    /// `commits_behind` field — HEAD-equality is the only signal.
+    /// Drives the `Closeout` orient axis at `Urgency::Closeout`.
+    pub closeout: CloseoutObservation,
 }
 
 /// Fetch every GitHub observation needed to describe the PR's state.
@@ -179,6 +186,7 @@ pub(crate) fn fetch_all(
     let pull_request_metadata =
         observe_pull_request_metadata(state_root, slug, pr, &pull_request_view.head_ref_oid);
     let doc_review = observe_doc_review(state_root, slug, pr, &pull_request_view.head_ref_oid);
+    let closeout = observe_closeout(state_root, pr, &pull_request_view.head_ref_oid);
     // Branch rules and protection live at the protected root, not
     // at intermediate stack branches. Resolve before fanning out.
     let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pull_request_view.base_ref_name));
@@ -283,6 +291,7 @@ pub(crate) fn fetch_all(
             pull_request_metadata,
             doc_review,
             claude_review,
+            closeout,
         })))
     })
 }
@@ -338,7 +347,7 @@ fn terminal_observations(
         },
         claude_review: ClaudeReviewObservation {
             attestation: None,
-            head_sha,
+            head_sha: head_sha.clone(),
             commits_behind: None,
             attest_path: None,
             latest_claude_at: None,
@@ -346,6 +355,11 @@ fn terminal_observations(
             latest_claude_body: None,
             latest_claude_url: None,
             inline_thread_count: 0,
+        },
+        closeout: CloseoutObservation {
+            attestation: None,
+            head_sha,
+            attest_path: None,
         },
     }
 }

@@ -6,6 +6,7 @@
 pub(crate) mod bot_threads;
 pub(crate) mod ci;
 pub(crate) mod claude_review;
+pub(crate) mod closeout;
 pub(crate) mod codex_review;
 pub(crate) mod copilot;
 pub(crate) mod cursor;
@@ -24,6 +25,7 @@ use serde::Serialize;
 
 use ci::CiReport;
 use claude_review::{ClaudeReview, orient_claude_review};
+use closeout::{Closeout, orient_closeout};
 pub(crate) use codex_review::CodexReviewReport;
 use codex_review::orient_codex_review;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
@@ -110,6 +112,16 @@ pub(crate) struct OrientedState {
     /// Absolute path of the Claude-review attestation file the agent
     /// must rewrite. Mirrors `attest_path` for the Claude-review axis.
     pub claude_review_attest_path: Option<std::path::PathBuf>,
+    /// Closeout sign-off state. Same `Synced` / `Drift` /
+    /// `NeverAttested` shape as the other SHA-keyed attestation axes
+    /// but without `commits_behind` — HEAD-equality is the only
+    /// signal. Drives the `Closeout` decide candidate at
+    /// `Urgency::Closeout` (strictly the least-urgent tier), making
+    /// `HandoffHuman` conditional on an agent sign-off at current HEAD.
+    pub closeout: Closeout,
+    /// Absolute path of the closeout attestation file the agent must
+    /// rewrite. Mirrors `attest_path` for the closeout axis.
+    pub closeout_attest_path: Option<std::path::PathBuf>,
 }
 
 /// Compose all axes from a single GitHub observation bundle plus
@@ -203,6 +215,8 @@ pub(crate) fn orient(
     let doc_review_attest_path = obs.doc_review.attest_path.clone();
     let claude_review = orient_claude_review(&obs.claude_review);
     let claude_review_attest_path = obs.claude_review.attest_path.clone();
+    let closeout = orient_closeout(&obs.closeout);
+    let closeout_attest_path = obs.closeout.attest_path.clone();
 
     OrientedState {
         ci,
@@ -219,5 +233,7 @@ pub(crate) fn orient(
         doc_review_attest_path,
         claude_review,
         claude_review_attest_path,
+        closeout,
+        closeout_attest_path,
     }
 }

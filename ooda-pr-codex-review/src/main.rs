@@ -825,7 +825,36 @@ fn push_handoff_context(
                 r.pending_reviews.humans.len()
             ),
         );
+        push_closeout_context_line(prompt, &snap.oriented);
     }
+}
+
+/// Append a `Closeout: attested at <ts> (sha <short>)` line when the
+/// closeout axis is `Synced` at current HEAD AND the attestation file
+/// is readable. No line otherwise — the absence is itself a signal
+/// (Closeout never fires past convergence; absence on a `HandoffHuman`
+/// path implies the loop bailed out before reaching the gate).
+fn push_closeout_context_line(
+    prompt: &mut ooda_core::HandoffPrompt,
+    oriented: &orient::OrientedState,
+) {
+    if !matches!(oriented.closeout, orient::closeout::Closeout::Synced) {
+        return;
+    }
+    let Some(path) = oriented.closeout_attest_path.as_deref() else {
+        return;
+    };
+    let Ok(Some(att)) = ooda_core::attest::read_closeout(path) else {
+        return;
+    };
+    prompt.push_context_line(
+        "Closeout",
+        format!(
+            "attested at {} (sha {})",
+            att.attested_at.to_rfc3339(),
+            &att.attested_sha[..7],
+        ),
+    );
 }
 
 /// Render `Outcome` to a writer (typically stderr) per the SKILL
@@ -1324,6 +1353,8 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            closeout: orient::closeout::Closeout::Synced,
+            closeout_attest_path: None,
         }
     }
 

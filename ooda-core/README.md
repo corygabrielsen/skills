@@ -16,19 +16,19 @@ shape, written once.
 
 The crate exposes:
 
-| Type                              | Role                                                                                                                      |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `Outcome<K>`                      | Binary boundary. Generic over a per-binary `ActionKind`. 1:1 variant → [`ExitCode`]; see "Exit-code scheme" below.        |
-| `ExitCode`                        | The numeric process-exit contract. `#[repr(u8)]` discriminants in one place; every typed result returns or takes this.    |
-| `Decision<K>` / `DecisionHalt<K>` | Returned by `decide()`. Three-layered halt taxonomy (`Success` / `Terminal` / `AgentNeeded` / `HumanNeeded`).             |
-| `HaltReason<K>`                   | Returned by `run_loop`. Superset of `DecisionHalt` with loop-only `Stalled` / `CapReached` variants.                      |
-| `Terminal`                        | `Succeeded` \| `Aborted` — neutral verbs that fit every domain.                                                           |
-| `Action<K>`                       | The operation `decide` prescribes. Carries `kind: K`, `automation`, `target_effect`, `urgency`, `description`, `blocker`. |
-| `Automation`                      | `Full` \| `Wait{interval}` \| `Agent` \| `Human`.                                                                         |
-| `Urgency`                         | `Critical < BlockingFix < BlockingWait < BlockingHuman < Advancing < Hygiene` (sort order for candidate actions).         |
-| `TargetEffect`                    | `Blocks` \| `Advances` \| `Neutral`.                                                                                      |
-| `BlockerKey`                      | Stable, non-empty stall-comparator key (newtype, no serde Deserialize).                                                   |
-| `ActionKindName`                  | Trait each binary's `ActionKind` enum implements so the loop can render variant tokens.                                   |
+| Type                              | Role                                                                                                                                                                                                                                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Outcome<K>`                      | Binary boundary. Generic over a per-binary `ActionKind`. 1:1 variant → [`ExitCode`]; see "Exit-code scheme" below.                                                                                                                          |
+| `ExitCode`                        | The numeric process-exit contract. `#[repr(u8)]` discriminants in one place; every typed result returns or takes this.                                                                                                                      |
+| `Decision<K>` / `DecisionHalt<K>` | Returned by `decide()`. Three-layered halt taxonomy (`Success` / `Terminal` / `AgentNeeded` / `HumanNeeded`).                                                                                                                               |
+| `HaltReason<K>`                   | Returned by `run_loop`. Superset of `DecisionHalt` with loop-only `Stalled` / `CapReached` variants.                                                                                                                                        |
+| `Terminal`                        | `Succeeded` \| `Aborted` — neutral verbs that fit every domain.                                                                                                                                                                             |
+| `Action<K>`                       | The operation `decide` prescribes. Carries `kind: K`, `automation`, `target_effect`, `urgency`, `description`, `blocker`.                                                                                                                   |
+| `Automation`                      | `Full` \| `Wait{interval}` \| `Agent` \| `Human`.                                                                                                                                                                                           |
+| `Urgency`                         | `Critical < BlockingFix < BlockingWait < BlockingHuman < Advancing < Hygiene < Closeout` (sort order for candidate actions; `Closeout` is the convergence-gate tier — outranked by every other tier so it fires only on global quiescence). |
+| `TargetEffect`                    | `Blocks` \| `Advances` \| `Neutral`.                                                                                                                                                                                                        |
+| `BlockerKey`                      | Stable, non-empty stall-comparator key (newtype, no serde Deserialize).                                                                                                                                                                     |
+| `ActionKindName`                  | Trait each binary's `ActionKind` enum implements so the loop can render variant tokens.                                                                                                                                                     |
 
 ## How a binary consumes it
 

@@ -646,6 +646,7 @@ fn urgency_label(u: Urgency) -> &'static str {
         Urgency::BlockingHuman => "blocking human",
         Urgency::Advancing => "advancing",
         Urgency::Hygiene => "hygiene",
+        Urgency::Closeout => "closeout",
     }
 }
 

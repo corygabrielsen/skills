@@ -14,7 +14,7 @@ use crate::orient::pull_request_metadata::PullRequestMetadata;
 use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
 #[must_use]
-pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
+pub(crate) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     if oriented.state.commits == 0 {
         return Vec::new();
     }

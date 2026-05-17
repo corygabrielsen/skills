@@ -8,16 +8,16 @@
 
 pub(crate) mod action;
 pub(crate) mod ci;
-mod claude_review;
-mod closeout;
+pub(crate) mod claude_review;
+pub(crate) mod closeout;
 mod codex_review;
 pub(crate) mod copilot;
 pub(crate) mod cursor;
 pub(crate) mod decision;
-mod doc_review;
-mod pull_request_metadata;
-mod reviews;
-mod state;
+pub(crate) mod doc_review;
+pub(crate) mod pull_request_metadata;
+pub(crate) mod reviews;
+pub(crate) mod state;
 
 use crate::orient::OrientedState;
 

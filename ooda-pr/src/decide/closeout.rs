@@ -21,7 +21,7 @@ use crate::orient::closeout::Closeout;
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 #[must_use]
-pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
+pub(crate) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     let needs_closeout = matches!(
         oriented.closeout,
         Closeout::Drift { .. } | Closeout::NeverAttested,

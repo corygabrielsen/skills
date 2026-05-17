@@ -1,7 +1,7 @@
 //! Atomic + durable file writes for stable read surfaces.
 //!
 //! Stable read surfaces are files that another process / iteration
-//! / user reads as authoritative state: `latest/state.json`,
+//! / user reads as authoritative state: `CURRENT.json`,
 //! `dedup.json`, attestation files, manifest files. They must
 //! never be observed in a partial state by a concurrent reader,
 //! and must survive a crash without truncation.

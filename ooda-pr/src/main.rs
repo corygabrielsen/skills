@@ -318,7 +318,10 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         log_post_result("comment", true, r, Some(recorder));
     }
     let snapshot = HandoffSnapshot {
-        oriented: oriented.clone(),
+        ci: oriented.ci.clone(),
+        reviews: oriented.reviews.clone(),
+        closeout: oriented.closeout.clone(),
+        closeout_attest_path: oriented.closeout_attest_path.clone(),
         head_short: obs
             .pull_request_view
             .head_ref_oid
@@ -357,7 +360,10 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
                     candidate_actions: &[decide::action::Action],
                     d: &Decision| {
         snapshot = Some(HandoffSnapshot {
-            oriented: oriented.clone(),
+            ci: oriented.ci.clone(),
+            reviews: oriented.reviews.clone(),
+            closeout: oriented.closeout.clone(),
+            closeout_attest_path: oriented.closeout_attest_path.clone(),
             head_short: obs
                 .pull_request_view
                 .head_ref_oid
@@ -503,7 +509,10 @@ fn halt_blocker(halt: &DecisionHalt) -> Option<&ooda_core::BlockerKey> {
 /// state crosses the runner seam.
 #[derive(Debug, Clone)]
 struct HandoffSnapshot {
-    oriented: orient::OrientedState,
+    ci: orient::ci::CiReport,
+    reviews: orient::reviews::ReviewSummary,
+    closeout: orient::closeout::Closeout,
+    closeout_attest_path: Option<PathBuf>,
     head_short: String,
     base_branch: String,
     dashboard: Dashboard,
@@ -603,7 +612,7 @@ fn push_handoff_context(
             "Branch",
             format!("{} ← {}", snap.base_branch, snap.head_short),
         );
-        let req = &snap.oriented.ci.summary.required;
+        let req = &snap.ci.summary.required;
         prompt.push_context_line(
             "CI",
             format!(
@@ -613,7 +622,7 @@ fn push_handoff_context(
                 req.pending()
             ),
         );
-        let r = &snap.oriented.reviews;
+        let r = &snap.reviews;
         prompt.push_context_line(
             "Reviews",
             format!(
@@ -623,7 +632,7 @@ fn push_handoff_context(
                 r.pending_reviews.humans.len()
             ),
         );
-        push_closeout_context_line(prompt, &snap.oriented);
+        push_closeout_context_line(prompt, &snap.closeout, snap.closeout_attest_path.as_deref());
     }
 }
 
@@ -635,12 +644,13 @@ fn push_handoff_context(
 /// reaching the gate.
 fn push_closeout_context_line(
     prompt: &mut ooda_core::HandoffPrompt,
-    oriented: &orient::OrientedState,
+    closeout: &orient::closeout::Closeout,
+    attest_path: Option<&Path>,
 ) {
-    if !matches!(oriented.closeout, orient::closeout::Closeout::Synced) {
+    if !matches!(closeout, orient::closeout::Closeout::Synced) {
         return;
     }
-    let Some(path) = oriented.closeout_attest_path.as_deref() else {
+    let Some(path) = attest_path else {
         return;
     };
     let Ok(Some(att)) = ooda_core::attest::read_closeout(path) else {
@@ -1093,8 +1103,12 @@ mod tests {
             signals: Vec::new(),
             blockers,
         };
+        let o = stub_oriented();
         HandoffSnapshot {
-            oriented: stub_oriented(),
+            ci: o.ci,
+            reviews: o.reviews,
+            closeout: o.closeout,
+            closeout_attest_path: o.closeout_attest_path,
             head_short: "abcdef0".into(),
             base_branch: "master".into(),
             dashboard,
@@ -1312,8 +1326,8 @@ mod tests {
         write_closeout_atomic(&path, sha.to_string()).unwrap();
 
         let mut snap = snapshot_with_dashboard(&[rebase_action()]);
-        snap.oriented.closeout = orient::closeout::Closeout::Synced;
-        snap.oriented.closeout_attest_path = Some(path);
+        snap.closeout = orient::closeout::Closeout::Synced;
+        snap.closeout_attest_path = Some(path);
 
         let handoff = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::RequestApproval,
@@ -1347,8 +1361,8 @@ mod tests {
     #[test]
     fn decorate_handoff_human_omits_closeout_line_when_not_synced() {
         let mut snap = snapshot_with_dashboard(&[rebase_action()]);
-        snap.oriented.closeout = orient::closeout::Closeout::NeverAttested;
-        snap.oriented.closeout_attest_path = None;
+        snap.closeout = orient::closeout::Closeout::NeverAttested;
+        snap.closeout_attest_path = None;
 
         let handoff = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::RequestApproval,
@@ -1378,8 +1392,8 @@ mod tests {
     #[test]
     fn decorate_handoff_human_omits_closeout_line_when_path_missing() {
         let mut snap = snapshot_with_dashboard(&[rebase_action()]);
-        snap.oriented.closeout = orient::closeout::Closeout::Synced;
-        snap.oriented.closeout_attest_path = None;
+        snap.closeout = orient::closeout::Closeout::Synced;
+        snap.closeout_attest_path = None;
 
         let handoff = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::RequestApproval,

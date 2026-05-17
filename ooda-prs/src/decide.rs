@@ -7,7 +7,7 @@
 //! aggregate score gating the loop.
 
 pub(crate) mod action;
-mod ci;
+pub(crate) mod ci;
 mod claude_review;
 mod closeout;
 mod copilot;

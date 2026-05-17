@@ -359,6 +359,7 @@ impl Dashboard {
     /// recommended winner → same-tier alternatives → one section
     /// per lower-urgency tier → signals → blockers. Empty sections
     /// are omitted.
+    #[cfg(test)]
     pub(crate) fn render_next_md(&self) -> String {
         let Some(winner) = self.candidates.first() else {
             return "# Next\n\nNo action selected.\n".to_string();
@@ -497,6 +498,7 @@ impl Dashboard {
     }
 
     /// Render the structured blocker list as a standalone surface.
+    #[cfg(test)]
     pub(crate) fn render_blockers_md(&self) -> String {
         if self.blockers.is_empty() {
             return "# Blockers\n\nNo current blocker.\n".to_string();

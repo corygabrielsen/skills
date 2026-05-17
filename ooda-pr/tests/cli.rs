@@ -29,7 +29,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn run(args: &[&str]) -> (i32, String, String) {
     let root = temp_path("state");
     let out = command(args)
-        .env("OODA_PR_STATE_HOME", &root)
+        .env("OODA_STATE_HOME", &root)
         .output()
         .expect("spawn ooda-pr");
     (
@@ -343,31 +343,40 @@ fn state_root_records_even_when_observe_fails() {
     assert_eq!(code, 70, "stderr: {stderr}");
     assert!(stderr.starts_with("BinaryError: observe:"));
 
-    let pr_root = state_root.join("github.com/owner/repo/prs/1");
-    assert!(pr_root.join("events.jsonl").exists());
-    assert!(pr_root.join("CURRENT.json").exists());
-    assert!(pr_root.join("ledger.jsonl").exists());
-
-    let events = std::fs::read_to_string(pr_root.join("events.jsonl")).unwrap();
-    assert!(events.contains(r#""kind":"run_started""#), "{events}");
-    assert!(events.contains(r#""kind":"observe_started""#), "{events}");
-    assert!(
-        events.contains(r#""kind":"tool_call_finished""#),
-        "{events}"
-    );
-    assert!(events.contains(r#""kind":"observe_finished""#), "{events}");
-    assert!(events.contains(r#""kind":"outcome""#), "{events}");
-
-    let run_dirs: Vec<_> = std::fs::read_dir(pr_root.join("runs"))
+    // ooda-state layout: <state-root>/{runs,live}/<run-id>/. Run id
+    // is opaque; the domain (`pr`) and target (`slug`/`pr`) live in
+    // the events.jsonl payload, not in the path.
+    let runs: Vec<_> = std::fs::read_dir(state_root.join("runs"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
-    assert_eq!(run_dirs.len(), 1);
-    assert!(run_dirs[0].join("manifest.json").exists());
-    assert!(run_dirs[0].join("trace.md").exists());
+    assert_eq!(runs.len(), 1, "exactly one run: {runs:?}");
+    let run_dir = &runs[0];
+    assert!(run_dir.join("events.jsonl").exists());
+    assert!(run_dir.join("blobs").is_dir());
+
+    let events = std::fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+    assert!(events.contains(r#""kind":"run_started""#), "{events}");
+    assert!(events.contains(r#""domain":"pr""#), "{events}");
+    // Tool calls and observe lifecycle are domain_specific events;
+    // the `kind_suffix` field carries the per-event token.
     assert!(
-        run_dirs[0]
-            .join("iterations/0001/event-range.json")
-            .exists()
+        events.contains(r#""kind_suffix":"observe_started""#),
+        "{events}"
     );
+    assert!(
+        events.contains(r#""kind_suffix":"tool_call_finished""#),
+        "{events}"
+    );
+    assert!(
+        events.contains(r#""kind_suffix":"observe_finished""#),
+        "{events}"
+    );
+    assert!(events.contains(r#""kind":"run_halted""#), "{events}");
+    assert!(events.contains(r#""outcome":"BinaryError""#), "{events}");
+
+    // `run_halted` removes the live marker; no live entry remains.
+    let live_count =
+        std::fs::read_dir(state_root.join("live")).map_or(0, std::iter::Iterator::count);
+    assert_eq!(live_count, 0, "live marker should be gone after halt");
 }

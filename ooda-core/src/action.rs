@@ -155,6 +155,14 @@ pub trait ActionKindName {
 /// extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Urgency {
+    /// Strictly most-urgent tier — the first-attestation gate.
+    /// Inverse of [`Self::Closeout`]. Emitted only by axes whose
+    /// state is "never-attested-yet": the agent has work to
+    /// witness into a local file but has not yet done so.
+    /// Preempts mechanical setup so the agent's witness is in
+    /// place before any state-mutating action triggers downstream
+    /// reviewers.
+    Opening,
     /// In-loop actions that make unconditional forward progress.
     /// MUST preempt any blocking handoff — passing one up to pick
     /// a Wait/Human halt ends the iteration with the target still
@@ -221,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn urgency_sorts_critical_first() {
+    fn urgency_sorts_opening_first() {
         let mut us = [
             Urgency::Closeout,
             Urgency::Hygiene,
@@ -230,11 +238,13 @@ mod tests {
             Urgency::BlockingFix,
             Urgency::Advancing,
             Urgency::BlockingWait,
+            Urgency::Opening,
         ];
         us.sort();
         assert_eq!(
             us,
             [
+                Urgency::Opening,
                 Urgency::Critical,
                 Urgency::BlockingFix,
                 Urgency::BlockingWait,
@@ -247,6 +257,17 @@ mod tests {
     }
 
     #[test]
+    fn opening_is_strictly_most_urgent() {
+        assert!(Urgency::Opening < Urgency::Critical);
+        assert!(Urgency::Opening < Urgency::BlockingFix);
+        assert!(Urgency::Opening < Urgency::BlockingWait);
+        assert!(Urgency::Opening < Urgency::BlockingHuman);
+        assert!(Urgency::Opening < Urgency::Advancing);
+        assert!(Urgency::Opening < Urgency::Hygiene);
+        assert!(Urgency::Opening < Urgency::Closeout);
+    }
+
+    #[test]
     fn closeout_is_strictly_least_urgent() {
         assert!(Urgency::Hygiene < Urgency::Closeout);
         assert!(Urgency::Advancing < Urgency::Closeout);
@@ -254,6 +275,7 @@ mod tests {
         assert!(Urgency::BlockingWait < Urgency::Closeout);
         assert!(Urgency::BlockingFix < Urgency::Closeout);
         assert!(Urgency::Critical < Urgency::Closeout);
+        assert!(Urgency::Opening < Urgency::Closeout);
     }
 
     #[test]

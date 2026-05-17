@@ -597,6 +597,7 @@ fn tiers(candidates: &[RankedCandidate]) -> Vec<TierBucket<'_>> {
 /// renames.
 fn urgency_label(u: Urgency) -> &'static str {
     match u {
+        Urgency::Opening => "opening",
         Urgency::Critical => "critical",
         Urgency::BlockingFix => "blocking fix",
         Urgency::BlockingWait => "blocking wait",

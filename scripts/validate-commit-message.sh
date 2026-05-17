@@ -1,111 +1,141 @@
-#!/bin/bash
-# Validate commit message follows the 50/72 rule.
+#!/bin/sh
+# Property 1: Message Well-Formedness — validation script
 #
-# Rules enforced:
-#   - Subject line ≤50 characters
-#   - Body wrapped at 72 characters
-#     (Exempt: code blocks, tables, URLs, indented code, blockquotes)
+# Decision procedure for the commit message subject line constraint.
+# Given a commit message M = (subject, body):
+#   valid(M) ⟺ |subject| ≤ <max>
+#
+# The subject limit depends on context:
+#   Default (PR-suffix-aware mode):
+#     With trailing " (#NNN)" suffix:   |subject| ≤ 50
+#     Without:                          |subject| ≤ 42  (room for GitHub's " (#NNNN)")
+#   With --max N:                       |subject| ≤ N   (suffix logic skipped)
+#
+# Use `--max 50` in repos that don't squash-merge through GitHub PRs:
+# no suffix is ever appended, so the 42-char overhead is unjustified.
+#
+# Authoritative source: CONTRIBUTING.md "Commit Messages" section (when present),
+# or the per-repo .pre-commit-config.yaml hook args.
 #
 # Usage:
-#   validate-commit-message.sh <file>   # Read from file (strips # comments)
-#   validate-commit-message.sh -        # Read from stdin (no comment stripping)
+#   validate-commit-message.sh [--max N] <commit-msg-file>
+#   validate-commit-message.sh [--max N] -        # stdin
 #
 # Exit codes:
 #   0 - Valid
-#   1 - Invalid
+#   1 - Invalid (or runtime failure: file not found)
+#   2 - Usage error (missing or invalid argument)
 
-set -o errexit
-set -o nounset
-set -o pipefail
+set -e
+set -u
 
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 <commit-msg-file|->" >&2
-    exit 1
+usage() {
+    printf 'Usage: %s [--max N] <commit-msg-file|->\n' "$0" >&2
+    exit 2
+}
+
+max_override=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --max)
+            shift
+            [ $# -gt 0 ] || usage
+            max_override="$1"
+            shift
+            ;;
+        --max=*)
+            max_override="${1#--max=}"
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -)
+            break
+            ;;
+        --*)
+            printf 'Unknown option: %s\n' "$1" >&2
+            usage
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ -n "$max_override" ]; then
+    case "$max_override" in
+        ''|*[!0-9]*)
+            printf 'Error: --max requires a positive integer, got: %s\n' "$max_override" >&2
+            exit 2
+            ;;
+    esac
+    [ "$max_override" -gt 0 ] || {
+        printf 'Error: --max must be > 0, got: %s\n' "$max_override" >&2
+        exit 2
+    }
 fi
 
-INPUT="$1"
+[ $# -ge 1 ] || usage
+input="$1"
 
-# Read commit message
-if [ "$INPUT" = "-" ]; then
-    COMMIT_MSG=$(cat)
-elif [ -f "$INPUT" ]; then
-    # Strip comment lines (git's default commit template has them)
-    COMMIT_MSG=$(grep -v '^#' "$INPUT" || true)
+if [ "$input" = "-" ]; then
+    message=$(cat)
+elif [ -f "$input" ] && [ -r "$input" ]; then
+    # Strip comment lines (git's default commit template has them).
+    # sed exits 0 except on real errors (vs `grep -v` which exits
+    # 1 for no matches, hiding actual I/O errors under `|| true`).
+    # Both -f and -r required: -r alone would accept FIFOs and
+    # device files (e.g. /dev/zero would read forever).
+    message=$(sed '/^#/d' "$input")
+elif [ -e "$input" ]; then
+    printf 'Error: not a readable regular file: %s\n' "$input" >&2
+    exit 1
 else
-    echo "Error: File not found: $INPUT" >&2
+    printf 'Error: File not found: %s\n' "$input" >&2
     exit 1
 fi
 
-# Split into subject and body
-SUBJECT=$(printf '%s\n' "$COMMIT_MSG" | head -n1)
-BODY=$(printf '%s\n' "$COMMIT_MSG" | tail -n +3)  # Skip subject and blank line
+# Extract subject (first line). printf instead of echo so a
+# dash-prefixed subject isn't interpreted as a flag.
+subject=$(printf '%s\n' "$message" | head -n1)
 
-subject_errors=()
-body_errors=()
+fail() {
+    {
+        printf 'Commit message validation failed:\n\n'
+        printf '  %s\n' "$1"
+        printf '  Text: %s\n\n' "$subject"
+        printf 'See the commit message policy for this repository.\n'
+    } >&2
+    exit 1
+}
 
-# === SUBJECT LINE CHECK ===
-subject_len=${#SUBJECT}
-max_len=50
-
-if [ -z "$SUBJECT" ]; then
-    subject_errors+=("Subject line cannot be empty")
-elif [ "$subject_len" -gt "$max_len" ]; then
-    overage=$((subject_len - max_len))
-    subject_errors+=("Subject: $subject_len chars, limit $max_len ($overage over)")
+if [ -z "$subject" ]; then
+    fail "Subject line cannot be empty"
 fi
 
-# === BODY LINE CHECK ===
-if [ -n "$BODY" ]; then
-    line_num=0
-    in_code_block=false
-
-    while IFS= read -r line || [ -n "$line" ]; do
-        line_num=$((line_num + 1))
-        line_len=${#line}
-
-        # Track code block state
-        if [[ "$line" =~ ^\`\`\` ]]; then
-            if $in_code_block; then in_code_block=false; else in_code_block=true; fi
-            continue
-        fi
-
-        # Skip exempt lines
-        $in_code_block && continue
-        [[ "$line" =~ ^[[:space:]]*\| ]] && continue      # Markdown table
-        [[ "$line" =~ https?:// ]] && continue            # Contains URL
-        [[ "$line" =~ ^[[:space:]]{4} ]] && continue      # Indented code
-        [[ "$line" =~ ^$'\t' ]] && continue               # Tab-indented code
-        [[ "$line" =~ ^\> ]] && continue                  # Blockquote
-
-        if [ "$line_len" -gt 72 ]; then
-            body_errors+=("Line $line_num: $line_len chars")
-        fi
-    done <<< "$BODY"
+if [ -n "$max_override" ]; then
+    # Fixed-limit mode: no PR-suffix logic.
+    max="$max_override"
+    suffix_note=""
+elif printf '%s\n' "$subject" | grep -qE ' [(]#[0-9]+[)]$'; then
+    # PR-suffix-aware mode, trailing " (#NNN)" present: full 50.
+    # Use bracket expressions `[(]` and `[)]` for literal parens —
+    # POSIX ERE treats backslash-escapes of ordinary characters as
+    # undefined, and `\(` / `\)` mean group-anchors in BRE.
+    max=50
+    suffix_note=""
+else
+    # PR-suffix-aware mode, no suffix yet: leave 8 chars for GitHub.
+    max=42
+    suffix_note=" (room for PR suffix)"
 fi
 
-# === OUTPUT ===
-if [ ${#subject_errors[@]} -eq 0 ] && [ ${#body_errors[@]} -eq 0 ]; then
-    echo "Commit message OK (subject: $subject_len/$max_len chars)"
-    exit 0
+len=${#subject}
+if [ "$len" -gt "$max" ]; then
+    overage=$((len - max))
+    fail "Subject: $len chars, limit $max$suffix_note ($overage over)"
 fi
 
-echo "Commit message validation failed (50/72 rule):"
-echo ""
-
-if [ ${#subject_errors[@]} -gt 0 ]; then
-    for err in "${subject_errors[@]}"; do
-        echo "  $err"
-    done
-    echo "  Text: $SUBJECT"
-    echo ""
-fi
-
-if [ ${#body_errors[@]} -gt 0 ]; then
-    echo "  Body lines exceeding 72 chars:"
-    for err in "${body_errors[@]}"; do
-        echo "    $err"
-    done
-    echo ""
-fi
-
-exit 1
+printf 'Commit message OK (subject: %s/%s chars)\n' "$len" "$max" >&2

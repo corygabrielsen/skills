@@ -118,7 +118,11 @@ pub(crate) fn candidates(
     // an approval-request situation — the requested changes must
     // be addressed before re-review.
     let needs_approval = matches!(reviews.decision, Some(ReviewDecision::ReviewRequired));
-    let ci_clean = ci.required.fail() == 0 && ci.required.pending() == 0;
+    // `missing_names` carries required checks that are configured
+    // but not yet present on the PR — an approval request here
+    // would race ahead of the gate.
+    let ci_clean =
+        ci.required.fail() == 0 && ci.required.pending() == 0 && ci.missing_names.is_empty();
     // Gate symmetry with the address-threads filter: an outdated
     // thread is still unresolved feedback (anchor moved, content
     // may still apply), so any approval-closing candidate must
@@ -447,10 +451,10 @@ mod tests {
     ) -> ReviewThread {
         use crate::orient::thread::{BotName, FilePath, ThreadId, ThreadLocation};
         ReviewThread {
-            id: ThreadId::new(id.to_string()),
+            id: ThreadId::new(id.to_string()).unwrap(),
             author: ThreadAuthor::Bot(BotName::Copilot),
             location: ThreadLocation {
-                path: FilePath::new(path),
+                path: FilePath::new(path).unwrap(),
                 line: Some(line),
             },
             body: body.into(),

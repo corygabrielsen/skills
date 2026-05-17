@@ -21,6 +21,18 @@ pub struct IdError {
     reason: String,
 }
 
+impl IdError {
+    /// Public constructor for sibling modules that define their own
+    /// branded newtypes (e.g. [`crate::orient::thread::ThreadId`])
+    /// and reuse the shared error shape.
+    pub fn new(kind: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            reason: reason.into(),
+        }
+    }
+}
+
 impl fmt::Display for IdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid {}: {}", self.kind, self.reason)
@@ -30,10 +42,67 @@ impl fmt::Display for IdError {
 impl std::error::Error for IdError {}
 
 fn err(kind: &'static str, reason: impl Into<String>) -> IdError {
-    IdError {
-        kind,
-        reason: reason.into(),
+    IdError::new(kind, reason)
+}
+
+/// Validate a GitHub account login (user or org). GitHub's own rule
+/// is `[A-Za-z0-9-]{1,39}` with no leading or trailing `-` and no
+/// consecutive `-`. Applied to [`Owner`].
+fn validate_github_account_login(kind: &'static str, s: &str) -> Result<(), IdError> {
+    if s.is_empty() {
+        return Err(err(kind, "empty"));
     }
+    if s.len() > 39 {
+        return Err(err(kind, "length > 39"));
+    }
+    if s.starts_with('-') || s.ends_with('-') {
+        return Err(err(kind, "leading or trailing '-'"));
+    }
+    if s.contains("--") {
+        return Err(err(kind, "consecutive '-'"));
+    }
+    if !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(err(kind, "non-[A-Za-z0-9-] byte"));
+    }
+    Ok(())
+}
+
+/// Validate a GitHub repo name: `[A-Za-z0-9._-]{1,100}`, no leading
+/// `.` or `-`. Applied to [`Repo`].
+fn validate_github_repo_name(kind: &'static str, s: &str) -> Result<(), IdError> {
+    if s.is_empty() {
+        return Err(err(kind, "empty"));
+    }
+    if s.len() > 100 {
+        return Err(err(kind, "length > 100"));
+    }
+    if s.starts_with('.') || s.starts_with('-') {
+        return Err(err(kind, "leading '.' or '-'"));
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        return Err(err(kind, "non-[A-Za-z0-9._-] byte"));
+    }
+    Ok(())
+}
+
+/// Reject empty / whitespace / control-byte strings. Used by
+/// newtypes whose surface domain (team slug, check name, login
+/// including `[bot]` suffix) tolerates richer character sets but
+/// MUST NOT carry framing-significant bytes.
+fn validate_no_control_bytes(kind: &'static str, s: &str) -> Result<(), IdError> {
+    if s.is_empty() {
+        return Err(err(kind, "empty"));
+    }
+    if s.trim().is_empty() {
+        return Err(err(kind, "whitespace-only"));
+    }
+    if s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err(err(kind, "contains ASCII control byte"));
+    }
+    Ok(())
 }
 
 // -- Owner -----------------------------------------------------------
@@ -45,12 +114,7 @@ pub struct Owner(String);
 
 impl Owner {
     pub fn parse(s: &str) -> Result<Self, IdError> {
-        if s.is_empty() {
-            return Err(err("owner", "empty"));
-        }
-        if s.contains('/') {
-            return Err(err("owner", "contains '/'"));
-        }
+        validate_github_account_login("owner", s)?;
         Ok(Self(s.to_owned()))
     }
 
@@ -87,12 +151,7 @@ pub struct Repo(String);
 
 impl Repo {
     pub fn parse(s: &str) -> Result<Self, IdError> {
-        if s.is_empty() {
-            return Err(err("repo", "empty"));
-        }
-        if s.contains('/') {
-            return Err(err("repo", "contains '/'"));
-        }
+        validate_github_repo_name("repo", s)?;
         Ok(Self(s.to_owned()))
     }
 
@@ -278,9 +337,8 @@ pub struct GitHubLogin(String);
 
 impl GitHubLogin {
     pub fn parse(s: &str) -> Result<Self, IdError> {
-        if s.is_empty() {
-            return Err(err("github login", "empty"));
-        }
+        let stem = s.strip_suffix("[bot]").unwrap_or(s);
+        validate_github_account_login("github login", stem)?;
         Ok(Self(s.to_owned()))
     }
 
@@ -398,9 +456,7 @@ pub struct TeamName(String);
 
 impl TeamName {
     pub fn parse(s: &str) -> Result<Self, IdError> {
-        if s.is_empty() {
-            return Err(err("team name", "empty"));
-        }
+        validate_no_control_bytes("team name", s)?;
         Ok(Self(s.to_owned()))
     }
 
@@ -464,9 +520,7 @@ pub struct CheckName(String);
 
 impl CheckName {
     pub fn parse(s: &str) -> Result<Self, IdError> {
-        if s.is_empty() {
-            return Err(err("check name", "empty"));
-        }
+        validate_no_control_bytes("check name", s)?;
         Ok(Self(s.to_owned()))
     }
 
@@ -620,10 +674,42 @@ mod tests {
     }
 
     #[test]
+    fn owner_rejects_whitespace_control_and_disallowed_chars() {
+        assert!(Owner::parse("al ice").is_err());
+        assert!(Owner::parse("acme\n").is_err());
+        assert!(Owner::parse("acme[bot]").is_err());
+        assert!(Owner::parse("-leading").is_err());
+        assert!(Owner::parse("trailing-").is_err());
+        assert!(Owner::parse("foo--bar").is_err());
+        // 40 chars exceeds the 39-byte ceiling.
+        assert!(Owner::parse(&"a".repeat(40)).is_err());
+        // 39 chars is exactly the ceiling.
+        assert_eq!(
+            Owner::parse(&"a".repeat(39)).unwrap().as_str(),
+            "a".repeat(39),
+        );
+    }
+
+    #[test]
     fn repo_rejects_empty_and_slash() {
         assert!(Repo::parse("").is_err());
         assert!(Repo::parse("a/b").is_err());
         assert_eq!(Repo::parse("protocol").unwrap().as_str(), "protocol");
+    }
+
+    #[test]
+    fn repo_rejects_whitespace_control_and_disallowed_chars() {
+        assert!(Repo::parse("acme widget").is_err());
+        assert!(Repo::parse("acme\n").is_err());
+        assert!(Repo::parse(".hidden").is_err());
+        assert!(Repo::parse("-leading").is_err());
+        // 101 chars exceeds the 100-byte ceiling.
+        assert!(Repo::parse(&"a".repeat(101)).is_err());
+        // Dots, underscores, and dashes are admitted in non-leading position.
+        assert_eq!(
+            Repo::parse("protocol.v2-stable_1").unwrap().as_str(),
+            "protocol.v2-stable_1",
+        );
     }
 
     #[test]
@@ -660,6 +746,38 @@ mod tests {
         assert!(GitHubLogin::parse("").is_err());
         assert!(!GitHubLogin::parse("alice").unwrap().is_bot());
         assert!(GitHubLogin::parse("copilot[bot]").unwrap().is_bot());
+    }
+
+    #[test]
+    fn github_login_rejects_control_bytes_and_invalid_chars() {
+        assert!(GitHubLogin::parse("al ice").is_err());
+        assert!(GitHubLogin::parse("alice\n").is_err());
+        assert!(GitHubLogin::parse("-alice").is_err());
+        assert!(GitHubLogin::parse("alice--bob").is_err());
+        // The stem before `[bot]` is the part the GitHub regex applies to.
+        assert!(GitHubLogin::parse("[bot]").is_err());
+        assert!(GitHubLogin::parse("al ice[bot]").is_err());
+        assert!(GitHubLogin::parse("copilot-pull-request-reviewer[bot]").is_ok());
+    }
+
+    #[test]
+    fn team_name_rejects_control_bytes() {
+        assert!(TeamName::parse("").is_err());
+        assert!(TeamName::parse("   ").is_err());
+        assert!(TeamName::parse("backend\n").is_err());
+        assert_eq!(TeamName::parse("backend").unwrap().as_str(), "backend",);
+    }
+
+    #[test]
+    fn check_name_rejects_control_bytes() {
+        // Spaces and slashes are admitted — only control bytes are
+        // rejected so stderr framing cannot be split.
+        assert!(CheckName::parse("CI\nstage").is_err());
+        assert!(CheckName::parse("CI\0stage").is_err());
+        assert_eq!(
+            CheckName::parse("Build / test").unwrap().as_str(),
+            "Build / test",
+        );
     }
 
     #[test]

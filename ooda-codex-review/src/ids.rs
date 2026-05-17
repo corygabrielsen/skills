@@ -188,8 +188,16 @@ impl RepoId {
         if s.is_empty() {
             return Err(err("repo id", "empty"));
         }
-        if s.bytes().any(|b| b == b'/' || b.is_ascii_whitespace()) {
-            return Err(err("repo id", "must not contain '/' or whitespace"));
+        // Strict per-byte filter: ASCII printable only (0x21..=0x7e),
+        // less '/'. Rejects whitespace, control bytes, and non-ASCII
+        // (which includes `\u{2028}` line separator and other Unicode
+        // line-break-class code points whose first UTF-8 byte falls
+        // outside this range).
+        if !s.bytes().all(|b| matches!(b, 0x21..=0x7e) && b != b'/') {
+            return Err(err(
+                "repo id",
+                "must be ASCII printable, no '/' or whitespace",
+            ));
         }
         Ok(Self(s))
     }
@@ -290,6 +298,16 @@ mod tests {
             RepoId::parse("ooda-codex-review-abc123").unwrap().as_str(),
             "ooda-codex-review-abc123"
         );
+    }
+
+    #[test]
+    fn repo_id_rejects_control_bytes_and_non_ascii() {
+        assert!(RepoId::parse("abc\n").is_err());
+        assert!(RepoId::parse("abc\0").is_err());
+        assert!(RepoId::parse("abc\u{007f}").is_err());
+        // U+2028 LINE SEPARATOR — first UTF-8 byte 0xe2 falls
+        // outside the printable-ASCII range.
+        assert!(RepoId::parse("abc\u{2028}").is_err());
     }
 
     #[test]

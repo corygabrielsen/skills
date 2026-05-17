@@ -118,6 +118,11 @@ impl BlockerKey {
     /// Test-only escape hatch for fixture construction. Bypasses
     /// the gate-stability discipline of [`Self::from_static`] /
     /// [`Self::typed`]; production call sites MUST use those.
+    ///
+    /// Gated behind `cfg(test)` (within this crate) or the
+    /// `test-support` Cargo feature (for cross-crate fixtures), so
+    /// release builds of dependent binaries cannot reach it.
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     #[must_use]
     pub fn for_test(s: impl Into<String>) -> Self {

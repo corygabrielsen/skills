@@ -4,7 +4,7 @@
 //! resolve HEAD via `git rev-parse` in the working directory, then
 //! write the per-axis attestation file under
 //! `<state-root>/<pr-id>/`. State-root resolution defers to
-//! [`ooda_core::state_root::resolve_ooda_pr_state_root`].
+//! [`ooda_state::resolve_state_root`].
 //!
 //! # Exit codes
 //!
@@ -26,7 +26,7 @@ use ooda_core::attest::{
     AttestError, write_claude_review_atomic, write_closeout_atomic, write_doc_review_atomic,
     write_pull_request_metadata_atomic,
 };
-use ooda_core::state_root::resolve_ooda_pr_state_root;
+use ooda_state::resolve_state_root as resolve_ooda_state_root;
 
 const EXIT_VALIDATION: u8 = 64;
 const EXIT_GIT: u8 = 65;
@@ -56,7 +56,7 @@ enum SubCmd {
 
         /// State-root directory; the per-PR subdir is created on
         /// demand. When omitted, resolved per
-        /// [`ooda_core::state_root::resolve_ooda_pr_state_root`].
+        /// [`ooda_state::resolve_state_root`].
         #[arg(long)]
         state_root: Option<PathBuf>,
     },
@@ -193,7 +193,7 @@ fn resolve_state_root(explicit: Option<&Path>) -> Result<PathBuf, String> {
         });
     }
 
-    let resolved = resolve_ooda_pr_state_root(None);
+    let resolved = resolve_ooda_state_root(None);
     fs::create_dir_all(&resolved).map_err(|e| {
         format!(
             "failed to create resolved state root {}: {e}",

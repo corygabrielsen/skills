@@ -1008,7 +1008,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
             );
         }
         Outcome::HandoffHuman(handoff) => {
-            let _ = writeln!(out, "Hand off to human: {}", handoff.kind.name());
+            let _ = writeln!(out, "Hand off to human: {}", handoff.prompt.headline);
             write_handoff_block(out, &handoff.prompt.to_string(), handoff_path);
         }
         Outcome::WouldAdvance(action) => {
@@ -1020,7 +1020,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
             );
         }
         Outcome::HandoffAgent(handoff) => {
-            let _ = writeln!(out, "Hand off to agent: {}", handoff.kind.name());
+            let _ = writeln!(out, "Hand off to agent: {}", handoff.prompt.headline);
             write_handoff_block(out, &handoff.prompt.to_string(), handoff_path);
         }
         Outcome::BinaryError(msg) => {
@@ -1239,7 +1239,7 @@ mod tests {
         let mut buf = Vec::new();
         render_outcome(&mut buf, &make_handoff_outcome("Rebase onto base"), None);
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.starts_with("Hand off to agent: Rebase\n"));
+        assert!(s.starts_with("Hand off to agent: Rebase onto base\n"));
         assert!(s.contains("\n  prompt: # Rebase onto base\n"));
     }
 
@@ -1254,7 +1254,7 @@ mod tests {
             Some(path),
         );
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.starts_with("Hand off to agent: Rebase\n"));
+        assert!(s.starts_with("Hand off to agent: Rebase onto base\n"));
         assert!(
             s.contains(
                 "\n  see: /state/github.com/acme/widget/prs/42/runs/r1/iterations/0001/handoff.md\n",

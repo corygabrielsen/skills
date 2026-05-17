@@ -47,6 +47,7 @@ use axum::response::{Html, IntoResponse, Json};
 use axum::routing::get;
 use futures_util::stream::Stream;
 use notify::{EventKind, RecursiveMode, Watcher};
+use ooda_core::ExitCode;
 use ooda_state::{Event as OodaEvent, RunId, StateRoot};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
@@ -91,8 +92,7 @@ struct StreamedEvent {
     event: OodaEvent,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -100,7 +100,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let args = parse_args()?;
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(CliError::Usage(msg)) => {
+            eprintln!("cockpit: {msg}");
+            return ExitCode::UsageError.into();
+        }
+        Err(CliError::Other(e)) => {
+            eprintln!("cockpit: {e}");
+            return ExitCode::BinaryError.into();
+        }
+    };
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("cockpit: tokio runtime: {e}");
+            return ExitCode::BinaryError.into();
+        }
+    };
+
+    match runtime.block_on(serve(args)) {
+        Ok(()) => ExitCode::DoneSucceeded.into(),
+        Err(e) => {
+            eprintln!("cockpit: {e}");
+            ExitCode::BinaryError.into()
+        }
+    }
+}
+
+async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let state_root_path = ooda_state::resolve_state_root(args.state_root.as_deref());
     let state_root = StateRoot::new(&state_root_path)?;
     let bind_ip = args.bind.unwrap_or_else(default_bind_ip);
@@ -402,31 +434,74 @@ struct Args {
     state_root: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
+/// Parser-stage error discriminant. `Usage` carries a single-line
+/// diagnostic that maps to `ExitCode::UsageError` (64); `Other`
+/// wraps any non-CLI runtime failure that surfaces during arg
+/// resolution.
+enum CliError {
+    Usage(String),
+    #[allow(dead_code)]
+    Other(Box<dyn std::error::Error>),
+}
+
+impl From<String> for CliError {
+    fn from(msg: String) -> Self {
+        Self::Usage(msg)
+    }
+}
+
+fn parse_args() -> Result<Args, CliError> {
+    // Help-pre-scan establishes the help-dominates-parse-failure
+    // invariant; without it, a malformed earlier flag would shadow a
+    // later `--help`.
+    if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+        print_usage();
+        std::process::exit(0);
+    }
+
     let mut port = DEFAULT_PORT;
     let mut bind = None;
     let mut state_root = None;
+    let mut saw_serve = false;
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "serve" => {} // sole subcommand today; accepted for future-proofing
-            "--port" => {
-                let v = iter.next().ok_or("--port requires a value")?;
-                port = v.parse().map_err(|e| format!("--port: {e}"))?;
-            }
-            "--bind" => {
-                let v = iter.next().ok_or("--bind requires a value")?;
-                bind = Some(v.parse().map_err(|e| format!("--bind: {e}"))?);
-            }
-            "--state-root" => {
-                let v = iter.next().ok_or("--state-root requires a value")?;
-                state_root = Some(PathBuf::from(v));
-            }
             "-h" | "--help" => {
+                // Unreachable under the help-pre-scan invariant.
+                // Retained as a structural backstop.
                 print_usage();
                 std::process::exit(0);
             }
-            other => return Err(format!("unknown argument: {other}").into()),
+            "serve" => {
+                if saw_serve {
+                    return Err(CliError::Usage("`serve` subcommand repeated".into()));
+                }
+                saw_serve = true;
+            }
+            "--port" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| CliError::Usage("--port requires a value".into()))?;
+                port = v
+                    .parse()
+                    .map_err(|e| CliError::Usage(format!("--port: {e}")))?;
+            }
+            "--bind" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| CliError::Usage("--bind requires a value".into()))?;
+                bind = Some(
+                    v.parse()
+                        .map_err(|e| CliError::Usage(format!("--bind: {e}")))?,
+                );
+            }
+            "--state-root" => {
+                let v = iter
+                    .next()
+                    .ok_or_else(|| CliError::Usage("--state-root requires a value".into()))?;
+                state_root = Some(PathBuf::from(v));
+            }
+            other => return Err(CliError::Usage(format!("unknown argument: {other}"))),
         }
     }
     Ok(Args {

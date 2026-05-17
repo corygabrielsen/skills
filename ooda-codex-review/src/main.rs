@@ -20,7 +20,11 @@
 use ooda_core::MidTier;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+// Aliased to avoid collision with `ooda_core::ExitCode` (re-exported
+// throughout this binary). The two types are distinct: `ExitCode`
+// is the typed family-wide enum; `ProcessExitCode` is the OS-facing
+// `std::process::ExitCode` that `main` returns.
+use std::process::ExitCode as ProcessExitCode;
 
 mod act;
 mod decide;
@@ -51,7 +55,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Mode (exactly one required):\n  --uncommitted       review working-tree changes vs HEAD\n  --base BRANCH       review current branch vs BRANCH\n  --commit SHA        review a specific commit (40-hex SHA)\n  --pr NUM            review a specific PR's changes\n\
          \n\
-         Options:\n  --level LVL                  reasoning level (= floor): low|medium|high|xhigh (default low)\n  --ceiling LVL                top of the ladder; all-clean here halts DoneFixedPoint (default xhigh, must be >= --level)\n  -n N                         parallel review count (default 3, must be ≥ 1)\n  --max-iter N                 loop iteration cap (default 50, must be ≥ 1)\n  --state-root PATH            OODA state-tree root (default $OODA_STATE_HOME or $XDG_STATE_HOME/ooda or $HOME/.local/state/ooda)\n  --codex-bin PATH             path to the `codex` binary (default `codex`)\n  --criteria STRING            unsupported with current `codex review` target modes; always UsageError\n  -h, --help                   show this help and exit\n\
+         Options:\n  --level LVL                  reasoning level (= floor): low|medium|high|xhigh (default low)\n  --ceiling LVL                top of the ladder; all-clean here halts DoneFixedPoint (default xhigh, must be >= --level)\n  --codex-review-n N           parallel review count (default 3, must be ≥ 1)\n  --max-iter N                 loop iteration cap (default 50, must be ≥ 1)\n  --state-root PATH            OODA state-tree root (default $OODA_STATE_HOME or $XDG_STATE_HOME/ooda or $HOME/.local/state/ooda)\n  --codex-bin PATH             path to the `codex` binary (default `codex`)\n  --criteria STRING            unsupported with current `codex review` target modes; always UsageError\n  -h, --help                   show this help and exit\n\
          \n\
          Side-effect flags (skip the loop, emit a single ladder-transition event run, exit immediately. Mutually exclusive):\n  --advance-level              climb one rung (Idle at ceiling)\n  --drop-level                 drop one rung, clamp at floor (Idle at floor)\n  --restart-from-floor         reset current_level to floor\n  --mark-retro-clean           record Clean outcome; advance, or DoneFixedPoint at ceiling\n  --mark-retro-changes REASON  record RetrospectiveChanges outcome; restart from floor\n  --mark-address-passed        record Addressed outcome; drop one rung\n  --mark-address-failed DETAILS  emit HandoffHuman with DETAILS as prompt\n\
          \n\
@@ -62,7 +66,10 @@ fn print_usage(out: &mut dyn std::io::Write) {
 // ----- args ------------------------------------------------------------
 
 struct Args {
-    target: ReviewTarget,
+    /// Loop mode requires a target; side-effect mode never reads
+    /// it. Encoded as `Option` so side-effect invocations can omit
+    /// the target flag without manufacturing a placeholder.
+    target: Option<ReviewTarget>,
     level: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
     n: std::num::NonZeroU32,
@@ -140,6 +147,9 @@ fn parse_positive_u32(flag: &str, raw: &str) -> Result<std::num::NonZeroU32, Out
             "{flag} must be ≥ 1; got negative value: {raw}"
         )));
     }
+    if raw.starts_with('+') {
+        return Err(usage(format!("{flag}: leading `+` not accepted: {raw}")));
+    }
     let n: u32 = raw
         .parse()
         .map_err(|_| usage(format!("{flag}: not an integer: {raw}")))?;
@@ -202,6 +212,9 @@ fn parse_args() -> Result<Args, Outcome> {
             }
             "--pr" => {
                 let v = next_value(&mut iter, "--pr")?;
+                if v.starts_with('+') {
+                    return Err(usage(format!("--pr: leading `+` not accepted: {v}")));
+                }
                 let num: u64 = v
                     .parse()
                     .map_err(|_| usage(format!("--pr: not a positive integer: {v}")))?;
@@ -218,9 +231,9 @@ fn parse_args() -> Result<Args, Outcome> {
                 let v = next_value(&mut iter, "--ceiling")?;
                 ceiling = parse_level(&v).map_err(usage)?;
             }
-            "-n" => {
-                let v = next_value(&mut iter, "-n")?;
-                n = parse_positive_u32("-n", &v)?;
+            "--codex-review-n" => {
+                let v = next_value(&mut iter, "--codex-review-n")?;
+                n = parse_positive_u32("--codex-review-n", &v)?;
             }
             "--max-iter" => {
                 let v = next_value(&mut iter, "--max-iter")?;
@@ -261,9 +274,13 @@ fn parse_args() -> Result<Args, Outcome> {
         }
     }
 
-    let target = target.ok_or_else(|| {
-        usage("exactly one of --uncommitted / --base / --commit / --pr is required")
-    })?;
+    // Loop mode requires a target; side-effect mode never reads
+    // it. Reject a missing target only in loop mode.
+    if target.is_none() && side_effect.is_none() {
+        return Err(usage(
+            "exactly one of --uncommitted / --base / --commit / --pr is required",
+        ));
+    }
 
     if ceiling < level {
         return Err(usage(format!(
@@ -394,16 +411,20 @@ fn sha256_prefix(input: &str, hex_chars: usize) -> String {
 /// value, ladder bounds) without leaking PR-domain concepts like
 /// repo slugs or PR numbers — those live in the orchestrator's
 /// own event stream when needed.
+///
+/// Side-effect invocations omit `--uncommitted`/`--base`/`--commit`/`--pr`;
+/// the payload renders `mode = "side-effect"` and `value = null`.
 fn build_target_payload(
-    target: &ReviewTarget,
+    target: Option<&ReviewTarget>,
     floor: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
 ) -> serde_json::Value {
     let (mode, value) = match target {
-        ReviewTarget::Uncommitted => ("uncommitted", None),
-        ReviewTarget::Base(b) => ("base", Some(b.as_str().to_string())),
-        ReviewTarget::Commit(s) => ("commit", Some(s.as_str().to_string())),
-        ReviewTarget::Pr(n) => ("pr", Some(n.to_string())),
+        None => ("side-effect", None),
+        Some(ReviewTarget::Uncommitted) => ("uncommitted", None),
+        Some(ReviewTarget::Base(b)) => ("base", Some(b.as_str().to_string())),
+        Some(ReviewTarget::Commit(s)) => ("commit", Some(s.as_str().to_string())),
+        Some(ReviewTarget::Pr(n)) => ("pr", Some(n.to_string())),
     };
     serde_json::json!({
         "mode": mode,
@@ -416,24 +437,6 @@ fn build_target_payload(
 // ----- orchestration ---------------------------------------------------
 
 fn run_session(args: &Args) -> Outcome {
-    let repo_root = match discover_repo_root() {
-        Ok(p) => p,
-        Err(e) => return Outcome::binary_error(e),
-    };
-    let repo_id = match compute_repo_id(&repo_root) {
-        Ok(id) => id,
-        Err(e) => return Outcome::binary_error(format!("compute repo id: {e}")),
-    };
-
-    let codex_target = if args.side_effect.is_none() {
-        match resolve_codex_target(&args.target, &repo_root) {
-            Ok(target) => Some(target),
-            Err(e) => return Outcome::binary_error(e),
-        }
-    } else {
-        None
-    };
-
     let state_root_path = ooda_state::resolve_state_root(args.state_root.as_deref());
     let state = match StateRoot::new(state_root_path) {
         Ok(s) => s,
@@ -446,16 +449,42 @@ fn run_session(args: &Args) -> Outcome {
     };
     if let Err(e) = writer.start(EventBody::RunStarted {
         domain: "codex-review".into(),
-        target: build_target_payload(&args.target, args.level, args.ceiling),
+        target: build_target_payload(args.target.as_ref(), args.level, args.ceiling),
     }) {
         return Outcome::binary_error(format!("emit run_started: {e}"));
     }
 
     if let Some(side_effect) = args.side_effect.clone() {
+        // Side-effect mode reads neither the git working tree nor
+        // the repo identity; gating the git-shells off keeps a
+        // non-repo invocation (CI dispatch, test harness) from
+        // failing with `BinaryError(70)` for a property the side-
+        // effect branch never observes.
         let outcome = apply_side_effect(&mut writer, args.level, args.ceiling, side_effect);
         finalize(&mut writer, &outcome);
         return outcome;
     }
+
+    // Loop mode requires the git toplevel + repo identity. Resolve
+    // them only on this branch so the side-effect mode above stays
+    // side-effect-free with respect to git.
+    let repo_root = match discover_repo_root() {
+        Ok(p) => p,
+        Err(e) => return Outcome::binary_error(e),
+    };
+    let repo_id = match compute_repo_id(&repo_root) {
+        Ok(id) => id,
+        Err(e) => return Outcome::binary_error(format!("compute repo id: {e}")),
+    };
+
+    let loop_target = args
+        .target
+        .clone()
+        .expect("loop mode rejects missing --target at parse time");
+    let codex_target = match resolve_codex_target(&loop_target, &repo_root) {
+        Ok(target) => target,
+        Err(e) => return Outcome::binary_error(e),
+    };
 
     // Loop mode: spawn codex review subprocesses into a per-run
     // scratch dir. The dir lives beside `events.jsonl` and `blobs/`
@@ -470,14 +499,14 @@ fn run_session(args: &Args) -> Outcome {
 
     let ctx = ActContext {
         batch_dir: batch_dir.clone(),
-        target: codex_target.expect("loop mode resolves codex target"),
+        target: codex_target,
         repo_root,
         codex_bin: args.codex_bin.clone(),
     };
 
     let level = args.level;
     let n = args.n.get();
-    let observe_target = args.target.clone();
+    let observe_target = loop_target.clone();
     let observe_repo_id = repo_id.clone();
     let observe = move |_r: &RepoId, _t: &ReviewTarget| {
         fetch_all(
@@ -493,7 +522,7 @@ fn run_session(args: &Args) -> Outcome {
     let mut sink = EventSink::new(&mut writer);
     let result = run_loop(
         &repo_id,
-        &args.target,
+        &loop_target,
         LoopConfig {
             max_iterations: args.max_iter,
             ceiling: args.ceiling,
@@ -552,6 +581,12 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
 /// `MarkAddressFailed` additionally writes the handoff prompt
 /// blob and emits `iteration_handoff`.
 ///
+/// `floor` is the bottom of the ladder (= `--level`). The
+/// `RestartFromFloor` / `MarkRetroChanges` log lines render the
+/// truthful "to floor: {floor}" transition; the prior `current`
+/// rung is the orchestrator's state, not this binary's, so it is
+/// not part of the rendered text.
+///
 /// Outcome map (see [`SideEffect`] for the per-variant rationale):
 ///
 /// | SideEffect | Outcome |
@@ -564,48 +599,46 @@ fn outcome_name(outcome: &Outcome) -> &'static str {
 /// | `MarkAddressFailed` | `HandoffHuman` |
 fn apply_side_effect(
     writer: &mut RunWriter,
-    from: CodexReasoningLevel,
+    floor: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,
     side_effect: SideEffect,
 ) -> Outcome {
     match side_effect {
-        SideEffect::AdvanceLevel => match from.higher() {
+        SideEffect::AdvanceLevel => match floor.higher() {
             Some(to) => emit_transition(
                 writer,
                 "AdvanceLevel",
-                &format!("advanced level: {} -> {}", from.as_str(), to.as_str()),
+                &format!("advanced level: {} -> {}", floor.as_str(), to.as_str()),
             ),
             None => emit_transition(
                 writer,
                 "AdvanceLevel",
-                &format!("at ladder edge ({}); no advance", from.as_str()),
+                &format!("at ladder edge ({}); no advance", floor.as_str()),
             ),
         },
-        SideEffect::DropLevel => match from.lower() {
+        SideEffect::DropLevel => match floor.lower() {
             Some(to) => emit_transition(
                 writer,
                 "DropLevel",
-                &format!("dropped level: {} -> {}", from.as_str(), to.as_str()),
+                &format!("dropped level: {} -> {}", floor.as_str(), to.as_str()),
             ),
             None => emit_transition(
                 writer,
                 "DropLevel",
-                &format!("at floor ({}); no drop", from.as_str()),
+                &format!("at floor ({}); no drop", floor.as_str()),
             ),
         },
         SideEffect::RestartFromFloor => emit_transition(
             writer,
             "RestartFromFloor",
-            &format!(
-                "restarted from floor: {} -> {}",
-                from.as_str(),
-                from.as_str()
-            ),
+            &format!("restarted to floor: {}", floor.as_str()),
         ),
-        SideEffect::MarkRetroClean => apply_mark_retro_clean(writer, ceiling, from),
-        SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(writer, from, &reason),
-        SideEffect::MarkAddressPassed => apply_mark_address_passed(writer, from),
-        SideEffect::MarkAddressFailed(details) => apply_mark_address_failed(writer, from, &details),
+        SideEffect::MarkRetroClean => apply_mark_retro_clean(writer, ceiling, floor),
+        SideEffect::MarkRetroChanges(reason) => apply_mark_retro_changes(writer, floor, &reason),
+        SideEffect::MarkAddressPassed => apply_mark_address_passed(writer, floor),
+        SideEffect::MarkAddressFailed(details) => {
+            apply_mark_address_failed(writer, floor, &details)
+        }
     }
 }
 
@@ -655,15 +688,16 @@ fn apply_mark_retro_clean(
 
 fn apply_mark_retro_changes(
     writer: &mut RunWriter,
-    current: CodexReasoningLevel,
+    floor: CodexReasoningLevel,
     reason: &str,
 ) -> Outcome {
+    // Log renders the truthful transition: "restart to floor".
+    // The prior `current` rung is the orchestrator's state, not
+    // this binary's, so it does not appear here.
     let log_line = format!(
-        "retrospective surfaced changes at {} (\"{}\"); restarted from floor: {} -> {}",
-        current.as_str(),
+        "retrospective surfaced changes (\"{}\"); restarted to floor: {}",
         reason,
-        current.as_str(),
-        current.as_str()
+        floor.as_str()
     );
     emit_transition(writer, "RetroChanges::RestartFromFloor", &log_line)
 }
@@ -716,14 +750,14 @@ fn apply_mark_address_failed(
     Outcome::HandoffHuman(Box::new(handoff))
 }
 
-fn main() -> ExitCode {
+fn main() -> ProcessExitCode {
     let outcome = match parse_args() {
         Ok(args) => run_session(&args),
         Err(e) => e,
     };
     let code = outcome.exit_code();
     render_outcome(&mut std::io::stderr(), &outcome);
-    ExitCode::from(code)
+    ProcessExitCode::from(code)
 }
 
 /// Render `Outcome` to stderr per the wire contract: single-line
@@ -816,7 +850,7 @@ mod tests {
     #[test]
     fn target_payload_carries_mode_and_ladder_bounds() {
         let payload = build_target_payload(
-            &ReviewTarget::Uncommitted,
+            Some(&ReviewTarget::Uncommitted),
             CodexReasoningLevel::Low,
             CodexReasoningLevel::Xhigh,
         );
@@ -827,7 +861,7 @@ mod tests {
 
         let branch = BranchName::parse("master").unwrap();
         let payload = build_target_payload(
-            &ReviewTarget::Base(branch),
+            Some(&ReviewTarget::Base(branch)),
             CodexReasoningLevel::Medium,
             CodexReasoningLevel::High,
         );
@@ -835,5 +869,15 @@ mod tests {
         assert_eq!(payload["value"], "master");
         assert_eq!(payload["floor"], "medium");
         assert_eq!(payload["ceiling"], "high");
+    }
+
+    #[test]
+    fn target_payload_side_effect_mode_when_target_absent() {
+        let payload =
+            build_target_payload(None, CodexReasoningLevel::Low, CodexReasoningLevel::Xhigh);
+        assert_eq!(payload["mode"], "side-effect");
+        assert!(payload["value"].is_null());
+        assert_eq!(payload["floor"], "low");
+        assert_eq!(payload["ceiling"], "xhigh");
     }
 }

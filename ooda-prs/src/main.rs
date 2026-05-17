@@ -1,5 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+// Aliased to avoid collision with `ooda_core::ExitCode` (used via
+// the `MultiOutcome::exit_code()` projection below). The two types
+// are distinct: `ExitCode` is the typed family-wide enum;
+// `ProcessExitCode` is the OS-facing `std::process::ExitCode` that
+// `main` returns.
+use std::process::ExitCode as ProcessExitCode;
 use std::time::Duration;
 
 mod act;
@@ -40,8 +45,8 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  -h, --help           show this help and exit\n\
          \n\
-         Exit codes — aggregate priority projection over per-PR Outcomes:\n   0 all DoneMerged/DoneClosed/Paused (no further action)\n   1 (unused at suite level — Paused folds into 0)\n   2 any WouldAdvance\n   3 any HandoffHuman\n   4 any HandoffAgent\n   5 (unused at suite level — DoneClosed folds into 0)\n   6 any StuckRepeated\n   7 any StuckCapReached\n  64 UsageError\n  70 any BinaryError\n  (130 SIGINT, 143 SIGTERM reserved)\n\
-         Priority order (highest first): UsageError > BinaryError > HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated > WouldAdvance > terminal."
+         Exit codes — aggregate priority projection over per-PR Outcomes:\n   0 all DoneMerged/Paused (no further action)\n   1 (unused at suite level — Paused folds into 0)\n   2 any WouldAdvance\n   3 any HandoffHuman\n   4 any HandoffAgent\n   5 any DoneClosed (closed without merge — distinct from merged)\n   6 any StuckRepeated\n   7 any StuckCapReached\n  64 UsageError\n  70 any BinaryError\n  (130 SIGINT, 143 SIGTERM reserved)\n\
+         Priority order (highest first): UsageError > BinaryError > HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated > WouldAdvance > DoneClosed > DoneMerged/Paused."
     );
 }
 
@@ -139,6 +144,9 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
                         "--max-iter must be ≥ 1; got negative value: {v}"
                     )));
                 }
+                if v.starts_with('+') {
+                    return Err(usage(&format!("--max-iter: leading `+` not accepted: {v}")));
+                }
                 let Ok(n) = v.parse::<u32>() else {
                     return Err(usage(&format!("--max-iter: not an integer: {v}")));
                 };
@@ -168,6 +176,11 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
                 if v.starts_with('-') {
                     return Err(usage(&format!(
                         "--concurrency must be ≥ 1; got negative value: {v}"
+                    )));
+                }
+                if v.starts_with('+') {
+                    return Err(usage(&format!(
+                        "--concurrency: leading `+` not accepted: {v}"
                     )));
                 }
                 let Ok(n) = v.parse::<u32>() else {
@@ -330,7 +343,7 @@ fn usage(msg: &str) -> ooda_core::SingleLineString {
     msg.into()
 }
 
-fn main() -> ExitCode {
+fn main() -> ProcessExitCode {
     let multi = match parse_args() {
         Ok(args) => {
             // Parallel per-PR dispatch under `thread::scope`. Each
@@ -373,7 +386,7 @@ fn main() -> ExitCode {
             MultiOutcome::UsageError(usage_msg)
         }
     };
-    ExitCode::from(multi.exit_code())
+    ProcessExitCode::from(multi.exit_code())
 }
 
 /// Drive a single PR end-to-end on one worker.

@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+// Aliased to avoid collision with `ooda_core::ExitCode` (used via
+// the `Outcome::exit_code()` projection below). The two types are
+// distinct: `ExitCode` is the typed family-wide enum; `ProcessExitCode`
+// is the OS-facing `std::process::ExitCode` that `main` returns.
+use std::process::ExitCode as ProcessExitCode;
 use std::time::Duration;
 
 mod act;
@@ -66,6 +70,10 @@ struct Args {
 ///   anywhere in argv triggers usage-to-stdout and `exit 0`,
 ///   regardless of any neighboring malformed flag. Established by
 ///   a pre-scan that precedes per-token parsing.
+//
+// One arm per known flag is intentional: length is the spec.
+// Extracting helpers would scatter the flag contract.
+#[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, Outcome> {
     // Help-pre-scan establishes the help-dominates-parse-failure
     // invariant; without it, a malformed earlier flag would shadow a
@@ -123,6 +131,9 @@ fn parse_args() -> Result<Args, Outcome> {
                     return Err(usage(&format!(
                         "--max-iter must be ≥ 1; got negative value: {v}"
                     )));
+                }
+                if v.starts_with('+') {
+                    return Err(usage(&format!("--max-iter: leading `+` not accepted: {v}")));
                 }
                 let Ok(n) = v.parse::<u32>() else {
                     return Err(usage(&format!("--max-iter: not an integer: {v}")));
@@ -190,7 +201,7 @@ fn usage(msg: &str) -> Outcome {
     Outcome::usage_error(msg)
 }
 
-fn main() -> ExitCode {
+fn main() -> ProcessExitCode {
     let outcome = match parse_args() {
         Ok(args) => {
             let recorder = match Recorder::open(RecorderConfig {
@@ -226,7 +237,7 @@ fn run_mode(mode: Mode) -> RunMode {
     }
 }
 
-fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
+fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     let code = outcome.exit_code();
     let handoff_path = match (outcome, recorder.as_ref()) {
         (Outcome::HandoffAgent(h) | Outcome::HandoffHuman(h), Some(r)) => {
@@ -247,7 +258,7 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
         }
         recorder.record_outcome(outcome, code, &headline, handoff_path.as_deref());
     }
-    ExitCode::from(code)
+    ProcessExitCode::from(code)
 }
 
 fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {

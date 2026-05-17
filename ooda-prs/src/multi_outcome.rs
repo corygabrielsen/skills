@@ -24,13 +24,16 @@
 //! ∃ ProcessOutcome with StuckCapReached(_)      → 7
 //! ∃ ProcessOutcome with StuckRepeated(_)        → 6
 //! ∃ ProcessOutcome with WouldAdvance(_)         → 2    (inspect-only)
-//! all terminal/Paused (DoneSucceeded | DoneAborted | Paused) → 0
+//! ∃ ProcessOutcome with DoneAborted(_)          → 5
+//! all DoneSucceeded/Paused                       → 0
 //! ```
 //!
-//! `Paused` (per-PR exit 1) and `DoneAborted` (per-PR exit 5) fold
-//! into `0` at the suite level: they are non-actionable terminal
-//! states from the harness's perspective. The per-PR records on
-//! stdout disambiguate.
+//! `Paused` (per-PR exit 1) folds into `0` at the suite level: it is
+//! a non-actionable "no action this pass" outcome. `DoneAborted`
+//! preserves its per-PR `5` at the suite level — a closed PR is a
+//! distinct terminal state from a merged one, and the harness
+//! caller routes on the difference. The per-PR records on stdout
+//! disambiguate within each bucket.
 //!
 //! ## Totality
 //!
@@ -130,10 +133,15 @@ fn bundle_exit_code(prs: &[ProcessOutcome]) -> ExitCode {
     {
         return ExitCode::WouldAdvance;
     }
-    // Remaining variants — DoneSucceeded, DoneAborted, Paused — are
-    // non-actionable terminal states at the suite level. Collapse
-    // to DoneSucceeded (exit 0); per-PR records on stdout
-    // disambiguate.
+    if prs
+        .iter()
+        .any(|p| matches!(p.outcome, Outcome::DoneAborted))
+    {
+        return ExitCode::DoneAborted;
+    }
+    // Remaining variants — DoneSucceeded, Paused — are non-actionable
+    // success/idle states at the suite level. Collapse to
+    // DoneSucceeded (exit 0); per-PR records on stdout disambiguate.
     ExitCode::DoneSucceeded
 }
 
@@ -206,15 +214,42 @@ mod tests {
     }
 
     #[test]
-    fn mixed_terminal_collapses_to_zero() {
-        // DoneSucceeded + DoneAborted + Paused → all "no further action"
-        // → 0 at suite level. Per-PR records disambiguate.
+    fn mixed_terminal_with_done_aborted_is_five() {
+        // DoneAborted is closed-without-merge; it is operationally
+        // distinct from DoneSucceeded and from Paused (idle). The
+        // bundle exit code surfaces the closure at the suite level.
         let m = MultiOutcome::Bundle(vec![
             record("a/b", 1, Outcome::DoneSucceeded),
             record("a/b", 2, Outcome::DoneAborted),
             record("a/b", 3, Outcome::Paused),
         ]);
+        assert_eq!(m.exit_code(), ExitCode::DoneAborted);
+    }
+
+    #[test]
+    fn done_succeeded_and_paused_only_collapse_to_zero() {
+        // Without any DoneAborted in the bundle, the remaining
+        // success/idle states fold to DoneSucceeded.
+        let m = MultiOutcome::Bundle(vec![
+            record("a/b", 1, Outcome::DoneSucceeded),
+            record("a/b", 2, Outcome::Paused),
+        ]);
         assert_eq!(m.exit_code(), ExitCode::DoneSucceeded);
+    }
+
+    #[test]
+    fn done_aborted_alone_is_five() {
+        let m = MultiOutcome::Bundle(vec![record("a/b", 1, Outcome::DoneAborted)]);
+        assert_eq!(m.exit_code(), ExitCode::DoneAborted);
+    }
+
+    #[test]
+    fn would_advance_beats_done_aborted() {
+        let m = MultiOutcome::Bundle(vec![
+            record("a/b", 1, Outcome::DoneAborted),
+            record("a/b", 2, Outcome::WouldAdvance(Box::new(dummy_action()))),
+        ]);
+        assert_eq!(m.exit_code(), ExitCode::WouldAdvance);
     }
 
     #[test]

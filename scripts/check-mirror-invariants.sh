@@ -241,4 +241,10 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
+# Witness body length-cap regression is foreclosed at the type level:
+# `ooda_core::handoff_prompt::Witness::body` is `SafeBody`, which
+# truncates at construction. A bare `String` will fail to compile
+# rather than slipping through here; no grep sweep needed.
+# Witness URL scheme regression is foreclosed identically by `SafeUrl`.
+
 echo "Mirror invariant: OK"

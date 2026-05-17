@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString, Witness};
+use ooda_core::{HandoffPrompt, NonEmpty, SafeUrl, SingleLineString, Witness};
 
 use crate::ids::PullRequestNumber;
 
@@ -51,17 +51,24 @@ pub(crate) fn build_address_claude_review_prompt(
         "claude main review @ {body_at} ({})",
         thread_count_label(inline_thread_count),
     ));
+    // SafeUrl rejects non-http(s) and embedded control bytes;
+    // a malformed upstream URL drops to `None` rather than poisoning
+    // the URL: line.
     let url = if latest_claude_url.is_empty() {
         None
     } else {
-        Some(latest_claude_url.to_string())
+        SafeUrl::parse(latest_claude_url).ok()
     };
     let body = if latest_claude_body.trim().is_empty() {
         "(review body was empty)".to_string()
     } else {
         latest_claude_body.to_string()
     };
-    prompt.push_witnesses(NonEmpty::singleton(Witness { label, body, url }));
+    prompt.push_witnesses(NonEmpty::singleton(Witness {
+        label,
+        body: body.into(),
+        url,
+    }));
 
     prompt.push_heading(3, "Step 2 — run the attestation CLI");
     prompt.push_code("bash", cli_invocation(pr, attest_path));

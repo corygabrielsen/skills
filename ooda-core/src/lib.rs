@@ -35,11 +35,14 @@ pub mod blocker;
 pub mod decision;
 pub mod exit_code;
 pub mod handoff_prompt;
+pub mod md_escape;
 pub mod non_empty;
 pub mod outcome;
 pub mod polling_interval;
 pub mod pull_request_state;
 pub mod rate_limit;
+pub mod safe_body;
+pub mod safe_url;
 pub mod single_line_string;
 pub mod stall_key;
 
@@ -53,10 +56,13 @@ pub use decision::{
 };
 pub use exit_code::ExitCode;
 pub use handoff_prompt::{ContextLine, HandoffPrompt, PromptSection, Witness};
+pub use md_escape::md_inline_escape;
 pub use non_empty::NonEmpty;
 pub use outcome::Outcome;
 pub use polling_interval::{PollingInterval, PollingIntervalError};
 pub use pull_request_state::{PullRequestState, TerminalState};
 pub use rate_limit::{BucketState, RateLimitBudget, RateLimitHit, RateLimitScope};
+pub use safe_body::SafeBody;
+pub use safe_url::{SafeUrl, SafeUrlError};
 pub use single_line_string::SingleLineString;
 pub use stall_key::StallKey;

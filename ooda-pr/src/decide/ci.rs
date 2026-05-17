@@ -263,24 +263,27 @@ fn failed_check_witness(f: &FailedCheck) -> Witness {
     let label = SingleLineString::new(f.name.as_str().to_string());
     let mut body_lines: Vec<String> = Vec::new();
     if !f.description.trim().is_empty() {
-        body_lines.push(format!("  {}", f.description.trim()));
+        body_lines.push(f.description.trim().to_string());
     }
     if !f.link.trim().is_empty() {
-        body_lines.push(format!("  Run: {}", f.link.trim()));
+        body_lines.push(format!("Run: {}", f.link.trim()));
     }
     if body_lines.is_empty() {
         // The label still names the check; the placeholder
         // preserves the per-check witness shape.
-        body_lines.push("  (no run details available)".to_string());
+        body_lines.push("(no run details available)".to_string());
     }
+    // SafeUrl rejects non-http(s) and embedded control bytes;
+    // a malformed CI link drops to `None` rather than poisoning
+    // the URL: line.
     let url = if f.link.trim().is_empty() {
         None
     } else {
-        Some(f.link.trim().to_string())
+        ooda_core::SafeUrl::parse(f.link.trim()).ok()
     };
     Witness {
         label,
-        body: body_lines.join("\n"),
+        body: body_lines.join("\n").into(),
         url,
     }
 }
@@ -331,7 +334,9 @@ fn escalate_ci_failed_prompt(
                     (w.body, w.url)
                 }
                 None => (
-                    "  (no description / link available — eventual-consistency window)".to_string(),
+                    "(no description / link available — eventual-consistency window)"
+                        .to_string()
+                        .into(),
                     None,
                 ),
             };

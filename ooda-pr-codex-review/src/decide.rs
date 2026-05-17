@@ -11,7 +11,7 @@ pub(crate) mod ci;
 mod claude_review;
 mod closeout;
 mod codex_review;
-mod copilot;
+pub(crate) mod copilot;
 pub(crate) mod cursor;
 pub(crate) mod decision;
 mod doc_review;

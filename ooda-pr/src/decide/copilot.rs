@@ -21,7 +21,7 @@ use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urg
 // bot axes; a future shared abstraction can lift it once three or
 // more axes wear it.
 #[allow(clippy::too_many_lines)]
-pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
+pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
 
     match &report.activity {

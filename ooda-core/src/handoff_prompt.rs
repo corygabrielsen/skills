@@ -119,13 +119,15 @@ impl HandoffPrompt {
     }
 
     /// Append a markdown heading. `level` is the `#` count
-    /// (1 = top, 6 = deepest). Callers picking levels for
-    /// sub-structure of the dashboard preamble or per-axis bodies
-    /// should typically use 2 or 3 so they nest under the
-    /// headline's level-1 rendering.
+    /// (1 = top, 6 = deepest); values outside `1..=6` are clamped
+    /// into the valid `CommonMark` range at construction time so the
+    /// stored variant never carries an invalid level. Callers
+    /// picking levels for sub-structure of the dashboard preamble
+    /// or per-axis bodies should typically use 2 or 3 so they nest
+    /// under the headline's level-1 rendering.
     pub fn push_heading(&mut self, level: u8, text: impl Into<SingleLineString>) {
         self.sections
-            .push(PromptSection::Heading(level, text.into()));
+            .push(PromptSection::Heading(level.clamp(1, 6), text.into()));
     }
 
     /// Append a free-form prose paragraph.
@@ -229,9 +231,9 @@ impl fmt::Display for PromptSection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Heading(level, text) => {
-                // Clamp to the markdown range [1, 6]; a request
-                // outside that range is a caller bug, but a panic
-                // would surface in a render path, so clamp instead.
+                // `push_heading` clamps to [1, 6]; defensively clamp
+                // again at render time so any future variant
+                // construction path inherits the invariant.
                 let n = (*level).clamp(1, 6) as usize;
                 for _ in 0..n {
                     f.write_str("#")?;
@@ -240,7 +242,16 @@ impl fmt::Display for PromptSection {
             }
             Self::Paragraph(s) => f.write_str(s),
             Self::Code { language, body } => {
-                write!(f, "```{language}\n{body}\n```")
+                // Auto-extend the fence so a body containing a line
+                // starting with three or more backticks cannot close
+                // the block early. Per `CommonMark`, an info-string
+                // may not contain a backtick; render-time we strip
+                // them along with any whitespace that would split
+                // the info-string token.
+                let info = sanitize_info_string(language.as_str());
+                let fence_len = required_fence_len(body);
+                let fence: String = "`".repeat(fence_len);
+                write!(f, "{fence}{info}\n{body}\n{fence}")
             }
             Self::NumberedList(items) => {
                 for (i, item) in items.iter().enumerate() {
@@ -274,6 +285,31 @@ impl fmt::Display for PromptSection {
             }
         }
     }
+}
+
+/// `CommonMark` fence-length helper: returns the smallest backtick
+/// count `n >= 3` such that `body` contains no line whose first non-
+/// space run is `n` backticks (which would close the fence early).
+fn required_fence_len(body: &str) -> usize {
+    let mut max_run = 0usize;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let run = trimmed.bytes().take_while(|&b| b == b'`').count();
+        if run > max_run {
+            max_run = run;
+        }
+    }
+    max_run.saturating_add(1).max(3)
+}
+
+/// `CommonMark` info-string sanitizer. The spec forbids backticks in
+/// info-strings and treats whitespace as a token boundary;
+/// stripping both yields a string the renderer can interpolate
+/// directly without splitting the opening fence line.
+fn sanitize_info_string(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| *c != '`' && !c.is_whitespace())
+        .collect()
 }
 
 #[cfg(test)]
@@ -424,6 +460,55 @@ mod tests {
         p.push_code("", "raw body");
         let s = format!("{p}");
         assert_eq!(s, "# h\n\n```\nraw body\n```");
+    }
+
+    #[test]
+    fn code_block_extends_fence_to_avoid_collision() {
+        // Body contains a 3-backtick fence line; the outer fence
+        // must therefore use 4 or more backticks.
+        let mut p = HandoffPrompt::new("h");
+        p.push_code("", "before\n```\nnested\n```\nafter");
+        let s = format!("{p}");
+        assert!(
+            s.starts_with("# h\n\n````\nbefore\n```\nnested\n```\nafter\n````"),
+            "fence should auto-extend; got: {s}",
+        );
+    }
+
+    #[test]
+    fn code_block_strips_backticks_from_info_string() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_code("ba`sh", "body");
+        let s = format!("{p}");
+        assert_eq!(s, "# h\n\n```bash\nbody\n```");
+    }
+
+    #[test]
+    fn code_block_strips_whitespace_from_info_string() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_code(" bash ", "body");
+        let s = format!("{p}");
+        assert_eq!(s, "# h\n\n```bash\nbody\n```");
+    }
+
+    #[test]
+    fn push_heading_clamps_level_zero_to_one() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_heading(0, "x");
+        match &p.sections[0] {
+            PromptSection::Heading(level, _) => assert_eq!(*level, 1),
+            _ => panic!("expected heading"),
+        }
+    }
+
+    #[test]
+    fn push_heading_clamps_level_seven_to_six() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_heading(7, "x");
+        match &p.sections[0] {
+            PromptSection::Heading(level, _) => assert_eq!(*level, 6),
+            _ => panic!("expected heading"),
+        }
     }
 
     #[test]

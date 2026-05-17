@@ -204,6 +204,9 @@ impl Recorder {
     pub(crate) fn open(cfg: RecorderConfig) -> Result<Self, RecorderError> {
         let root_path = resolve_state_root(cfg.state_root.as_deref());
         let state_root = StateRoot::new(&root_path)?;
+        // Best-effort: reclaim disk for live markers left behind by
+        // crashed prior runs (PID-derived liveness).
+        let _ = state_root.sweep_dead_markers();
         let run_id = ooda_state::RunId::generate();
         let mut writer = state_root.create_run(run_id)?;
 
@@ -622,7 +625,10 @@ impl Inner {
         Ok(())
     }
 
-    fn write_json_blob<T: Serialize + ?Sized>(&self, value: &T) -> Result<BlobRef, RecorderError> {
+    fn write_json_blob<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> Result<BlobRef, RecorderError> {
         let bytes = serde_json::to_vec_pretty(value)?;
         Ok(self.writer.write_blob(&bytes, "json")?)
     }

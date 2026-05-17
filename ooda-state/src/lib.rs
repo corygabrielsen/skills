@@ -27,7 +27,20 @@
 //! - Live markers created via `OpenOptions::create_new` (atomic
 //!   `O_CREAT|O_EXCL`); deleted via `fs::remove_file` (atomic).
 //!
-//! No locks; no shared mutable state between concurrent runs.
+//! Concurrent runs use disjoint paths (distinct `<run-id>`), so the
+//! disk layout needs no inter-run locking. Each [`RunWriter`] is a
+//! single-threaded handle: `&mut self` rules out in-process aliasing
+//! by construction.
+//!
+//! # Liveness
+//!
+//! `live/<run-id>` markers can leak across SIGKILL / OOM / power
+//! loss. [`RunId::generate`] embeds the writer's PID as the
+//! `-p<pid>` suffix; readers filter out markers whose PID is no
+//! longer alive (POSIX `kill(pid, 0)`). [`RunWriter`] also
+//! implements [`Drop`] to release the marker on unwind, and
+//! [`StateRoot::sweep_dead_markers`] reclaims disk space for
+//! filtered-out markers.
 
 #![doc(html_root_url = "https://docs.rs/ooda-state/0.1.0")]
 
@@ -94,7 +107,30 @@ pub enum StateError {
         size: usize,
         cap: usize,
     },
+    /// Caller attempted to `create_run` for a run id whose
+    /// `events.jsonl` already exists. Signals reuse of a
+    /// previously-used run id; create a fresh id via
+    /// [`RunId::generate`].
+    RunDirExists(RunId),
+    /// Caller appended or halted a [`RunWriter`] after it had
+    /// already been halted. Post-halt writes are a writer-protocol
+    /// bug; the on-disk run is terminal.
+    AlreadyHalted(RunId),
+    /// A blob's recorded size exceeds the maximum the reader will
+    /// allocate in one call. Use [`RunReader::read_blob_stream`]
+    /// to consume blobs incrementally.
+    BlobTooLarge {
+        run_id: RunId,
+        size: u64,
+        limit: u64,
+    },
 }
+
+/// Maximum blob size accepted by [`RunReader::read_blob`] (64 MiB).
+/// Larger blobs must be read via [`RunReader::read_blob_stream`].
+/// The cap is a defense against a corrupted [`BlobRef::size`]
+/// triggering unbounded `Vec::with_capacity`.
+pub const MAX_INLINE_BLOB_SIZE: u64 = 64 * 1024 * 1024;
 
 impl std::fmt::Display for StateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -122,6 +158,19 @@ impl std::fmt::Display for StateError {
             Self::EventTooLarge { kind, size, cap } => write!(
                 f,
                 "event line too large after overflow attempt: kind={kind} size={size} cap={cap}"
+            ),
+            Self::RunDirExists(id) => {
+                write!(f, "run dir already populated: {}", id.as_str())
+            }
+            Self::AlreadyHalted(id) => write!(f, "run already halted: {}", id.as_str()),
+            Self::BlobTooLarge {
+                run_id,
+                size,
+                limit,
+            } => write!(
+                f,
+                "blob in run {} reports size {size} bytes (limit {limit}); use read_blob_stream",
+                run_id.as_str()
             ),
         }
     }
@@ -153,23 +202,34 @@ pub struct RunId(String);
 
 impl RunId {
     /// Wrap an arbitrary string as a run-id. Caller is responsible
-    /// for global uniqueness; no validation here beyond rejecting
-    /// strings that would escape the runs/ directory (`..`, `/`,
-    /// leading `.`).
+    /// for global uniqueness; validation here rejects strings that
+    /// would escape the runs/ directory, split framed text streams,
+    /// or trip filesystem ergonomics.
+    ///
+    /// Rejected inputs:
+    ///
+    /// - empty or whitespace-only
+    /// - any ASCII control byte (`< 0x20`, `0x7f`) — covers `\n`,
+    ///   `\r`, `\t`, `\0`
+    /// - path separators (`/`, `\\`)
+    /// - leading `.` (hidden file) or exactly `.` / `..`
+    /// - leading or trailing whitespace
     ///
     /// # Errors
     ///
     /// Returns [`StateError::Io`] with [`io::ErrorKind::InvalidInput`]
-    /// if `s` is empty, contains path separators, or would resolve
-    /// to a hidden or parent-directory entry.
+    /// if any rejection rule fires.
     pub fn new(s: impl Into<String>) -> Result<Self> {
         let s = s.into();
         if s.is_empty()
+            || s.trim().is_empty()
+            || s.len() != s.trim().len()
             || s.contains('/')
             || s.contains('\\')
             || s == "."
             || s == ".."
             || s.starts_with('.')
+            || s.bytes().any(|b| b < 0x20 || b == 0x7f)
         {
             return Err(StateError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -198,6 +258,23 @@ impl RunId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Extract the writer-PID suffix from a [`Self::generate`]-shaped
+    /// run id. Returns `None` for ids that lack the `-p<digits>`
+    /// suffix (e.g. caller-supplied ids via [`Self::new`]).
+    ///
+    /// Used by [`StateRoot::live_runs`] and writer-startup sweeps to
+    /// classify whether a `live/<run-id>` marker belongs to a still-
+    /// alive process or to a crashed writer.
+    #[must_use]
+    pub fn writer_pid(&self) -> Option<u32> {
+        let suffix = self.0.rsplit('-').next()?;
+        let digits = suffix.strip_prefix('p')?;
+        if digits.is_empty() {
+            return None;
+        }
+        digits.parse::<u32>().ok()
     }
 }
 
@@ -403,25 +480,37 @@ pub fn resolve_state_root(explicit: Option<&Path>) -> PathBuf {
     if let Some(path) = explicit {
         return path.to_path_buf();
     }
-    if let Some(path) = nonempty_env_path("OODA_STATE_HOME") {
+    if let Some(path) = env_path("OODA_STATE_HOME") {
         return path;
     }
-    if let Some(path) = nonempty_env_path("XDG_STATE_HOME") {
+    if let Some(path) = env_path("XDG_STATE_HOME") {
         return path.join("ooda");
     }
-    if let Some(home) = nonempty_env_path("HOME") {
+    if let Some(home) = env_path("HOME") {
         return home.join(".local").join("state").join("ooda");
     }
     std::env::temp_dir().join("ooda")
 }
 
-fn nonempty_env_path(name: &str) -> Option<PathBuf> {
-    let value = std::env::var_os(name)?;
-    if value.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(value))
+/// Read an env-var as a path with normalization. Trims whitespace,
+/// treats empty / whitespace-only values as unset, and expands a
+/// leading `~/` (or bare `~`) against `$HOME` when present.
+///
+/// Returns `None` if the var is unset, empty after trim, or has a
+/// `~`-expansion request that cannot resolve.
+fn env_path(name: &str) -> Option<PathBuf> {
+    let raw = std::env::var(name).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+    if trimmed == "~" {
+        return std::env::var_os("HOME").map(PathBuf::from);
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest));
+    }
+    Some(PathBuf::from(trimmed))
 }
 
 // ── State root ───────────────────────────────────────────────────────
@@ -466,17 +555,30 @@ impl StateRoot {
     /// written — call [`RunWriter::start`] with the first
     /// `RunStarted` event to commit the run to the live index.
     ///
+    /// Best-effort: orphan `*.tmp` files left over from prior writer
+    /// crashes in `blobs/` are swept before returning.
+    ///
     /// # Errors
     ///
-    /// Returns [`StateError::Io`] if `runs/<id>/blobs/` cannot be
-    /// created.
+    /// Returns [`StateError::RunDirExists`] if `runs/<id>/events.jsonl`
+    /// already has content (id reuse). Returns [`StateError::Io`] if
+    /// `runs/<id>/blobs/` cannot be created.
     pub fn create_run(&self, id: RunId) -> Result<RunWriter> {
         let run_dir = self.run_dir(&id);
-        fs::create_dir_all(run_dir.join("blobs"))?;
+        let blobs_dir = run_dir.join("blobs");
+        fs::create_dir_all(&blobs_dir)?;
+        let events_path = run_dir.join("events.jsonl");
+        if let Ok(meta) = fs::metadata(&events_path)
+            && meta.len() > 0
+        {
+            return Err(StateError::RunDirExists(id));
+        }
+        sweep_blob_tmps(&blobs_dir);
         Ok(RunWriter {
             root: self.clone(),
             id,
             started: false,
+            halted: false,
         })
     }
 
@@ -496,15 +598,39 @@ impl StateRoot {
         })
     }
 
-    /// List currently-active run IDs (presence of `live/<run-id>`
-    /// marker). Order is filesystem-dependent; callers should sort
-    /// if they need determinism.
+    /// List currently-active run IDs. PIDs encoded into ids by
+    /// [`RunId::generate`] are probed via `kill(pid, 0)`; markers
+    /// whose writer is no longer alive are filtered out. Use
+    /// [`Self::live_runs_unfiltered`] for diagnostic enumeration
+    /// that ignores liveness.
+    ///
+    /// Order is filesystem-dependent; callers should sort if they
+    /// need determinism.
     ///
     /// # Errors
     ///
     /// Returns [`StateError::Io`] if `live/` exists but cannot be
     /// enumerated.
     pub fn live_runs(&self) -> Result<Vec<RunId>> {
+        let mut out = Vec::new();
+        for id in self.live_runs_unfiltered()? {
+            match id.writer_pid() {
+                Some(pid) if !is_pid_alive(pid) => {}
+                _ => out.push(id),
+            }
+        }
+        Ok(out)
+    }
+
+    /// List every `live/` marker without PID-liveness filtering.
+    /// Use for diagnostics; production readers should prefer
+    /// [`Self::live_runs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError::Io`] if `live/` exists but cannot be
+    /// enumerated.
+    pub fn live_runs_unfiltered(&self) -> Result<Vec<RunId>> {
         let mut out = Vec::new();
         let live_dir = self.root.join("live");
         if !live_dir.is_dir() {
@@ -520,17 +646,98 @@ impl StateRoot {
         }
         Ok(out)
     }
+
+    /// Unlink every `live/<run-id>` marker whose embedded PID is no
+    /// longer alive. Markers without a parseable PID suffix are
+    /// left in place (conservative — caller may be using a non-
+    /// generated id scheme).
+    ///
+    /// Returns the ids of swept markers for logging.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError::Io`] if `live/` cannot be enumerated.
+    /// Per-file unlink failures are best-effort (logged-implicit via
+    /// the return list excluding them).
+    pub fn sweep_dead_markers(&self) -> Result<Vec<RunId>> {
+        let mut swept = Vec::new();
+        for id in self.live_runs_unfiltered()? {
+            let Some(pid) = id.writer_pid() else { continue };
+            if is_pid_alive(pid) {
+                continue;
+            }
+            let marker = self.live_marker(&id);
+            if fs::remove_file(&marker).is_ok() {
+                swept.push(id);
+            }
+        }
+        Ok(swept)
+    }
+}
+
+/// POSIX `kill(pid, 0)` liveness probe. `Ok` => alive (or alive but
+/// not owned by the caller — `EPERM`); `ESRCH` => dead.
+///
+/// On non-Unix targets this returns `true` (conservative — we can
+/// neither probe nor garbage-collect markers; readers see the marker
+/// regardless of writer state).
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        // kill(0, 0) addresses every process in the caller's group;
+        // never a valid writer pid. Treat as dead.
+        return false;
+    }
+    // SAFETY: `libc::kill` with signal 0 performs an existence check
+    // only; no side effects on the target process.
+    let pid_i32 = i32::try_from(pid).unwrap_or(i32::MAX);
+    let rc = unsafe { libc_kill(pid_i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM (process exists, not owned by us) == alive.
+    matches!(io::Error::last_os_error().raw_os_error(), Some(1))
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+/// Best-effort sweep of orphan `<sha>.<ext>.tmp` siblings in a
+/// blobs directory. Called from [`StateRoot::create_run`].
+fn sweep_blob_tmps(blobs_dir: &Path) {
+    let Ok(entries) = fs::read_dir(blobs_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+        {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 // ── RunWriter ────────────────────────────────────────────────────────
 
-/// Append-only writer for one run. Single-threaded by construction;
-/// callers wanting concurrent writes should open distinct runs.
+/// Append-only writer for one run. Single-threaded by construction:
+/// every mutating method takes `&mut self`, ruling out in-process
+/// aliasing. Concurrent writes belong on distinct runs.
 #[derive(Debug)]
 pub struct RunWriter {
     root: StateRoot,
     id: RunId,
     started: bool,
+    halted: bool,
 }
 
 impl RunWriter {
@@ -539,8 +746,24 @@ impl RunWriter {
         &self.id
     }
 
-    /// Commit the run to the live index and append the first
-    /// event (must be [`EventBody::RunStarted`]).
+    /// True once a terminal event has been appended via
+    /// [`Self::halt`]. Subsequent [`Self::append`] / [`Self::halt`]
+    /// calls return [`StateError::AlreadyHalted`].
+    #[must_use]
+    pub fn is_halted(&self) -> bool {
+        self.halted
+    }
+
+    /// Append `RunStarted` then commit the run to the live index.
+    /// Order matters: the event lands on disk *before* the marker
+    /// so a crash mid-`start` leaves a marker-less run dir that
+    /// readers ignore (rather than a stuck-live empty marker).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `body` is not [`EventBody::RunStarted`]. The
+    /// terminal-event contract is a writer-protocol invariant and
+    /// must hold in release.
     ///
     /// # Errors
     ///
@@ -550,10 +773,19 @@ impl RunWriter {
     /// filesystem failures or [`StateError::Json`] if the event
     /// fails to serialize.
     pub fn start(&mut self, body: EventBody) -> Result<()> {
-        debug_assert!(
+        assert!(
             matches!(body, EventBody::RunStarted { .. }),
             "RunWriter::start expects EventBody::RunStarted"
         );
+        assert!(!self.started, "RunWriter::start called twice");
+        assert!(!self.halted, "RunWriter::start after halt");
+        // Append the RunStarted event first; on success, claim the
+        // marker. If the append fails we never created the marker,
+        // so there is nothing to roll back. If the marker creation
+        // fails (id collision), the events.jsonl already carries
+        // the line — that's tolerable: readers key liveness off the
+        // marker, not the file.
+        self.append_event(Event::now(body))?;
         let marker = self.root.live_marker(&self.id);
         match OpenOptions::new()
             .write(true)
@@ -567,7 +799,7 @@ impl RunWriter {
             Err(e) => return Err(StateError::Io(e)),
         }
         self.started = true;
-        self.append_event(Event::now(body))
+        Ok(())
     }
 
     /// Append one event to `events.jsonl`. Must be preceded by
@@ -585,11 +817,15 @@ impl RunWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`StateError::Io`] for filesystem failures,
-    /// [`StateError::Json`] if the event fails to serialize, or
-    /// [`StateError::EventTooLarge`] if the post-substitution
-    /// line still exceeds the cap.
+    /// Returns [`StateError::AlreadyHalted`] if [`Self::halt`] has
+    /// already run. Returns [`StateError::Io`] for filesystem
+    /// failures, [`StateError::Json`] if the event fails to
+    /// serialize, or [`StateError::EventTooLarge`] if the
+    /// post-substitution line still exceeds the cap.
     pub fn append(&mut self, body: EventBody) -> Result<()> {
+        if self.halted {
+            return Err(StateError::AlreadyHalted(self.id.clone()));
+        }
         self.append_event(Event::now(body))
     }
 
@@ -618,11 +854,15 @@ impl RunWriter {
     /// the blob already exists (same sha + ext), the existing
     /// file is reused.
     ///
+    /// Takes `&mut self` to rule out concurrent in-process callers
+    /// racing on the `exists()` → `create_new(tmp)` → `rename`
+    /// sequence.
+    ///
     /// # Errors
     ///
     /// Returns [`StateError::Io`] if the temp file cannot be
     /// created/written or the rename into the final path fails.
-    pub fn write_blob(&self, bytes: &[u8], ext: &str) -> Result<BlobRef> {
+    pub fn write_blob(&mut self, bytes: &[u8], ext: &str) -> Result<BlobRef> {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         let sha = hex::encode(hasher.finalize());
@@ -652,7 +892,15 @@ impl RunWriter {
     }
 
     /// Append a terminal event and remove the live marker. After
-    /// this returns, the run is no longer in the live index.
+    /// this returns, the run is no longer in the live index and
+    /// the writer is halted: subsequent [`Self::append`] /
+    /// [`Self::halt`] return [`StateError::AlreadyHalted`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `body` is not one of the terminal variants
+    /// ([`EventBody::RunHalted`], [`EventBody::RunStalled`],
+    /// [`EventBody::RunCapReached`]).
     ///
     /// Marker removal runs unconditionally: even if the terminal
     /// append fails (disk full, oversize event, EIO) the live
@@ -662,13 +910,14 @@ impl RunWriter {
     ///
     /// # Errors
     ///
-    /// Returns [`StateError::Io`] for filesystem failures other
-    /// than a missing marker (which is silently tolerated for
-    /// idempotency). Returns [`StateError::Json`] if the event
-    /// fails to serialize, or [`StateError::EventTooLarge`] if
-    /// the terminal event exceeds the per-line cap.
+    /// Returns [`StateError::AlreadyHalted`] if `halt` has already
+    /// run. Returns [`StateError::Io`] for filesystem failures
+    /// other than a missing marker (which is silently tolerated
+    /// for idempotency). Returns [`StateError::Json`] if the
+    /// event fails to serialize, or [`StateError::EventTooLarge`]
+    /// if the terminal event exceeds the per-line cap.
     pub fn halt(&mut self, body: EventBody) -> Result<()> {
-        debug_assert!(
+        assert!(
             matches!(
                 body,
                 EventBody::RunHalted { .. }
@@ -677,7 +926,14 @@ impl RunWriter {
             ),
             "RunWriter::halt expects a terminal event variant"
         );
+        if self.halted {
+            return Err(StateError::AlreadyHalted(self.id.clone()));
+        }
         let append_res = self.append_event(Event::now(body));
+        // Mark halted regardless of append success: the on-disk
+        // marker is being cleared, so subsequent appends would be
+        // ambiguous. Callers see the append error if any.
+        self.halted = true;
         let marker = self.root.live_marker(&self.id);
         let remove_res = match fs::remove_file(&marker) {
             Ok(()) => Ok(()),
@@ -721,7 +977,7 @@ fn event_kind(body: &EventBody) -> &'static str {
 /// Variants without an unbounded JSON field are left untouched;
 /// the caller's subsequent size check will surface
 /// [`StateError::EventTooLarge`] for those.
-fn substitute_overflow_field(writer: &RunWriter, event: &mut Event) -> Result<()> {
+fn substitute_overflow_field(writer: &mut RunWriter, event: &mut Event) -> Result<()> {
     match &mut event.body {
         EventBody::DomainSpecific { payload, .. } => {
             let blob = spill_value_to_blob(writer, payload)?;
@@ -736,9 +992,30 @@ fn substitute_overflow_field(writer: &RunWriter, event: &mut Event) -> Result<()
     Ok(())
 }
 
-fn spill_value_to_blob(writer: &RunWriter, value: &serde_json::Value) -> Result<BlobRef> {
+fn spill_value_to_blob(writer: &mut RunWriter, value: &serde_json::Value) -> Result<BlobRef> {
     let bytes = serde_json::to_vec(value)?;
     writer.write_blob(&bytes, "json")
+}
+
+impl Drop for RunWriter {
+    /// Best-effort release of the live marker on unwind / scope-exit
+    /// without an explicit [`Self::halt`]. Covers SIGINT trapped to
+    /// `process::exit` paths and panic unwinds. Hard kills (SIGKILL,
+    /// OOM) skip Drop; readers reconcile those via PID-liveness in
+    /// [`StateRoot::live_runs`].
+    fn drop(&mut self) {
+        if !self.started || self.halted {
+            return;
+        }
+        let marker = self.root.live_marker(&self.id);
+        let _ = fs::remove_file(&marker);
+        // Best-effort terminal event so readers can distinguish
+        // "writer crashed cleanly" from "writer SIGKILLed mid-run".
+        let _ = self.append_event(Event::now(EventBody::RunHalted {
+            outcome: "DroppedWithoutHalt".to_string(),
+            exit_code: -1,
+        }));
+    }
 }
 
 // ── RunReader ────────────────────────────────────────────────────────
@@ -756,10 +1033,11 @@ impl RunReader {
         &self.id
     }
 
-    /// Parse the entire `events.jsonl` into a `Vec<Event>`. For
-    /// small files (typical: 10s of KB to a few MB) this is fine;
-    /// callers wanting a streaming reader should use
-    /// [`Self::events_stream`].
+    /// Parse the entire `events.jsonl` into a `Vec<Event>`. Lenient:
+    /// malformed lines (forward-compat unknown variants, mid-write
+    /// partial lines) are skipped and the parse error is dropped.
+    /// Callers needing strict semantics should use
+    /// [`Self::events_strict`].
     ///
     /// A trailing line not terminated by `\n` is treated as
     /// "writer mid-flight" and skipped — the writer is racing the
@@ -769,9 +1047,35 @@ impl RunReader {
     /// # Errors
     ///
     /// Returns [`StateError::Io`] if the file exists but cannot
-    /// be read, or [`StateError::Json`] if any **complete** line
-    /// fails to parse.
+    /// be read.
     pub fn events(&self) -> Result<Vec<Event>> {
+        let path = self.root.run_dir(&self.id).join("events.jsonl");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = fs::read(&path)?;
+        let mut out = Vec::new();
+        for line in complete_lines(&bytes) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(ev) = serde_json::from_str::<Event>(trimmed) {
+                out.push(ev);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Strict variant of [`Self::events`]: returns the first parse
+    /// error encountered. Use only when partial lines and forward-
+    /// compat skew are known to be impossible.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError::Io`] for file-read failures or
+    /// [`StateError::Json`] on the first malformed line.
+    pub fn events_strict(&self) -> Result<Vec<Event>> {
         let path = self.root.run_dir(&self.id).join("events.jsonl");
         if !path.exists() {
             return Ok(Vec::new());
@@ -788,23 +1092,56 @@ impl RunReader {
         Ok(out)
     }
 
-    /// Iterator over events as they're parsed. A trailing line
-    /// not terminated by `\n` is treated as "writer mid-flight"
-    /// and skipped silently. Stops at the first malformed
-    /// **complete** line, returning the parse error.
+    /// Iterator over events as they're parsed. Lenient: per-line
+    /// parse errors are skipped (yielding only the valid events).
+    /// A trailing line not terminated by `\n` is treated as
+    /// "writer mid-flight" and skipped silently. Use
+    /// [`Self::events_stream_strict`] when strict per-line
+    /// reporting is required.
     ///
     /// # Errors
     ///
     /// Returns [`StateError::Io`] if `events.jsonl` exists but
     /// cannot be opened. A missing file is treated as an empty
     /// iterator (no error).
-    pub fn events_stream(&self) -> Result<impl Iterator<Item = Result<Event>>> {
+    pub fn events_stream(&self) -> Result<EventsIter> {
         use std::io::BufRead;
         let path = self.root.run_dir(&self.id).join("events.jsonl");
         let file = match File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                // Empty iterator (no events yet).
+                return Ok(EventsIter {
+                    inner: Box::new(std::iter::empty()),
+                });
+            }
+            Err(e) => return Err(StateError::Io(e)),
+        };
+        let reader = io::BufReader::new(file);
+        let inner = reader.lines().filter_map(|l| match l {
+            Ok(s) if s.trim().is_empty() => None,
+            Ok(s) => serde_json::from_str::<Event>(&s).ok().map(Ok),
+            Err(_) => None,
+        });
+        Ok(EventsIter {
+            inner: Box::new(inner),
+        })
+    }
+
+    /// Strict streaming variant of [`Self::events_stream`]. Yields
+    /// `Err(_)` on per-line parse failure, letting a strict caller
+    /// distinguish malformed lines from forward-compat unknowns.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::events_stream`] for opening errors. Per-line
+    /// parse failures surface as `Some(Err(_))` items in the
+    /// returned iterator.
+    pub fn events_stream_strict(&self) -> Result<EventsIter> {
+        use std::io::BufRead;
+        let path = self.root.run_dir(&self.id).join("events.jsonl");
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Ok(EventsIter {
                     inner: Box::new(std::iter::empty()),
                 });
@@ -850,28 +1187,52 @@ impl RunReader {
         })
     }
 
-    /// Read a blob's bytes. Verifies the on-disk hash matches the
-    /// reference; mismatch is a corruption signal.
+    /// Read a blob's bytes into memory. Verifies the on-disk hash
+    /// matches the reference; mismatch is a corruption signal.
+    ///
+    /// The allocation is bounded by [`MAX_INLINE_BLOB_SIZE`] (64
+    /// MiB) cross-checked against the file's actual length on
+    /// disk. Larger blobs surface as [`StateError::BlobTooLarge`];
+    /// the caller must use [`Self::read_blob_stream`] to consume
+    /// them incrementally.
     ///
     /// # Errors
     ///
     /// Returns [`StateError::MissingBlob`] if the referenced
-    /// blob is not on disk; [`StateError::Io`] if the file
-    /// exists but cannot be read; [`StateError::BlobHashMismatch`]
-    /// if the on-disk content does not hash to the expected sha.
+    /// blob is not on disk; [`StateError::BlobTooLarge`] if its
+    /// on-disk size exceeds the inline cap;
+    /// [`StateError::Io`] if the file exists but cannot be read;
+    /// [`StateError::BlobHashMismatch`] if the on-disk content
+    /// does not hash to the expected sha.
     pub fn read_blob(&self, blob: &BlobRef) -> Result<Vec<u8>> {
         let blob_path = self
             .root
             .run_dir(&self.id)
             .join("blobs")
             .join(blob.filename());
-        if !blob_path.exists() {
-            return Err(StateError::MissingBlob {
+        let meta = match fs::metadata(&blob_path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(StateError::MissingBlob {
+                    run_id: self.id.clone(),
+                    blob: blob.clone(),
+                });
+            }
+            Err(e) => return Err(StateError::Io(e)),
+        };
+        let on_disk = meta.len();
+        if on_disk > MAX_INLINE_BLOB_SIZE {
+            return Err(StateError::BlobTooLarge {
                 run_id: self.id.clone(),
-                blob: blob.clone(),
+                size: on_disk,
+                limit: MAX_INLINE_BLOB_SIZE,
             });
         }
-        let mut buf = Vec::with_capacity(usize::try_from(blob.size).unwrap_or(usize::MAX));
+        // Trust the file length over the recorded size — a
+        // corrupted BlobRef::size could otherwise drive an OOM
+        // allocation. Cap defensively at MAX_INLINE_BLOB_SIZE.
+        let cap = usize::try_from(on_disk).unwrap_or(0);
+        let mut buf = Vec::with_capacity(cap);
         File::open(&blob_path)?.read_to_end(&mut buf)?;
         let mut hasher = Sha256::new();
         hasher.update(&buf);
@@ -884,6 +1245,81 @@ impl RunReader {
             });
         }
         Ok(buf)
+    }
+
+    /// Open a hash-verifying streaming reader for a blob. Reads
+    /// bytes incrementally and accumulates the SHA-256; the caller
+    /// must invoke [`HashVerifyingReader::verify`] after consuming
+    /// the stream to confirm content integrity.
+    ///
+    /// Use for blobs that may exceed [`MAX_INLINE_BLOB_SIZE`]
+    /// (large LLM transcripts, captured stdout).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError::MissingBlob`] if the referenced blob
+    /// is not on disk; [`StateError::Io`] if the file cannot be
+    /// opened.
+    pub fn read_blob_stream(&self, blob: &BlobRef) -> Result<HashVerifyingReader> {
+        let blob_path = self
+            .root
+            .run_dir(&self.id)
+            .join("blobs")
+            .join(blob.filename());
+        if !blob_path.exists() {
+            return Err(StateError::MissingBlob {
+                run_id: self.id.clone(),
+                blob: blob.clone(),
+            });
+        }
+        let file = File::open(&blob_path)?;
+        Ok(HashVerifyingReader {
+            inner: io::BufReader::new(file),
+            hasher: Sha256::new(),
+            expected: blob.sha.clone(),
+            run_id: self.id.clone(),
+        })
+    }
+}
+
+/// Streaming reader that updates a SHA-256 hasher over every byte
+/// consumed via its `Read` impl. Callers must invoke
+/// [`Self::verify`] after the stream is fully drained to confirm
+/// the on-disk content matches the expected hash.
+pub struct HashVerifyingReader {
+    inner: io::BufReader<File>,
+    hasher: Sha256,
+    expected: String,
+    run_id: RunId,
+}
+
+impl HashVerifyingReader {
+    /// Finalize the hash and compare to the expected SHA-256.
+    /// Call after the stream has been fully consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError::BlobHashMismatch`] if the accumulated
+    /// hash differs from the expected sha.
+    pub fn verify(self) -> Result<()> {
+        let actual = hex::encode(self.hasher.finalize());
+        if actual == self.expected {
+            Ok(())
+        } else {
+            Err(StateError::BlobHashMismatch {
+                run_id: self.run_id,
+                expected: self.expected,
+                actual,
+            })
+        }
+    }
+}
+
+impl Read for HashVerifyingReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
     }
 }
 
@@ -971,7 +1407,31 @@ mod tests {
     }
 
     #[test]
-    fn double_start_is_rejected() {
+    fn double_start_on_same_writer_panics() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut a = root.create_run(id).unwrap();
+        a.start(EventBody::RunStarted {
+            domain: "test".into(),
+            target: serde_json::Value::Null,
+        })
+        .unwrap();
+
+        // Second start on the same writer is a writer-protocol bug.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            a.start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+        }))
+        .is_err();
+        assert!(panicked);
+    }
+
+    #[test]
+    fn create_run_on_started_id_returns_run_dir_exists() {
+        // Second create_run on a populated dir is rejected by
+        // RunDirExists; this is the cross-process collision path.
         let (_tmp, root) = fresh();
         let id = RunId::generate();
         let mut a = root.create_run(id.clone()).unwrap();
@@ -980,23 +1440,15 @@ mod tests {
             target: serde_json::Value::Null,
         })
         .unwrap();
-
-        // Second writer on the same id tries to start: collision.
-        let mut b = root.create_run(id.clone()).unwrap();
-        let err = b
-            .start(EventBody::RunStarted {
-                domain: "test".into(),
-                target: serde_json::Value::Null,
-            })
-            .unwrap_err();
-        assert!(matches!(err, StateError::AlreadyStarted(_)));
+        let err = root.create_run(id).unwrap_err();
+        assert!(matches!(err, StateError::RunDirExists(_)));
     }
 
     #[test]
     fn blob_dedup_skips_second_write() {
         let (_tmp, root) = fresh();
         let id = RunId::generate();
-        let writer = root.create_run(id.clone()).unwrap();
+        let mut writer = root.create_run(id.clone()).unwrap();
 
         let body = b"identical content";
         let a = writer.write_blob(body, "md").unwrap();
@@ -1013,7 +1465,7 @@ mod tests {
     fn blob_read_back_verifies_hash() {
         let (_tmp, root) = fresh();
         let id = RunId::generate();
-        let writer = root.create_run(id.clone()).unwrap();
+        let mut writer = root.create_run(id.clone()).unwrap();
         let body = b"hello, world";
         let blob = writer.write_blob(body, "txt").unwrap();
         let reader = root.open_run(id).unwrap();
@@ -1025,7 +1477,7 @@ mod tests {
     fn blob_read_detects_tampering() {
         let (_tmp, root) = fresh();
         let id = RunId::generate();
-        let writer = root.create_run(id.clone()).unwrap();
+        let mut writer = root.create_run(id.clone()).unwrap();
         let blob = writer.write_blob(b"original", "txt").unwrap();
         // Overwrite the file with different bytes.
         let path = root
@@ -1164,6 +1616,100 @@ mod tests {
     }
 
     #[test]
+    fn run_id_rejects_control_bytes_and_whitespace() {
+        assert!(RunId::new("a\nb").is_err());
+        assert!(RunId::new("a\rb").is_err());
+        assert!(RunId::new("a\tb").is_err());
+        assert!(RunId::new("a\0b").is_err());
+        assert!(RunId::new(" leading").is_err());
+        assert!(RunId::new("trailing ").is_err());
+        assert!(RunId::new("   ").is_err());
+    }
+
+    #[test]
+    fn run_id_writer_pid_parses_generated_ids() {
+        let id = RunId::generate();
+        let pid = id.writer_pid().expect("generated id has pid suffix");
+        assert_eq!(pid, std::process::id());
+    }
+
+    #[test]
+    fn run_id_writer_pid_returns_none_for_caller_supplied() {
+        let id = RunId::new("custom-id").unwrap();
+        assert!(id.writer_pid().is_none());
+    }
+
+    #[test]
+    fn post_halt_append_returns_already_halted() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        writer
+            .halt(EventBody::RunHalted {
+                outcome: "Done".into(),
+                exit_code: 0,
+            })
+            .unwrap();
+        let err = writer
+            .append(EventBody::DomainSpecific {
+                kind_suffix: "after_halt".into(),
+                payload: serde_json::Value::Null,
+            })
+            .unwrap_err();
+        assert!(matches!(err, StateError::AlreadyHalted(_)));
+    }
+
+    #[test]
+    fn double_halt_returns_already_halted() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        writer
+            .halt(EventBody::RunHalted {
+                outcome: "Done".into(),
+                exit_code: 0,
+            })
+            .unwrap();
+        let err = writer
+            .halt(EventBody::RunHalted {
+                outcome: "Done".into(),
+                exit_code: 0,
+            })
+            .unwrap_err();
+        assert!(matches!(err, StateError::AlreadyHalted(_)));
+    }
+
+    #[test]
+    fn create_run_rejects_populated_events_file() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        // Drop the writer (Drop releases marker + appends synthetic
+        // halt). Now reopen the same id: events.jsonl has content.
+        drop(writer);
+        let err = root.create_run(id).unwrap_err();
+        assert!(matches!(err, StateError::RunDirExists(_)));
+    }
+
+    #[test]
     fn events_tolerates_trailing_partial_line() {
         let (_tmp, root) = fresh();
         let id = RunId::generate();
@@ -1189,8 +1735,8 @@ mod tests {
         let streamed: Vec<Event> = reader
             .events_stream()
             .unwrap()
-            .collect::<Result<_>>()
-            .unwrap();
+            .filter_map(std::result::Result::ok)
+            .collect();
         assert_eq!(
             streamed.len(),
             1,
@@ -1224,6 +1770,178 @@ mod tests {
             !root.live_runs().unwrap().contains(&id),
             "marker must be cleared even when append fails",
         );
+    }
+
+    #[test]
+    fn drop_without_halt_releases_marker() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert!(root.live_runs_unfiltered().unwrap().contains(&id));
+        drop(writer);
+        assert!(!root.live_runs_unfiltered().unwrap().contains(&id));
+    }
+
+    #[test]
+    fn live_runs_filters_dead_pid_markers() {
+        let (_tmp, root) = fresh();
+        // Hand-craft a marker for a never-existing PID.
+        let id = RunId::new("20260101T000000Z-000000000-p1").unwrap();
+        std::fs::write(root.path().join("live").join(id.as_str()), b"").unwrap();
+        assert!(root.live_runs_unfiltered().unwrap().contains(&id));
+        // PID 1 is init — alive on every running system. Use a
+        // sentinel "unlikely to exist" PID instead.
+        let dead_id = RunId::new("20260101T000000Z-000000001-p4294967294").unwrap();
+        std::fs::write(root.path().join("live").join(dead_id.as_str()), b"").unwrap();
+        let live = root.live_runs().unwrap();
+        assert!(!live.contains(&dead_id), "dead pid should be filtered");
+    }
+
+    #[test]
+    fn sweep_dead_markers_unlinks_filtered_entries() {
+        let (_tmp, root) = fresh();
+        let dead_id = RunId::new("20260101T000000Z-000000002-p4294967294").unwrap();
+        std::fs::write(root.path().join("live").join(dead_id.as_str()), b"").unwrap();
+        let swept = root.sweep_dead_markers().unwrap();
+        assert!(swept.contains(&dead_id));
+        assert!(!root.path().join("live").join(dead_id.as_str()).exists());
+    }
+
+    #[test]
+    fn read_blob_rejects_oversize() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        let blob = writer.write_blob(b"x", "txt").unwrap();
+        // Overwrite the file with content over the inline cap.
+        let path = root
+            .path()
+            .join("runs")
+            .join(id.as_str())
+            .join("blobs")
+            .join(blob.filename());
+        let big = vec![0u8; usize::try_from(MAX_INLINE_BLOB_SIZE + 1).unwrap()];
+        std::fs::write(&path, &big).unwrap();
+        let reader = root.open_run(id).unwrap();
+        let err = reader.read_blob(&blob).unwrap_err();
+        assert!(matches!(err, StateError::BlobTooLarge { .. }));
+    }
+
+    #[test]
+    fn read_blob_stream_verifies_hash() {
+        use std::io::Read as _;
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        let blob = writer.write_blob(b"streaming bytes", "txt").unwrap();
+        let reader = root.open_run(id).unwrap();
+        let mut stream = reader.read_blob_stream(&blob).unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"streaming bytes");
+        stream.verify().unwrap();
+    }
+
+    #[test]
+    fn read_blob_stream_detects_tampering() {
+        use std::io::Read as _;
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        let blob = writer.write_blob(b"original", "txt").unwrap();
+        let path = root
+            .path()
+            .join("runs")
+            .join(id.as_str())
+            .join("blobs")
+            .join(blob.filename());
+        std::fs::write(&path, b"tampered").unwrap();
+        let reader = root.open_run(id).unwrap();
+        let mut stream = reader.read_blob_stream(&blob).unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).unwrap();
+        let err = stream.verify().unwrap_err();
+        assert!(matches!(err, StateError::BlobHashMismatch { .. }));
+    }
+
+    #[test]
+    fn events_skips_malformed_lines() {
+        use std::io::Write as _;
+
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        // Inject a malformed line directly into events.jsonl.
+        let path = root
+            .path()
+            .join("runs")
+            .join(id.as_str())
+            .join("events.jsonl");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"not json\n").unwrap();
+        f.write_all(
+            br#"{"ts":"2026-05-17T00:00:00Z","kind":"iteration_decided","iteration":1,"decision_kind":"Execute"}
+"#,
+        )
+        .unwrap();
+        drop(f);
+        let reader = root.open_run(id).unwrap();
+        let events = reader.events().unwrap();
+        assert_eq!(events.len(), 2, "skipped malformed, kept 2 valid");
+        let err = reader.events_strict().unwrap_err();
+        assert!(matches!(err, StateError::Json(_)));
+    }
+
+    #[test]
+    fn env_path_trims_and_expands_tilde() {
+        // Use scoped env vars to avoid cross-test pollution.
+        // SAFETY: tests run single-threaded under default `cargo test`?
+        // No — they run in parallel by default. The env mutations
+        // here race with other tests reading the same vars. Mitigate
+        // by using a process-unique var name so this test is the
+        // only reader.
+        let var = format!("OODA_TEST_PATH_{}", std::process::id());
+        // SAFETY: env mutation in test; var name uniquified per pid.
+        unsafe { std::env::set_var(&var, "   /tmp/foo   ") };
+        assert_eq!(env_path(&var), Some(PathBuf::from("/tmp/foo")));
+        // SAFETY: see above.
+        unsafe { std::env::set_var(&var, "   ") };
+        assert_eq!(env_path(&var), None);
+        // SAFETY: see above.
+        unsafe { std::env::set_var(&var, "~/scratch") };
+        if let Some(home) = std::env::var_os("HOME") {
+            let expected = PathBuf::from(home).join("scratch");
+            assert_eq!(env_path(&var), Some(expected));
+        }
+        // SAFETY: see above.
+        unsafe { std::env::remove_var(&var) };
+    }
+
+    #[test]
+    fn create_run_sweeps_blob_tmps() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        // Pre-populate a stale tmp.
+        let blobs_dir = root.path().join("runs").join(id.as_str()).join("blobs");
+        std::fs::create_dir_all(&blobs_dir).unwrap();
+        std::fs::write(blobs_dir.join("abc.md.tmp"), b"stale").unwrap();
+        let _writer = root.create_run(id).unwrap();
+        assert!(!blobs_dir.join("abc.md.tmp").exists());
     }
 
     #[test]

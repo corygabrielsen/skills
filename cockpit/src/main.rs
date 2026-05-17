@@ -38,6 +38,7 @@ use std::io::{self, SeekFrom};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::Router;
@@ -50,7 +51,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use ooda_core::ExitCode;
 use ooda_state::{Event as OodaEvent, RunId, StateRoot};
 use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
@@ -63,6 +64,22 @@ const DEFAULT_PORT: u16 = 7777;
 /// "live tail", not durable history — durable history is on disk).
 const BROADCAST_CAPACITY: usize = 1024;
 
+/// Bounded capacity for the notify→async bridge. Notify is a sync
+/// callback; the receiver is an async task. Disk is authoritative —
+/// a dropped notify event delays tail-start by one poll at worst.
+const NOTIFY_CHANNEL_CAPACITY: usize = 4096;
+
+/// Cap on the per-tail `partial` buffer (1 MiB). If a writer never
+/// emits a newline (writer-protocol bug), the partial buffer would
+/// grow unbounded. On overflow the buffer is drained to the next
+/// newline and a warning is logged.
+const PARTIAL_BUFFER_CAP: usize = 1024 * 1024;
+
+/// Initial backoff for restart loops; doubles per failure to a
+/// per-loop ceiling.
+const RESTART_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const RESTART_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 /// How often the per-run tail task wakes to read new bytes. The
 /// `live/` watcher is event-driven, but each `events.jsonl` is
 /// polled because adding a second inotify watch per active run is
@@ -73,6 +90,24 @@ const TAIL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 struct AppState {
     state_root: PathBuf,
     tx: broadcast::Sender<StreamedEvent>,
+    metrics: Arc<Metrics>,
+}
+
+/// Process-lifetime observability counters surfaced via `/api/health`.
+#[derive(Debug, Default)]
+#[allow(clippy::struct_field_names)]
+struct Metrics {
+    /// Total broadcast events dropped due to subscriber `Lagged(n)`.
+    lagged_total: AtomicU64,
+    /// Total notify events dropped because the bounded bridge was
+    /// full (operator should see this if the watcher is overrun).
+    notify_dropped_total: AtomicU64,
+    /// Total times a tail's `partial` buffer hit `PARTIAL_BUFFER_CAP`
+    /// and was force-drained to the next newline.
+    partial_overflow_total: AtomicU64,
+    /// Total times a tail detected `events.jsonl` shrinking (writer-
+    /// contract violation) and reset its offset.
+    truncations_total: AtomicU64,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,6 +115,10 @@ struct Health {
     status: &'static str,
     state_root: String,
     version: &'static str,
+    lagged_total: u64,
+    notify_dropped_total: u64,
+    partial_overflow_total: u64,
+    truncations_total: u64,
 }
 
 /// SSE wire shape: the parsed `ooda_state::Event` plus the run id
@@ -148,8 +187,20 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(?addr, ?state_root_path, "cockpit starting");
     }
 
+    let metrics = Arc::new(Metrics::default());
+    // Best-effort: reclaim disk for live markers whose writer is
+    // dead. PID-liveness is parsed from the run-id suffix; non-
+    // generated ids are left alone (conservative).
+    match state_root.sweep_dead_markers() {
+        Ok(swept) if !swept.is_empty() => {
+            tracing::info!(count = swept.len(), "swept dead live markers");
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, "sweep_dead_markers failed"),
+    }
+
     let (tx, _rx) = broadcast::channel::<StreamedEvent>(BROADCAST_CAPACITY);
-    spawn_live_watcher(state_root.clone(), tx.clone());
+    spawn_live_watcher(state_root.clone(), tx.clone(), Arc::clone(&metrics));
 
     let app = Router::new()
         .route("/", get(index))
@@ -158,6 +209,7 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .with_state(AppState {
             state_root: state_root_path.clone(),
             tx,
+            metrics,
         });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -181,6 +233,10 @@ async fn health(State(app): State<AppState>) -> Json<Health> {
         status: "ok",
         state_root: app.state_root.display().to_string(),
         version: env!("CARGO_PKG_VERSION"),
+        lagged_total: app.metrics.lagged_total.load(Ordering::Relaxed),
+        notify_dropped_total: app.metrics.notify_dropped_total.load(Ordering::Relaxed),
+        partial_overflow_total: app.metrics.partial_overflow_total.load(Ordering::Relaxed),
+        truncations_total: app.metrics.truncations_total.load(Ordering::Relaxed),
     })
 }
 
@@ -189,10 +245,11 @@ async fn events_sse(
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     // BroadcastStream surfaces a `Lagged(n)` error when a slow
     // subscriber falls behind the channel capacity. Cockpit's
-    // contract is "live tail, best effort" — log the lag and drop
-    // the missed batch; do not tear down the SSE connection.
+    // contract is "live tail, best effort" — log the lag, count
+    // the dropped batch, and keep the SSE connection alive.
     let rx = app.tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
+    let metrics = Arc::clone(&app.metrics);
+    let stream = BroadcastStream::new(rx).filter_map(move |res| match res {
         Ok(ev) => match serde_json::to_string(&ev) {
             Ok(json) => Some(Ok(SseEvent::default().event("mutation").data(json))),
             Err(err) => {
@@ -200,8 +257,9 @@ async fn events_sse(
                 None
             }
         },
-        Err(err) => {
-            tracing::warn!(%err, "broadcast subscriber lagged; dropping batch");
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+            metrics.lagged_total.fetch_add(n, Ordering::Relaxed);
+            tracing::warn!(dropped = n, "broadcast subscriber lagged; dropping batch");
             None
         }
     });
@@ -214,49 +272,108 @@ async fn events_sse(
 
 // ── Live watcher ─────────────────────────────────────────────────────
 
-/// Spawn the `live/` watcher and pre-tail any runs already live at
-/// startup. The watcher runs for the lifetime of the daemon.
-fn spawn_live_watcher(state_root: StateRoot, tx: broadcast::Sender<StreamedEvent>) {
+/// Generation-tagged entry in the `tails` map. The generation is
+/// assigned at spawn time and consulted at self-cleanup so a stale
+/// task cannot delete a fresh entry that replaced it (Remove →
+/// Create coalescence race).
+#[derive(Debug)]
+struct TailEntry {
+    generation: u64,
+    cancel: oneshot::Sender<()>,
+}
+
+type Tails = Arc<Mutex<HashMap<RunId, TailEntry>>>;
+
+/// Spawn the `live/` watcher in a restart loop. The watcher runs
+/// for the lifetime of the daemon; a notify-backend death or IO
+/// error logs and re-creates the watcher with exponential backoff
+/// rather than leaving cockpit deaf.
+fn spawn_live_watcher(
+    state_root: StateRoot,
+    tx: broadcast::Sender<StreamedEvent>,
+    metrics: Arc<Metrics>,
+) {
     tokio::spawn(async move {
-        if let Err(err) = run_live_watcher(state_root, tx).await {
-            tracing::error!(%err, "live watcher exited with error");
-        }
+        let tails: Tails = Arc::new(Mutex::new(HashMap::new()));
+        let generation = Arc::new(AtomicU64::new(0));
+        run_with_restart("live_watcher", move || {
+            let state_root = state_root.clone();
+            let tx = tx.clone();
+            let tails = Arc::clone(&tails);
+            let metrics = Arc::clone(&metrics);
+            let generation = Arc::clone(&generation);
+            async move { run_live_watcher_once(state_root, tx, tails, metrics, generation).await }
+        })
+        .await;
     });
 }
 
-async fn run_live_watcher(
+/// Restart-with-backoff helper. Calls `make_fut` in a loop; on
+/// `Err` logs and sleeps with exponentially-increasing backoff
+/// (capped at [`RESTART_MAX_BACKOFF`]); on `Ok` resets the backoff.
+async fn run_with_restart<F, Fut>(name: &'static str, mut make_fut: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
+{
+    let mut backoff = RESTART_INITIAL_BACKOFF;
+    loop {
+        match make_fut().await {
+            Ok(()) => {
+                backoff = RESTART_INITIAL_BACKOFF;
+            }
+            Err(err) => {
+                tracing::error!(task = name, %err, ?backoff, "restarting after error");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(RESTART_MAX_BACKOFF);
+            }
+        }
+    }
+}
+
+async fn run_live_watcher_once(
     state_root: StateRoot,
     tx: broadcast::Sender<StreamedEvent>,
+    tails: Tails,
+    metrics: Arc<Metrics>,
+    generation: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let live_dir = state_root.path().join("live");
     // StateRoot::new created `live/` if missing; tolerate the race
     // where it was removed between construction and watcher startup.
     tokio::fs::create_dir_all(&live_dir).await?;
 
-    let tails: Arc<Mutex<HashMap<RunId, oneshot::Sender<()>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
-    // Pre-tail every already-live run from offset 0. The first
-    // pass replays the on-disk history into the broadcast channel;
-    // subsequent appends keep flowing through the same tail task.
-    //
-    // Caveat: `tokio::broadcast` does not replay past messages to
-    // late subscribers, so an SSE client that connects after this
-    // pre-tail completes will not see the replayed events — only
-    // appends that follow. Per-connection backfill (read disk →
-    // forward to the client → subscribe to broadcast) is future
-    // work; for now, late connectors get the live tail only.
+    // Pre-tail every already-live run. `live_runs()` filters out
+    // markers whose writer PID is dead; the tail begins at the
+    // file's current EOF so a fresh subscriber doesn't get flooded
+    // with replayed history (broadcast subscribers connect after
+    // this point and only see appends from now on).
     for id in state_root.live_runs()? {
-        start_tail(&state_root, &tx, &tails, id).await;
+        start_tail(
+            &state_root,
+            &tx,
+            &tails,
+            &metrics,
+            &generation,
+            id,
+            StartOffset::Eof,
+        )
+        .await;
     }
 
-    let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<notify::Event>();
+    let (notify_tx, mut notify_rx) = mpsc::channel::<notify::Event>(NOTIFY_CHANNEL_CAPACITY);
+    let metrics_for_cb = Arc::clone(&metrics);
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         match res {
             Ok(ev) => {
-                // Best-effort: receiver gone means the daemon is
-                // shutting down; drop quietly.
-                let _ = notify_tx.send(ev);
+                // Bounded channel; on full, drop and count. Disk is
+                // authoritative — a missed Create just delays
+                // tail-start by one poll on the next event.
+                if notify_tx.try_send(ev).is_err() {
+                    metrics_for_cb
+                        .notify_dropped_total
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
             Err(err) => tracing::warn!(%err, "live watcher event error"),
         }
@@ -268,7 +385,25 @@ async fn run_live_watcher(
             EventKind::Create(_) => {
                 for path in ev.paths {
                     if let Some(id) = run_id_from_marker(&path) {
-                        start_tail(&state_root, &tx, &tails, id).await;
+                        // Skip start_tail if the marker's PID is
+                        // already dead (rare: marker created by a
+                        // process that crashed milliseconds later).
+                        if let Some(pid) = id.writer_pid()
+                            && !is_pid_alive(pid)
+                        {
+                            tracing::debug!(run_id = %id, pid, "skipping tail: pid dead");
+                            continue;
+                        }
+                        start_tail(
+                            &state_root,
+                            &tx,
+                            &tails,
+                            &metrics,
+                            &generation,
+                            id,
+                            StartOffset::Beginning,
+                        )
+                        .await;
                     }
                 }
             }
@@ -283,10 +418,49 @@ async fn run_live_watcher(
         }
     }
 
-    // Channel closed: watcher dropped.  Move ownership into the
-    // task so it lives as long as the loop runs.
+    // Channel closed: watcher dropped. Returning Ok lets the
+    // restart loop re-establish the watcher.
     drop(watcher);
     Ok(())
+}
+
+/// POSIX `kill(pid, 0)` liveness probe (mirrors the helper in
+/// `ooda-state`). Used to skip tailing markers whose writer is
+/// already gone at the moment we observe their Create.
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let pid_i32 = i32::try_from(pid).unwrap_or(i32::MAX);
+    let rc = unsafe { libc_kill(pid_i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    matches!(io::Error::last_os_error().raw_os_error(), Some(1))
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+/// Initial offset for a freshly-spawned tail task.
+#[derive(Copy, Clone, Debug)]
+enum StartOffset {
+    /// Read from offset 0 — used when responding to a Create event
+    /// (likely a brand-new run with little history).
+    Beginning,
+    /// Seek to EOF — used for pre-startup pre-tail to avoid
+    /// flooding the broadcast channel with replayed historical
+    /// events that no live subscriber asked for.
+    Eof,
 }
 
 /// Extract a `RunId` from the basename of a `live/<run-id>` marker
@@ -300,15 +474,25 @@ fn run_id_from_marker(path: &Path) -> Option<RunId> {
 async fn start_tail(
     state_root: &StateRoot,
     tx: &broadcast::Sender<StreamedEvent>,
-    tails: &Arc<Mutex<HashMap<RunId, oneshot::Sender<()>>>>,
+    tails: &Tails,
+    metrics: &Arc<Metrics>,
+    generation: &Arc<AtomicU64>,
     id: RunId,
+    start: StartOffset,
 ) {
     let mut guard = tails.lock().await;
     if guard.contains_key(&id) {
         return;
     }
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
-    guard.insert(id.clone(), cancel_tx);
+    let gen_id = generation.fetch_add(1, Ordering::Relaxed);
+    guard.insert(
+        id.clone(),
+        TailEntry {
+            generation: gen_id,
+            cancel: cancel_tx,
+        },
+    );
     drop(guard);
 
     let events_path = state_root
@@ -318,27 +502,42 @@ async fn start_tail(
         .join("events.jsonl");
     let tx = tx.clone();
     let tails = Arc::clone(tails);
+    let metrics = Arc::clone(metrics);
     let id_for_task = id.clone();
     tokio::spawn(async move {
-        if let Err(err) = tail_events(events_path, id_for_task.clone(), tx, cancel_rx).await {
-            tracing::warn!(run_id = %id_for_task, %err, "tail task exited with error");
+        run_tail_with_restart(
+            events_path,
+            id_for_task.clone(),
+            tx,
+            cancel_rx,
+            start,
+            Arc::clone(&metrics),
+        )
+        .await;
+        // Self-cleanup: only delete OUR entry. A Remove → Create
+        // coalescence may have replaced us with a fresh tail at a
+        // higher generation; deleting that would leave a zombie
+        // tail unreachable from stop_tail.
+        let mut guard = tails.lock().await;
+        if let Some(entry) = guard.get(&id_for_task)
+            && entry.generation == gen_id
+        {
+            guard.remove(&id_for_task);
         }
-        // Self-cleanup so a halted run can be re-tailed if its
-        // marker reappears (test scenarios; not expected in
-        // production where run-ids are unique).
-        tails.lock().await.remove(&id_for_task);
     });
 }
 
-async fn stop_tail(tails: &Arc<Mutex<HashMap<RunId, oneshot::Sender<()>>>>, id: &RunId) {
-    if let Some(cancel) = tails.lock().await.remove(id) {
-        let _ = cancel.send(());
+async fn stop_tail(tails: &Tails, id: &RunId) {
+    if let Some(entry) = tails.lock().await.remove(id) {
+        let _ = entry.cancel.send(());
     }
 }
 
-/// Tail `events_path` from offset 0, forwarding each parsed line as
-/// a `StreamedEvent` to `tx`. Returns when `cancel_rx` fires or the
-/// broadcast channel is dropped.
+/// Drive `tail_events_once` in a restart loop until the tail
+/// completes cleanly (cancellation) or the broadcast channel is
+/// gone. Per-iteration IO failures (transient EIO, `NotFound`) log
+/// and retry with backoff; this is the resilience hook that keeps
+/// a single bad read from killing the tail forever.
 ///
 /// The poll carries a byte-level partial buffer (not a `String`)
 /// so a UTF-8 codepoint or PIPE_BUF-sized event split across two
@@ -346,87 +545,170 @@ async fn stop_tail(tails: &Arc<Mutex<HashMap<RunId, oneshot::Sender<()>>>>, id: 
 /// fails UTF-8 decoding is logged and skipped; a trailing run of
 /// bytes without a terminating `\n` is held in `partial` for the
 /// next pass.
-async fn tail_events(
+async fn run_tail_with_restart(
     events_path: PathBuf,
     run_id: RunId,
     tx: broadcast::Sender<StreamedEvent>,
     mut cancel_rx: oneshot::Receiver<()>,
-) -> io::Result<()> {
-    let mut offset: u64 = 0;
+    start: StartOffset,
+    metrics: Arc<Metrics>,
+) {
+    let mut backoff = RESTART_INITIAL_BACKOFF;
+    let mut offset: u64 = match start {
+        StartOffset::Beginning => 0,
+        StartOffset::Eof => initial_eof_offset(&events_path).await,
+    };
     let mut partial: Vec<u8> = Vec::new();
     loop {
-        tokio::select! {
-            biased;
-            _ = &mut cancel_rx => return Ok(()),
-            () = tokio::time::sleep(TAIL_POLL_INTERVAL) => {}
+        let result = tail_events_once(
+            &events_path,
+            &run_id,
+            &tx,
+            &mut cancel_rx,
+            &mut offset,
+            &mut partial,
+            &metrics,
+        )
+        .await;
+        match result {
+            TailStep::Cancelled | TailStep::SubscribersGone => return,
+            TailStep::Idle => {
+                backoff = RESTART_INITIAL_BACKOFF;
+            }
+            TailStep::TransientError(err) => {
+                tracing::warn!(run_id = %run_id, %err, ?backoff, "tail transient error; backing off");
+                tokio::select! {
+                    biased;
+                    _ = &mut cancel_rx => return,
+                    () = tokio::time::sleep(backoff) => {}
+                }
+                backoff = (backoff * 2).min(RESTART_MAX_BACKOFF);
+            }
         }
-
-        let mut file = match tokio::fs::File::open(&events_path).await {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
-        };
-        let len = file.metadata().await?.len();
-        if len <= offset {
-            // No new bytes (or file truncated — Cockpit treats
-            // truncation as "nothing new"; events.jsonl is
-            // append-only by the writer contract).
-            continue;
-        }
-        file.seek(SeekFrom::Start(offset)).await?;
-        let mut buf: Vec<u8> = Vec::new();
-        let read = file.read_to_end(&mut buf).await?;
-        offset += read as u64;
-        partial.extend_from_slice(&buf);
-        cap_partial(&mut partial, &run_id);
-        emit_complete_lines(&mut partial, &run_id, &tx);
     }
 }
 
-/// Cap on the unparsed partial-line buffer. A single event line
-/// is bounded by [`ooda_state::MAX_EVENT_BYTES`] (`PIPE_BUF` =
-/// 4 KiB); a 1 MiB ceiling absorbs many polls of split events
-/// without unbounded growth if the writer somehow stalls mid-line
-/// forever.
-const PARTIAL_CAP_BYTES: usize = 1024 * 1024;
+/// Snapshot `events.jsonl` length at startup so [`StartOffset::Eof`]
+/// tails skip historical events. A missing file → offset 0
+/// (subsequent appends will be picked up).
+async fn initial_eof_offset(events_path: &Path) -> u64 {
+    match tokio::fs::metadata(events_path).await {
+        Ok(meta) => meta.len(),
+        Err(_) => 0,
+    }
+}
 
-/// Drop everything up to (and including) the most recent `\n` if
-/// the partial buffer breaches [`PARTIAL_CAP_BYTES`]. If no
-/// newline is present at all, the entire buffer is discarded — a
-/// pathological writer that emits more than 1 MiB without a
-/// terminator is lying about the append-only contract.
-fn cap_partial(partial: &mut Vec<u8>, run_id: &RunId) {
-    if partial.len() <= PARTIAL_CAP_BYTES {
-        return;
+#[derive(Debug)]
+enum TailStep {
+    /// `cancel_rx` fired; tail should exit cleanly.
+    Cancelled,
+    /// Broadcast channel has no subscribers AND no live `Sender`
+    /// references besides ours — tail can exit (history is on disk
+    /// for any future history endpoint).
+    SubscribersGone,
+    /// One poll cycle completed without error.
+    Idle,
+    /// Transient IO error; outer loop should sleep and retry.
+    TransientError(io::Error),
+}
+
+/// Single-poll tail body. Forwards new bytes from `events_path`
+/// into `tx`, carrying the trailing partial line across calls in
+/// `partial`. Returns a [`TailStep`] for the outer restart loop.
+async fn tail_events_once(
+    events_path: &Path,
+    run_id: &RunId,
+    tx: &broadcast::Sender<StreamedEvent>,
+    cancel_rx: &mut oneshot::Receiver<()>,
+    offset: &mut u64,
+    partial: &mut Vec<u8>,
+    metrics: &Arc<Metrics>,
+) -> TailStep {
+    tokio::select! {
+        biased;
+        _ = &mut *cancel_rx => return TailStep::Cancelled,
+        () = tokio::time::sleep(TAIL_POLL_INTERVAL) => {}
     }
-    if let Some(idx) = partial.iter().rposition(|b| *b == b'\n') {
-        let dropped = idx + 1;
-        partial.drain(..dropped);
+
+    let mut file = match tokio::fs::File::open(events_path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return TailStep::Idle,
+        Err(e) => return TailStep::TransientError(e),
+    };
+    let len = match file.metadata().await {
+        Ok(m) => m.len(),
+        Err(e) => return TailStep::TransientError(e),
+    };
+    if len < *offset {
+        // Truncation: events.jsonl is supposed to be append-only.
+        // Reset offset + partial so we don't silently skip the
+        // re-grown bytes.
         tracing::warn!(
             run_id = %run_id,
-            dropped,
-            "tail partial buffer exceeded cap; dropping to last newline",
+            prior_offset = *offset,
+            new_len = len,
+            "events.jsonl shrank; resetting tail",
         );
-    } else {
-        let dropped = partial.len();
+        metrics.truncations_total.fetch_add(1, Ordering::Relaxed);
+        *offset = 0;
         partial.clear();
+    }
+    if len == *offset {
+        return TailStep::Idle;
+    }
+    if let Err(e) = file.seek(SeekFrom::Start(*offset)).await {
+        return TailStep::TransientError(e);
+    }
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    let read = match reader.read_to_end(&mut buf).await {
+        Ok(n) => n,
+        Err(e) => return TailStep::TransientError(e),
+    };
+    *offset += read as u64;
+    partial.extend_from_slice(&buf);
+    if partial.len() > PARTIAL_BUFFER_CAP {
+        // Writer never emitted a newline within 1 MiB — drop bytes
+        // up to the most recent newline so we resynchronize on the
+        // next valid line boundary. If no newline exists, clear the
+        // whole buffer.
+        metrics
+            .partial_overflow_total
+            .fetch_add(1, Ordering::Relaxed);
+        let drop_to = partial
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1);
         tracing::warn!(
             run_id = %run_id,
-            dropped,
-            "tail partial buffer exceeded cap with no newline; discarding",
+            dropped_bytes = drop_to,
+            "tail partial buffer overflowed PARTIAL_BUFFER_CAP; resyncing to next newline",
         );
+        if drop_to == 0 {
+            partial.clear();
+        } else {
+            partial.drain(..drop_to);
+        }
     }
+    if !emit_complete_lines(partial, run_id, tx) {
+        return TailStep::SubscribersGone;
+    }
+    TailStep::Idle
 }
 
 /// Pop complete (newline-terminated) byte-lines from `buffer`,
-/// decode UTF-8, parse JSON, and forward. The trailing partial
-/// byte-run — if any — is left in `buffer` for the next read.
+/// decode UTF-8, parse JSON, and forward. Returns `false` if a
+/// `tx.send` failed AND there are no live subscribers — caller may
+/// then exit the tail. A complete byte-line that fails UTF-8 decode
+/// is logged and skipped. The trailing partial byte-run — if any —
+/// is left in `buffer` for the next read.
 fn emit_complete_lines(
     buffer: &mut Vec<u8>,
     run_id: &RunId,
     tx: &broadcast::Sender<StreamedEvent>,
-) {
-    while let Some(nl) = buffer.iter().position(|b| *b == b'\n') {
+) -> bool {
+    let mut alive = true;
+    while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
         let raw: Vec<u8> = buffer.drain(..=nl).take(nl).collect();
         let line = match std::str::from_utf8(&raw) {
             Ok(s) => s,
@@ -445,16 +727,16 @@ fn emit_complete_lines(
                     run_id: run_id.as_str().to_string(),
                     event,
                 };
-                // Send-error means no subscribers; that's fine — the
-                // event is still on disk for late connectors via a
-                // future history endpoint.
-                let _ = tx.send(streamed);
+                if tx.send(streamed).is_err() && tx.receiver_count() == 0 {
+                    alive = false;
+                }
             }
             Err(err) => {
                 tracing::warn!(run_id = %run_id, %err, line = %trimmed, "skipping malformed event line");
             }
         }
     }
+    alive
 }
 
 // ── Shutdown ─────────────────────────────────────────────────────────
@@ -628,7 +910,9 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(serde_json::to_string(&ev).unwrap().as_bytes());
         buf.push(b'\n');
-        buf.extend_from_slice(b"{\"ts\":\"2026-05-17T00:00:00Z\",\"kind\":\"iteration_decided\",\"iteration\":2,\"decision_kind\":\"H");
+        buf.extend_from_slice(
+            b"{\"ts\":\"2026-05-17T00:00:00Z\",\"kind\":\"iteration_decided\",\"iteration\":2,\"decision_kind\":\"H",
+        );
 
         emit_complete_lines(&mut buf, &run_id, &tx);
 
@@ -675,22 +959,6 @@ mod tests {
         emit_complete_lines(&mut buf, &run_id, &tx);
         assert!(rx.try_recv().is_ok());
         assert!(buf.is_empty());
-    }
-
-    #[test]
-    fn cap_partial_drops_to_last_newline_when_over_cap() {
-        let run_id = RunId::new("test-run").unwrap();
-        let mut buf: Vec<u8> = Vec::with_capacity(PARTIAL_CAP_BYTES + 16);
-        buf.resize(PARTIAL_CAP_BYTES / 2, b'x');
-        buf.push(b'\n');
-        buf.resize(PARTIAL_CAP_BYTES + 8, b'y');
-        cap_partial(&mut buf, &run_id);
-        // Everything before the newline + the newline itself is dropped.
-        assert_eq!(
-            buf.len(),
-            PARTIAL_CAP_BYTES + 8 - (PARTIAL_CAP_BYTES / 2 + 1)
-        );
-        assert!(buf.iter().all(|b| *b == b'y'));
     }
 
     #[test]

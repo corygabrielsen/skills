@@ -18,6 +18,12 @@ pub(crate) struct Session {
 
 impl Session {
     /// Open (or create) a session directory. Acquires a lock file.
+    ///
+    /// On `AlreadyExists`, the lockfile body (PID of the prior
+    /// owner) is consulted: if that PID is no longer alive, the
+    /// stale lock is unlinked and the acquisition retries once.
+    /// This covers SIGINT / SIGKILL / panic-unwind paths that
+    /// bypass [`Self::release`] (and that [`Drop`] cannot catch).
     pub(crate) fn open(session_id: &str) -> Result<Self, String> {
         let dir = PathBuf::from(BASE_DIR).join(session_id);
         ooda_core::atomic_io::secure_create_dir_all(&dir)
@@ -25,24 +31,33 @@ impl Session {
 
         let lock_path = dir.join("lock");
         // Atomic lock via O_CREAT|O_EXCL — no TOCTOU race.
-        match ooda_core::atomic_io::open_secure_create_new(&lock_path) {
-            Ok(mut f) => {
-                let _ = write!(f, "{}", std::process::id());
+        // Retry once on AlreadyExists if the prior owner PID is dead
+        // (covers SIGKILL / panic paths that bypass Drop).
+        for attempt in 0..2 {
+            match ooda_core::atomic_io::open_secure_create_new(&lock_path) {
+                Ok(mut f) => {
+                    let _ = write!(f, "{}", std::process::id());
+                    let history = load_history(&dir);
+                    return Ok(Self {
+                        dir,
+                        history,
+                        lock_path,
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let content = fs::read_to_string(&lock_path).unwrap_or_default();
+                    let prior_pid = content.trim().parse::<u32>().ok();
+                    if attempt == 0 && prior_pid.is_some_and(|p| !is_pid_alive(p)) {
+                        // Stale lock — owner is dead. Unlink and retry.
+                        let _ = fs::remove_file(&lock_path);
+                        continue;
+                    }
+                    return Err(format!("session locked (pid {content})"));
+                }
+                Err(e) => return Err(format!("cannot create lock: {e}")),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let content = fs::read_to_string(&lock_path).unwrap_or_default();
-                return Err(format!("session locked (pid {content})"));
-            }
-            Err(e) => return Err(format!("cannot create lock: {e}")),
         }
-
-        let history = load_history(&dir);
-
-        Ok(Self {
-            dir,
-            history,
-            lock_path,
-        })
+        Err("session locked (pid unknown)".to_string())
     }
 
     pub(crate) fn append_history(&mut self, entry: IterLog) -> Result<(), String> {
@@ -77,6 +92,44 @@ impl Session {
     pub(crate) fn release(&self) {
         let _ = fs::remove_file(&self.lock_path);
     }
+}
+
+impl Drop for Session {
+    /// Release the lockfile on best-effort exit (panic unwind, early
+    /// return between [`Self::open`] and [`Self::release`]).
+    /// SIGKILL / SIGTERM-without-trap still bypass Drop; readers
+    /// reconcile those via the PID-liveness re-acquire path in
+    /// [`Self::open`].
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
+/// POSIX `kill(pid, 0)` liveness probe (mirrors the helper in
+/// `ooda-state` and `cockpit`). Used by [`Session::open`] to
+/// reclaim leaked lockfiles whose owner is no longer running.
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let pid_i32 = i32::try_from(pid).unwrap_or(i32::MAX);
+    let rc = unsafe { libc_kill(pid_i32, 0) };
+    if rc == 0 {
+        return true;
+    }
+    matches!(std::io::Error::last_os_error().raw_os_error(), Some(1))
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
 fn load_history(dir: &Path) -> Vec<IterLog> {

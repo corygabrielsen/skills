@@ -331,6 +331,7 @@ impl Recorder {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn record_iteration<TObs>(
         &self,
         iteration: u32,
@@ -341,7 +342,16 @@ impl Recorder {
     ) where
         TObs: Serialize,
     {
-        let dashboard = Dashboard::from_iteration(oriented, candidates, decision);
+        let dashboard = Dashboard::from_iteration(
+            &oriented.ci,
+            oriented.cursor.as_ref(),
+            oriented.copilot.as_ref(),
+            &oriented.pull_request_metadata,
+            &oriented.doc_review,
+            &oriented.claude_review,
+            candidates,
+            decision,
+        );
         self.best_effort(|inner| {
             inner.current_iteration = Some(iteration);
 

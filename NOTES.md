@@ -1,110 +1,159 @@
-# Fifth-Generation Programming Notes
+# ooda-pr-codex-review → ooda-state cutover
 
-## The Generational Shift
+Task #227. Mapping decisions and rationale.
 
-| Generation | Artifact             | Abstraction                  |
-| ---------- | -------------------- | ---------------------------- |
-| 1GL        | Machine code         | Hardware instructions        |
-| 2GL        | Assembly             | Mnemonics                    |
-| 3GL        | C, Python            | Procedural/OO                |
-| 4GL        | SQL, MATLAB          | Declarative, domain-specific |
-| **5GL**    | **Natural language** | **Intent specification**     |
+## Domain
 
-**Key insight**: The prompt becomes the source of truth. Generated code is an artifact — like protobuf bindings from a `.proto` file. You version-control the intent, not the output.
+`domain = "pr"`. The codex-review axis is one of nine axes on a PR
+domain; it does not change the binary's domain. The standalone
+`ooda-codex-review` binary lives in a different domain.
 
-## Fixed Point Theory
+## RunStarted.target shape
 
-The core loop pattern:
-
-```
-Reviewer → Addresser → Loop until fixed point
-```
-
-Works for any LLM-readable artifact:
-
-| Skill                    | Artifact   | Reviewer      | Fixed Point          |
-| ------------------------ | ---------- | ------------- | -------------------- |
-| loop-codex-review        | Code       | Codex CLI     | n clean at xhigh     |
-| loop-address-pr-feedback | Code       | Humans + bots | All threads resolved |
-| review-skill-parallel    | Skill docs | Claude agents | n clean reviews      |
-
-**Fixed point** = no reviewer can find anything to flag. Not because you argued them down, but because the artifact is both _correct_ AND _self-evident_.
-
-## The Linting Parallel
-
-| 3GL Linting                | 5GL Review                 |
-| -------------------------- | -------------------------- |
-| Deterministic              | Stochastic                 |
-| Converges to "no warnings" | Converges to "no findings" |
-| Fix issue → issue gone     | Fix issue → E[findings] ↓  |
-
-**Why stochastic convergence works**: Different reviewers catch different issues through execution diversity. If all n independent samples return clean, the probability of lurking issues is low.
-
-**Non-monotonic is fine**: Findings may fluctuate (68 → 55 → 62 → 40). Track the trend, not individual counts. The criterion is "expected findings approaches zero."
-
-## The Oscillation Trap
-
-Multiple reviewers can chase each other in circles:
-
-```
-Fix conciseness → remove text → create ambiguity
-Fix adversarial → add clarifying text → create verbosity
-Fix correctness → add edge case handling → more text
-→ Back to conciseness...
+```json
+{
+  "slug": "owner/repo",
+  "pr": 42,
+  "mode": "loop" | "inspect",
+  "max_iter": 50,
+  "status_comment": false,
+  "codex_review": null | {
+    "floor": "low",
+    "ceiling": "high",
+    "n": 3
+  }
+}
 ```
 
-**The escape**: Aggressive consolidation. Don't add clarifying text—rewrite to be both shorter AND clearer. Less surface area = fewer things to flag = stability.
+`codex_review = null` ⇔ axis disabled (CLI ceiling = off). Non-null
+captures the per-invocation ladder bounds + parallelism.
 
-## Convergence Data
+## Event mapping
 
-`review-skill` fixed-point run (Jan 2026, 3 reviewers: adversarial/conciseness/correctness):
+| Old recorder method                | New event                                                         |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `open` (run start)                 | `RunStarted { domain:"pr", target }`                              |
+| `record_observe_start`             | `DomainSpecific { kind_suffix:"observe_started", payload }`       |
+| `record_observe_end`               | `DomainSpecific { kind_suffix:"observe_finished", payload }`      |
+| `record_iteration` observe blob    | `IterationObserved { iteration, blob:normalized.json }`           |
+| `record_iteration` oriented        | `IterationOriented { iteration, blob:oriented.json }`             |
+| `record_iteration` decision        | `IterationDecided { iteration, decision_kind }` + 3 blob events   |
+| `record_action_start`              | `DomainSpecific { kind_suffix:"action_started", payload }`        |
+| `record_action_end`                | `IterationExecuted { iteration, action_kind }`                    |
+| `record_wait_start`                | `DomainSpecific { kind_suffix:"wait_started", payload }`          |
+| `record_wait_end`                  | `IterationWaited { iteration, action_kind, interval_ms }`         |
+| `record_status_comment_*`          | `DomainSpecific { kind_suffix:"status_comment_*", payload }`      |
+| `tool_call_*`                      | `DomainSpecific { kind_suffix:"tool_call_*", payload+blob refs }` |
+| `record_outcome` (success/handoff) | `RunHalted { outcome, exit_code }`                                |
+| `record_outcome` (StuckRepeated)   | `RunStalled { last_action }`                                      |
+| `record_outcome` (StuckCapReached) | `RunCapReached { last_action }`                                   |
+| `write_handoff_md`                 | `write_blob(prompt, "md")` → returns blob path                    |
+| `write_trace_line`                 | `DomainSpecific { kind_suffix:"trace_line", payload:{line} }`     |
 
-| Iteration | Issues | Pattern     |
-| :-------: | :----: | :---------- |
-|    3-7    |  4-18  | Oscillating |
-|     8     |   29   | Peak        |
-|   9-13    |   0    | Stable      |
+Blobs (`normalized`, `oriented`, `candidates`, `decision`,
+`dashboard`, `index.md`, `blockers.md`, `next.md`, handoff body,
+tool stdout/stderr/record) are written via
+`RunWriter::write_blob`; events carry `BlobRef { sha, size, ext }`.
 
-**Breakthrough at iteration 8→9**: Consolidated Core Philosophy from 7 lines to 1. The cycle broke because there was nothing left to cut or clarify.
+## Codex axis state (the ambiguous part)
 
-## The Nash Equilibrium
+The codex axis has two kinds of state:
 
-The fixed point is where three competing pressures balance:
+1. **Observations** — `BatchState` / `VerdictRecord` lists per
+   ladder level per head SHA. **Maps cleanly**: emitted as
+   `DomainSpecific { kind_suffix:"codex_observed", payload:{level,
+batch_state, blob_refs_to_log_files} }` events on each
+   iteration.
+
+2. **Spawn workspace** — physical directory where `codex review`
+   subprocesses write `<L>-<slot>.log`, `<L>-<slot>.exit`,
+   `head_sha.txt`. This is shared act/observe state with two
+   constraints the ooda-state model doesn't satisfy:
+   - **Cross-run persistence** (cache survives across runs of the
+     binary against the same PR).
+   - **Stable PR-keyed path** (act-side spawn writes there; the
+     same path must be observable in the next iteration).
+
+   The ooda-state model is run-opaque and per-iteration immutable;
+   spawn workspace is the opposite shape.
+
+### Decision: split the workspace out of the recorder
+
+Codex spawn workspace lives at a **separate, PR-keyed path
+outside `<state-root>/runs/`**:
 
 ```
-           Correctness
-           (complete)
-              ▲
-             /|\
-            / | \
-           /  ●  \  ← Fixed point
-          /   |   \
-         ▼────┴────▼
-   Conciseness    Adversarial
-    (minimal)    (unambiguous)
+<state-root>/workspaces/pr-codex-review/<slug>/<pr>/
+  .lock                       advisory flock (lifetime of run)
+  levels/<L>/<head_sha[:12]>/
+    head_sha.txt
+    <L>-<slot>.log
+    <L>-<slot>.exit
 ```
 
-Movement in any direction makes something worse. The document can't be shorter without losing correctness, can't be longer without triggering conciseness, can't be reworded without creating ambiguity.
+This is **act-side state**, not recorder state. The recorder emits
+DomainSpecific events that reference the log files via blob refs
+(snapshots taken at observation time), so the immutable per-run
+audit trail in `events.jsonl` is complete on its own — the
+workspace is just the act-side scratch.
 
-## The Noise Floor
+A symmetric `<state-root>/workspaces/pr-comment-dedup/<slug>/<pr>.json`
+replaces the old `<pr_root>/status-comment/dedup.json` for the
+status-comment dedup state (also cross-run PR-keyed).
 
-Simple reviewers converge; deep reviewers always find something.
+Rationale: the new ooda-state design explicitly carves out
+"domain-specific index (additive, per-binary)" as an extension
+point for per-domain caches that the run-opaque core deliberately
+doesn't cover. The codex workspace and the comment dedup file
+are exactly that shape.
 
-| Reviewer Depth | Result at Fixed Point |
-| -------------- | --------------------- |
-| Simple/fast    | NO ISSUES             |
-| Deep/thorough  | ~13 borderline issues |
+### Alternatives considered
 
-The "borderline issues" are stable across runs—same findings, not oscillating. They represent the noise floor: real but diminishing-returns improvements.
+- **Put codex logs inside the run** — breaks the cache property
+  (next run can't reuse them).
+- **Put codex logs at a path keyed on `RunWriter::run_id`** —
+  same problem: per-run dir is scoped to one process.
+- **Snapshot codex logs as content-addressed blobs only** — works
+  for the audit trail but breaks the act-side spawn protocol
+  (codex needs a fixed directory to write into).
 
-**Practical criterion**: Simple reviewers return clean. Deep analysis is for auditing, not iteration.
+## Things deleted
 
-## The Self-Evident Criterion
+- `recorder.rs::CurrentManifest` writes — `CURRENT.json` is gone
+  from the new model; readers walk `events.jsonl` instead.
+- `recorder.rs::publish_current`, `publish_current` artifacts map,
+  `outcome_has_action` predicate.
+- `ledger.jsonl` / `ledger.md` cross-run streams — superseded by
+  per-run `events.jsonl`; cross-run browse walks `runs/`.
+- `trace.md` / `trace.jsonl` per-run files — superseded by
+  `events.jsonl` (DomainSpecific `trace_line` events).
+- `manifest.json` per-run file — superseded by `RunStarted` event
+  payload.
+- `event-range.json` per-iteration file — was a derived index;
+  `events.jsonl` is the source of truth.
+- `tools-calls/*` per-iteration directory — tool call bytes now
+  live as blobs referenced from `tool_call_finished` events.
+- `--legacy-trace` / `RecorderConfig::legacy_trace` — superseded
+  by event log; `--trace PATH` flag is retained as a noop tail
+  alias (writes to the same path it always did, derived from
+  events).
 
-Every finding demands improvement. No exceptions.
+  → Decided not to retain the flag-noop; the flag is removed
+  too. `--trace PATH` is no longer a CLI arg.
 
-- **Real bug** → fix
-- **False positive** → the artifact was unclear; clarify until intent is obvious
-- **Design tradeoff** → document the rationale explicitly
+## SKILL.md changes
 
-There is no "dismiss." If a reviewer misunderstood, another will too.
+The "Always-On State" section's filesystem layout block is
+replaced with the new `<state-root>/runs/<id>/events.jsonl + blobs/`
+shape; the "Recorder layout (codex sub-tree)" section is replaced
+with the workspaces shape; the `--trace PATH` flag row is removed.
+
+The Handoff\* `see:` pointer now targets a blob inside
+`runs/<run-id>/blobs/<sha>.md`, not a per-iteration `handoff.md`.
+
+## Integration test
+
+`tests/cli.rs::state_root_records_even_when_observe_fails` is
+rewritten to assert the new event shapes (`events.jsonl` exists;
+contains `run_started` / `run_halted` events with `domain="pr"`
+target; `live/<id>` marker is absent after halt).

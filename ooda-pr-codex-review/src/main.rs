@@ -25,7 +25,7 @@ use observe::github::{FetchOutcome, fetch_all};
 use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
-use recorder::{Recorder, RecorderConfig, RunMode};
+use recorder::{CodexReviewSnapshot, Recorder, RecorderConfig, RunMode};
 use runner::{CodexReviewConfig, LoopConfig, current_timestamp, run_loop};
 
 fn print_usage(out: &mut dyn std::io::Write) {
@@ -35,7 +35,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Usage:\n  ooda-pr-codex-review [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr-codex-review inspect [options] <owner/repo> <pr>   one pass; print Outcome; exit\n\
          \n\
-         Options:\n  --max-iter N                  loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment              post a status comment on the PR each iteration (deduped)\n  --state-root PATH             write always-on harness state under PATH\n  --trace PATH                  also append the compact trace to PATH\n  --codex-review-ceiling LVL    enable codex review with ceiling LVL: off|low|medium|high|xhigh (default off — codex review disabled)\n  --codex-review-floor LVL      codex review starting rung: low|medium|high|xhigh (default low; must be ≤ ceiling)\n  --codex-review-n N            codex review parallel reviewers per level (default 3, must be ≥ 1)\n  --codex-review-bin PATH       path to the codex binary (default codex, PATH lookup)\n  -h, --help                    show this help and exit\n\
+         Options:\n  --max-iter N                  loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment              post a status comment on the PR each iteration (deduped)\n  --state-root PATH             write always-on harness state under PATH\n  --codex-review-ceiling LVL    enable codex review with ceiling LVL: off|low|medium|high|xhigh (default off — codex review disabled)\n  --codex-review-floor LVL      codex review starting rung: low|medium|high|xhigh (default low; must be ≤ ceiling)\n  --codex-review-n N            codex review parallel reviewers per level (default 3, must be ≥ 1)\n  --codex-review-bin PATH       path to the codex binary (default codex, PATH lookup)\n  -h, --help                    show this help and exit\n\
          \n\
          Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneMerged       1 Paused             2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent     5 DoneClosed         6 StuckRepeated     7 StuckCapReached\n  64 UsageError      70 BinaryError       (130 SIGINT, 143 SIGTERM reserved)"
     );
@@ -54,7 +54,6 @@ struct Args {
     max_iter: std::num::NonZeroU32,
     status_comment: bool,
     state_root: Option<PathBuf>,
-    trace: Option<PathBuf>,
     /// Discriminant for the codex-review axis. `None` disables it
     /// (axis-disabled behavior is observationally identical to the
     /// no-codex sibling binary); `Some(level)` enables with that
@@ -122,7 +121,6 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
-    let mut trace: Option<PathBuf> = None;
     let mut codex_review_ceiling: Option<CodexReasoningLevel> = None;
     let mut codex_review_floor: CodexReasoningLevel = CodexReasoningLevel::Low;
     let mut codex_review_n: u32 = 3;
@@ -132,7 +130,6 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut saw_max_iter = false;
     let mut saw_status_comment = false;
     let mut saw_state_root = false;
-    let mut saw_trace = false;
     let mut saw_codex_review_ceiling = false;
     let mut saw_codex_review_floor = false;
     let mut saw_codex_review_n = false;
@@ -182,16 +179,6 @@ fn parse_args() -> Result<Args, Outcome> {
                     return Err(usage("--max-iter must be ≥ 1; got 0"));
                 };
                 max_iter = n;
-            }
-            "--trace" => {
-                if saw_trace {
-                    return Err(usage("--trace repeated"));
-                }
-                saw_trace = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--trace requires a value"));
-                };
-                trace = Some(PathBuf::from(v));
             }
             "--state-root" => {
                 if saw_state_root {
@@ -292,7 +279,6 @@ fn parse_args() -> Result<Args, Outcome> {
         max_iter,
         status_comment,
         state_root,
-        trace,
         codex_review_ceiling,
         codex_review_floor,
         codex_review_n,
@@ -314,7 +300,7 @@ fn main() -> ExitCode {
                 max_iter: args.max_iter,
                 status_comment: args.status_comment,
                 state_root: args.state_root.clone(),
-                legacy_trace: args.trace.clone(),
+                legacy_trace: None,
             }) {
                 Ok(r) => r,
                 Err(e) => {
@@ -322,6 +308,14 @@ fn main() -> ExitCode {
                 }
             };
             recorder.install_process_recorder();
+            let codex_review_snapshot =
+                args.codex_review_ceiling
+                    .map(|ceiling| CodexReviewSnapshot {
+                        floor: args.codex_review_floor.as_str().to_string(),
+                        ceiling: ceiling.as_str().to_string(),
+                        n: args.codex_review_n,
+                    });
+            recorder.record_codex_review_config(codex_review_snapshot.as_ref());
             let outcome = match args.mode {
                 Mode::Inspect => run_inspect(&args, &recorder),
                 Mode::Loop => run_full(&args, &recorder),
@@ -557,7 +551,7 @@ fn maybe_fetch_codex(
     let Some(ceiling) = args.codex_review_ceiling else {
         return Ok(None);
     };
-    let codex_pr_root = recorder.pull_request_root().join("codex");
+    let codex_pr_root = recorder.pr_workspace_root().join("codex");
     match fetch_codex(
         &codex_pr_root,
         args.codex_review_floor,
@@ -599,7 +593,7 @@ fn build_codex_act_context(
         Ok(p) => p,
         Err(e) => return Err(Outcome::binary_error(format!("repo root: {e}"))),
     };
-    let codex_pr_root = recorder.pull_request_root().join("codex");
+    let codex_pr_root = recorder.pr_workspace_root().join("codex");
     if let Err(e) = std::fs::create_dir_all(&codex_pr_root) {
         return Err(Outcome::binary_error(format!(
             "create codex pr_root {}: {e}",

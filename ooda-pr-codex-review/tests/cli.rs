@@ -29,7 +29,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn run(args: &[&str]) -> (i32, String, String) {
     let root = temp_path("state");
     let out = command(args)
-        .env("OODA_PR_STATE_HOME", &root)
+        .env("OODA_STATE_HOME", &root)
         .output()
         .expect("spawn ooda-pr-codex-review");
     (
@@ -71,7 +71,6 @@ fn help_long_exits_zero_via_stdout() {
         "stdout should begin with binary name; got: {stdout:?}"
     );
     assert!(stdout.contains("--state-root PATH"));
-    assert!(stdout.contains("--trace PATH"));
     assert!(stdout.contains("--codex-review-ceiling LVL"));
     assert_eq!(stderr, "", "--help must not write to stderr");
 }
@@ -233,7 +232,7 @@ fn status_comment_repeated_rejected() {
     );
 }
 
-// ─── --trace validation ─────────────────────────────────────────
+// ─── --state-root validation ───────────────────────────────────
 
 #[test]
 fn state_root_no_value_rejected() {
@@ -252,26 +251,6 @@ fn state_root_repeated_rejected() {
             "1",
         ],
         "--state-root repeated",
-    );
-}
-
-#[test]
-fn trace_no_value_rejected() {
-    assert_usage_error(&["--trace"], "--trace requires a value");
-}
-
-#[test]
-fn trace_repeated_rejected() {
-    assert_usage_error(
-        &[
-            "--trace",
-            "/tmp/a.log",
-            "--trace",
-            "/tmp/b.log",
-            "owner/repo",
-            "1",
-        ],
-        "--trace repeated",
     );
 }
 
@@ -558,31 +537,37 @@ fn state_root_records_even_when_observe_fails() {
     assert_eq!(code, 70, "stderr: {stderr}");
     assert!(stderr.starts_with("BinaryError: observe:"));
 
-    let pr_root = state_root.join("github.com/owner/repo/prs/1");
-    assert!(pr_root.join("events.jsonl").exists());
-    assert!(pr_root.join("CURRENT.json").exists());
-    assert!(pr_root.join("ledger.jsonl").exists());
-
-    let events = std::fs::read_to_string(pr_root.join("events.jsonl")).unwrap();
-    assert!(events.contains(r#""kind":"run_started""#), "{events}");
-    assert!(events.contains(r#""kind":"observe_started""#), "{events}");
-    assert!(
-        events.contains(r#""kind":"tool_call_finished""#),
-        "{events}"
+    // The ooda-state layout: one run-dir under runs/, holding the
+    // run's events.jsonl + blobs/. Live marker is gone after halt.
+    let runs_dir = state_root.join("runs");
+    let live_dir = state_root.join("live");
+    assert!(runs_dir.is_dir(), "runs/ exists");
+    assert!(live_dir.is_dir(), "live/ exists");
+    assert_eq!(
+        std::fs::read_dir(&live_dir).unwrap().count(),
+        0,
+        "live marker is removed after halt",
     );
-    assert!(events.contains(r#""kind":"observe_finished""#), "{events}");
-    assert!(events.contains(r#""kind":"outcome""#), "{events}");
-
-    let run_dirs: Vec<_> = std::fs::read_dir(pr_root.join("runs"))
+    let run_paths: Vec<_> = std::fs::read_dir(&runs_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
-    assert_eq!(run_dirs.len(), 1);
-    assert!(run_dirs[0].join("manifest.json").exists());
-    assert!(run_dirs[0].join("trace.md").exists());
+    assert_eq!(run_paths.len(), 1, "exactly one run was created");
+    let only_run = &run_paths[0];
+    assert!(only_run.join("events.jsonl").exists());
+    assert!(only_run.join("blobs").is_dir());
+
+    let events = std::fs::read_to_string(only_run.join("events.jsonl")).unwrap();
+    assert!(events.contains(r#""kind":"run_started""#), "{events}");
+    assert!(events.contains(r#""domain":"pr""#), "{events}");
     assert!(
-        run_dirs[0]
-            .join("iterations/0001/event-range.json")
-            .exists()
+        events.contains(r#""kind_suffix":"observe_started""#),
+        "{events}",
     );
+    assert!(
+        events.contains(r#""kind_suffix":"observe_finished""#),
+        "{events}",
+    );
+    assert!(events.contains(r#""kind_suffix":"outcome""#), "{events}");
+    assert!(events.contains(r#""kind":"run_halted""#), "{events}");
 }

@@ -12,7 +12,6 @@ use crate::orient::reviews::ReviewSummary;
 use crate::orient::thread::ReviewThread;
 use ooda_core::Axis;
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct ReviewsObservation<'a> {
     pub reviews: &'a ReviewSummary,
     pub ci: &'a CiReport,
@@ -20,7 +19,6 @@ pub(crate) struct ReviewsObservation<'a> {
     pub threads: &'a [ReviewThread],
 }
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct ReviewsAxis;
 
 impl<'a> Axis<ReviewsObservation<'a>> for ReviewsAxis {

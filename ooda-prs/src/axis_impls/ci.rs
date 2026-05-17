@@ -11,13 +11,11 @@ use crate::orient::ci::CiReport;
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`CiAxis`].
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CiObservation<'a> {
     pub report: &'a CiReport,
 }
 
 /// Wrapper exposing CI as an [`Axis`] impl.
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CiAxis;
 
 impl<'a> Axis<CiObservation<'a>> for CiAxis {

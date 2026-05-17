@@ -41,10 +41,11 @@ use thread::ReviewThread;
 /// **Not a stable consumer-facing contract.** Each downstream
 /// consumer takes a per-consumer `<X>Inputs<'a>` struct of typed
 /// dep refs; the `From<&OrientedState>` bridges defined on each
-/// `Inputs` struct decompose this bundle. No consumer body should
-/// read `OrientedState` fields directly. Task 218's Driver loop
-/// will eliminate this aggregation entirely (per-axis Reports
-/// will be locals at the Driver site).
+/// `Inputs` struct decompose this bundle. No consumer body reads
+/// `OrientedState` fields directly — the Driver
+/// ([`crate::runner::drive`]) dispatches per-axis via the
+/// [`ooda_core::Axis`] trait, and each `Inputs` constructor
+/// projects out the subset of fields its consumer needs.
 ///
 /// Composition is purely additive: each axis owns its own field, no
 /// cross-axis aggregate (score, tier) lives here. Downstream views

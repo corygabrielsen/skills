@@ -9,14 +9,12 @@ use crate::ids::PullRequestNumber;
 use crate::orient::closeout::Closeout;
 use ooda_core::Axis;
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CloseoutObservation<'a> {
     pub closeout: &'a Closeout,
     pub attest_path: Option<&'a std::path::Path>,
     pub pr: PullRequestNumber,
 }
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CloseoutAxis;
 
 impl<'a> Axis<CloseoutObservation<'a>> for CloseoutAxis {

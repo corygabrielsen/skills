@@ -19,7 +19,6 @@ use crate::orient::thread::ReviewThread;
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`StateAxis`].
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct StateObservation<'a> {
     pub state: &'a PullRequestProjection,
     pub threads: &'a [ReviewThread],
@@ -27,7 +26,6 @@ pub(crate) struct StateObservation<'a> {
 }
 
 /// Wrapper exposing mechanical merge-shape blockers as an [`Axis`] impl.
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct StateAxis;
 
 impl<'a> Axis<StateObservation<'a>> for StateAxis {

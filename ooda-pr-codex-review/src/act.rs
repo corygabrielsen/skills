@@ -13,6 +13,7 @@
 
 pub(crate) mod address_claude_review;
 mod ci;
+pub(crate) mod closeout;
 mod copilot;
 pub(crate) mod review_docs;
 pub(crate) mod sync_pull_request_metadata;

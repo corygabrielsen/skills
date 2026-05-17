@@ -63,6 +63,14 @@ fn expected_doc_review_path(state_root: &Path, pr_id: &str) -> PathBuf {
         .join("doc_review_attest.json")
 }
 
+fn expected_closeout_path(state_root: &Path, pr_id: &str) -> PathBuf {
+    state_root
+        .canonicalize()
+        .unwrap()
+        .join(pr_id)
+        .join("closeout_attest.json")
+}
+
 #[test]
 fn happy_path_writes_attestation_for_head() {
     let repo = TempDir::new().unwrap();
@@ -400,4 +408,145 @@ fn idempotent_second_run_overwrites_and_advances_timestamp() {
         second_at > first_at.as_str(),
         "timestamp must monotonically advance"
     );
+}
+
+// ── closeout subcommand ────────────────────────────────────────────
+
+#[test]
+fn closeout_happy_path_writes_attestation_for_head() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["closeout", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .assert()
+        .success();
+
+    let path = expected_closeout_path(state_root.path(), "42");
+    assert!(
+        path.exists(),
+        "closeout attestation not written at {}",
+        path.display()
+    );
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+    assert_eq!(json["version"].as_u64().unwrap(), 1);
+    assert!(json["attested_at"].as_str().is_some());
+}
+
+#[test]
+fn closeout_invalid_pull_request_id_exits_64() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["closeout", "--pr-id", "abc", "--state-root"])
+        .arg(state_root.path())
+        .assert()
+        .failure()
+        .code(64)
+        .stderr(contains("--pr-id"));
+}
+
+#[test]
+fn closeout_not_a_git_repo_exits_65() {
+    let non_repo = TempDir::new().unwrap();
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(non_repo.path())
+        .args(["closeout", "--pr-id", "1", "--state-root"])
+        .arg(state_root.path())
+        .assert()
+        .failure()
+        .code(65);
+}
+
+#[test]
+fn closeout_ooda_pr_state_home_env_var_supplies_default_state_root() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .env("OODA_PR_STATE_HOME", state_root.path())
+        .env_remove("XDG_STATE_HOME")
+        .args(["closeout", "--pr-id", "753"])
+        .assert()
+        .success();
+
+    let path = expected_closeout_path(state_root.path(), "753");
+    assert!(path.exists(), "attestation not at {}", path.display());
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+}
+
+#[test]
+fn closeout_home_fallback_supplies_default_state_root_when_no_env_overrides() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let fake_home = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .env_remove("OODA_PR_STATE_HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env("HOME", fake_home.path())
+        .args(["closeout", "--pr-id", "753"])
+        .assert()
+        .success();
+
+    let path = fake_home
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".local")
+        .join("state")
+        .join("ooda-pr")
+        .join("753")
+        .join("closeout_attest.json");
+    assert!(path.exists(), "attestation not at {}", path.display());
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+}
+
+#[test]
+fn closeout_idempotent_second_run_overwrites_and_advances_timestamp() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["closeout", "--pr-id", "7", "--state-root"])
+        .arg(state_root.path())
+        .assert()
+        .success();
+    let path = expected_closeout_path(state_root.path(), "7");
+    let first = read_attestation(&path);
+    let first_at = first["attested_at"].as_str().unwrap().to_string();
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    bin()
+        .current_dir(repo.path())
+        .args(["closeout", "--pr-id", "7", "--state-root"])
+        .arg(state_root.path())
+        .assert()
+        .success();
+    let second = read_attestation(&path);
+    let second_at = second["attested_at"].as_str().unwrap();
+
+    assert_eq!(
+        first["attested_sha"].as_str().unwrap(),
+        second["attested_sha"].as_str().unwrap()
+    );
+    assert_ne!(first_at, second_at);
+    assert!(second_at > first_at.as_str());
 }

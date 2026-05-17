@@ -593,7 +593,36 @@ fn push_handoff_context(
                 r.pending_reviews.humans.len()
             ),
         );
+        push_closeout_context_line(prompt, &snap.oriented);
     }
+}
+
+/// Append a `Closeout: attested at <ts> (sha <short>)` line when the
+/// closeout axis is `Synced` at current HEAD AND the attestation file
+/// is readable. No line otherwise — the absence is itself a signal
+/// (Closeout never fires past convergence; absence on a `HandoffHuman`
+/// path implies the loop bailed out before reaching the gate).
+fn push_closeout_context_line(
+    prompt: &mut ooda_core::HandoffPrompt,
+    oriented: &orient::OrientedState,
+) {
+    if !matches!(oriented.closeout, orient::closeout::Closeout::Synced) {
+        return;
+    }
+    let Some(path) = oriented.closeout_attest_path.as_deref() else {
+        return;
+    };
+    let Ok(Some(att)) = ooda_core::attest::read_closeout(path) else {
+        return;
+    };
+    prompt.push_context_line(
+        "Closeout",
+        format!(
+            "attested at {} (sha {})",
+            att.attested_at.to_rfc3339(),
+            &att.attested_sha[..7],
+        ),
+    );
 }
 
 /// Render `Outcome` to a writer (typically stderr) per the SKILL
@@ -1106,6 +1135,8 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            closeout: orient::closeout::Closeout::Synced,
+            closeout_attest_path: None,
         }
     }
 
@@ -1235,6 +1266,111 @@ mod tests {
         // Per-action context still gated — no PR / Blocker lines.
         assert!(!rendered.contains("PR: https://"), "{rendered}");
         assert!(!rendered.contains("Blocker: behind_base"), "{rendered}");
+    }
+
+    #[test]
+    fn decorate_handoff_human_surfaces_closeout_attestation_line_when_synced() {
+        use ooda_core::attest::write_closeout_atomic;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("42").join("closeout_attest.json");
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        write_closeout_atomic(&path, sha.to_string()).unwrap();
+
+        let mut snap = snapshot_with_dashboard(&[rebase_action()]);
+        snap.oriented.closeout = orient::closeout::Closeout::Synced;
+        snap.oriented.closeout_attest_path = Some(path);
+
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::RequestApproval,
+            prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            blocker: ids::BlockerKey::from_static("not_approved"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(
+            Outcome::HandoffHuman(Box::new(handoff)),
+            &slug,
+            pr,
+            Some(&snap),
+        );
+        let Outcome::HandoffHuman(handoff) = decorated else {
+            panic!("expected HandoffHuman");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(
+            rendered.contains("Closeout: attested at "),
+            "decoration: {rendered}",
+        );
+        assert!(
+            rendered.contains(&sha[..7]),
+            "short sha must appear: {rendered}",
+        );
+    }
+
+    #[test]
+    fn decorate_handoff_human_omits_closeout_line_when_not_synced() {
+        let mut snap = snapshot_with_dashboard(&[rebase_action()]);
+        snap.oriented.closeout = orient::closeout::Closeout::NeverAttested;
+        snap.oriented.closeout_attest_path = None;
+
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::RequestApproval,
+            prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            blocker: ids::BlockerKey::from_static("not_approved"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(
+            Outcome::HandoffHuman(Box::new(handoff)),
+            &slug,
+            pr,
+            Some(&snap),
+        );
+        let Outcome::HandoffHuman(handoff) = decorated else {
+            panic!("expected HandoffHuman");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(
+            !rendered.contains("Closeout:"),
+            "no closeout line expected when not Synced: {rendered}",
+        );
+    }
+
+    #[test]
+    fn decorate_handoff_human_omits_closeout_line_when_path_missing() {
+        let mut snap = snapshot_with_dashboard(&[rebase_action()]);
+        snap.oriented.closeout = orient::closeout::Closeout::Synced;
+        snap.oriented.closeout_attest_path = None;
+
+        let handoff = ooda_core::HandoffAction {
+            kind: decide::action::ActionKind::RequestApproval,
+            prompt: ooda_core::HandoffPrompt::new("Request or self-approve"),
+            target_effect: decide::action::TargetEffect::Blocks,
+            urgency: decide::action::Urgency::BlockingHuman,
+            blocker: ids::BlockerKey::from_static("not_approved"),
+        };
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        let decorated = decorate_handoff_human(
+            Outcome::HandoffHuman(Box::new(handoff)),
+            &slug,
+            pr,
+            Some(&snap),
+        );
+        let Outcome::HandoffHuman(handoff) = decorated else {
+            panic!("expected HandoffHuman");
+        };
+        let rendered = handoff.prompt.to_string();
+        assert!(
+            !rendered.contains("Closeout:"),
+            "no closeout line expected without attest path: {rendered}",
+        );
     }
 
     #[test]

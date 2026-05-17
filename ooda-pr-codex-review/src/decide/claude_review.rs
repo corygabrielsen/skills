@@ -138,6 +138,8 @@ mod tests {
                 "/state/753/claude_review_attest.json",
             )),
             codex_review: None,
+            closeout: crate::orient::closeout::Closeout::Synced,
+            closeout_attest_path: None,
         }
     }
 

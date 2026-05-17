@@ -427,6 +427,8 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            closeout: crate::orient::closeout::Closeout::Synced,
+            closeout_attest_path: None,
         }
     }
 
@@ -450,6 +452,8 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            closeout: crate::orient::closeout::Closeout::Synced,
+            closeout_attest_path: None,
         }
     }
 

@@ -186,9 +186,16 @@ pub enum Urgency {
     /// Active advancement that doesn't unblock but improves the
     /// target. Non-Full Advances actions.
     Advancing,
-    /// Non-blocking metadata cleanup. Always sorts last regardless
-    /// of automation.
+    /// Non-blocking metadata cleanup. Sorts ahead of [`Self::Closeout`]
+    /// so per-axis hygiene attestations clear before the final-state
+    /// closeout gate.
     Hygiene,
+    /// Final pre-handoff sign-off. Strictly the least-urgent tier —
+    /// emitted only by the Closeout axis. The reducer selects it only
+    /// when every other axis's candidate set is empty, making
+    /// `HandoffHuman` conditional on an agent-signed attestation at
+    /// current HEAD.
+    Closeout,
 }
 
 /// What dispatching this action would do to the blocker state.
@@ -234,6 +241,7 @@ mod tests {
     #[test]
     fn urgency_sorts_critical_first() {
         let mut us = [
+            Urgency::Closeout,
             Urgency::Hygiene,
             Urgency::Critical,
             Urgency::BlockingHuman,
@@ -251,8 +259,19 @@ mod tests {
                 Urgency::BlockingHuman,
                 Urgency::Advancing,
                 Urgency::Hygiene,
+                Urgency::Closeout,
             ]
         );
+    }
+
+    #[test]
+    fn closeout_is_strictly_least_urgent() {
+        assert!(Urgency::Hygiene < Urgency::Closeout);
+        assert!(Urgency::Advancing < Urgency::Closeout);
+        assert!(Urgency::BlockingHuman < Urgency::Closeout);
+        assert!(Urgency::BlockingWait < Urgency::Closeout);
+        assert!(Urgency::BlockingFix < Urgency::Closeout);
+        assert!(Urgency::Critical < Urgency::Closeout);
     }
 
     #[test]

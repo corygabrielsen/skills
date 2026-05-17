@@ -245,6 +245,19 @@ pub enum ActionKind {
     AddressClaudeReview {
         attest_path: std::path::PathBuf,
     },
+
+    // ── Closeout attestation ──
+    /// The convergence-gate attestation. Emitted at `Urgency::Closeout`
+    /// (strictly the least-urgent tier) whenever the closeout axis is
+    /// `Drift` or `NeverAttested`. Wins only on global quiescence —
+    /// when no other axis emits anything. The agent performs a final
+    /// pre-handoff sweep, then runs `ooda-attest closeout` at current
+    /// HEAD. `HandoffHuman` then fires from the empty-candidate-set
+    /// arm with the strong precondition that the agent has explicitly
+    /// signed off.
+    Closeout {
+        attest_path: std::path::PathBuf,
+    },
 }
 
 impl ActionKind {
@@ -295,6 +308,7 @@ impl ActionKindName for ActionKind {
             Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
             Self::ReviewDocs { .. } => "ReviewDocs",
             Self::AddressClaudeReview { .. } => "AddressClaudeReview",
+            Self::Closeout { .. } => "Closeout",
         }
     }
 }

@@ -174,9 +174,11 @@ agent mistakes; the binary is not at fault.
   minutes in `Wait(1m)` polling for a CI check or a bot review is
   working correctly. The wait is the action. Let it finish.
 
-**After a `Handoff*` (exit 3 or 4).** Perform the requested action,
-then re-invoke `/ooda-pr` in **loop mode** (no `inspect`). The
-loop's first iteration re-observes the now-modified state and
+**After a `Handoff*` (exit 3 or 4).** Surface the handoff to the
+user (header + iter-log + `handoff.md`; see `Handoff*` prompt
+format → "Surface to the user"). Then perform the requested
+action and re-invoke `/ooda-pr` in **loop mode** (no `inspect`).
+The loop's first iteration re-observes the now-modified state and
 either selects the next action or halts.
 
 **Time budget.** ooda-pr is iteration-bounded, not wall-clock-bounded.
@@ -533,8 +535,8 @@ always carries an `Action` and always emits the
 |  0   | `DoneSucceeded`           | `DoneMerged`                                                       | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
 |  1   | `Paused`                  | `Paused`                                                           | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
 |  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`                          | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
-|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`) and surface it verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                   |
-|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`) and dispatch an agent with it as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                            |
+|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`). Surface the handoff to the user (see "Surface to the user" below). Re-invoke `/ooda-pr` after they resolve it.                                                                                   |
+|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr` after the agent finishes.                          |
 |  5   | `DoneAborted`             | `DoneClosed`                                                       | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
 |  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`                         | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
 |  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                       | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
@@ -636,6 +638,37 @@ The prompt content is non-empty by convention but
 `Action.description` is a plain `String` and the type does not
 enforce non-emptiness; the file may be zero-length. Embedded
 newlines in the description appear verbatim in `handoff.md`.
+
+**Surface to the user.** After reading `handoff.md`, the calling
+agent's next user-visible response MUST expose the handoff content
+to the human. At minimum, surface: (1) the final variant block
+(stderr header + `  see:` pointer line), (2) the per-iteration
+stderr trail emitted during the run (or its trailing window if
+long), and (3) the `handoff.md` body in full. The body already
+carries the dashboard preamble (tier-grouped candidates, per-axis
+signals, blockers) and the per-action prompt — surfacing the file
+verbatim discharges items (2)-(3) for the blockers / signals
+portion.
+
+This requirement applies to **both** `HandoffHuman` (exit 3) and
+`HandoffAgent` (exit 4) — even when the caller dispatches a
+sub-agent, the human must see the dispatch context. The
+calling agent MAY add a one-line framing summary above the
+surfaced content; it MUST NOT replace the surfaced content with
+a summary. Format is the caller's choice (verbatim fenced block,
+structured render, collapsible region, etc.) — fidelity is the
+constraint, not format.
+
+Rationale: the dashboard preamble + per-action body encode why
+this halt fired and what state the PR is in. A summary that omits
+them loses the audit surface that lets the human (a) understand
+the halt without opening state files, (b) verify the agent's
+interpretation before approving the next action, and (c) catch
+cases where the agent is about to act on a wrong reading. This is
+not in tension with the "do not editorialize" anti-pattern under
+**Driving discipline** — that rule forbids agent vibes
+displacing the halt-class exit codes; this rule requires the
+loop's own reasoning to reach the human.
 
 **Fallback (rare)**: if the recorder cannot write `handoff.md`
 (IO failure, recorder absent), the binary falls back to the

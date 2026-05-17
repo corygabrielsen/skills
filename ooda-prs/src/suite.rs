@@ -44,7 +44,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::multi_outcome::ProcessOutcome;
-use crate::outcome::Outcome;
 
 /// Drive every PR in `suite` in parallel. `drive_one` is invoked
 /// once per `(slug, pr)` on its own thread; the closure is
@@ -64,7 +63,7 @@ pub(crate) fn drive_suite<F>(
     drive_one: F,
 ) -> Vec<ProcessOutcome>
 where
-    F: Fn(&RepoSlug, PullRequestNumber) -> Outcome + Sync,
+    F: Fn(&RepoSlug, PullRequestNumber) -> ProcessOutcome + Sync,
 {
     let n = suite.len();
     if n == 0 {
@@ -77,7 +76,7 @@ where
     // `Vec<T>` doesn't permit per-element interior mutability without
     // either `Mutex<T>` or `UnsafeCell`. The Mutex form is also the
     // honest signal that "thread X owns slot i" without unsafe.
-    let results: Vec<Mutex<Option<Outcome>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    let results: Vec<Mutex<Option<ProcessOutcome>>> = (0..n).map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
 
     std::thread::scope(|scope| {
@@ -110,19 +109,12 @@ where
     // result slots in input order; every slot must be Some(_) by
     // construction (atomic counter visits each i exactly once and
     // each visit assigns).
-    suite
-        .iter()
-        .zip(results)
-        .map(|((slug, pr), slot)| {
-            let outcome = slot
-                .into_inner()
+    results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
                 .expect("result slot mutex poisoned")
-                .expect("result slot not set — atomic counter invariant violated");
-            ProcessOutcome {
-                slug: slug.clone(),
-                pr: *pr,
-                outcome,
-            }
+                .expect("result slot not set — atomic counter invariant violated")
         })
         .collect()
 }
@@ -130,6 +122,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outcome::Outcome;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering as O;
 
@@ -141,9 +134,18 @@ mod tests {
         PullRequestNumber::new(n).unwrap()
     }
 
+    fn po(s: &RepoSlug, n: PullRequestNumber, o: Outcome) -> ProcessOutcome {
+        ProcessOutcome {
+            slug: s.clone(),
+            pr: n,
+            run_id: String::new(),
+            outcome: o,
+        }
+    }
+
     #[test]
     fn empty_suite_returns_empty() {
-        let out = drive_suite(&[], None, |_, _| Outcome::DoneSucceeded);
+        let out = drive_suite(&[], None, |s, n| po(s, n, Outcome::DoneSucceeded));
         assert!(out.is_empty());
     }
 
@@ -154,11 +156,11 @@ mod tests {
             (slug("a/b"), pr(20)),
             (slug("c/d"), pr(30)),
         ];
-        let out = drive_suite(&s, None, |_, p| {
+        let out = drive_suite(&s, None, |sl, p| {
             // Map each PR to a unique BinaryError carrying its
             // number, so we can assert order independently of which
             // thread ran first.
-            Outcome::binary_error(format!("pr={p}"))
+            po(sl, p, Outcome::binary_error(format!("pr={p}")))
         });
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].pr.get(), 10);
@@ -178,9 +180,9 @@ mod tests {
         // Verify the atomic counter visits each index exactly once.
         let s: Vec<_> = (1..=10).map(|n| (slug("x/y"), pr(n))).collect();
         let counter = AtomicU32::new(0);
-        let _ = drive_suite(&s, None, |_, _| {
+        let _ = drive_suite(&s, None, |sl, n| {
             counter.fetch_add(1, O::SeqCst);
-            Outcome::Paused
+            po(sl, n, Outcome::Paused)
         });
         assert_eq!(counter.load(O::SeqCst), 10);
     }
@@ -191,9 +193,9 @@ mod tests {
         // run; just sequentially.
         let s: Vec<_> = (1..=5).map(|n| (slug("x/y"), pr(n))).collect();
         let counter = AtomicU32::new(0);
-        let out = drive_suite(&s, Some(0), |_, _| {
+        let out = drive_suite(&s, Some(0), |sl, n| {
             counter.fetch_add(1, O::SeqCst);
-            Outcome::DoneSucceeded
+            po(sl, n, Outcome::DoneSucceeded)
         });
         assert_eq!(counter.load(O::SeqCst), 5);
         assert_eq!(out.len(), 5);
@@ -205,7 +207,9 @@ mod tests {
         // not incorrect. We just verify all PRs run and outcomes
         // are collected in order.
         let s: Vec<_> = (1..=3).map(|n| (slug("x/y"), pr(n))).collect();
-        let out = drive_suite(&s, Some(100), |_, p| Outcome::binary_error(format!("{p}")));
+        let out = drive_suite(&s, Some(100), |sl, p| {
+            po(sl, p, Outcome::binary_error(format!("{p}")))
+        });
         assert_eq!(out.len(), 3);
         for (i, po) in out.iter().enumerate() {
             assert_eq!(po.pr.get(), (i + 1) as u64);

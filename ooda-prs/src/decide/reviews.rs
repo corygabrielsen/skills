@@ -50,7 +50,28 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
         });
     }
 
-    if let Some(bots) = NonEmpty::try_from_vec(reviews.pending_reviews.bots.clone()) {
+    // When the copilot axis is active (repo has the copilot_code_review
+    // ruleset), let IT own Copilot's pending-state polling — its
+    // `WaitForCopilotAck` runs at a 15s interval and feeds the timing-
+    // aware health classifier. Reviews-axis emission of `WaitForBotReview`
+    // for the same login would shadow it: both fire at `BlockingWait`,
+    // stable-sort tiebreaker puts reviews first (axis order: state → ci
+    // → reviews → copilot → ...), so a 60s presence-only poll wins and
+    // the 15s timing-aware poll never fires. Filter Copilot here when
+    // the axis exists; non-Copilot bots (Renovate, Dependabot, etc.)
+    // and Copilot-on-repos-without-the-axis are unaffected.
+    let bots_filtered: Vec<_> = if oriented.copilot.is_some() {
+        reviews
+            .pending_reviews
+            .bots
+            .iter()
+            .filter(|bot| !crate::orient::copilot::is_copilot(bot.as_str()))
+            .cloned()
+            .collect()
+    } else {
+        reviews.pending_reviews.bots.clone()
+    };
+    if let Some(bots) = NonEmpty::try_from_vec(bots_filtered) {
         let names = join_display(&bots);
         out.push(Action {
             kind: ActionKind::WaitForBotReview { reviewers: bots },
@@ -625,6 +646,93 @@ mod tests {
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
             "All-Resolved set must not emit AddressThreads"
+        );
+    }
+
+    fn copilot_active_report() -> crate::orient::copilot::CopilotReport {
+        use crate::orient::copilot::{
+            CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotTier, InFlightHealth,
+        };
+        CopilotReport {
+            config: CopilotRepoConfig {
+                enabled: true,
+                review_on_push: false,
+                review_draft_pull_requests: false,
+            },
+            activity: CopilotActivity::Requested {
+                requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+                health: InFlightHealth::Healthy,
+            },
+            rounds: vec![],
+            threads: crate::orient::bot_threads::BotThreadSummary::default(),
+            tier: CopilotTier::Bronze,
+            fresh: false,
+        }
+    }
+
+    fn oriented_with_copilot(
+        reviews: ReviewSummary,
+        copilot: Option<crate::orient::copilot::CopilotReport>,
+    ) -> OrientedState {
+        let mut o = oriented_with(reviews);
+        o.copilot = copilot;
+        o
+    }
+
+    #[test]
+    fn pending_bots_emit_wait_for_bot_review_without_copilot_axis() {
+        // Baseline: no copilot axis active → Copilot in pending_bots
+        // flows through unfiltered.
+        let mut r = clean_reviews();
+        r.pending_reviews.bots = vec![GitHubLogin::parse("copilot-pull-request-reviewer").unwrap()];
+        let cs = candidates(&oriented_with_copilot(r, None));
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::WaitForBotReview { .. })),
+            "expected WaitForBotReview emission when copilot axis is absent: {:?}",
+            cs.iter().map(|a| &a.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn copilot_filtered_from_wait_for_bot_review_when_copilot_axis_active() {
+        // Copilot axis active → reviews-axis must not shadow it; the
+        // pending Copilot login is filtered out, no WaitForBotReview
+        // emission (because Copilot was the only pending bot).
+        let mut r = clean_reviews();
+        r.pending_reviews.bots = vec![GitHubLogin::parse("copilot-pull-request-reviewer").unwrap()];
+        let cs = candidates(&oriented_with_copilot(r, Some(copilot_active_report())));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::WaitForBotReview { .. })),
+            "expected NO WaitForBotReview when copilot axis owns Copilot: {:?}",
+            cs.iter().map(|a| &a.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn non_copilot_bots_still_emit_wait_for_bot_review_when_copilot_axis_active() {
+        // Copilot filtered, but a non-Copilot bot (e.g. Renovate) is
+        // still emitted — reviews-axis remains the home for generic
+        // bot reviewers.
+        let mut r = clean_reviews();
+        r.pending_reviews.bots = vec![
+            GitHubLogin::parse("copilot-pull-request-reviewer").unwrap(),
+            GitHubLogin::parse("renovate[bot]").unwrap(),
+        ];
+        let cs = candidates(&oriented_with_copilot(r, Some(copilot_active_report())));
+        let wait_for_bot = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::WaitForBotReview { .. }))
+            .expect("expected WaitForBotReview for the non-Copilot bot");
+        let ActionKind::WaitForBotReview { reviewers } = &wait_for_bot.kind else {
+            unreachable!()
+        };
+        let logins: Vec<&str> = reviewers.iter().map(GitHubLogin::as_str).collect();
+        assert_eq!(
+            logins,
+            vec!["renovate[bot]"],
+            "expected Copilot filtered out, Renovate retained"
         );
     }
 

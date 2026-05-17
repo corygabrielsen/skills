@@ -128,9 +128,9 @@ by each binary's `render_outcome` function:
 | `Paused`          | `Paused`                                               | `Idle`                     |
 | `StuckRepeated`   | `StuckRepeated: <ActionKind>:<BlockerKey>`             | same                       |
 | `StuckCapReached` | `StuckCapReached: <ActionKind>:<BlockerKey>`           | same                       |
-| `HandoffHuman`    | `HandoffHuman: <ActionKind>` + prompt block            | same                       |
+| `HandoffHuman`    | `HandoffHuman: <ActionKind>` + `  see: <handoff.md>`   | same                       |
 | `WouldAdvance`    | `WouldAdvance: <ActionKind>:<Automation>`              | same _(reserved)_          |
-| `HandoffAgent`    | `HandoffAgent: <ActionKind>` + prompt block            | same                       |
+| `HandoffAgent`    | `HandoffAgent: <ActionKind>` + `  see: <handoff.md>`   | same                       |
 | `BinaryError`     | `BinaryError: <msg>`                                   | same                       |
 | `UsageError`      | `UsageError: <msg>` + usage block                      | same                       |
 

@@ -19,7 +19,7 @@ pub(crate) type Outcome = ooda_core::Outcome<ActionKind>;
 /// single-line human-triage string; the typed error is flattened
 /// via [`ooda_core::Outcome::binary_error`] so the stderr-header
 /// invariant ("first line is the header, nothing else follows
-/// except prompt blocks for handoff variants") holds.
+/// except the `  see:` pointer line for handoff variants") holds.
 impl From<LoopError> for Outcome {
     fn from(err: LoopError) -> Self {
         Self::binary_error(err.to_string())

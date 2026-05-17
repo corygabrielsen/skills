@@ -15,6 +15,9 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+# Bash-only constructs in use: `mapfile`, process substitution `<(...)`.
+[ -n "${BASH_VERSION:-}" ] || { printf '%s: requires bash\n' "$0" >&2; exit 1; }
+
 errors=0
 
 check_file() {
@@ -40,15 +43,15 @@ check_file() {
         esac
     done < "$file"
 
-    if ! $closed; then
+    if [ "$closed" = false ]; then
         echo "FAIL: $file — frontmatter block never closed (missing closing '---')"
         errors=$((errors + 1))
         return
     fi
 
     local missing=()
-    $has_name || missing+=("name")
-    $has_description || missing+=("description")
+    [ "$has_name" = true ] || missing+=("name")
+    [ "$has_description" = true ] || missing+=("description")
 
     if [ ${#missing[@]} -gt 0 ]; then
         echo "FAIL: $file — missing fields: ${missing[*]}"

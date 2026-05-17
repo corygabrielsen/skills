@@ -13,5 +13,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+BIN="$DIR/target/release/ooda-pr-codex-review"
 (cd "$DIR" && cargo build --release --quiet) >&2
-exec "$DIR/target/release/ooda-pr-codex-review" "$@"
+[ -x "$BIN" ] || { printf '%s: build produced no executable at %s\n' "$0" "$BIN" >&2; exit 1; }
+exec "$BIN" "$@"

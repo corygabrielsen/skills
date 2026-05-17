@@ -18,7 +18,6 @@ mod text;
 use act::{ActContext, CodexActContext};
 use dashboard::Dashboard;
 use decide::action::{ActionEffect, rate_limit_wait_action};
-use decide::candidates;
 use decide::decision::{Decision, DecisionHalt};
 use ids::{CodexReasoningLevel, PullRequestNumber, RepoSlug};
 use observe::codex::fetch_all as fetch_codex;
@@ -414,7 +413,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
             Err(e) => return e,
         };
     let oriented = orient(&obs, codex_obs.as_ref(), None, current_timestamp());
-    let candidate_actions = candidates(&decide::CandidatesInputs::from(&oriented), args.pr);
+    let candidate_actions = runner::drive(&oriented, args.pr);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
     recorder.record_iteration(
         1,

@@ -5,20 +5,19 @@ edition = "2024"
 description = "Local web companion UI for OODA agents — daemon + browser surface"
 
 [dependencies]
-ooda-core = { path = "../ooda-core" }
+ooda-state = { path = "../ooda-state" }
 axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
-tokio-stream = { version = "0.1", features = ["time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "fs", "io-util"] }
+tokio-stream = { version = "0.1", features = ["time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
+notify = "6"
 
-# notify + tower-http will return when the file-watcher and CORS
-# layers are wired in V1.1+. Removing them now keeps the V1 build
-# graph small.
+# tower-http (CORS) will be added when the React frontend lands.
 
 [lints.rust]
 unreachable_pub = "warn"

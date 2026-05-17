@@ -37,56 +37,106 @@ once the daemon is running (WSL2 NAT forwards the Windows-side
 - Fall back to the WSL2 IP: `hostname -I` inside WSL2, then visit
   `http://<that-ip>:7777/` from Windows.
 
-## API (V1)
+## API
 
 - `GET /` — placeholder HTML page (real React frontend lands in
   a follow-up).
 - `GET /api/health` — JSON `{ status, state_root, version }`.
-- `GET /api/events` — Server-Sent Events stream. V1 emits a
-  `heartbeat` event every 5s; once the file-watcher is wired,
-  the same channel emits `mutation` events for state-tree
-  changes.
+- `GET /api/events` — Server-Sent Events stream. One `mutation`
+  event per `ooda_state::Event` appended to any active run's
+  `events.jsonl`. Payload is the parsed event JSON with an added
+  `run_id` field for per-run routing.
+
+Wire shape per SSE event:
+
+```json
+{
+  "run_id": "20260517T142500Z-123456789-p4242",
+  "ts": "2026-05-17T14:25:03Z",
+  "kind": "iteration_observed",
+  "iteration": 1,
+  "blob": { "sha": "…", "size": 4523, "ext": "json" }
+}
+```
+
+The `kind` discriminant and remaining body fields are exactly the
+`ooda_state::Event` serialization; see that crate's docs for the
+typed variants.
 
 ## State source
 
 Cockpit reads (does not write) the OODA state tree resolved via
-the same env chain `ooda-pr` uses:
+the `ooda-state` env chain:
 
 ```
-$OODA_PR_STATE_HOME
-  → $XDG_STATE_HOME/ooda-pr
-  → $HOME/.local/state/ooda-pr
-  → $TMPDIR/ooda-pr
+$OODA_STATE_HOME
+  → $XDG_STATE_HOME/ooda
+  → $HOME/.local/state/ooda
+  → $TMPDIR/ooda
 ```
 
 Override with `--state-root PATH`.
 
+State layout (from `ooda-state`):
+
+```
+<state-root>/
+├── runs/<run-id>/
+│   ├── events.jsonl
+│   └── blobs/<sha>.<ext>
+└── live/<run-id>          # empty marker; presence = "active"
+```
+
+## Watcher model
+
+Cockpit runs a single `inotify` watch on `<state-root>/live/`
+(non-recursive). That directory has small cardinality (a handful
+of active runs at a time), so the watch is cheap.
+
+- On `Create` of `live/<run-id>`: spawn a tail task on
+  `runs/<run-id>/events.jsonl` that polls for new bytes and
+  broadcasts each parsed event.
+- On `Remove` of `live/<run-id>`: cancel the tail task.
+- On startup: enumerate existing `live/` markers and start
+  tailing each from offset 0; the pre-existing events.jsonl is
+  replayed into the broadcast channel once.
+
+The broadcast channel does not replay past messages to late
+subscribers — an SSE client connecting mid-run sees only events
+appended after its connection. Per-connection backfill of
+historical events from disk is future work and will land alongside
+the first `GET /api/runs/:run_id/events` endpoint.
+
+Watching the whole state tree was rejected: `runs/` accumulates
+one directory per historical run (300k+ on mature machines),
+well past the cost-effective range for `inotify`. The `live/`
+marker set is the single source of truth for "what's active",
+and tailing one file per active run is bounded.
+
 ## Status
 
-V1 = daemon shell. End-to-end pipeline works: HTTP server,
-placeholder HTML, health endpoint, SSE stream.
+What's wired:
+
+- HTTP daemon (axum), SSE channel, platform-aware bind.
+- `ooda-state` reader: live watcher + per-run tail + broadcast
+  fanout.
+- Placeholder HTML feed that renders `{run_id, ts, kind, payload}`.
 
 What's deferred:
 
-- **File-watcher**: a naive recursive watch on the full state
-  tree is unworkable — mature trees hit ~300k+ directories
-  (one per immutable iteration), well past the cost-effective
-  range for either `inotify` (per-handle setup) or
-  `PollWatcher` (per-poll walk). The mutation feed needs a
-  scope-narrowing policy first (watch only recently-touched
-  PRs? Project a small set of canonical files like
-  `CURRENT.json`? Server-side polling of a curated set?). V1.1
-  will pick.
-- **React + Vite frontend**: the placeholder HTML is
-  intentional. Real frontend lands as a separate `web/`
-  subdirectory once the V1.1 watcher gives it real data to
-  render.
-- **Per-OS daemon scripts**: systemd user unit (Linux),
-  launchd plist (macOS). V1 ships as `cockpit serve` (manual
-  start); auto-start is V1.2.
-- **Control plane**: V2. POST endpoints to trigger
-  `/ooda-pr`, send prompts, pause/resume. WebSocket
-  bidirectional channel comes with it.
+- **React + Vite frontend**: the placeholder HTML is intentional.
+  Real frontend lands as a separate `web/` subdirectory once
+  multi-PR navigation, blob preview, and per-run drilldown
+  designs are in.
+- **Per-OS daemon scripts**: systemd user unit (Linux), launchd
+  plist (macOS). Daemon currently runs as `cockpit serve`
+  (manual start).
+- **Blob fetch endpoint**: `GET /api/runs/:run_id/blobs/:sha`
+  lazy-loads the content-addressed payloads referenced by
+  events. Not needed for the bare event feed; lands with the
+  frontend.
+- **Control plane**: POST endpoints to trigger `/ooda-pr`, send
+  prompts, pause/resume; WebSocket bidirectional channel.
 
 See `~/.claude/projects/-home-cory-code-skills/memory/project-cockpit-design.md`
 for the locked design and the brainstorm/socratic that picked it.
@@ -94,20 +144,21 @@ for the locked design and the brainstorm/socratic that picked it.
 ## Architecture
 
 ```
-~/.local/state/ooda-pr/         ← (V1.1+) PollWatcher / scoped notify
+~/.local/state/ooda/         ← inotify watch on live/ only
         │
         ▼
-   cockpit daemon (axum + tokio)
+   cockpit daemon (axum + tokio + notify)
+        │  per-run tail tasks → tokio::broadcast
         │
         ├── GET /              → static HTML (include_str!)
         ├── GET /api/health    → JSON
-        └── GET /api/events    → SSE (heartbeat in V1; mutations in V1.1)
+        └── GET /api/events    → SSE (mutation events)
         │
         ▼
-    127.0.0.1:7777
+    127.0.0.1:7777 (or 0.0.0.0:7777 under WSL2)
 ```
 
-URL routing is intentionally **domain-shaped**:
-`/api/runs/...` rather than `/api/pr/...`, so the multi-domain
-mission-control vision (see `[[project-ooda-multi-domain-vision]]`
-in memory) doesn't require a rewrite when domain #2 lands.
+URL routing is intentionally **domain-shaped** (`/api/runs/...`
+rather than `/api/pr/...`) so the multi-domain mission-control
+vision (see `[[project-ooda-multi-domain-vision]]` in memory)
+doesn't require a rewrite when domain #2 lands.

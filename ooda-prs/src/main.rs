@@ -549,7 +549,13 @@ fn run_inspect(
     let oriented = orient(&obs, None, current_timestamp());
     let candidate_actions = candidates(&oriented, pr);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
-    recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
+    recorder.record_iteration(
+        1,
+        &obs,
+        &recorder::RecorderInputs::from(&oriented),
+        &candidate_actions,
+        &decision,
+    );
     if args.status_comment {
         let rendered = comment::render::render(
             slug,
@@ -619,7 +625,13 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
             ),
         });
         recorder.set_iteration(Some(i));
-        recorder.record_iteration(i, obs, oriented, candidate_actions, d);
+        recorder.record_iteration(
+            i,
+            obs,
+            &recorder::RecorderInputs::from(oriented),
+            candidate_actions,
+            d,
+        );
         let line = iteration_line(i, d);
         eprintln!("{line}");
         recorder.write_trace_line(&line);

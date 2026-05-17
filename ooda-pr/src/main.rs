@@ -297,7 +297,13 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     let oriented = orient(&obs, None, current_timestamp());
     let candidate_actions = candidates(&oriented, args.pr);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
-    recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
+    recorder.record_iteration(
+        1,
+        &obs,
+        &recorder::RecorderInputs::from(&oriented),
+        &candidate_actions,
+        &decision,
+    );
     if args.status_comment {
         let rendered = comment::render::render(
             &args.slug,
@@ -372,7 +378,13 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
             ),
         });
         recorder.set_iteration(Some(i));
-        recorder.record_iteration(i, obs, oriented, candidate_actions, d);
+        recorder.record_iteration(
+            i,
+            obs,
+            &recorder::RecorderInputs::from(oriented),
+            candidate_actions,
+            d,
+        );
         let line = iteration_line(i, d);
         eprintln!("{line}");
         recorder.write_trace_line(&line);

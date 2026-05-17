@@ -63,7 +63,16 @@ pub(crate) fn render(
     candidates: &[Action],
     decision: &Decision,
 ) -> Rendered {
-    let dashboard = Dashboard::from_iteration(oriented, candidates, decision);
+    let dashboard = Dashboard::from_iteration(
+        &oriented.ci,
+        oriented.cursor.as_ref(),
+        oriented.copilot.as_ref(),
+        &oriented.pull_request_metadata,
+        &oriented.doc_review,
+        &oriented.claude_review,
+        candidates,
+        decision,
+    );
     let header = header_line(slug, pr, iteration);
     let dashboard_body = dashboard.render_status_comment();
     let body = if dashboard_body.is_empty() {

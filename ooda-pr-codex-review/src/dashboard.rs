@@ -17,7 +17,6 @@
 use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt};
 use crate::ids::BlockerKey;
-use crate::orient::OrientedState;
 use crate::orient::ci::ci_signal;
 use crate::orient::claude_review::ClaudeReview;
 use crate::orient::copilot::copilot_signal;
@@ -136,13 +135,29 @@ pub(crate) struct Blocker {
 impl Dashboard {
     /// Assemble a [`Dashboard`] from the per-iteration triple.
     /// Pure projection — no additional observation source.
+    ///
+    /// Declared deps: the six axes' reports that feed the
+    /// dashboard's signal stripe.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_iteration(
-        oriented: &OrientedState,
+        ci: &crate::orient::ci::CiReport,
+        cursor: Option<&crate::orient::cursor::CursorReport>,
+        copilot: Option<&crate::orient::copilot::CopilotReport>,
+        pull_request_metadata: &PullRequestMetadata,
+        doc_review: &crate::orient::doc_review::DocReview,
+        claude_review: &crate::orient::claude_review::ClaudeReview,
         candidates: &[Action],
         decision: &Decision,
     ) -> Self {
         let candidates = build_candidates(candidates, decision);
-        let signals = collect_signals(oriented);
+        let signals = collect_signals(
+            ci,
+            cursor,
+            copilot,
+            pull_request_metadata,
+            doc_review,
+            claude_review,
+        );
         let blockers = collect_blockers(&candidates);
         Self {
             candidates,
@@ -178,26 +193,31 @@ impl RankedCandidate {
     }
 }
 
-fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
+fn collect_signals(
+    ci: &crate::orient::ci::CiReport,
+    cursor: Option<&crate::orient::cursor::CursorReport>,
+    copilot: Option<&crate::orient::copilot::CopilotReport>,
+    pull_request_metadata: &PullRequestMetadata,
+    doc_review: &crate::orient::doc_review::DocReview,
+    claude_review: &crate::orient::claude_review::ClaudeReview,
+) -> Vec<AxisSignal> {
     let mut out: Vec<AxisSignal> = Vec::new();
-    if let Some(c) = &oriented.copilot
+    if let Some(c) = copilot
         && let Some(sig) = copilot_signal(&c.activity)
     {
         out.push(sig);
     }
-    if let Some(sig) = ci_signal(&oriented.ci.activity) {
+    if let Some(sig) = ci_signal(&ci.activity) {
         out.push(sig);
     }
-    if let Some(c) = &oriented.cursor
+    if let Some(c) = cursor
         && let Some(sig) = cursor_signal(&c.activity)
     {
         out.push(sig);
     }
-    out.push(pull_request_metadata_signal(
-        &oriented.pull_request_metadata,
-    ));
-    out.push(doc_review_signal(&oriented.doc_review));
-    out.push(claude_review_signal(&oriented.claude_review));
+    out.push(pull_request_metadata_signal(pull_request_metadata));
+    out.push(doc_review_signal(doc_review));
+    out.push(claude_review_signal(claude_review));
     out
 }
 

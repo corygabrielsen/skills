@@ -321,7 +321,16 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
             .take(7)
             .collect(),
         base_branch: obs.pull_request_view.base_ref_name.to_string(),
-        dashboard: Dashboard::from_iteration(&oriented, &candidate_actions, &decision),
+        dashboard: Dashboard::from_iteration(
+            &oriented.ci,
+            oriented.cursor.as_ref(),
+            oriented.copilot.as_ref(),
+            &oriented.pull_request_metadata,
+            &oriented.doc_review,
+            &oriented.claude_review,
+            &candidate_actions,
+            &decision,
+        ),
     };
     decorate_handoff_human(
         Outcome::from(decision),
@@ -351,7 +360,16 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
                 .take(7)
                 .collect(),
             base_branch: obs.pull_request_view.base_ref_name.to_string(),
-            dashboard: Dashboard::from_iteration(oriented, candidate_actions, d),
+            dashboard: Dashboard::from_iteration(
+                &oriented.ci,
+                oriented.cursor.as_ref(),
+                oriented.copilot.as_ref(),
+                &oriented.pull_request_metadata,
+                &oriented.doc_review,
+                &oriented.claude_review,
+                candidate_actions,
+                d,
+            ),
         });
         recorder.set_iteration(Some(i));
         recorder.record_iteration(i, obs, oriented, candidate_actions, d);

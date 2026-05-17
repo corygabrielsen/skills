@@ -30,6 +30,7 @@
 pub mod action;
 pub mod atomic_io;
 pub mod attest;
+pub mod axis;
 pub mod blocker;
 pub mod current_manifest;
 pub mod decision;
@@ -47,6 +48,7 @@ pub mod state_root;
 pub use action::{
     Action, ActionEffect, ActionKindName, HandoffAction, MidTier, TargetEffect, Urgency,
 };
+pub use axis::Axis;
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};
 pub use current_manifest::{CurrentManifest, SCHEMA_VERSION as CURRENT_MANIFEST_SCHEMA_VERSION};
 pub use decision::{

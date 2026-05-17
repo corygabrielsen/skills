@@ -805,11 +805,34 @@ fn compute_in_flight_health(
 ) -> InFlightHealth {
     let rounds_h = filter_to_current_head(rounds, commits, head);
     if rounds_h.is_empty() {
-        // No round at current HEAD yet (e.g. eventual-consistency
-        // synthetic Requested). The in-flight stage exists but no
-        // round backs it — treat as Healthy; no timing signal to
-        // degrade on.
-        return InFlightHealth::Healthy;
+        // Distinguish two surface-identical sub-cases:
+        //   (a) `rounds.is_empty()` — no events observed at all
+        //       (synthetic Requested via `bare_stage`, or genuine
+        //       eventual-consistency lag right after a fresh
+        //       request). No timing signal yet; Healthy.
+        //   (b) `rounds.is_not_empty()` — events exist but were all
+        //       filtered out by `filter_to_current_head`. A
+        //       force-push moved HEAD past every round's
+        //       `requested_at`. If `THRESHOLD_START_TIMEOUT` has
+        //       elapsed since the HEAD commit was pushed, the events
+        //       feed had time to deliver a fresh request event and
+        //       didn't — Copilot's pending-reviewer slot is orphaned
+        //       at the new HEAD. RerequestCopilot is empirically a
+        //       no-op against pending state (see
+        //       `act/copilot.rs`), so skip the budget dance and
+        //       escalate directly to Failed → EscalateCopilotFailed
+        //       → HandoffHuman.
+        if rounds.is_empty() {
+            return InFlightHealth::Healthy;
+        }
+        let head_committed_at = commits
+            .iter()
+            .find(|c| c.oid == *head)
+            .map(|c| c.committed_date);
+        return match head_committed_at {
+            Some(t) if now.at() - t.at() > THRESHOLD_START_TIMEOUT => InFlightHealth::Failed,
+            _ => InFlightHealth::Healthy,
+        };
     }
     let tail_idx = rounds_h.len() - 1;
     // Walk back from the tail; for each round, tau is the next
@@ -1746,6 +1769,114 @@ mod tests {
                 }
             ),
             "expected Working(Degraded), got {:?}",
+            r.activity
+        );
+    }
+
+    #[test]
+    fn requested_failed_when_orphaned_after_force_push() {
+        // Force-push scenario: req_event at 09:15 was at pre-push
+        // HEAD (sha PRE). Force-push at 09:30 advanced HEAD to
+        // HEAD_SHA. No new req_event arrived. By 09:45 (15min after
+        // the new HEAD was pushed, past the 10min start threshold),
+        // the events-feed lag explanation is exhausted —
+        // orphaned-pending confirmed. RerequestCopilot is empirically
+        // a no-op against pending state, so escalate directly to
+        // Failed (→ EscalateCopilotFailed → HandoffHuman).
+        const PRE_PUSH_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let events = vec![req_event("2026-04-23T09:15:00Z", "Copilot")];
+        let commits = vec![
+            commit_at(PRE_PUSH_SHA, "2026-04-23T09:00:00Z"),
+            commit_at(HEAD_SHA, "2026-04-23T09:30:00Z"),
+        ];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T09:45:00Z"),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                r.activity,
+                CopilotActivity::Requested {
+                    health: InFlightHealth::Failed,
+                    ..
+                }
+            ),
+            "expected Requested(Failed), got {:?}",
+            r.activity
+        );
+    }
+
+    #[test]
+    fn requested_healthy_within_window_after_force_push() {
+        // Same force-push setup as the orphaned test, but only 5min
+        // after the new HEAD push — under the 10min threshold. The
+        // events feed may still deliver a fresh request event;
+        // respect the ack window.
+        const PRE_PUSH_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let events = vec![req_event("2026-04-23T09:15:00Z", "Copilot")];
+        let commits = vec![
+            commit_at(PRE_PUSH_SHA, "2026-04-23T09:00:00Z"),
+            commit_at(HEAD_SHA, "2026-04-23T09:30:00Z"),
+        ];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T09:35:00Z"),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                r.activity,
+                CopilotActivity::Requested {
+                    health: InFlightHealth::Healthy,
+                    ..
+                }
+            ),
+            "expected Requested(Healthy), got {:?}",
+            r.activity
+        );
+    }
+
+    #[test]
+    fn requested_healthy_when_head_not_in_commits() {
+        // Defensive: HEAD SHA is absent from the commits list (an
+        // observation-invariant violation). Don't escalate spuriously;
+        // fall back to Healthy.
+        const PRE_PUSH_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let events = vec![req_event("2026-04-23T09:15:00Z", "Copilot")];
+        let commits = vec![commit_at(PRE_PUSH_SHA, "2026-04-23T09:00:00Z")];
+        let r = orient_copilot(
+            enabled(),
+            &events,
+            &[],
+            &empty_threads(),
+            &pending_copilot(),
+            &head(),
+            &commits,
+            ts("2026-04-23T09:45:00Z"),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                r.activity,
+                CopilotActivity::Requested {
+                    health: InFlightHealth::Healthy,
+                    ..
+                }
+            ),
+            "expected Requested(Healthy), got {:?}",
             r.activity
         );
     }

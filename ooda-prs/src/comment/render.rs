@@ -15,12 +15,46 @@ use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
-use crate::orient::OrientedState;
+use crate::orient::ci::CiReport;
 use crate::orient::claude_review::ClaudeReview;
-use crate::orient::copilot::CopilotActivity;
+use crate::orient::copilot::{CopilotActivity, CopilotReport};
+use crate::orient::cursor::CursorReport;
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
+use crate::orient::reviews::ReviewSummary;
 use serde::Serialize;
+
+/// Per-consumer input slice for [`render`]. Each field declares a
+/// typed dep ref. The struct is the function signature reified;
+/// it is not a god-struct in the [`crate::orient::OrientedState`]
+/// sense — its scope is exactly what this one consumer reads.
+pub(crate) struct RenderInputs<'a> {
+    pub ci: &'a CiReport,
+    pub cursor: Option<&'a CursorReport>,
+    pub copilot: Option<&'a CopilotReport>,
+    pub reviews: &'a ReviewSummary,
+    pub pull_request_metadata: &'a PullRequestMetadata,
+    pub doc_review: &'a DocReview,
+    pub claude_review: &'a ClaudeReview,
+}
+
+impl<'a> From<&'a crate::orient::OrientedState> for RenderInputs<'a> {
+    /// Transitional bridge: while [`crate::orient::OrientedState`]
+    /// still exists, callers can construct `RenderInputs` from it
+    /// via `From::from`. Once `OrientedState` is removed, callers
+    /// will construct refs directly from per-axis locals.
+    fn from(o: &'a crate::orient::OrientedState) -> Self {
+        Self {
+            ci: &o.ci,
+            cursor: o.cursor.as_ref(),
+            copilot: o.copilot.as_ref(),
+            reviews: &o.reviews,
+            pull_request_metadata: &o.pull_request_metadata,
+            doc_review: &o.doc_review,
+            claude_review: &o.claude_review,
+        }
+    }
+}
 
 /// Glyph for a tier slug. The set of slugs is shared across the
 /// bot-review axes; an unknown slug renders as a question mark.
@@ -59,17 +93,17 @@ pub(crate) fn render(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     iteration: Option<u32>,
-    oriented: &OrientedState,
+    inputs: &RenderInputs<'_>,
     candidates: &[Action],
     decision: &Decision,
 ) -> Rendered {
     let dashboard = Dashboard::from_iteration(
-        &oriented.ci,
-        oriented.cursor.as_ref(),
-        oriented.copilot.as_ref(),
-        &oriented.pull_request_metadata,
-        &oriented.doc_review,
-        &oriented.claude_review,
+        inputs.ci,
+        inputs.cursor,
+        inputs.copilot,
+        inputs.pull_request_metadata,
+        inputs.doc_review,
+        inputs.claude_review,
         candidates,
         decision,
     );
@@ -83,13 +117,13 @@ pub(crate) fn render(
         format!("{header}\n\n{dashboard_body}")
     };
 
-    let ci = ci_line(&oriented.ci);
-    let copilot = copilot_line(oriented.copilot.as_ref());
-    let cursor = cursor_line(oriented.cursor.as_ref());
-    let reviews = reviews_line(&oriented.reviews);
-    let pr_meta = pull_request_metadata_line(&oriented.pull_request_metadata);
-    let doc_review = doc_review_line(&oriented.doc_review);
-    let claude_review = claude_review_line(&oriented.claude_review);
+    let ci = ci_line(inputs.ci);
+    let copilot = copilot_line(inputs.copilot);
+    let cursor = cursor_line(inputs.cursor);
+    let reviews = reviews_line(inputs.reviews);
+    let pr_meta = pull_request_metadata_line(inputs.pull_request_metadata);
+    let doc_review = doc_review_line(inputs.doc_review);
+    let claude_review = claude_review_line(inputs.claude_review);
     // Dedup key composition: per-axis lines (structural state) +
     // decision discriminant (which arm fired) + decision blocker
     // tagged with payload (which gate, with cardinality-bearing
@@ -350,6 +384,7 @@ mod tests {
     use crate::decide::decision::{Decision, DecisionHalt};
     use crate::ids::{BlockerKey, Timestamp};
     use crate::observe::github::pull_request_view::Mergeable;
+    use crate::orient::OrientedState;
     use crate::orient::ci::{
         CheckBucket, CiActivity, CiReport, CiSummary, FailedCheck, ResolvedState,
     };
@@ -485,7 +520,7 @@ mod tests {
             &slug(),
             pr(),
             Some(7),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::Success),
         );
@@ -502,7 +537,7 @@ mod tests {
             &slug(),
             pr(),
             Some(3),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)),
         );
@@ -518,7 +553,7 @@ mod tests {
             &slug(),
             pr(),
             Some(2),
-            &o,
+            &RenderInputs::from(&o),
             std::slice::from_ref(&action),
             &Decision::Execute(action.clone()),
         );
@@ -540,7 +575,7 @@ mod tests {
             &slug(),
             pr(),
             None,
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::Success),
         );
@@ -559,7 +594,7 @@ mod tests {
             &slug(),
             pr(),
             Some(1),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::Success),
         );
@@ -567,7 +602,7 @@ mod tests {
             &slug(),
             pr(),
             Some(99),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::Success),
         );
@@ -599,7 +634,7 @@ mod tests {
             &slug(),
             pr(),
             Some(5),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)),
         );
@@ -618,7 +653,7 @@ mod tests {
             &slug(),
             pr(),
             Some(4),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::AgentNeeded(handoff_action())),
         );
@@ -741,7 +776,7 @@ mod tests {
             &slug(),
             pr(),
             Some(6),
-            &o,
+            &RenderInputs::from(&o),
             &[],
             &Decision::Halt(DecisionHalt::HumanNeeded(handoff_action())),
         );

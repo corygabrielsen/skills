@@ -444,6 +444,9 @@ fn run_session(args: &Args) -> Outcome {
         Ok(s) => s,
         Err(e) => return Outcome::binary_error(format!("state root open: {e}")),
     };
+    // Best-effort: reclaim disk for live markers left behind by
+    // crashed prior runs (PID-derived liveness).
+    let _ = state.sweep_dead_markers();
     let run_id = RunId::generate();
     let mut writer = match state.create_run(run_id.clone()) {
         Ok(w) => w,

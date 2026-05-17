@@ -124,6 +124,13 @@ fn spawn_codex_reviews(
 ) -> Result<(), ActError> {
     ooda_core::atomic_io::secure_create_dir_all(&ctx.batch_dir)
         .map_err(|source| ActError::Spawn { slot: 0, source })?;
+    // Per-batch-dir advisory lock. A concurrent observe pass
+    // walking this directory while logs are truncated would see
+    // a half-truncated file and misclassify the verdict; the
+    // lock excludes that window from any reader that takes the
+    // same lock cooperatively.
+    let _batch_lock = ooda_core::FileLock::acquire(&ctx.batch_dir.join(".batch.lock"))
+        .map_err(|source| ActError::Spawn { slot: 0, source })?;
 
     if should_preflight_path(&ctx.codex_bin) && !ctx.codex_bin.exists() {
         return Err(ActError::Spawn {

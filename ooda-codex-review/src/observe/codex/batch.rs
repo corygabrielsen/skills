@@ -82,6 +82,12 @@ pub(crate) fn scan_batch(
         Err(e) => return Err(e),
     };
 
+    // Per-batch-dir advisory lock. Acquired cooperatively against
+    // the spawn-side lock that excludes log truncation; the
+    // observe pass thus never reads a half-truncated log mid
+    // re-spawn.
+    let _batch_lock = ooda_core::FileLock::acquire(&batch_dir.join(".batch.lock"))?;
+
     let mut log_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
     let mut exit_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
 

@@ -10,6 +10,14 @@
 //!
 //! - **Atomic write**: a partial write is never observed by readers
 //!   (via [`crate::atomic_io::write_atomic`]).
+//! - **Cross-process write serialisation**: every `write_*_atomic`
+//!   acquires a [`crate::file_lock::FileLock`] on a sidecar for the
+//!   duration of the write. Two concurrent attest invocations against
+//!   the same path serialise; the loser observes the winner's bytes
+//!   on its next read. Read-then-decide-then-write callers that need
+//!   the read tied to the write should take a [`FileLock`] over the
+//!   full RMW window externally — the per-write lock alone does not
+//!   close that gap.
 //! - **Total read**: a missing file is `Ok(None)`; malformed content
 //!   and wrong-schema content yield typed errors distinguishable
 //!   from genuine IO failure.
@@ -131,8 +139,29 @@ pub fn write_pull_request_metadata_atomic(
         version: PULL_REQUEST_METADATA_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let _lock = crate::file_lock::FileLock::acquire(path)?;
     crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
+}
+
+/// Acquire the cross-process advisory lock that guards every
+/// `write_*_atomic` in this module. Callers performing a
+/// read → decide → write sequence on the same attestation path
+/// should hold this guard across the whole window so a concurrent
+/// invocation does not slip in a write between their read and
+/// their decision.
+///
+/// # Errors
+///
+/// Propagates [`crate::file_lock::FileLock::acquire`] failures.
+pub fn attest_lock(path: &Path) -> std::io::Result<crate::file_lock::FileLock> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    crate::file_lock::FileLock::acquire(path)
 }
 
 /// Read the attestation at `path`. Total over the absence case
@@ -187,6 +216,10 @@ pub fn write_doc_review_atomic(
         version: DOC_REVIEW_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let _lock = crate::file_lock::FileLock::acquire(path)?;
     crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
 }
@@ -235,6 +268,10 @@ pub fn write_claude_review_atomic(
         version: CLAUDE_REVIEW_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let _lock = crate::file_lock::FileLock::acquire(path)?;
     crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
 }
@@ -283,6 +320,10 @@ pub fn write_closeout_atomic(
         version: CLOSEOUT_SCHEMA_VERSION,
     };
     let json = serde_json::to_vec_pretty(&attestation)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let _lock = crate::file_lock::FileLock::acquire(path)?;
     crate::atomic_io::write_atomic(path, &json)?;
     Ok(attestation)
 }

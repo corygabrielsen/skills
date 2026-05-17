@@ -169,6 +169,13 @@ fn spawn_codex_review_batch(
     let dir = codex_batch_dir(&codex.codex_pr_root, level, &codex.head_sha);
     ooda_core::atomic_io::secure_create_dir_all(&dir)
         .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
+    // Per-batch-dir advisory lock. The outer per-PR `.lock`
+    // (held FD-tied by CodexActContext) excludes other
+    // ooda-pr-codex-review invocations; this inner lock excludes
+    // a concurrent observe pass that walks the directory while
+    // head_sha.txt and per-slot logs are being (re)written.
+    let _batch_lock = ooda_core::FileLock::acquire(&dir.join(".batch.lock"))
+        .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
     let mut sha_file = ooda_core::atomic_io::open_secure_truncate(&dir.join("head_sha.txt"))
         .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
     sha_file

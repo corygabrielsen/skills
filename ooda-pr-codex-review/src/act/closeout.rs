@@ -133,7 +133,7 @@ mod tests {
         let s = p.to_string();
         assert!(s.contains("converged at a new HEAD"), "{s}");
         assert!(
-            s.starts_with("Closeout: confirm PR ready for human handoff."),
+            s.starts_with("# Closeout: confirm PR ready for human handoff."),
             "{s}"
         );
     }

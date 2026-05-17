@@ -121,13 +121,33 @@ impl ActionEffect {
     }
 
     /// Render the payload as a single `String` regardless of variant.
-    /// Call sites that need only the textual payload use this;
-    /// sites that mutate prompt structure use [`Self::prompt_mut`].
+    /// For Agent/Human prompts this returns the full markdown body
+    /// (headline + sections). Call sites that need only the textual
+    /// payload use this; sites that mutate prompt structure use
+    /// [`Self::prompt_mut`]; sites that want a one-line summary
+    /// (e.g. for embedding in a dashboard line) use
+    /// [`Self::rendered_summary`].
     #[must_use]
     pub fn rendered_message(&self) -> String {
         match self {
             Self::Full { log } | Self::Wait { log, .. } => log.clone(),
             Self::Agent { prompt } | Self::Human { prompt } => prompt.to_string(),
+        }
+    }
+
+    /// One-line summary of the payload. For Agent/Human, returns
+    /// the prompt's headline (no `# ` prefix, no body). For
+    /// Full/Wait, returns the log (which is single-line by
+    /// construction). Use this where the payload appears inline in
+    /// another rendering — e.g. a dashboard line of the form
+    /// "Recommended: <kind>: <summary>" — and use
+    /// [`Self::rendered_message`] when the caller needs the full
+    /// body.
+    #[must_use]
+    pub fn rendered_summary(&self) -> String {
+        match self {
+            Self::Full { log } | Self::Wait { log, .. } => log.clone(),
+            Self::Agent { prompt } | Self::Human { prompt } => prompt.headline.to_string(),
         }
     }
 }
@@ -137,6 +157,12 @@ impl<K> Action<K> {
     #[must_use]
     pub fn rendered_payload(&self) -> String {
         self.effect.rendered_message()
+    }
+
+    /// Convenience pass-through — same as `self.effect.rendered_summary()`.
+    #[must_use]
+    pub fn rendered_summary(&self) -> String {
+        self.effect.rendered_summary()
     }
 }
 
@@ -374,6 +400,6 @@ mod tests {
             prompt: HandoffPrompt::new("agented"),
         };
         assert_eq!(f.rendered_message(), "fulled");
-        assert_eq!(a.rendered_message(), "agented");
+        assert_eq!(a.rendered_message(), "# agented");
     }
 }

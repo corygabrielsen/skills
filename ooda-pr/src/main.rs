@@ -936,7 +936,7 @@ mod tests {
         render_outcome(&mut buf, &make_handoff_outcome("Rebase onto base"), None);
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("HandoffAgent: Rebase\n"));
-        assert!(s.contains("\n  prompt: Rebase onto base\n"));
+        assert!(s.contains("\n  prompt: # Rebase onto base\n"));
     }
 
     #[test]
@@ -981,15 +981,15 @@ mod tests {
         };
         let rendered = handoff.prompt.to_string();
         assert!(
-            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            rendered.contains("**PR:** https://github.com/acme/widget/pull/42"),
             "decoration: {rendered}",
         );
         assert!(
-            rendered.contains("Blocker: not_approved"),
+            rendered.contains("**Blocker:** not_approved"),
             "decoration: {rendered}",
         );
         // Original prompt content is preserved.
-        assert!(rendered.starts_with("Request or self-approve"));
+        assert!(rendered.starts_with("# Request or self-approve"));
     }
 
     #[test]
@@ -1025,15 +1025,15 @@ mod tests {
         };
         let rendered = handoff.prompt.to_string();
         assert!(
-            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            rendered.contains("**PR:** https://github.com/acme/widget/pull/42"),
             "PR context missing from Rebase HandoffAgent: {rendered}",
         );
         assert!(
-            rendered.contains("Blocker: behind_base"),
+            rendered.contains("**Blocker:** behind_base"),
             "blocker context missing: {rendered}",
         );
         // Original prompt content preserved.
-        assert!(rendered.starts_with("Rebase onto the latest base branch"));
+        assert!(rendered.starts_with("# Rebase onto the latest base branch"));
     }
 
     #[test]
@@ -1057,7 +1057,7 @@ mod tests {
             panic!("expected HandoffAgent");
         };
         let rendered = handoff.prompt.to_string();
-        assert!(!rendered.contains("PR: https://"));
+        assert!(!rendered.contains("**PR:** https://"));
         assert!(!rendered.contains("Blocker:"));
     }
 
@@ -1074,7 +1074,7 @@ mod tests {
             .iter()
             .map(|a| RankedCandidate {
                 action_name: ooda_core::ActionKindName::name(&a.kind),
-                action_log: a.rendered_payload(),
+                action_log: a.rendered_summary(),
                 effect_debug: format!("{:?}", a.effect),
                 urgency: a.urgency,
                 blocker: a.blocker.clone(),
@@ -1222,10 +1222,10 @@ mod tests {
         // The existing per-action context block from 5bf9c7c still
         // lands at the trailing edge — preamble does not displace it.
         assert!(
-            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            rendered.contains("**PR:** https://github.com/acme/widget/pull/42"),
             "trailing context: {rendered}",
         );
-        assert!(rendered.contains("Blocker: not_approved"), "{rendered}");
+        assert!(rendered.contains("**Blocker:** not_approved"), "{rendered}");
     }
 
     #[test]
@@ -1259,11 +1259,11 @@ mod tests {
             "preamble missing: {rendered}",
         );
         assert!(
-            rendered.contains("PR: https://github.com/acme/widget/pull/42"),
+            rendered.contains("**PR:** https://github.com/acme/widget/pull/42"),
             "5bf9c7c context missing: {rendered}",
         );
         assert!(
-            rendered.contains("Blocker: behind_base"),
+            rendered.contains("**Blocker:** behind_base"),
             "5bf9c7c blocker missing: {rendered}",
         );
         assert!(rendered.contains("Rebase onto the latest base branch"));
@@ -1300,8 +1300,8 @@ mod tests {
             "preamble must apply to non-allowlisted: {rendered}",
         );
         // Per-action context still gated — no PR / Blocker lines.
-        assert!(!rendered.contains("PR: https://"), "{rendered}");
-        assert!(!rendered.contains("Blocker: behind_base"), "{rendered}");
+        assert!(!rendered.contains("**PR:** https://"), "{rendered}");
+        assert!(!rendered.contains("**Blocker:** behind_base"), "{rendered}");
     }
 
     #[test]
@@ -1338,7 +1338,7 @@ mod tests {
         };
         let rendered = handoff.prompt.to_string();
         assert!(
-            rendered.contains("Closeout: attested at "),
+            rendered.contains("**Closeout:** attested at "),
             "decoration: {rendered}",
         );
         assert!(

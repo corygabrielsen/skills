@@ -32,15 +32,34 @@ pub struct HandoffPrompt {
 /// captures a recurring rendering shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PromptSection {
+    /// Markdown heading — renders as `<#-prefix> <text>` where the
+    /// prefix is `level` hashes. The headline of the enclosing
+    /// [`HandoffPrompt`] is rendered as a level-1 heading
+    /// (`# <headline>`); section headings should typically use
+    /// level 2 or 3 so they nest under the headline visually.
+    /// Use this for any section label that previously read as a
+    /// colon-suffixed paragraph (e.g. `Signals:`, `Blockers:`,
+    /// `Queued (blocking wait):` — replace with a
+    /// `Heading(2, "Signals")` etc).
+    Heading(u8, SingleLineString),
     /// Free prose paragraph. May contain embedded newlines.
     Paragraph(String),
+    /// Fenced code block — renders as a markdown ```` ``` ```` fence.
+    /// `language` is rendered as the info-string (e.g. `"bash"`,
+    /// `"graphql"`); an empty string renders an unlabeled fence.
+    /// `body` is emitted verbatim between the open and close fences.
+    Code {
+        language: SingleLineString,
+        body: String,
+    },
     /// Numbered list — `1. <item>` / `2. <item>` / … Items are
     /// individually single-line. For multi-line entries with
     /// bodies, prefer [`Self::Witnesses`].
     NumberedList(NonEmpty<SingleLineString>),
     /// Per-item witnesses — each carries a one-line label and a
     /// free-form body. Used when the recipient needs both a stable
-    /// identifier and full content per item.
+    /// identifier and full content per item. Each witness renders
+    /// with the label as a level-3 markdown heading.
     Witnesses(NonEmpty<Witness>),
     /// Key/value triage context — `<key>: <value>` lines, both
     /// sides single-line so the block stays regex-friendly.
@@ -77,9 +96,30 @@ impl HandoffPrompt {
         }
     }
 
+    /// Append a markdown heading. `level` is the `#` count
+    /// (1 = top, 6 = deepest). Callers picking levels for
+    /// sub-structure of the dashboard preamble or per-axis bodies
+    /// should typically use 2 or 3 so they nest under the
+    /// headline's level-1 rendering.
+    pub fn push_heading(&mut self, level: u8, text: impl Into<SingleLineString>) {
+        self.sections
+            .push(PromptSection::Heading(level, text.into()));
+    }
+
     /// Append a free-form prose paragraph.
     pub fn push_paragraph(&mut self, text: impl Into<String>) {
         self.sections.push(PromptSection::Paragraph(text.into()));
+    }
+
+    /// Append a fenced code block. `language` becomes the fence
+    /// info-string (e.g. `"bash"`, `"graphql"`); pass an empty
+    /// string for an unlabeled fence. `body` is emitted verbatim
+    /// between the fences.
+    pub fn push_code(&mut self, language: impl Into<SingleLineString>, body: impl Into<String>) {
+        self.sections.push(PromptSection::Code {
+            language: language.into(),
+            body: body.into(),
+        });
     }
 
     /// Append a numbered list. Caller is responsible for ensuring
@@ -149,8 +189,12 @@ impl HandoffPrompt {
 }
 
 impl fmt::Display for HandoffPrompt {
+    /// Render as markdown. The headline becomes a level-1 heading
+    /// (`# <headline>`) so the artifact is visually distinct when
+    /// embedded in a longer conversation; sections follow on
+    /// blank-line boundaries.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.headline.as_str())?;
+        write!(f, "# {}", self.headline)?;
         for section in &self.sections {
             f.write_str("\n\n")?;
             fmt::Display::fmt(section, f)?;
@@ -162,7 +206,20 @@ impl fmt::Display for HandoffPrompt {
 impl fmt::Display for PromptSection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Heading(level, text) => {
+                // Clamp to the markdown range [1, 6]; a request
+                // outside that range is a caller bug, but a panic
+                // would surface in a render path, so clamp instead.
+                let n = (*level).clamp(1, 6) as usize;
+                for _ in 0..n {
+                    f.write_str("#")?;
+                }
+                write!(f, " {text}")
+            }
             Self::Paragraph(s) => f.write_str(s),
+            Self::Code { language, body } => {
+                write!(f, "```{language}\n{body}\n```")
+            }
             Self::NumberedList(items) => {
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -177,9 +234,9 @@ impl fmt::Display for PromptSection {
                     if i > 0 {
                         f.write_str("\n\n")?;
                     }
-                    write!(f, "{}\n{}", w.label, w.body)?;
+                    write!(f, "### {}\n\n{}", w.label, w.body)?;
                     if let Some(url) = &w.url {
-                        write!(f, "\nURL: {url}")?;
+                        write!(f, "\n\nURL: {url}")?;
                     }
                 }
                 Ok(())
@@ -189,7 +246,7 @@ impl fmt::Display for PromptSection {
                     if i > 0 {
                         f.write_str("\n")?;
                     }
-                    write!(f, "{}: {}", l.key, l.value)?;
+                    write!(f, "- **{}:** {}", l.key, l.value)?;
                 }
                 Ok(())
             }
@@ -202,9 +259,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn headline_only_renders_one_line() {
+    fn headline_renders_as_level_one_heading() {
         let p = HandoffPrompt::new("Request or self-approve");
-        assert_eq!(format!("{p}"), "Request or self-approve");
+        assert_eq!(format!("{p}"), "# Request or self-approve");
     }
 
     #[test]
@@ -214,24 +271,24 @@ mod tests {
         let s = format!("{p}");
         assert_eq!(
             s,
-            "Address summary-only change-request review.\n\
+            "# Address summary-only change-request review.\n\
              \n\
              Read the latest CHANGES_REQUESTED review body and address it."
         );
     }
 
     #[test]
-    fn context_lines_join_with_single_newline_within_block() {
+    fn context_lines_render_as_definition_list() {
         let mut p = HandoffPrompt::new("Halted for human triage.");
         p.push_context_line("PR", "https://github.com/acme/widget/pull/42");
         p.push_context_line("Blocker", "ci_fail: Lint");
         let s = format!("{p}");
         assert_eq!(
             s,
-            "Halted for human triage.\n\
+            "# Halted for human triage.\n\
              \n\
-             PR: https://github.com/acme/widget/pull/42\n\
-             Blocker: ci_fail: Lint"
+             - **PR:** https://github.com/acme/widget/pull/42\n\
+             - **Blocker:** ci_fail: Lint"
         );
     }
 
@@ -260,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn witnesses_render_with_label_then_body_double_separated() {
+    fn witnesses_render_with_h3_label_then_body() {
         let witnesses = NonEmpty::try_from_vec(vec![
             Witness {
                 label: "Copilot @ src/foo.rs:42    thread_id: t1".into(),
@@ -277,10 +334,10 @@ mod tests {
         let mut p = HandoffPrompt::new("Address 2 unresolved review threads.");
         p.push_witnesses(witnesses);
         let s = format!("{p}");
-        assert!(
-            s.contains("Copilot @ src/foo.rs:42    thread_id: t1\nConsider a different name here.")
-        );
-        assert!(s.contains("Cursor @ src/bar.rs:7    thread_id: t2\nMulti-line\nbody."));
+        assert!(s.contains(
+            "### Copilot @ src/foo.rs:42    thread_id: t1\n\nConsider a different name here."
+        ));
+        assert!(s.contains("### Cursor @ src/bar.rs:7    thread_id: t2\n\nMulti-line\nbody."));
     }
 
     #[test]
@@ -293,7 +350,7 @@ mod tests {
         let mut p = HandoffPrompt::new("h");
         p.push_witnesses(witnesses);
         let s = format!("{p}");
-        assert_eq!(s, "h\n\nlabel\nbody line");
+        assert_eq!(s, "# h\n\n### label\n\nbody line");
         assert!(!s.contains("URL:"));
     }
 
@@ -307,7 +364,44 @@ mod tests {
         let mut p = HandoffPrompt::new("h");
         p.push_witnesses(witnesses);
         let s = format!("{p}");
-        assert_eq!(s, "h\n\nlabel\nbody line\nURL: https://example/r/1");
+        assert_eq!(
+            s,
+            "# h\n\n### label\n\nbody line\n\nURL: https://example/r/1"
+        );
+    }
+
+    #[test]
+    fn heading_renders_with_level_hashes() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_heading(2, "Recommended");
+        p.push_heading(3, "Step 1");
+        let s = format!("{p}");
+        assert_eq!(s, "# h\n\n## Recommended\n\n### Step 1");
+    }
+
+    #[test]
+    fn heading_level_clamps_into_markdown_range() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_heading(0, "low");
+        p.push_heading(7, "high");
+        let s = format!("{p}");
+        assert_eq!(s, "# h\n\n# low\n\n###### high");
+    }
+
+    #[test]
+    fn code_block_renders_with_language_fence() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_code("bash", "gh pr view --json reviews");
+        let s = format!("{p}");
+        assert_eq!(s, "# h\n\n```bash\ngh pr view --json reviews\n```");
+    }
+
+    #[test]
+    fn code_block_with_empty_language_renders_unlabeled_fence() {
+        let mut p = HandoffPrompt::new("h");
+        p.push_code("", "raw body");
+        let s = format!("{p}");
+        assert_eq!(s, "# h\n\n```\nraw body\n```");
     }
 
     #[test]

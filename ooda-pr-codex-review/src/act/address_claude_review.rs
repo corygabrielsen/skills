@@ -121,7 +121,10 @@ mod tests {
     #[test]
     fn prompt_starts_with_headline() {
         let p = build_address_claude_review_prompt(pr(), ts(), "body", "url", 1, None);
-        assert!(p.to_string().starts_with("Claude review needs addressing."));
+        assert!(
+            p.to_string()
+                .starts_with("# Claude review needs addressing.")
+        );
     }
 
     #[test]

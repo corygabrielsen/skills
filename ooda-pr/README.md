@@ -488,9 +488,9 @@ header(Outcome) ::=                      ← left: variant; right: emitted stder
     DoneSucceeded                        "DoneMerged"
     StuckRepeated(a)                     "StuckRepeated: {a.kind.name()}:{a.blocker}"
     StuckCapReached(a)                   "StuckCapReached: {a.kind.name()}:{a.blocker}"
-    HandoffHuman(a)                      "Hand off to human: {a.kind.name()}"  + see-pointer
+    HandoffHuman(a)                      "Hand off to human: {a.prompt.headline}"  + see-pointer
     WouldAdvance(a)                      "WouldAdvance: {a.kind.name()}:{format_automation(a.automation)}"
-    HandoffAgent(a)                      "Hand off to agent: {a.kind.name()}"  + see-pointer
+    HandoffAgent(a)                      "Hand off to agent: {a.prompt.headline}"  + see-pointer
     BinaryError(msg)                     "BinaryError: {msg}"
     Paused                               "Paused"
     DoneAborted                          "DoneClosed"

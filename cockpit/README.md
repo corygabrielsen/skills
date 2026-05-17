@@ -1,16 +1,41 @@
 # Cockpit
 
 Local web companion UI for OODA agents. Background daemon that
-surfaces what your agents are doing on this machine via a
-browser at `http://127.0.0.1:7777`.
+surfaces what your agents are doing on this machine via a browser
+at `http://localhost:7777`.
 
 ## Run
 
 ```bash
-~/.claude/skills/cockpit/run serve              # default port 7777
+~/.claude/skills/cockpit/run serve                # default port 7777
 ~/.claude/skills/cockpit/run serve --port 9000
+~/.claude/skills/cockpit/run serve --bind 127.0.0.1
 ~/.claude/skills/cockpit/run serve --state-root /custom/path
 ```
+
+Then open `http://localhost:7777/` in a browser.
+
+### Bind defaults
+
+- **Native Linux / macOS**: defaults to `127.0.0.1` (loopback
+  only, no external surface).
+- **WSL2** (detected via `WSL_DISTRO_NAME`): defaults to
+  `0.0.0.0` so a browser on the Windows host can reach the
+  daemon. WSL2's `localhostForwarding` for `127.0.0.1` has been
+  historically unreliable; `0.0.0.0` is the no-surprise default.
+  Pass `--bind 127.0.0.1` if you've verified your `.wslconfig`
+  forwarding works and want loopback-only.
+
+### Reaching the daemon from Windows under WSL2
+
+`http://localhost:7777/` should just work in any Windows browser
+once the daemon is running (WSL2 NAT forwards the Windows-side
+`localhost` to the WSL2 host's `0.0.0.0` bind). If it doesn't:
+
+- Confirm the daemon is running:
+  `curl http://127.0.0.1:7777/api/health` inside WSL2.
+- Fall back to the WSL2 IP: `hostname -I` inside WSL2, then visit
+  `http://<that-ip>:7777/` from Windows.
 
 ## API (V1)
 

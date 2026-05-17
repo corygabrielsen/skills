@@ -43,9 +43,9 @@ tree.
 
 ## Sibling binaries
 
-| Name          | Refers to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ooda-attest` | Companion CLI that writes attestation files at `<state-root>/<pr-id>/<axis>_attest.json` for four axes: `pr-meta`, `doc-review`, `claude-review`, `closeout`. Each `Sync*` / `Review*` / `Address*` / `Closeout` handoff (exit 4) instructs the receiving agent to run the matching subcommand after completing the work. `closeout` is the convergence gate — it fires only when every other axis is silent and gates `HandoffHuman` on an explicit agent sign-off. `--state-root` is optional; absent it, the same env-var chain `ooda-pr` uses (`$OODA_PR_STATE_HOME` → `$XDG_STATE_HOME/ooda-pr` → `$HOME/.local/state/ooda-pr` → `$TMPDIR/ooda-pr`) supplies the default. Run `ooda-attest --help` for the full surface. |
+| Name          | Refers to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ooda-attest` | Companion CLI that writes attestation files at `<state-root>/<pr-id>/<axis>_attest.json` for four axes: `pr-meta`, `doc-review`, `claude-review`, `closeout`. Each `Sync*` / `Review*` / `Address*` / `Closeout` handoff (exit 4) instructs the receiving agent to run the matching subcommand after completing the work. `closeout` is the convergence gate — it fires only when every other axis is silent and gates `HandoffHuman` on an explicit agent sign-off. Run `ooda-attest --help` for the full surface. |
 
 ## Type spine
 
@@ -85,8 +85,11 @@ not the variant name.
 - `runner.rs::run_loop` — iteration sequencing, stall detection,
   cap detection. Each binary's runner diverges enough on
   side-effects / flock / refresh logic that lifting is premature.
-- `recorder.rs` — on-disk event ledger. Three binaries share the
-  PR-side schema; `ooda-codex-review` uses a different one.
+- `state.rs` — thin adapter over the shared `ooda-state` crate.
+  PR-specific event vocabulary (`action_started`,
+  `status_comment_rendered`, `tool_call_finished`, …) lives here;
+  the generic on-disk layout (events.jsonl + content-addressed
+  blobs) is owned by `ooda-state`.
 - `decide/action.rs::ActionKind` and its `ActionKindName` impl.
 - `From<LoopError> for Outcome` — `LoopError` shape differs per
   binary.
@@ -191,7 +194,7 @@ agent mistakes; the binary is not at fault.
   _working_.
 
 **After a `Handoff*` (exit 3 or 4).** Surface the handoff to the
-user (header + iter-log + `handoff.md`; see `Handoff*` prompt
+user (header + iter-log + handoff blob; see `Handoff*` prompt
 format → "Surface to the user"). Then perform the requested
 action and re-invoke `/ooda-pr` in **loop mode** (no `inspect`).
 The loop's first iteration re-observes the now-modified state and
@@ -250,74 +253,70 @@ exit code (typically 101 for compile error) and ooda-pr does
 not execute — treat such codes as `BinaryError`-equivalent
 (see catch-all).
 
-| Flag                | Meaning                                                                                                                                                                                                                                                                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--max-iter N`      | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                         |
-| `--status-comment`  | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                             |
-| `--state-root PATH` | Override the always-on state root. Default resolution is `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then `~/.local/state/ooda-pr`, then the platform temp directory. State is keyed by GitHub repo+PR, not by checkout path.                                                                     |
-| `--trace PATH`      | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 70). Later trace writes are best-effort and do not change the Outcome. |
-| `-h`, `--help`      | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                        |
+| Flag                | Meaning                                                                                                                                                                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--max-iter N`      | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                          |
+| `--status-comment`  | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `index/pr/<owner>/<repo>/<pr>/status-comment-dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                                    |
+| `--state-root PATH` | Override the always-on state root. Default resolution is `$OODA_STATE_HOME`, then `$XDG_STATE_HOME/ooda`, then `~/.local/state/ooda`, then `$TMPDIR/ooda`. One root per machine, shared by every OODA agent regardless of domain; domain identity (`pr`, `codex-review`, …) lives in events, not in the path. |
+| `--trace PATH`      | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 70). Later trace writes are best-effort and do not change the Outcome.  |
+| `-h`, `--help`      | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                         |
 
 ## Always-On State
 
-Every invocation with valid `<owner/repo>` and `<pr>` writes a local
-PR memory harness before observation begins. The default root is:
+Every invocation with valid `<owner/repo>` and `<pr>` writes a
+host-local audit trail before observation begins. The state model
+is domain-agnostic and lives in the `ooda-state` crate; ooda-pr is
+one of several writers sharing the same on-disk layout.
+
+The state root resolves via this chain:
 
 1. `--state-root PATH`
-2. `$OODA_PR_STATE_HOME`
-3. `$XDG_STATE_HOME/ooda-pr`
-4. `~/.local/state/ooda-pr`
-5. the platform temp directory
+2. `$OODA_STATE_HOME`
+3. `$XDG_STATE_HOME/ooda`
+4. `~/.local/state/ooda`
+5. `$TMPDIR/ooda`
 
-State is keyed by forge + repo + PR, so the same PR driven from
-multiple checkouts shares one host-local memory:
+One root per machine. Domain identity (`pr` slug, `codex-review`
+level, etc.) lives inside event records, not in the path:
 
 ```text
-<root>/github.com/<owner>/<repo>/prs/<pr>/
-  CURRENT.json                  # mutable pointer to the current run/iteration
-                                # schema_version, run_id, iteration, exit_code,
-                                # headline, artifacts (symbol → relative path),
-                                # keep_runs. Atomic replace; per-iteration
-                                # immutables under runs/.../iterations/... never move.
-  ledger.md
-  ledger.jsonl
-  events.jsonl
-  status-comment/
-    dedup.json
-  blobs/
-    sha256/<aa>/<bb>/<hash>.zst
-  runs/<run-id>/
-    manifest.json
-    outcome.json                # final per-PR Outcome, written by record_outcome
-    trace.md
-    trace.jsonl
-    iterations/0001/
-      event-range.json
-      normalized.json
-      oriented.json
-      candidates.json
-      decision_envelope.json    # the Execute/Halt envelope (runner's typed input)
-      dashboard.json            # tier-grouped human-shaped projection
-      action.json               # present iff the decision carries an Action / HandoffAction
-      index.md                  # per-iteration human surface (replaces former latest/index.md)
-      blockers.md
-      next.md
-      handoff.md                # present only when the iteration's outcome is Handoff* (exit 3 / 4)
-      tool-calls/
-      act-result.json
+<root>/
+├── runs/<run-id>/
+│   ├── events.jsonl          # source of truth (append-only typed events)
+│   └── blobs/<sha>.<ext>     # content-addressed payloads
+├── live/<run-id>             # empty marker; presence = active run
+└── index/pr/<owner>/<repo>/<pr>/
+    └── status-comment-dedup.json   # cross-run dedup memory
 ```
 
-Agent entrypoint: read `CURRENT.json` first; it names the current
-`run_id`, `iteration`, `exit_code`, and a `headline`, plus an
-`artifacts` map of symbolic names (`state`, `dashboard`,
-`decision_envelope`, `index`, `blockers`, `next`, `handoff`,
-`action`, `outcome`, …) to relative paths inside the per-iteration
-immutable directory. Follow `artifacts.index` for the per-iteration
-markdown, `artifacts.state` for the oriented JSON, `artifacts.outcome`
-for the run-level outcome, or `ledger.md` / `events.jsonl` for the
-cross-run audit stream. Full command stdout/stderr and repeated
-artifacts are retained as compressed content-addressed blobs under
-`blobs/sha256/` and linked from events/artifact refs.
+`<run-id>` is opaque (`<YYYYMMDDTHHMMSSZ>-<entropy>-p<pid>`); the
+GitHub slug + PR number live in the `target` payload on the
+`run_started` event, not in the path.
+
+**Event vocabulary.** Each line in `events.jsonl` is a typed event
+with a `kind` discriminator. Ooda-pr emits:
+
+- `run_started` — first event; `domain: "pr"`, `target` carries
+  forge / slug / pr / mode / max_iter / status_comment / cwd / argv.
+- `iteration_observed` / `iteration_oriented` — references to a
+  `blob` containing the JSON snapshot.
+- `iteration_decided` — carries `decision_kind` (e.g.
+  `"Execute::Rebase"`, `"Halt::HumanNeeded"`).
+- `iteration_executed` / `iteration_waited` — post-act markers.
+- `iteration_handoff` — references the handoff prompt blob.
+- `run_halted` — terminal event; `outcome` carries the boundary
+  variant name, `exit_code` carries the numeric exit. After this
+  event the `live/<run-id>` marker is deleted.
+- `domain_specific` — catch-all for events the core vocabulary
+  doesn't model (observe lifecycle, status-comment lifecycle, raw
+  tool-call telemetry, action_started/finished). `kind_suffix`
+  names the event; `payload` is opaque JSON.
+
+**Agent entrypoint.** To audit a run: pick the `runs/<run-id>/`
+directory (or watch `live/` for active runs), parse `events.jsonl`
+line-by-line, and dereference any `blob` field by joining
+`runs/<run-id>/blobs/<sha>.<ext>`. Cockpit (`/cockpit`) provides a
+live tail; for one-shot audits, walk `runs/` directly.
 
 ## Outcomes
 
@@ -361,11 +360,10 @@ Outcome's emission). Listed by emission site:
     `DoneClosed`), `AgentNeeded` → `HandoffAgent` (exit 4),
     `HumanNeeded` → `HandoffHuman` (exit 3). Payloads are not
     expanded in the iter-log line; the boundary emission carries
-    them — `Handoff*` in the per-iteration
-    `runs/<run-id>/iterations/<NNNN>/handoff.md` (pointed to by the
-    stderr `  see:` line and named in `CURRENT.json` as
-    `artifacts.handoff`), `Stuck*` in the `:<BlockerKey>`
-    projection, terminal/Paused with no payload.
+    them — `Handoff*` in a content-addressed blob at
+    `runs/<run-id>/blobs/<sha>.md` (pointed to by the stderr
+    `  see:` line), `Stuck*` in the `:<BlockerKey>` projection,
+    terminal/Paused with no payload.
   - When `--status-comment` is set: `[iter N] comment: posted`,
     `[iter N] comment: <PostError>`, or silently skipped on the
     common dedup-no-change case. (See "comment lines" below.)
@@ -381,20 +379,19 @@ Outcome's emission). Listed by emission site:
     `comment: skipped (unchanged)`, or `comment: <PostError>`.
 - **Final variant block** (last emission, both modes): the
   Outcome header, optionally followed by a single pointer line
-  `  see: <abs-path-to-handoff.md>` (`Handoff*`) or the
-  usage block (`UsageError`). The path points at the per-iteration
-  `runs/<run-id>/iterations/<NNNN>/handoff.md`; the same path is
-  also exposed as `artifacts.handoff` in `CURRENT.json`. The prompt
-  body lives in `handoff.md`, not on stderr — see `Handoff*` prompt
-  format below.
+  `  see: <abs-path-to-handoff-blob>` (`Handoff*`) or the
+  usage block (`UsageError`). The path points at a
+  content-addressed blob (`runs/<run-id>/blobs/<sha>.md`); the
+  prompt body lives in that file, not on stderr — see `Handoff*`
+  prompt format below.
 
-The always-on `runs/<run-id>/trace.md` receives an appended run
-header before observation begins, then the same stack / iteration /
-comment diagnostic lines that the binary emits during the run, then
-the final Outcome block and `exit=<code>`. When `--trace PATH` is
-set, the same compact trace is also appended to that path. These
-trace files are audit aids only; stderr remains the binary boundary,
-and `$?` remains the dispatch contract.
+The durable audit trail lives in `runs/<run-id>/events.jsonl` —
+structured, typed events rather than a free-form text trace.
+When `--trace PATH` is set, the binary additionally appends the
+compact human-readable trace lines (stack note, iteration log,
+comment status lines, final Outcome block, and `exit=<code>`)
+to that path as a compatibility sink. Stderr remains the binary
+boundary, and `$?` remains the dispatch contract.
 
 **Comment lines** (when `--status-comment` is set):
 
@@ -451,8 +448,8 @@ always carries an `Action` and always emits the
 |  0   | `DoneSucceeded`           | `DoneMerged`                                                       | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
 |  1   | `Paused`                  | `Paused`                                                           | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
 |  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`                          | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
-|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`). Surface the handoff to the user (see "Surface to the user" below). Re-invoke `/ooda-pr` after they resolve it.                                                                                   |
-|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr` after the agent finishes.                          |
+|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to handoff blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below). Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                           |
+|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to handoff blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                  |
 |  5   | `DoneAborted`             | `DoneClosed`                                                       | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
 |  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`                         | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
 |  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                       | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
@@ -525,14 +522,13 @@ require source repair.
 ### `Handoff*` prompt format
 
 For `HandoffAgent(action)` and `HandoffHuman(action)`, the prompt
-body is **written to disk** at the per-iteration path
-`<state-root>/github.com/<owner>/<repo>/prs/<pr>/runs/<run-id>/iterations/<NNNN>/handoff.md`
-(also surfaced as `artifacts.handoff` in `CURRENT.json`), and the
-**only** stderr emission after the header is a single pointer line
-of the form:
+body is **written to disk** as a content-addressed blob at
+`<state-root>/runs/<run-id>/blobs/<sha>.md`, and the **only**
+stderr emission after the header is a single pointer line of the
+form:
 
 ```
-  see: <absolute-path-to-handoff.md>
+  see: <absolute-path-to-handoff-blob>
 ```
 
 The pointer line begins with the literal **7-byte** sequence: two
@@ -542,28 +538,30 @@ remainder of the line (until `\n`) is the absolute path. There is
 no inline prompt body on stderr.
 
 **Caller protocol**: read the path from the pointer line, then
-read the file in full. The file is bounded — its size is
-observable via `stat` before commit — so callers should `Read`
-the whole file rather than tail-truncate stderr (which would lose
-the dashboard preamble that explains _why_ this action was
-selected). Do not interpret an `EOF` on stderr after the pointer
-line as a boundary on the prompt — the prompt lives in the file.
+read the file in full. The file is content-addressed (filename is
+its SHA-256) and immutable; its size is observable via `stat`, so
+callers should `Read` the whole file rather than tail-truncate
+stderr (which would lose the dashboard preamble that explains _why_
+this action was selected). Do not interpret an `EOF` on stderr
+after the pointer line as a boundary on the prompt — the prompt
+lives in the file.
 
 The prompt content is non-empty by convention but
 `Action.description` is a plain `String` and the type does not
 enforce non-emptiness; the file may be zero-length. Embedded
-newlines in the description appear verbatim in `handoff.md`.
+newlines in the description appear verbatim in the handoff blob.
 
-**Surface to the user.** After reading `handoff.md`, the calling
-agent's next user-visible response MUST expose the handoff content
-to the human. At minimum, surface: (1) the final variant block
-(stderr header + `  see:` pointer line), (2) the per-iteration
-stderr trail emitted during the run (bounded by `--max-iter`;
-default cap yields ~50 `[iter N] ...` lines, surface in full), and
-(3) the `handoff.md` body in full. The body already carries the
-dashboard preamble (tier-grouped candidates, per-axis signals,
-blockers) and the per-action prompt — surfacing the file verbatim
-discharges items (2)-(3) for the blockers / signals portion.
+**Surface to the user.** After reading the handoff blob, the
+calling agent's next user-visible response MUST expose the handoff
+content to the human. At minimum, surface: (1) the final variant
+block (stderr header + `  see:` pointer line), (2) the
+per-iteration stderr trail emitted during the run (bounded by
+`--max-iter`; default cap yields ~50 `[iter N] ...` lines, surface
+in full), and (3) the handoff blob body in full. The body already
+carries the dashboard preamble (tier-grouped candidates, per-axis
+signals, blockers) and the per-action prompt — surfacing the file
+verbatim discharges items (2)-(3) for the blockers / signals
+portion.
 
 This requirement applies to **both** `HandoffHuman` (exit 3) and
 `HandoffAgent` (exit 4) — even when the caller dispatches a
@@ -585,8 +583,8 @@ not in tension with the "do not editorialize" anti-pattern under
 displacing the halt-class exit codes; this rule requires the
 loop's own reasoning to reach the human.
 
-**Fallback (rare)**: if the recorder cannot write `handoff.md`
-(IO failure, recorder absent), the binary falls back to the
+**Fallback (rare)**: if the recorder cannot write the handoff
+blob (IO failure, recorder absent), the binary falls back to the
 legacy inline form — a `  prompt: <body>` line (10-byte sentinel
 `␣␣prompt:␣`) followed by the prompt content streamed to EOF on
 stderr. Callers SHOULD prefer the `see:` form when present; the
@@ -594,7 +592,7 @@ fallback exists only so the prompt is never lost. The **Surface
 to the user** requirement above applies to the fallback path
 verbatim: when the inline form fires, the inline body (the bytes
 after the `␣␣prompt:␣` sentinel through EOF) substitutes for the
-`handoff.md` body in item (3); items (1)-(2) are unchanged.
+handoff blob in item (3); items (1)-(2) are unchanged.
 
 In `inspect` mode, the `Handoff*` prompt has the same
 **directive form** as in loop mode — the content tells the
@@ -604,24 +602,24 @@ Single-line prompt example:
 
 ```
 HandoffAgent: Rebase
-  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/runs/20260516T120000Z-000000000-p1234/iterations/0003/handoff.md
+  see: /home/user/.local/state/ooda/runs/20260516T120000Z-000000000-p1234/blobs/a3f1c2…d4.md
 ```
 
-`handoff.md` contents:
+Blob contents:
 
 ```
 Rebase onto the latest base branch
 ```
 
-Multi-line prompt example. `handoff.md` carries the dashboard
+Multi-line prompt example. The blob carries the dashboard
 preamble + per-action body verbatim:
 
 ```
 HandoffAgent: AddressThreads
-  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/runs/20260516T120000Z-000000000-p1234/iterations/0003/handoff.md
+  see: /home/user/.local/state/ooda/runs/20260516T120000Z-000000000-p1234/blobs/b7d2e9…1f.md
 ```
 
-`handoff.md` contents:
+Blob contents:
 
 ```
 Recommended (blocking fix): AddressThreads: 2 unresolved [blocker: unresolved_threads]

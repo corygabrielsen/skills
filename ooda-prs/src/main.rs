@@ -20,7 +20,6 @@ mod text;
 
 use dashboard::Dashboard;
 use decide::action::{ActionEffect, rate_limit_wait_action};
-use decide::candidates;
 use decide::decision::{Decision, DecisionHalt};
 use ids::{PullRequestNumber, RepoSlug};
 use multi_outcome::{MultiOutcome, ProcessOutcome};
@@ -547,7 +546,7 @@ fn run_inspect(
         recorder.write_trace_line(&line);
     }
     let oriented = orient(&obs, None, current_timestamp());
-    let candidate_actions = candidates(&decide::CandidatesInputs::from(&oriented), pr);
+    let candidate_actions = runner::drive(&oriented, pr);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
     recorder.record_iteration(
         1,

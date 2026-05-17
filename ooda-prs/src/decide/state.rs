@@ -304,7 +304,7 @@ fn merge_blocked_unmodeled_prompt(state: &PullRequestProjection) -> ooda_core::H
 /// The caller invokes this only when no other axis has produced a
 /// candidate, so it is the gate's last resort, not a parallel
 /// shadow of the modeled axes.
-pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
+pub(crate) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
     match state.merge_state_status {
         MergeStateStatus::Blocked => vec![Action {
             kind: ActionKind::ResolveMergePolicy,

@@ -24,8 +24,18 @@
 use std::num::NonZeroU32;
 
 use crate::act::{ActError, act};
-use crate::decide::action::{Action, rate_limit_wait_action};
-use crate::decide::candidates;
+use crate::axis_impls::ci::{CiAxis, CiObservation};
+use crate::axis_impls::claude_review::{ClaudeReviewAxis, ClaudeReviewObservation};
+use crate::axis_impls::closeout::{CloseoutAxis, CloseoutObservation};
+use crate::axis_impls::copilot::{CopilotAxis, CopilotObservation};
+use crate::axis_impls::cursor::{CursorAxis, CursorObservation};
+use crate::axis_impls::doc_review::{DocReviewAxis, DocReviewObservation};
+use crate::axis_impls::pull_request_metadata::{
+    PullRequestMetadataAxis, PullRequestMetadataObservation,
+};
+use crate::axis_impls::reviews::{ReviewsAxis, ReviewsObservation};
+use crate::axis_impls::state::{StateAxis, StateObservation};
+use crate::decide::action::{Action, TargetEffect, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{PullRequestNumber, RepoSlug, Timestamp};
 use crate::observe::github::gh::GhError;
@@ -33,7 +43,86 @@ use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
-use ooda_core::decide_from_candidates;
+use ooda_core::{Axis, decide_from_candidates};
+
+/// Driver-level orchestration: invoke each axis's `candidates()` via
+/// the [`Axis`] trait and merge into one urgency-sorted list.
+///
+/// Composition is hand-written rather than trait-dispatched over a
+/// uniform iterator. Two reasons: (a) each axis's `Observation` is
+/// intentionally distinct (the declared-deps shape) — unifying them
+/// behind a single dispatch fn would require per-axis adapters that
+/// reconstruct typed Observations from a shared context, which is
+/// the god-struct we just removed; (b) cross-axis dep ordering
+/// (state must project before CI consumes `has_open_parent_pr`) is
+/// intrinsic and locally checkable when the call list is explicit.
+///
+/// Class invariant — *advancement preempts passivity*: an active
+/// candidate the system can drive must outrank a candidate that
+/// only waits on an external signal. The fallback merge-state
+/// blocker fires only when no axis produced an advancement path;
+/// `out.sort_by_key(|a| a.urgency)` performs the merge step
+/// (stable: axis order within a tier is preserved).
+pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
+    let mut out: Vec<Action> = Vec::new();
+    out.extend(StateAxis.candidates(&StateObservation {
+        state: &oriented.state,
+        threads: &oriented.threads,
+        merge_base_delta: oriented.merge_base_delta.as_ref(),
+    }));
+    out.extend(CiAxis.candidates(&CiObservation {
+        report: &oriented.ci,
+    }));
+    out.extend(ReviewsAxis.candidates(&ReviewsObservation {
+        reviews: &oriented.reviews,
+        ci: &oriented.ci,
+        copilot: oriented.copilot.as_ref(),
+        threads: &oriented.threads,
+    }));
+    out.extend(CopilotAxis.candidates(&CopilotObservation {
+        report: oriented.copilot.as_ref(),
+    }));
+    out.extend(CursorAxis.candidates(&CursorObservation {
+        report: oriented.cursor.as_ref(),
+    }));
+    out.extend(
+        PullRequestMetadataAxis.candidates(&PullRequestMetadataObservation {
+            state: &oriented.state,
+            pull_request_metadata: &oriented.pull_request_metadata,
+            attest_path: oriented.attest_path.as_deref(),
+            pr,
+        }),
+    );
+    out.extend(DocReviewAxis.candidates(&DocReviewObservation {
+        state: &oriented.state,
+        doc_review: &oriented.doc_review,
+        attest_path: oriented.doc_review_attest_path.as_deref(),
+        pr,
+    }));
+    out.extend(ClaudeReviewAxis.candidates(&ClaudeReviewObservation {
+        claude_review: &oriented.claude_review,
+        attest_path: oriented.claude_review_attest_path.as_deref(),
+        pr,
+    }));
+    out.extend(CloseoutAxis.candidates(&CloseoutObservation {
+        closeout: &oriented.closeout,
+        attest_path: oriented.closeout_attest_path.as_deref(),
+        pr,
+    }));
+    let has_advancement_path = out.iter().any(|a| {
+        matches!(
+            a.target_effect,
+            TargetEffect::Blocks | TargetEffect::Advances,
+        )
+    });
+    if !has_advancement_path {
+        out.extend(crate::decide::state::fallback_merge_state_blocker(
+            &oriented.state,
+        ));
+    }
+    out.sort_by_key(|a| a.urgency);
+    out
+}
 
 /// Wall-clock for one iteration's worth of orient work.
 ///
@@ -216,7 +305,7 @@ fn run_iter(
     };
     let now = current_timestamp();
     let oriented = orient(&obs, None, now);
-    let candidates = candidates(&crate::decide::CandidatesInputs::from(&oriented), pr);
+    let candidates = drive(&oriented, pr);
     let decision = decide_from_candidates(candidates.clone(), obs.pull_request_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 

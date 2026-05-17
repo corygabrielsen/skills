@@ -285,6 +285,49 @@ impl Event {
     }
 }
 
+// ── State-root resolution ────────────────────────────────────────────
+
+/// Resolve the OODA state root via the canonical env chain.
+///
+/// Precedence:
+///
+/// 1. `explicit` (e.g. CLI `--state-root PATH`), if `Some`.
+/// 2. `$OODA_STATE_HOME`, if set and non-empty.
+/// 3. `$XDG_STATE_HOME/ooda`, if `XDG_STATE_HOME` is set and
+///    non-empty.
+/// 4. `$HOME/.local/state/ooda`, if `HOME` is set and non-empty.
+/// 5. `$TMPDIR/ooda` (via [`std::env::temp_dir`]) — the totality
+///    fallback.
+///
+/// Domain-neutral: there is one state root per machine, shared by
+/// every OODA agent regardless of domain. Domain identity lives
+/// inside event records, not in the state root path.
+#[must_use]
+pub fn resolve_state_root(explicit: Option<&Path>) -> PathBuf {
+    if let Some(path) = explicit {
+        return path.to_path_buf();
+    }
+    if let Some(path) = nonempty_env_path("OODA_STATE_HOME") {
+        return path;
+    }
+    if let Some(path) = nonempty_env_path("XDG_STATE_HOME") {
+        return path.join("ooda");
+    }
+    if let Some(home) = nonempty_env_path("HOME") {
+        return home.join(".local").join("state").join("ooda");
+    }
+    std::env::temp_dir().join("ooda")
+}
+
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(name)?;
+    if value.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
+    }
+}
+
 // ── State root ───────────────────────────────────────────────────────
 
 /// Handle to a v2 state root. Methods create the layout on demand;

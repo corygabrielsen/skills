@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Cockpit · OODA</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        max-width: 56rem;
+      }
+      h1 {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .hint {
+        color: color-mix(in oklab, currentColor 60%, transparent);
+      }
+      code {
+        background: color-mix(in oklab, currentColor 10%, transparent);
+        padding: 0.1em 0.3em;
+        border-radius: 0.25em;
+      }
+      #feed {
+        margin-top: 1.5rem;
+        white-space: pre-wrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem;
+        border: 1px solid color-mix(in oklab, currentColor 20%, transparent);
+        border-radius: 0.5em;
+        padding: 1rem;
+        max-height: 60vh;
+        overflow: auto;
+      }
+      #feed .ev {
+        padding: 0.25rem 0;
+        border-bottom: 1px dashed color-mix(in oklab, currentColor 12%, transparent);
+      }
+      #feed .ev:last-child { border-bottom: 0; }
+      #feed .kind {
+        font-weight: 600;
+        margin-right: 0.5em;
+      }
+      #status {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.8rem;
+        color: color-mix(in oklab, currentColor 60%, transparent);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Cockpit</h1>
+    <p class="hint">
+      V1 daemon: live mutation feed from the OODA state tree. The React frontend
+      lands in a follow-up — this placeholder proves the SSE pipeline end-to-end.
+    </p>
+    <p class="hint">
+      JSON: <code>GET /api/health</code> · <code>GET /api/events</code> (SSE)
+    </p>
+    <p id="status">connecting…</p>
+    <div id="feed"></div>
+    <script>
+      const feed = document.getElementById("feed");
+      const status = document.getElementById("status");
+      const es = new EventSource("/api/events");
+      es.addEventListener("open", () => {
+        status.textContent = "connected — waiting for state-tree mutations…";
+      });
+      es.addEventListener("error", () => {
+        status.textContent = "disconnected (browser will retry)";
+      });
+      es.addEventListener("mutation", (ev) => {
+        const m = JSON.parse(ev.data);
+        const row = document.createElement("div");
+        row.className = "ev";
+        const kind = document.createElement("span");
+        kind.className = "kind";
+        kind.textContent = m.kind;
+        row.appendChild(kind);
+        row.append(m.paths.join("\n"));
+        feed.insertBefore(row, feed.firstChild);
+        // Cap visible events so the page doesn't grow unbounded.
+        while (feed.childNodes.length > 200) feed.removeChild(feed.lastChild);
+      });
+    </script>
+  </body>
+</html>

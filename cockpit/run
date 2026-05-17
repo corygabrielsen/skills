@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Thin wrapper for the Cockpit daemon. Mirrors the pattern used by
+# ooda-pr / ooda-prs / ooda-pr-codex-review / ooda-codex-review:
+# `target/` is gitignored, so users can't be expected to know the
+# release-binary path. This script builds-on-demand and execs.
+#
+# Cargo's progress output goes to stderr so it doesn't pollute the
+# binary's stdout channel.
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+(cd "$DIR" && cargo build --release --quiet) >&2
+exec "$DIR/target/release/cockpit" "$@"

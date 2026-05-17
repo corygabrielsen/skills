@@ -1,30 +1,29 @@
 //! `StateAxis` — mechanical merge-shape blockers as an `Axis` impl.
 //!
-//! Wraps `decide::state::blocking_candidates`. Unlike the health
-//! axes (CI / Cursor / Copilot), this axis is a **convergence**
-//! axis: its candidate emitter reads across the whole
-//! [`OrientedState`] bundle, not just its own per-axis report,
-//! because merge-shape blockers cross-reference multiple axes
-//! (draft, WIP label, mergeability, base-branch deltas, etc.).
-//! The wrapper therefore takes a reference to the full oriented
-//! bundle as its observation.
+//! Wraps `decide::state::blocking_candidates`. Declared deps:
+//!
+//! - `state` — own projection (the merge-shape lattice).
+//! - `threads` — review threads, used by the rebase-prompt
+//!   enrichment to surface re-anchoring witnesses.
+//! - `merge_base_delta` — base-branch delta, used by the
+//!   rebase-prompt enrichment to render conflict-surface guidance.
 //!
 //! The companion `fallback_merge_state_blocker` is not wrapped
-//! here — it is composed alongside the per-axis candidate sets at
-//! the driver level (`decide.rs`), not inside this axis.
+//! here — it is composed alongside the per-axis candidate sets
+//! at the driver level (`decide.rs`), not inside this axis.
 
 use crate::decide::action::{Action, ActionKind};
-use crate::orient::OrientedState;
+use crate::observe::github::compare::MergeBaseDelta;
+use crate::orient::state::PullRequestProjection;
+use crate::orient::thread::ReviewThread;
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`StateAxis`].
-///
-/// Carries the whole oriented bundle: blocking candidates may
-/// cross-reference any axis. Specific fields read are documented
-/// inside `decide::state::blocking_candidates`.
 #[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct StateObservation<'a> {
-    pub oriented: &'a OrientedState,
+    pub state: &'a PullRequestProjection,
+    pub threads: &'a [ReviewThread],
+    pub merge_base_delta: Option<&'a MergeBaseDelta>,
 }
 
 /// Wrapper exposing mechanical merge-shape blockers as an [`Axis`] impl.
@@ -35,6 +34,6 @@ impl<'a> Axis<StateObservation<'a>> for StateAxis {
     type ActionKind = ActionKind;
 
     fn candidates(&self, obs: &StateObservation<'a>) -> Vec<Action> {
-        crate::decide::state::blocking_candidates(obs.oriented)
+        crate::decide::state::blocking_candidates(obs.state, obs.threads, obs.merge_base_delta)
     }
 }

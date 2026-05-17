@@ -49,7 +49,11 @@ pub(crate) fn candidates(
     // may not even start until the PR is in the correct lifecycle
     // shape, and CI failures on a conflicted branch are noise
     // until the merge base is resolved.
-    out.extend(state::blocking_candidates(oriented));
+    out.extend(state::blocking_candidates(
+        &oriented.state,
+        &oriented.threads,
+        oriented.merge_base_delta.as_ref(),
+    ));
     out.extend(ci::candidates(&oriented.ci));
     out.extend(reviews::candidates(oriented));
     if let Some(c) = &oriented.copilot {

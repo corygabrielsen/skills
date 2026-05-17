@@ -257,7 +257,7 @@ fn run_iter(
 
     let now = current_timestamp();
     let oriented = orient(&obs, codex_obs.as_ref(), None, now);
-    let candidates = candidates(&oriented, pr);
+    let candidates = candidates(&crate::decide::CandidatesInputs::from(&oriented), pr);
     let decision = decide_from_candidates(candidates.clone(), obs.pull_request_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 

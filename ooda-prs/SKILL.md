@@ -142,6 +142,26 @@ the `*)` default arm cleanly catches cargo-1, `101`, and any
 `128 + signal` code the dispatch table doesn't enumerate.
 Wrapper failures fall through to `*)` predictably.
 
+**Surface per-PR handoffs to the user verbatim.** When a downstream
+consumer (`notify_human`, `dispatch_agents`, an interactive
+wrapper agent) presents a per-PR `HandoffHuman` / `HandoffAgent`
+record to a human, the surface MUST be verbatim: the JSONL
+record's `prompt` field already carries the dashboard preamble +
+per-action body that explain why this PR halted. Do not collapse
+into a one-line summary; the human needs the full body to
+(a) understand each halt without opening per-PR state files,
+(b) verify the orchestrator's interpretation before approving the
+next action, and (c) catch cases where the orchestrator is about
+to act on a wrong reading. Format is the consumer's choice
+(verbatim fenced block, structured render, collapsible per-PR
+section, etc.) — fidelity is the constraint, not format. The
+per-PR `runs/<run-id>/iterations/<NNNN>/handoff.md` and per-PR
+`runs/<run-id>/trace.md` carry the same content for any consumer
+that prefers files over JSONL field reads. See
+`/ooda-pr` SKILL.md §`Handoff*` prompt format → "Surface to
+the user" for the single-PR rationale; the same applies per-PR
+in the suite.
+
 ## Suite grammar
 
 The grammar is **token-scan-based**: any argv token that begins

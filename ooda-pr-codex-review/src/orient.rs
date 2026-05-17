@@ -40,7 +40,15 @@ use reviews::ReviewSummary;
 use state::PullRequestProjection;
 use thread::ReviewThread;
 
-/// The full per-axis projection of one observation bundle.
+/// Transient post-orient bundle carrying every axis's projection.
+///
+/// **Not a stable consumer-facing contract.** Each downstream
+/// consumer takes a per-consumer `<X>Inputs<'a>` struct of typed
+/// dep refs; the `From<&OrientedState>` bridges defined on each
+/// `Inputs` struct decompose this bundle. No consumer body should
+/// read `OrientedState` fields directly. Task 218's Driver loop
+/// will eliminate this aggregation entirely (per-axis Reports
+/// will be locals at the Driver site).
 ///
 /// Composition is purely additive: each axis owns its own field, no
 /// cross-axis aggregate (score, tier) lives here. Downstream views

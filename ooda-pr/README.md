@@ -428,8 +428,8 @@ Outcome =                                              ⟶ exit_code()  stderr
     DoneSucceeded                                      ⟶ 0            "DoneMerged"
   ⊕ Paused                                             ⟶ 1            "Paused"
   ⊕ WouldAdvance(Action)                               ⟶ 2            "WouldAdvance: ..."    (inspect-only)
-  ⊕ HandoffHuman(Action)                               ⟶ 3            "HandoffHuman: ..."
-  ⊕ HandoffAgent(Action)                               ⟶ 4            "HandoffAgent: ..."
+  ⊕ HandoffHuman(Action)                               ⟶ 3            "Hand off to human: ..."
+  ⊕ HandoffAgent(Action)                               ⟶ 4            "Hand off to agent: ..."
   ⊕ DoneAborted                                        ⟶ 5            "DoneClosed"
   ⊕ StuckRepeated(Action)                              ⟶ 6            "StuckRepeated: ..."
   ⊕ StuckCapReached(Action)                            ⟶ 7            "StuckCapReached: ..."
@@ -488,9 +488,9 @@ header(Outcome) ::=                      ← left: variant; right: emitted stder
     DoneSucceeded                        "DoneMerged"
     StuckRepeated(a)                     "StuckRepeated: {a.kind.name()}:{a.blocker}"
     StuckCapReached(a)                   "StuckCapReached: {a.kind.name()}:{a.blocker}"
-    HandoffHuman(a)                      "HandoffHuman: {a.kind.name()}"  + see-pointer
+    HandoffHuman(a)                      "Hand off to human: {a.kind.name()}"  + see-pointer
     WouldAdvance(a)                      "WouldAdvance: {a.kind.name()}:{format_automation(a.automation)}"
-    HandoffAgent(a)                      "HandoffAgent: {a.kind.name()}"  + see-pointer
+    HandoffAgent(a)                      "Hand off to agent: {a.kind.name()}"  + see-pointer
     BinaryError(msg)                     "BinaryError: {msg}"
     Paused                               "Paused"
     DoneAborted                          "DoneClosed"

@@ -1,25 +1,20 @@
 //! Per-level batch scanning: read the run directory, count log
-//! files, extract completed verdicts, build [`BatchState`].
+//! files, extract completed verdicts, project to [`BatchState`].
 //!
-//! Filesystem layout:
+//! # Filesystem layout
 //!
 //! ```text
 //! <batch_dir>/
-//!   {level}-1.log
-//!   {level}-2.log
-//!   ...
-//!   {level}-n.log
-//!   {level}-1.exit
-//!   {level}-2.exit
-//!   ...
-//!   {level}-n.exit
+//!   {level}-{slot}.log
+//!   {level}-{slot}.exit
 //! ```
 //!
-//! A log file is "completed" once it contains a `codex` marker
-//! line AND a non-empty body after the marker. The marker-only
-//! state (body still streaming) counts as Running — operationally
-//! the body lands within seconds of the marker, but observing
-//! mid-stream once burned us with empty-verdict false-cleans.
+//! # Completion predicate
+//!
+//! A log is "completed" iff it contains the verdict marker AND a
+//! non-empty body after it. Marker-only counts as Running:
+//! observing the body mid-stream produces false-cleans, and
+//! waiting for the body to land is bounded.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -32,52 +27,49 @@ use crate::decide::action::CodexReasoningLevel;
 
 use super::verdict::{self, VerdictClass};
 
-/// Per-level batch state. The three discrete states a batch can
-/// be in from the observe layer's perspective.
+/// Per-level batch state from the observe layer's perspective.
+/// The three values partition the filesystem signal completely.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BatchState {
-    /// No log files for this level yet — `RunReviews` has not
-    /// been dispatched (or its spawn failed before any process
-    /// created its log).
+    /// No log files for this level. The spawn has not happened —
+    /// or happened and failed before any subprocess created its
+    /// log.
     NotStarted,
-    /// Some logs are still streaming. `total` files exist on
-    /// disk; `completed` of them have a verdict body extracted.
-    /// `pending = total - completed`. Decide reads `completed`
-    /// vs `expected` to choose `AwaitReviews` vs `ParseVerdicts`.
+    /// In flight. `total` files exist; `completed` of them have
+    /// satisfied the completion predicate; the remainder are
+    /// streaming.
     Running { total: u32, completed: u32 },
-    /// All `expected` log files have completed verdicts. The
-    /// per-slot bodies and classifications are attached for the
-    /// orient/decide layers.
+    /// `expected` files have all completed; per-slot bodies and
+    /// classifications attached.
     Complete { verdicts: Vec<VerdictRecord> },
 }
 
 /// One reviewer's verdict within a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct VerdictRecord {
-    /// 1-indexed slot within the batch (matches the `{n}` in
-    /// `{level}-{n}.log`).
+    /// 1-indexed slot within the batch; matches the filename's
+    /// slot component.
     pub slot: u32,
-    /// Raw verdict body — everything after the last `codex`
-    /// marker line in the log.
+    /// Raw body — everything after the last verdict marker line.
     pub body: String,
     /// Heuristic classification.
     pub class: VerdictClass,
 }
 
-/// Scan `batch_dir` for `{level}-*.log` files and produce a
-/// [`BatchState`]. `expected` is the configured `n` — the number
-/// of reviews launched for this batch.
+/// Scan `batch_dir` and project to a [`BatchState`].
 ///
-/// Three-way logic:
-///   - 0 files                 → `NotStarted`
-///   - completed < expected    → `Running { total, completed }`
-///   - completed == expected   → `Complete { verdicts }`
+/// Decision table over (file count, completion count, expected):
 ///
-/// `expected` is required because filesystem absence cannot
-/// distinguish "review hasn't started" from "review crashed
-/// before its first log write". The orient/decide layer owns
-/// that interpretation; observe surfaces what's on disk.
+/// | files | completed | result |
+/// |-------|-----------|--------|
+/// | 0     | —         | `NotStarted` |
+/// | n > 0 | c < expected | `Running { total = n, completed = c }` |
+/// | n > 0 | c == expected | `Complete { verdicts }` |
+///
+/// `expected` is required because filesystem absence alone cannot
+/// distinguish "spawn hasn't happened" from "spawn happened and
+/// crashed before any first write".
 pub(crate) fn scan_batch(
     batch_dir: &Path,
     level: CodexReasoningLevel,
@@ -162,7 +154,7 @@ pub(crate) fn scan_batch(
         }
     }
 
-    // Batch fan-out is bounded (per-iteration N reviewers); u32 fits.
+    // Bounded by the per-iteration reviewer fan-out; u32 fits.
     let total = u32::try_from(log_paths.len()).expect("batch log count fits in u32");
     let completed = u32::try_from(verdicts.len()).expect("batch verdict count fits in u32");
     if completed == expected {

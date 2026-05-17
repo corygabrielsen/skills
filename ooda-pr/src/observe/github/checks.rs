@@ -1,8 +1,6 @@
-//! Typed view of `gh pr checks --json name,state,description,link,completedAt`.
-//!
-//! Check runs and status-check contexts are unified by the `gh` CLI
-//! into a single flat array. Each entry is one check with its latest
-//! state and a link to the run detail page.
+//! Aggregated check projection — one row per check name with its
+//! latest state. Check-runs and status-check contexts are unified
+//! into a single shape by the host CLI.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -12,25 +10,14 @@ use super::gh::{GhError, gh_json_lenient};
 
 const CHECK_FIELDS: &str = "name,state,description,link,completedAt";
 
-/// Fetch all check runs on a PR (required + optional) via
-/// `gh pr checks`. Uses lenient parse:
-///   - status 8 with valid JSON → checks still pending (parse it)
-///   - status 1 with empty stdout → "no checks reported" → `vec![]`
+/// Fetch every check (required and advisory) on a PR. Tolerant
+/// decode lifts pending-but-otherwise-valid responses and absent-
+/// checks responses into successful empty results.
 ///
-/// Confound filter at the observe boundary: `action_required` is a
-/// GitHub Actions design state (manual approval pending), not a
-/// failure mode. It dominates per-day check noise from workflows
-/// like "AI: Claude Code" (50+/day per repo) and would mask as a
-/// terminal failure to the CI orient projection. Drop it here so no
-/// downstream stage has to special-case it.
-//
-// GitHub Actions emits `cancelled` for auto-cancel-by-concurrency
-// (PR superseded by a newer run on the same workflow) AND for
-// genuine outage-cancels. Distinguishing the two requires the
-// workflow_runs feed (cross-attempt visibility), not the
-// flattened-per-name `gh pr checks` rollup. v1 keeps the existing
-// cancelled→failed bucket; the workflow_runs feed grew exactly to
-// enable a later disposition tag without re-shaping this fetcher.
+/// Boundary-side confound filter: the manual-approval-pending state
+/// is a design state, not a failure mode. Dropping it here keeps
+/// the downstream classifier from masking it as a terminal failure
+/// when it dominates per-day check noise.
 pub(crate) fn fetch_pull_request_checks(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -52,24 +39,22 @@ pub(crate) fn fetch_pull_request_checks(
 pub(crate) struct PullRequestCheck {
     pub name: CheckName,
     pub state: CheckState,
-    /// Check output title (one-liner). Often empty.
+    /// One-line check title; often empty.
     #[serde(default)]
     pub description: String,
-    /// URL to the check run details page.
+    /// URL to the run details page.
     #[serde(default)]
     pub link: String,
-    /// ISO-8601 completion time. `gh` emits `""` for checks that have
-    /// not completed yet; this is normalised to `None`.
+    /// Completion time; absent for not-yet-completed checks. Absence
+    /// shapes (null, empty string) both decode to None.
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     pub completed_at: Option<Timestamp>,
 }
 
-/// GitHub's check-run conclusion + status vocabulary, mapped to a
-/// single enum. Variants beyond the common six (Success / Failure /
-/// Skipped / Neutral / `InProgress` / Queued) cover gh's full output:
-/// Cancelled, `TimedOut`, `ActionRequired`, Stale, Pending all show up
-/// in real PRs. An unknown variant we haven't seen yet routes to
-/// `Unknown` so observe doesn't abort on a future addition.
+/// Unified check state — host's conclusion and status vocabularies
+/// merged into one enum. The Unknown catchall routes any future
+/// variant to a known value so observation never aborts on
+/// unmodeled wire shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum CheckState {
@@ -93,7 +78,7 @@ fn deserialize_optional_timestamp<'de, D>(d: D) -> Result<Option<Timestamp>, D::
 where
     D: Deserializer<'de>,
 {
-    // gh emits "" for not-yet-completed runs instead of null.
+    // Absence shapes (null, empty string) both decode to None.
     let raw: Option<String> = Option::deserialize(d)?;
     match raw.as_deref() {
         None | Some("") => Ok(None),

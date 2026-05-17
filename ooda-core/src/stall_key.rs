@@ -1,42 +1,31 @@
 //! Stall comparator key.
 //!
-//! `run_loop` detects stalls by comparing the *current* iteration's
-//! action against the *previous* non-`Wait` action on two fields:
-//! its kind discriminant and its `BlockerKey`. Other fields
-//! (urgency, description, automation, `target_effect`) intentionally
-//! don't participate — they're derived from kind+blocker plus per-
-//! iteration observation, and equality on them would either be
-//! redundant or would cause spurious "not stalled" verdicts when
-//! only the description text drifted.
+//! The stall detector compares the current iteration's action
+//! against the previous non-`Wait` action on exactly two fields:
+//! the action-kind discriminant and the [`BlockerKey`]. All other
+//! `Action` fields are deliberately excluded — they are either
+//! redundant with `(kind, blocker)` or drift independently per
+//! iteration without changing the underlying gate.
 //!
-//! ## Why the discriminant, not the full `K`
+//! # Why the discriminant, not the typed `K`
 //!
-//! Until 2026-05 `StallKey` carried the full `K` (the per-binary
-//! `ActionKind`). That made variants with `Vec` / `NonEmpty`
-//! payloads — `AddressThreads { threads }`, `ReRunWorkflow
-//! { checks }`, `TriageWait { blocked_checks }` — fail to compare
-//! equal across iterations whenever the upstream observation
-//! reordered or trimmed the payload, even though the underlying
-//! gate (the `BlockerKey`) was unchanged. The stall detector
-//! silently went blind for those variants and a `Full`-automation
-//! axis (`ReRunWorkflow`) would re-fire every iteration until the
-//! orient-side budget cap escalated it.
-//!
-//! [`StallKey`] now projects `kind.name()` instead — the variant
-//! discriminant only, payload-free. Within-variant discrimination
-//! (e.g. `ci_fail: BuildA` vs `ci_fail: BuildB`) flows through
-//! [`BlockerKey`] which the decide layer already constructs with
-//! that distinction. The convention "if you need to distinguish,
-//! push it into the blocker" is now enforced by the stall-key
-//! type, not by per-variant convention.
+//! Equality on the full per-variant payload is unsound for the
+//! stall test: any payload-bearing variant whose payload trims or
+//! reorders between iterations (collections, counts) would compare
+//! unequal even when the underlying gate is unchanged, blinding
+//! the detector. [`StallKey`] projects `kind.name()` — a stable
+//! per-variant `&'static str` — and routes within-variant
+//! distinctions through [`BlockerKey`] instead. The convention
+//! "if you need to distinguish, push it into the blocker" is
+//! enforced by the type, not by per-variant discipline.
 
 use crate::action::{Action, ActionKindName};
 use crate::blocker::BlockerKey;
 
-/// The pair the stall comparator inspects:
-/// `(kind_name, blocker)`. Equality on `StallKey` IS the stall
-/// test. Non-generic — the kind is projected via
-/// [`ActionKindName::name`] to a stable `&'static str` discriminant.
+/// The pair the stall comparator inspects: `(kind_name, blocker)`.
+/// Equality on `StallKey` IS the stall test. Non-generic — the
+/// kind discriminant is projected via [`ActionKindName::name`] to
+/// a stable per-variant `&'static str`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StallKey {
     pub kind_name: &'static str,
@@ -44,10 +33,8 @@ pub struct StallKey {
 }
 
 impl<K: ActionKindName> Action<K> {
-    /// Project the action down to the pair `run_loop` compares
-    /// across iterations. The kind is projected via
-    /// [`ActionKindName::name`] — a stable `&'static str` per
-    /// variant, payload-free.
+    /// Project to the stall comparator's input pair. Payload-free
+    /// by construction.
     pub fn stall_key(&self) -> StallKey {
         StallKey {
             kind_name: self.kind.name(),
@@ -111,11 +98,9 @@ mod tests {
 
     #[test]
     fn same_variant_different_payload_yields_equal_stall_keys() {
-        // Regression: prior `StallKey<K>` would have compared the
-        // payload too, marking these unequal and defeating the
-        // stall detector for any variant with a varying payload.
-        // The discriminant projection collapses them; the blocker
-        // is the load-bearing distinguisher.
+        // Payload-bearing variants must collapse to the same stall
+        // key when the gate is unchanged — otherwise drift in the
+        // payload (counts, collections) would blind the detector.
         let a = action_with(K::FooWithPayload(3), "same_gate", "x");
         let b = action_with(K::FooWithPayload(5), "same_gate", "x");
         assert_eq!(a.stall_key(), b.stall_key());

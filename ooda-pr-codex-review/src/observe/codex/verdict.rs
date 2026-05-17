@@ -1,24 +1,34 @@
-//! Pure verdict extraction and classification over `codex review`
-//! log text. No I/O.
+//! Pure parse + classify of a streamed reviewer log. No I/O.
 //!
-//! `codex review` streams interleaved `thinking`/`exec`/`codex`
-//! blocks. The actual review result is the LAST block whose first
-//! line is `codex` (exact match — not a substring). The polling
-//! protocol uses the presence of that marker line to detect
-//! completion (loop-codex-review/SKILL.md → "Reading Review
-//! Results").
+//! # Log shape
+//!
+//! The reviewer streams interleaved blocks demarcated by exact
+//! marker lines (one of: a *thinking* marker, an *exec* marker, a
+//! *verdict* marker). The verdict body is the suffix of the log
+//! following the LAST occurrence of the verdict marker. "Marker"
+//! means a line whose content is exactly the marker token — not a
+//! substring, not an indented occurrence.
+//!
+//! # Invariants
+//!
+//! - **Last-marker-wins**: a reviewer that re-emits the marker
+//!   supersedes its earlier verdict. The extractor returns the
+//!   suffix after the final marker, never an earlier block.
+//! - **Marker-only ≠ complete**: presence of the marker without a
+//!   non-empty body indicates a still-streaming verdict, not a
+//!   clean one. Callers must distinguish.
+//! - **Pure**: extraction and classification are total functions of
+//!   the input string.
 
 use serde::Serialize;
 
-/// Extract the verdict block — everything after the LAST line that
-/// is exactly `codex` (no surrounding whitespace, no suffix).
-/// Returns `None` when the marker is absent (review still streaming
-/// thinking/exec output).
+/// Suffix of `log` following the final exact-match verdict marker
+/// line, or `None` if no such line exists.
 ///
-/// Mirrors the reference `awk` from loop-codex-review SKILL.md:
-/// `awk '/^codex$/{found=1; block=""; next} found{block=block $0
-/// "\n"} END{printf "%s", block}'` — last marker wins, body is
-/// everything after it.
+/// **Postcondition**: `Some("")` distinguishes "marker present,
+/// body empty" (still streaming) from `None` (marker absent — not
+/// yet at verdict). Callers depend on this distinction; collapsing
+/// them is a correctness bug.
 pub(crate) fn extract_verdict(log: &str) -> Option<String> {
     let mut after_last_marker: Option<usize> = None;
     let mut offset = 0usize;
@@ -32,34 +42,36 @@ pub(crate) fn extract_verdict(log: &str) -> Option<String> {
     after_last_marker.map(|i| log[i..].to_string())
 }
 
-/// Did the reviewer find anything to flag?
+/// Ternary classification of a verdict body.
 ///
-/// Ternary algebra: structural `HasIssues` signals (codex's own
-/// schema — priority bullets, review-comment headers) are
-/// authoritative. Clean is recognized via an empirically-tuned
-/// phrasing list. Anything else is Indeterminate — the classifier
-/// abstains rather than guessing.
+/// **Algebra**:
+/// - **Structural signals dominate**: the reviewer's own grammar
+///   (priority-bullet syntax, review-comment headers) is treated as
+///   ground truth.
+/// - **Prose-clean is admitted on whitelist**: an empirically tuned
+///   set of phrasings classifies as `Clean`.
+/// - **Abstention is a valid output**: unclassifiable prose maps to
+///   `Indeterminate` rather than to a default class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum VerdictClass {
-    /// Empty body or recognized "clean" phrasing — the review is clean.
+    /// Empty body or whitelist-recognized clean phrasing.
     Clean,
-    /// Body contains codex's structural issue markers
-    /// (`[P1]`/`[P2]`/`[P3]` bullets, `Review comment:` headers);
-    /// needs an `AddressBatch` halt to verify and fix.
+    /// Body contains a structural issue marker.
     HasIssues,
-    /// Prose with neither structural markers nor recognized clean
-    /// phrasing. Decide-layer policy: route like `HasIssues`
-    /// (operationally identical), but recorder JSONL surfaces it
-    /// distinctly for post-hoc observability.
+    /// Body matches neither rule. Downstream may route this
+    /// identically to `HasIssues`, but the distinction is preserved
+    /// for observability.
     Indeterminate,
 }
 
-/// Classify an extracted verdict body.
+/// Classify a verdict body.
 ///
-/// Evaluation order — structural markers (codex's own grammar)
-/// before prose phrase-matching, so a `[P*]` bullet in an otherwise
-/// clean-leaning summary still classifies as `HasIssues`.
+/// **Invariant — evaluation order**: structural signals are checked
+/// before prose phrasing. A structural marker embedded in an
+/// otherwise clean-leaning summary classifies as `HasIssues`. This
+/// order is load-bearing; reversing it would let prose hedging
+/// suppress real issues.
 pub(crate) fn classify(verdict: &str) -> VerdictClass {
     let body = verdict.trim();
     if body.is_empty() {
@@ -78,11 +90,9 @@ pub(crate) fn classify(verdict: &str) -> VerdictClass {
 }
 
 fn has_issue_signal(s: &str) -> bool {
-    // Line-anchored to avoid mid-sentence false positives
-    // ("the prior review comment was helpful" must not match).
-    // Priority bullets and review-comment headers are codex's
-    // ground-truth schema — present in 100% of real HasIssues
-    // verdicts across a 410-sample empirical study.
+    // Line-anchored: a marker must begin a line (after leading
+    // whitespace strip), preventing mid-sentence substring matches
+    // on prose that quotes the marker token.
     s.lines().any(|l| {
         let t = l.trim_start();
         t.starts_with("- [p1]")
@@ -97,13 +107,13 @@ fn has_issue_signal(s: &str) -> bool {
 }
 
 fn matches_clean_phrasing(normalized: &str) -> bool {
-    // Empirically-tuned codex clean phrasings. Conjunction markers
-    // (` but `, ` however `) were removed in commit 6cedd08 — they
-    // over-triggered on hedging language in clean verdicts.
-    //
-    // "no issues" stays exact-match only — two words is insufficient
-    // signal to contains-match without false-positives on prose like
-    // "previously had no issues here, but now broken".
+    // Whitelist of phrasings observed in clean verdicts. Two
+    // admission disciplines:
+    // - **Short phrasings** (≤ 2 words) are admitted by exact
+    //   match only — substring-matching them collides with
+    //   negated prose ("had no issues, now broken").
+    // - **Long phrasings** are admitted by substring match —
+    //   sufficiently specific to resist false positives.
     matches!(
         normalized,
         "no issues found" | "no issues" | "looks good" | "no actionable findings"
@@ -328,9 +338,8 @@ mod tests {
 
     #[test]
     fn classify_indeterminate_for_prose_without_signal() {
-        // Real-shape: summary paragraph with no markers AND no
-        // recognized clean phrasing. Codex's prose is too irregular
-        // to classify; the honest answer is to abstain.
+        // Prose with no structural marker and no whitelisted clean
+        // phrasing must reach `Indeterminate`, not a default class.
         let body = "I reviewed the diff against master. The structural changes \
                     introduce a new component layer, and the tests touch the \
                     relevant code paths.";
@@ -365,10 +374,8 @@ mod tests {
 
     #[test]
     fn classify_review_comment_substring_in_prose_is_not_has_issues() {
-        // Line-anchored matching — mid-sentence "review comment"
-        // should not trigger the structural marker rule. The body
-        // ends with a recognized clean phrasing so it lands Clean
-        // rather than Indeterminate.
+        // Line-anchored structural matching: an in-prose mention of
+        // the marker token must not trip the issue signal.
         let body = "The earlier review comment was addressed and I did not find any \
                     new correctness issues.";
         assert_eq!(classify(body), VerdictClass::Clean);
@@ -376,8 +383,8 @@ mod tests {
 
     #[test]
     fn classify_marker_takes_precedence_over_clean_phrasing() {
-        // Real shape: clean-leaning summary + an explicit P-marker.
-        // The marker is authoritative; classifier returns HasIssues.
+        // Structural marker co-occurring with prose-clean phrasing
+        // must classify HasIssues — evaluation-order invariant.
         let body = "I did not find any major issues in the diff overall.\n\n\
                     Review comment:\n\n- [P2] One thing — src/foo.rs:1\n  details\n";
         assert_eq!(classify(body), VerdictClass::HasIssues);
@@ -385,9 +392,8 @@ mod tests {
 
     #[test]
     fn classify_clean_hedged_with_but_is_clean() {
-        // Hedged clean verdict: a recognized clean phrasing followed
-        // by an English `but ...` continuation. The conjunction must
-        // not flip the classification.
+        // Hedging conjunctions in the body must not flip a
+        // whitelist-admitted clean phrasing.
         assert_eq!(
             classify("I did not find any correctness issues, but consider renaming foo."),
             VerdictClass::Clean
@@ -396,7 +402,6 @@ mod tests {
 
     #[test]
     fn classify_clean_hedged_with_however_is_clean() {
-        // Hedged clean verdict using "however" as the connective.
         assert_eq!(
             classify("No actionable findings. However, the naming of foo could be tightened."),
             VerdictClass::Clean
@@ -405,7 +410,6 @@ mod tests {
 
     #[test]
     fn classify_clean_did_not_find_with_but_is_clean() {
-        // Long-form clean verdict that contains ` but ` in body prose.
         assert_eq!(
             classify(
                 "I did not identify any correctness regressions in this diff, \
@@ -417,10 +421,8 @@ mod tests {
 
     #[test]
     fn classify_canonical_phrase_with_trailing_prose_is_clean() {
-        // Short canonical clean phrasings followed by trailing prose
-        // must still classify Clean — contains-match for the safe
-        // long-enough phrasings ("no issues found", "looks good",
-        // "no actionable findings").
+        // Long whitelisted phrasings admit by substring match;
+        // trailing prose must not suppress the verdict.
         assert_eq!(
             classify("No issues found, but consider renaming foo."),
             VerdictClass::Clean
@@ -437,8 +439,7 @@ mod tests {
 
     #[test]
     fn classify_bare_no_issues_short_phrase_is_clean() {
-        // Exact-match-only kept for "no issues" — too short to
-        // contains-match safely.
+        // Short whitelisted phrasings admit by exact match only.
         assert_eq!(classify("no issues"), VerdictClass::Clean);
     }
 }

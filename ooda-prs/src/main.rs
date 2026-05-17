@@ -69,21 +69,25 @@ struct Args {
     concurrency: Option<u32>,
 }
 
-/// Parse CLI args. On failure, returns `Outcome::UsageError(_)` so
-/// the boundary always speaks Outcome — no exception path.
+/// Parse CLI args into `Args` or a `SingleLineString` diagnostic.
 ///
-/// `-h` / `--help` short-circuits **before** any other validation:
-/// a pre-scan checks every argument for the help flag; if present
-/// anywhere (including after a malformed `--max-iter` etc.), usage
-/// is printed to stdout and the process exits 0. This matches the
-/// SKILL.md promise that `--help` is honored regardless of position.
+/// # Invariants
+///
+/// - **Totality over argv**: every reachable input yields either
+///   `Ok(Args)` or `Err(SingleLineString)`; no panic, no exception
+///   path. The boundary speaks Outcome-shaped values exclusively.
+/// - **Help dominates parse failure**: presence of `-h`/`--help`
+///   anywhere in argv triggers usage-to-stdout and `exit 0`,
+///   regardless of any neighboring malformed flag. Established by
+///   a pre-scan that precedes per-token parsing.
 //
-// Flat per-flag arg-parser table: length IS the spec, one arm per
-// known flag with its parse rules and error messages inline. Splitting
-// into helpers would scatter the flag contract across files.
+// One arm per known flag is intentional: length is the spec.
+// Extracting helpers would scatter the flag contract.
 #[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
-    // Pre-scan: --help wins over any other parse failure.
+    // Help-pre-scan establishes the help-dominates-parse-failure
+    // invariant; without it, a malformed earlier flag would shadow a
+    // later `--help`.
     if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
         print_usage(&mut std::io::stdout());
         std::process::exit(0);
@@ -107,9 +111,10 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                // Unreachable — pre-scan above caught these. Kept
-                // as defense-in-depth in case the pre-scan is ever
-                // restructured.
+                // Unreachable under the help-pre-scan invariant.
+                // Retained as a structural backstop: if the pre-scan
+                // is ever removed, this arm preserves the
+                // help-dominates-parse-failure contract.
                 print_usage(&mut std::io::stdout());
                 std::process::exit(0);
             }
@@ -128,11 +133,12 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
                 let Some(v) = iter.next() else {
                     return Err(usage("--max-iter requires a value"));
                 };
-                // Distinguish three rejection cases for actionable error
-                // messages: negative (sign-prefix check), non-numeric
-                // (parse failure), and zero (parsed but invalid).
-                // The validated value flows out as `NonZeroU32` so the
-                // runner's "iter 1 always runs" invariant is structural.
+                // Three rejection classes — negative / non-numeric /
+                // zero — each yields a distinct diagnostic so the
+                // operator can correct without inspecting source.
+                // The validated value is `NonZeroU32`, lifting the
+                // "≥ 1" precondition from a runtime check into the
+                // type system.
                 if v.starts_with('-') {
                     return Err(usage(&format!(
                         "--max-iter must be ≥ 1; got negative value: {v}"
@@ -211,20 +217,28 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
     })
 }
 
-/// Parse positional tokens into a non-empty, deduplicated suite of
-/// `(slug, pr)` pairs.
+/// Parse positional tokens into a non-empty, deduplicated suite.
 ///
-/// Grammar: `<group> ( ',' <group> )*` where `<group> ::= <slug>?
-/// <pr>+`. A `<slug>` is detected by the presence of `'/'` in the
-/// token; integers (any non-`/` token) are PR numbers.
+/// # Grammar
 ///
-/// Slug resolution: a group without an explicit slug inherits from
-/// the prior group's slug (within the same invocation). The very
-/// first group, if it has no explicit slug, falls back to inferring
-/// the cwd's repository via `gh repo view --json nameWithOwner`.
+/// ```text
+/// suite ::= group ( ',' group )*
+/// group ::= slug? pr+
+/// slug  ::= token containing '/'
+/// pr    ::= token without '/' (parsed as positive integer)
+/// ```
 ///
-/// Errors map to `Outcome::UsageError` so the parser path stays
-/// total-over-Argv.
+/// # Slug resolution
+///
+/// Each group's slug is the first defined of: its own token, the
+/// previously resolved group's slug, or the cwd repository
+/// inferred via `gh repo view`. Implicit-slug inheritance is
+/// left-to-right within one invocation.
+///
+/// # Invariant
+///
+/// Total over argv: every error path maps to a single-line
+/// diagnostic — no parser path can panic.
 fn parse_suite(
     positional: &[String],
 ) -> Result<Vec<(RepoSlug, PullRequestNumber)>, ooda_core::SingleLineString> {
@@ -234,10 +248,11 @@ fn parse_suite(
         ));
     }
 
-    // Joining with spaces and re-splitting on ',' handles all comma
-    // surface forms uniformly: `42, 43`, `42 ,43`, `42,43`, and the
-    // shell-tokenized `42,` then `43`. Each split segment is then
-    // whitespace-tokenized into individual <slug>?<pr>+ tokens.
+    // Comma-separation is normalized in two phases: join argv on
+    // spaces, then split on ','. This collapses every surface form
+    // — `a, b`, `a ,b`, `a,b`, and shell-split `a,` then `b` —
+    // onto one grammar, so downstream tokenization sees a single
+    // canonical shape.
     let joined: String = positional.join(" ");
     let group_strs: Vec<&str> = joined.split(',').map(str::trim).collect();
 
@@ -252,7 +267,8 @@ fn parse_suite(
             )));
         }
         let tokens: Vec<&str> = group_str.split_whitespace().collect();
-        // group_str non-empty after trim implies tokens non-empty.
+        // The empty-after-trim guard above discharges the
+        // non-empty-tokens precondition for the indexing below.
 
         let (slug, pr_tokens) = if tokens[0].contains('/') {
             let slug = RepoSlug::parse(tokens[0]).map_err(|e| usage(&e.to_string()))?;
@@ -284,11 +300,12 @@ fn parse_suite(
     Ok(suite)
 }
 
-/// Infer the cwd's repository slug via `gh repo view --json
-/// nameWithOwner --jq .nameWithOwner`. Used only when the first
-/// suite group has no explicit slug. Failures (no gh, not a repo,
-/// non-UTF-8 stdout, malformed slug) all flatten to a single
-/// human-readable string per the `UsageError` newline-free invariant.
+/// Infer the cwd's repository slug from the forge CLI.
+///
+/// Fallback path for the first suite group when no explicit slug
+/// is supplied. Every failure mode (CLI absent, cwd not a repo,
+/// non-UTF-8 stdout, malformed slug) flattens to a single-line
+/// diagnostic, preserving the `UsageError` newline-free invariant.
 fn infer_cwd_slug() -> Result<RepoSlug, String> {
     let out = std::process::Command::new("gh")
         .args([
@@ -318,12 +335,13 @@ fn infer_cwd_slug() -> Result<RepoSlug, String> {
     RepoSlug::parse(trimmed).map_err(|e| format!("cwd slug parse from gh stdout {trimmed:?}: {e}"))
 }
 
-/// Construct a parser-stage usage diagnostic. Typed as
-/// `SingleLineString` (not `Outcome`) so `parse_args` can return
-/// `Result<Args, SingleLineString>` — the call site lifts the
-/// message into both `Outcome::UsageError` (for stderr) and
-/// `MultiOutcome::UsageError` (for the suite-level exit code)
-/// without a runtime `unreachable!()` on a `match Outcome`.
+/// Construct a parser-stage diagnostic at the parser's natural
+/// type. Invariant: `parse_args` returns the bare diagnostic, not
+/// an `Outcome`, so the call site can lift one value into both
+/// `Outcome::UsageError` (stderr framing) and
+/// `MultiOutcome::UsageError` (exit-code framing) by direct
+/// construction — eliminating the runtime narrowing match that
+/// would otherwise carry an `unreachable!()` arm.
 fn usage(msg: &str) -> ooda_core::SingleLineString {
     msg.into()
 }
@@ -331,9 +349,10 @@ fn usage(msg: &str) -> ooda_core::SingleLineString {
 fn main() -> ExitCode {
     let multi = match parse_args() {
         Ok(args) => {
-            // Open the suite-level Recorder before any PR thread
-            // spawns so the manifest exists at audit time even if a
-            // worker panics mid-run.
+            // Suite-recorder lifecycle invariant: its manifest
+            // exists before any worker spawns and persists past any
+            // worker panic. Open-before-spawn is the cheapest
+            // schedule that satisfies both.
             let suite_recorder = match SuiteRecorder::open(&SuiteRecorderConfig {
                 suite: args.suite.clone(),
                 mode: run_mode(args.mode),
@@ -344,43 +363,43 @@ fn main() -> ExitCode {
             }) {
                 Ok(r) => Some(r),
                 Err(e) => {
-                    // Suite-recorder open failure is not fatal: per-
-                    // PR recorders still run, so the per-PR ledgers
-                    // exist. Surface the failure on stderr so it's
-                    // visible to the operator, then proceed.
+                    // Degraded-but-correct: per-PR recorders are
+                    // independent of the suite-level one, so the
+                    // per-PR ledgers remain complete. The
+                    // suite-level summary surface is the only
+                    // casualty; the operator is notified so the
+                    // partial degradation is observable.
                     eprintln!("warning: suite recorder open failed: {e}");
                     None
                 }
             };
 
             // Parallel per-PR dispatch under `thread::scope`. Each
-            // thread runs `drive_one_pull_request` which opens its own per-PR
-            // Recorder, installs it as the thread-local tool-call
-            // sink, runs the observe/orient/decide/act pipeline,
-            // renders the per-PR variant block on stderr, and
-            // records the outcome on its own Recorder. The aggregate
-            // exit code is the typed priority projection on
-            // `MultiOutcome` — see `multi_outcome.rs`.
+            // worker drives one PR through the full pipeline; the
+            // aggregate exit code is the typed priority projection
+            // on `MultiOutcome`.
             //
-            // Cross-thread isolation:
-            //   • `THREAD_RECORDER` is thread-local so PR_i's tool
-            //     calls cannot land in PR_j's ledger.
-            //   • Each PR's `Recorder` is `Arc<Mutex<_>>`-backed for
-            //     its own internal serialization; only one thread
-            //     ever holds it.
-            //   • `SuiteRecorder` is `Arc<Mutex<_>>`-backed; worker
-            //     threads call `register_pr` after their per-PR
-            //     Recorder has emitted its `run_id`.
-            //   • `run_loop`'s stall-detection state
-            //     (`last_non_wait`, `last_attempted`) is local to
-            //     the worker stack frame.
+            // # Cross-thread isolation invariants
+            //
+            // - **Tool-call sink**: thread-local, so worker i's
+            //   tool calls cannot land in worker j's ledger.
+            // - **Per-PR recorder**: `Arc<Mutex<_>>` with a single
+            //   owning thread; internal mutation is serialized
+            //   without contention.
+            // - **Suite recorder**: `Arc<Mutex<_>>`; workers
+            //   register their per-PR run-id after their own
+            //   recorder is open.
+            // - **Stall detection**: state lives on the worker
+            //   stack frame; no shared cell.
             let process_outcomes = suite::drive_suite(&args.suite, args.concurrency, |slug, pr| {
                 drive_one_pull_request(slug, pr, &args, suite_recorder.as_ref())
             });
             let multi = MultiOutcome::Bundle(process_outcomes);
-            // Stdout — the agent-harness contract. One JSONL record
-            // per PR, in input order. Stderr remains for human
-            // triage; `$?` remains the coarse dispatch signal.
+            // Output-channel partitioning: stdout carries the
+            // structured agent-harness contract (one JSONL record
+            // per PR in input order); stderr carries human-readable
+            // framing; `$?` carries the coarse dispatch signal.
+            // Each channel is independently consumable.
             render_multi_jsonl(&mut std::io::stdout(), &multi);
             // Finalize suite recorder: writes outcome.json + appends
             // the per-PR summary table to trace.md.
@@ -390,13 +409,12 @@ fn main() -> ExitCode {
             multi
         }
         Err(usage_msg) => {
-            // `parse_args` returns the diagnostic message directly
-            // (typed `SingleLineString`); lift it into the per-binary
-            // `Outcome::UsageError` for stderr formatting and into
-            // `MultiOutcome::UsageError` for the suite-level exit
-            // code. No `match` on `Outcome` is needed — the
-            // structural narrowing eliminates the prior
-            // `unreachable!()`.
+            // Dual-lift: one diagnostic, two framings.
+            // `parse_args` returns the bare typed message; we
+            // construct both `Outcome::UsageError` (stderr) and
+            // `MultiOutcome::UsageError` (exit code) directly,
+            // discharging the narrowing-match-with-unreachable!
+            // pattern at the type system instead of at runtime.
             let outcome: Outcome = Outcome::UsageError(usage_msg.clone());
             render_outcome(&mut std::io::stderr(), &outcome, None);
             MultiOutcome::UsageError(usage_msg)
@@ -405,12 +423,18 @@ fn main() -> ExitCode {
     ExitCode::from(multi.exit_code())
 }
 
-/// Drive a single PR end-to-end: open a Recorder keyed by `(slug,
-/// pr)`, install it as the thread-local tool-call sink, register
-/// the PR's `run_id` with the suite recorder, run the configured
-/// mode (`Loop` or `Inspect`), render the resulting `Outcome` to
-/// stderr, and record the outcome to the per-PR ledger. Returns
-/// the `Outcome` for the suite-level aggregator.
+/// Drive a single PR end-to-end on one worker.
+///
+/// # Sequenced steps
+///
+/// 1. Open a per-PR `Recorder` keyed on `(slug, pr)`.
+/// 2. Install it as the thread-local tool-call sink (so observed
+///    tool calls are attributed to this worker's ledger).
+/// 3. Register the PR's `run_id` with the suite-level recorder.
+/// 4. Run the mode-selected pipeline (`Loop` or `Inspect`).
+/// 5. Render the terminal `Outcome` to stderr and persist it.
+///
+/// Returns the `Outcome` for aggregation into `MultiOutcome`.
 fn drive_one_pull_request(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -428,8 +452,10 @@ fn drive_one_pull_request(
     }) {
         Ok(r) => r,
         Err(e) => {
-            // No recorder was opened for this PR; render to stderr
-            // so the suite-level summary still observes the failure.
+            // Recorder unavailable for this PR: still surface a
+            // `BinaryError` so the aggregate priority projection
+            // observes the failure. Stderr framing is the only
+            // channel available without a recorder.
             let outcome = Outcome::binary_error(format!("recorder: {e}"));
             render_outcome(&mut std::io::stderr(), &outcome, None);
             return outcome;
@@ -485,13 +511,12 @@ fn run_inspect(
             *o
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
-            // Rate-limited mid-inspect: no orient/decide possible
-            // (we have no observations). Surface the synthetic
-            // WaitForRateLimit through the same Outcome::from
-            // pipeline as any other Execute decision so wrappers
-            // see a `WouldAdvance` exit code with this action's
-            // payload — exactly what the full-loop runner would
-            // dispatch on iter 1.
+            // Rate-limit shortcircuit: with no observations,
+            // orient/decide are undefined. Inject a synthetic
+            // wait-action and project through the same
+            // `Outcome::from(Decision::Execute(_))` pipeline as any
+            // ordinary iteration — invariant: inspect's exit-code
+            // distribution is a subset of loop's.
             let line = format!(
                 "rate-limited on {}; would wait {}s",
                 hit.scope.name(),
@@ -509,11 +534,10 @@ fn run_inspect(
         }
     };
     if obs.stack_root_branch != obs.pull_request_view.base_ref_name {
-        // Diagnostic note when the PR's immediate base differs
-        // from the stack root used for branch-rule lookups. The
-        // suffix repeated `<root>` was redundant; dropped to make
-        // the line match the documented `stack: <base> → <root>`
-        // format exactly.
+        // Stack discrepancy: the PR's immediate base differs from
+        // the stack root branch-rule lookups are keyed on. Emit
+        // exactly `stack: <base> → <root>` so downstream parsers
+        // can match a fixed grammar.
         let line = format!(
             "stack: {} → {}",
             obs.pull_request_view.base_ref_name, obs.stack_root_branch,
@@ -624,11 +648,10 @@ fn post_result_line(
         Ok(true) => Some(format!("{prefix}: posted")),
         Ok(false) if verbose_skip => Some(format!("{prefix}: skipped (unchanged)")),
         Ok(false) => None,
-        // Flatten newlines so the comment-log line stays single-line
-        // — GhError::NonZero etc. don't strip embedded newlines from
-        // gh's stderr, so a multi-line error would otherwise break the
-        // implied one-line-per-comment-event contract documented in
-        // SKILL.md.
+        // Single-line invariant on comment-event log lines:
+        // `SingleLineString` flattens embedded newlines that the
+        // upstream error type does not strip. Discharges the
+        // one-line-per-comment-event contract at the type level.
         Err(e) => Some(format!(
             "{prefix}: {}",
             ooda_core::SingleLineString::new(e.to_string())
@@ -647,12 +670,9 @@ fn iteration_line(i: u32, d: &Decision) -> String {
             )
         }
         Decision::Halt(halt) => {
-            // Use halt.name() (finite token set) instead of {:?}
-            // so the per-iteration halt line stays single-line
-            // and bounded — Debug would expand AgentNeeded(Action {
-            // effect: ActionEffect::Agent { prompt: ... } }) into the
-            // action payload, which breaks the
-            // one-line-per-iteration invariant.
+            // `halt.name()` projects to a finite token set; `{:?}`
+            // would expand the payload and violate the
+            // one-line-bounded-length-per-iteration invariant.
             match halt_blocker(halt) {
                 Some(blocker) => format!(
                     "[iter {i}] halt: {} blocker: {}",
@@ -674,16 +694,16 @@ fn halt_blocker(halt: &DecisionHalt) -> Option<&ooda_core::BlockerKey> {
     }
 }
 
-/// Snapshot of the per-iteration state that the human-handoff
-/// decorator needs after `run_loop` returns. Captured from the last
-/// `on_state` callback so the post-loop decorator can render the PR
-/// link + a short situational summary without re-observing.
+/// Latest per-iteration context the post-loop handoff decorator
+/// requires. Invariant: captured during the final `on_state`
+/// callback, so decoration never re-observes — the loop's terminal
+/// observations are reused verbatim.
 ///
-/// `dashboard` carries the Phase-B preamble payload (tier-grouped
-/// candidates, per-axis signals, blockers). Constructed at the
-/// boundary from the same `(oriented, candidates, decision)` triple
-/// the recorder uses — option (a) from the spec, kept just-in-time
-/// so no new thread is plumbed through the runner.
+/// `dashboard` carries the tier-grouped candidates / per-axis
+/// signals / blockers projection derived from the same
+/// `(oriented, candidates, decision)` triple the recorder
+/// consumes. Constructed at the boundary so no shared mutable
+/// state crosses the runner seam.
 #[derive(Debug, Clone)]
 struct HandoffSnapshot {
     oriented: orient::OrientedState,
@@ -696,30 +716,28 @@ fn pull_request_url(slug: &RepoSlug, pr: PullRequestNumber) -> String {
     format!("https://github.com/{slug}/pull/{pr}")
 }
 
-// Rebase is `HandoffAgent`, not `HandoffHuman` — `ActionEffect::Agent`
-// projects to `Outcome::HandoffAgent` in `classify()`. The boundary
-// decorator must cover both classes of outcome where the situational
-// context (PR URL, branch, CI snapshot) is useful to whoever picks up
-// the prompt. As more `HandoffAgent` actions need the same context,
-// add them to `agent_action_needs_context` rather than spawning a
-// sibling decorator per kind.
-/// Append a PR-context block to handoff prompts so the stderr
-/// hand-off is usable on its own — no tab-juggling. Covers every
-/// `HandoffHuman` and the `HandoffAgent` variants whose recipient
-/// also needs the situational frame. Pass-through for every other
-/// `Outcome` variant.
+/// Decorate a handoff `Outcome` so the stderr hand-off is
+/// self-contained: the recipient can act without re-querying the
+/// forge.
 ///
-/// Two layers of decoration:
-/// * The dashboard preamble (Phase B) — universal across every
-///   `HandoffHuman` and `HandoffAgent` outcome. Prepended to the
-///   prompt's sections so the recipient sees tier-grouped
-///   candidates, per-axis signals, and blockers before the
-///   per-action body.
-/// * The per-action context block (5bf9c7c) — gated by the
-///   `agent_action_needs_context` allowlist. Appended via
-///   `push_handoff_context` after the existing prompt body so
-///   `HandoffHuman` and allowlisted `HandoffAgent` recipients pick
-///   up PR URL / branch / CI / reviews on the trailing edge.
+/// # Decoration layers
+///
+/// - **Preamble (universal)**: prepends a dashboard projection —
+///   tier-grouped candidates, per-axis signals, blockers — to every
+///   `HandoffHuman` and `HandoffAgent` outcome. Established by
+///   `prepend_dashboard_preamble`.
+/// - **Per-action context (gated)**: appends PR URL / branch / CI
+///   summary / review summary to `HandoffHuman` outcomes and to
+///   `HandoffAgent` outcomes whose kind passes
+///   `agent_action_needs_context`. Established by
+///   `push_handoff_context`.
+///
+/// # Invariants
+///
+/// - Non-handoff `Outcome` variants pass through unchanged.
+/// - The handoff-agent gate is allowlist-shaped: new kinds opt in
+///   by extension of `agent_action_needs_context`, not by editing
+///   this decorator's match arms.
 fn decorate_handoff_human(
     outcome: Outcome,
     slug: &RepoSlug,
@@ -743,12 +761,11 @@ fn decorate_handoff_human(
     }
 }
 
-/// Prepend the dashboard preamble sections (tier-grouped
-/// candidates, per-axis signals, blockers) to the handoff prompt's
-/// sections vec. No-op when the snapshot is absent (e.g. usage
-/// errors that surface a synthetic handoff without ever entering
-/// the iteration loop) or when the dashboard projects no
-/// candidates (terminal halts already render an empty preamble).
+/// Prepend dashboard preamble sections onto the handoff prompt.
+///
+/// Identity on either of two preconditions: snapshot absent
+/// (synthetic handoff outside the iteration loop) or dashboard
+/// projects no sections (terminal halts).
 fn prepend_dashboard_preamble(
     handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
     snapshot: Option<&HandoffSnapshot>,
@@ -765,20 +782,19 @@ fn prepend_dashboard_preamble(
     handoff.prompt.sections = sections;
 }
 
-/// `HandoffAgent` actions whose prompts benefit from the same
-/// PR / branch / CI context the `HandoffHuman` decorator appends.
-/// Today: `Rebase` (returning human triages the merge state).
-/// Add new variants here rather than open-coding the match at the
-/// call site.
+/// Allowlist predicate: which `HandoffAgent` kinds receive the
+/// trailing per-action context block. Extension point — new kinds
+/// opt in here; callers do not branch on `kind`.
 fn agent_action_needs_context(kind: &decide::action::ActionKind) -> bool {
     matches!(kind, decide::action::ActionKind::Rebase)
 }
 
-/// Append the boundary context (PR URL, blocker, branch, CI,
-/// reviews) onto the handoff prompt. `HandoffAction` exposes
-/// `prompt` as a direct field, so there's no inner `match` on
-/// `ActionEffect` and no `unreachable!()` arm — the structural
-/// projection done in `classify()` carries the invariant.
+/// Append boundary context lines (PR URL, blocker, branch, CI,
+/// reviews) onto the handoff prompt.
+///
+/// Total over `HandoffAction`: `prompt` is a direct field, so the
+/// structural projection in `classify()` discharges what would
+/// otherwise be an `unreachable!()` arm over `ActionEffect`.
 fn push_handoff_context(
     handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
     slug: &RepoSlug,
@@ -818,11 +834,12 @@ fn push_handoff_context(
     }
 }
 
-/// Append a `Closeout: attested at <ts> (sha <short>)` line when the
-/// closeout axis is `Synced` at current HEAD AND the attestation file
-/// is readable. No line otherwise — the absence is itself a signal
-/// (Closeout never fires past convergence; absence on a `HandoffHuman`
-/// path implies the loop bailed out before reaching the gate).
+/// Append a closeout attestation line iff both: closeout axis is
+/// `Synced` at current HEAD, AND the attestation file is readable.
+///
+/// Absence is a signal: closeout does not fire past convergence,
+/// so an unattested handoff path implies the loop yielded before
+/// reaching the gate.
 fn push_closeout_context_line(
     prompt: &mut ooda_core::HandoffPrompt,
     oriented: &orient::OrientedState,
@@ -846,21 +863,17 @@ fn push_closeout_context_line(
     );
 }
 
-/// Render the suite-level `MultiOutcome` as JSONL on stdout. One
-/// record per PR (Bundle case); empty stdout for `UsageError` (parse
-/// failures emit nothing on stdout — the `$? = 64` and stderr usage
-/// block are sufficient).
+/// Project the suite-level `MultiOutcome` onto JSONL stdout.
 ///
-/// The JSONL stream is the agent-harness contract:
-///   * one record per line, in suite input order;
-///   * each record carries `slug`, `pr`, `outcome` (variant name),
-///     and `exit` (per-PR exit code);
-///   * variant-specific fields are folded in:
-///       - `action`, `blocker` for `Stuck*`, `Handoff*`, `WouldAdvance`
-///       - `prompt` for `Handoff*`
-///       - `automation` for `WouldAdvance`
-///       - `msg` for `BinaryError` (and `UsageError`, though the
-///         latter never occurs at the per-PR level).
+/// # Output contract
+///
+/// - **Bundle case**: one record per PR, emitted in suite input
+///   order. Each record carries the constant fields
+///   `slug`/`pr`/`pr_url`/`outcome`/`exit`, plus variant-specific
+///   fields folded in by `per_pr_jsonl_record`.
+/// - **`UsageError` case**: empty stdout; the `$? = 64` exit code
+///   and the stderr usage block together fully discharge the
+///   diagnostic.
 fn render_multi_jsonl(out: &mut dyn std::io::Write, multi: &MultiOutcome) {
     let MultiOutcome::Bundle(prs) = multi else {
         return;
@@ -875,8 +888,8 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
     let mut obj: Map<String, Value> = Map::new();
     obj.insert("slug".into(), json!(po.slug.to_string()));
     obj.insert("pr".into(), json!(po.pr.get()));
-    // Always include a deep link so harnesses don't have to
-    // re-derive it from slug + pr per record.
+    // Deep link inclusion is invariant — consumers index `pr_url`
+    // directly rather than reconstruct it per record.
     obj.insert("pr_url".into(), json!(pull_request_url(&po.slug, po.pr)));
     obj.insert("outcome".into(), json!(outcome_variant_name(&po.outcome)));
     obj.insert("exit".into(), json!(po.outcome.exit_code()));
@@ -899,7 +912,8 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
             obj.insert("msg".into(), json!(s));
         }
         Outcome::DoneSucceeded | Outcome::DoneAborted | Outcome::Paused => {
-            // No additional fields.
+            // Terminal-no-payload variants: the constant fields
+            // fully describe them.
         }
     }
     Value::Object(obj).to_string()
@@ -920,17 +934,19 @@ fn outcome_variant_name(o: &Outcome) -> &'static str {
     }
 }
 
-/// Render `Outcome` to a writer (typically stderr) per the SKILL
-/// contract: single-line header, optionally followed by a pointer
-/// block (`Handoff*` variants). No trailing content.
+/// Render `Outcome` to a writer (typically stderr).
 ///
-/// `handoff_path` is the absolute path of the per-iteration
-/// `handoff.md` file the recorder wrote for this outcome
-/// (`runs/<run-id>/iterations/<NNNN>/handoff.md`). When `Some`, the
-/// emitted block is `  see: <path>` (a 7-byte sentinel + absolute
-/// path on one line); the agent reads the prompt body from the
-/// file. When `None` (recorder unavailable, or tests), the
-/// fallback is the legacy `  prompt: <body>` inline block.
+/// # Output contract
+///
+/// - **Header**: exactly one line per call, of the form
+///   `<Variant>[: <suffix>]`.
+///   Carries the bounded-token-set variant name plus a per-variant
+///   single-line suffix.
+/// - **Body** (handoff variants only): one pointer block written by
+///   `write_handoff_block`, choosing path-form or inline form by
+///   the `handoff_path` discriminant.
+/// - **Trailer**: none, except `UsageError` which appends usage to
+///   the same writer.
 fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Option<&Path>) {
     match oc {
         Outcome::DoneSucceeded => {
@@ -984,22 +1000,21 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
     }
 }
 
-/// Write the handoff block. Two shapes:
+/// Write the handoff block in one of two shapes.
 ///
-/// - **Path form** (`handoff_path = Some`): one line beginning with
-///   the literal 7-byte sequence `␣␣see:␣` (two spaces, "see",
-///   colon, space) followed by the absolute path of the
-///   per-iteration `handoff.md` file holding the prompt body
-///   (`runs/<run-id>/iterations/<NNNN>/handoff.md`). The agent
-///   reads that file to obtain the prompt; the file's size is
-///   observable via `stat` before commit, so consumption has no
-///   truncation pressure. This is the production path.
+/// # Path form (`handoff_path = Some`)
 ///
-/// - **Inline fallback** (`handoff_path = None`): one line beginning
-///   with the legacy 10-byte sequence `␣␣prompt:␣` followed by the
-///   description content. Continuation lines carry no prefix; the
-///   block ends at the last byte of content. Used by tests and as a
-///   defensive fallback when the recorder is unavailable.
+/// Single line with leading sentinel `␣␣see:␣` followed by an
+/// absolute path to a recorder-written file holding the prompt
+/// body. **Invariant**: prompt size is bounded by the file's stat
+/// — consumption is decoupled from the stderr stream's
+/// truncation budget. Production path.
+///
+/// # Inline fallback (`handoff_path = None`)
+///
+/// Single line with leading sentinel `␣␣prompt:␣` followed by the
+/// prompt body inline; continuation lines unprefixed. Used when
+/// the recorder is unavailable (e.g. tests).
 fn write_handoff_block(
     out: &mut dyn std::io::Write,
     description: &str,
@@ -1012,11 +1027,11 @@ fn write_handoff_block(
     }
 }
 
-/// Format `ActionEffect` for the `WouldAdvance` stderr render.
-/// `Wait{interval, ..}` becomes `Wait(<duration>)` with the duration
-/// in the smallest sensible compound unit (s, m, m+s). The log/prompt
-/// payload is intentionally omitted — that's what `write_handoff_block`
-/// renders separately for handoff variants.
+/// Project `ActionEffect` to a single-line tag suitable for the
+/// `WouldAdvance` header. The Wait variant carries a duration
+/// rendered in the smallest compound unit (s / m / m+s); payload
+/// fields (log, prompt) are discarded — handoff-prompt rendering
+/// is the responsibility of `write_handoff_block`.
 fn format_effect(e: &ActionEffect) -> String {
     match e {
         ActionEffect::Full { .. } => "Full".to_string(),
@@ -1248,24 +1263,23 @@ mod tests {
 
     // ─── per-PR JSONL schema goldens ────────────────────────────────
     //
-    // Exhaustive snapshot tests for `per_pr_jsonl_record`. The
-    // contract is the field set emitted for each `Outcome` variant —
-    // downstream tooling (jq, shell pipelines, dashboards) reads
-    // these field names directly, so a rename here is a breaking
-    // change that MUST surface as a test failure.
+    // Schema goldens for `per_pr_jsonl_record`'s output. The field
+    // names are an external contract — downstream tools index them
+    // directly — so renames surface here as test failures.
     //
-    // The match in `pull_request_jsonl_golden` is exhaustive over `Outcome`,
-    // so adding a new variant fails to compile here until a golden
-    // is added. The sample list (`pull_request_jsonl_sample_outcomes`) is
-    // hand-maintained but the length sentinel in the test catches
-    // omissions.
+    // Exhaustiveness is layered:
+    //   structural   — `pull_request_jsonl_golden`'s match on `Outcome`
+    //                  denies a non-exhaustive arm at compile time.
+    //   runtime      — the length sentinel in the test pins sample
+    //                  coverage to the variant count.
 
-    /// Canonical JSON shape emitted by `per_pr_jsonl_record` for
-    /// each `Outcome` variant. Used by `jsonl_schema_goldens_exhaustive`.
+    /// Canonical schema for `per_pr_jsonl_record`'s output:
+    /// constant outer fields plus a variant-specific tail.
     fn pull_request_jsonl_golden(outcome: &Outcome) -> serde_json::Value {
         use serde_json::json;
-        // Every record carries these four fields regardless of
-        // variant. The merge below adds the variant-specific tail.
+        // Outer object is invariant across `Outcome` variants;
+        // the per-variant arms below extend it with the
+        // variant-specific tail.
         let mut o = serde_json::Map::new();
         o.insert("slug".into(), json!("acme/widget"));
         o.insert("pr".into(), json!(42));
@@ -1333,10 +1347,11 @@ mod tests {
         serde_json::Value::Object(o)
     }
 
-    /// One sample `Outcome` per variant. Hand-maintained; the length
-    /// sentinel in `jsonl_schema_goldens_exhaustive` catches drift.
-    /// Variants carrying an `Action` use distinct kinds / blockers /
-    /// payloads so the golden distinguishes them by shape.
+    /// Sample coverage over `Outcome`: one inhabitant per variant.
+    /// Hand-maintained; the length sentinel in
+    /// `jsonl_schema_goldens_exhaustive` guards drift. Variants
+    /// carrying payloads use distinct kinds / blockers so the
+    /// golden distinguishes them by shape, not by chance.
     fn pull_request_jsonl_sample_outcomes() -> Vec<Outcome> {
         let stuck_action = action("rebase-needed");
         let mut would_advance_action = action("ci_pending: build");
@@ -1344,10 +1359,10 @@ mod tests {
             interval: ooda_core::PollingInterval::from_secs(60),
             log: "Wait for 2 pending checks".into(),
         };
-        // Handoff variants now carry `HandoffAction` (the typed
-        // projection with a top-level `prompt` field); construct
-        // those directly instead of going via an `Action` and
-        // mutating `effect`.
+        // Handoff variants carry `HandoffAction` (typed projection
+        // with a direct `prompt` field). Construct directly — the
+        // structural narrowing eliminates the prior `Action` +
+        // `effect` mutation path.
         let handoff_agent_action = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::Rebase,
             prompt: ooda_core::HandoffPrompt::new("Address 2 unresolved review threads."),
@@ -1376,11 +1391,11 @@ mod tests {
         ]
     }
 
-    /// One golden assertion per `Outcome` variant. Compile-checked
-    /// exhaustiveness lives in `pull_request_jsonl_golden`; runtime
-    /// completeness for the sample list is enforced by the length
-    /// sentinel — every Outcome variant in the family of 10 must
-    /// be represented.
+    /// Variant-wise golden assertions for `per_pr_jsonl_record`'s
+    /// schema. Compile-time exhaustiveness over `Outcome` is
+    /// supplied by `pull_request_jsonl_golden`'s match; runtime
+    /// exhaustiveness over the sample list is supplied by the
+    /// length-sentinel.
     #[test]
     fn jsonl_schema_goldens_exhaustive() {
         let samples = pull_request_jsonl_sample_outcomes();
@@ -1741,10 +1756,9 @@ mod tests {
         assert!(!rendered.contains("Blocker:"));
     }
 
-    // Note: per-variant shape assertions for `per_pr_jsonl_record`
-    // are covered by `jsonl_schema_goldens_exhaustive` above. Adding
-    // new per-variant tests here would be redundant — the exhaustive
-    // golden's match arms are the per-variant contract.
+    // Per-variant shape assertions are subsumed by
+    // `jsonl_schema_goldens_exhaustive`'s golden arms — adding
+    // sibling per-variant tests here would duplicate the contract.
 
     #[test]
     fn render_multi_jsonl_emits_one_line_per_pull_request_in_order() {

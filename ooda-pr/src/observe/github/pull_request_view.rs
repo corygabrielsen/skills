@@ -1,8 +1,7 @@
-//! Typed view of `gh pr view --json ...` output.
+//! Typed projection of the host's per-PR metadata view.
 //!
-//! Mirrors the GraphQL shape that the `gh` CLI emits for a pull
-//! request. Extra fields in the JSON are ignored; we model only what
-//! later stages (orient/decide) consume.
+//! The model carries only the fields downstream stages consume;
+//! unmodeled fields are ignored by the decoder.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -10,14 +9,12 @@ use crate::ids::{BranchName, GitCommitSha, GitHubLogin, PullRequestNumber, RepoS
 
 use super::gh::{GhError, gh_json};
 
-/// Fields passed via `--json` to `gh pr view`. Must stay aligned with
-/// the `PullRequestView` struct below.
+/// Field-selection list submitted to the host view. Coupled to the
+/// projection struct below; adding a field requires updating both
+/// in lockstep.
 const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
      mergeStateStatus,headRefOid,baseRefName,updatedAt,closedAt,mergedAt,\
      labels,assignees,reviewRequests,reviewDecision,commits,author";
-
-// `commits` returns an object with `oid` and `committedDate` (among
-// other fields); we deserialize the subset we consume below.
 
 /// Fetch PR metadata via `gh pr view`.
 pub(crate) fn fetch_pull_request_view(
@@ -55,25 +52,20 @@ pub(crate) struct PullRequestView {
     pub review_requests: Vec<ReviewRequest>,
     #[serde(default)]
     pub commits: Vec<Commit>,
-    /// PR author. `None` when the original user was deleted (`gh`
-    /// returns `{"is_bot": false, "login": "ghost"}` in that case
-    /// but historical wire shapes also emit a null object). The
-    /// Cursor axis reads this to detect bot-class authorship
-    /// (Dependabot / Renovate) — Cursor declines those PRs
-    /// server-side, so absence-of-check is expected, not a stall.
+    /// PR author. Absent on deleted-identity (the host emits a
+    /// ghost shape) or when the field never populated. Read by
+    /// axes that classify by author class.
     #[serde(default)]
     pub author: Option<PullRequestAuthor>,
 }
 
-/// PR author identity. Just the login — `gh` returns more fields
-/// (`name`, `id`, `is_bot`) but the bot-class detection runs against
-/// the login slug, so we keep the wire model narrow.
+/// PR author identity. Carries only the login slug — bot-class
+/// classification runs against the slug, so the wire model stays
+/// narrow.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct PullRequestAuthor {
-    /// `gh pr view --json author` emits an empty string when the
-    /// upstream user was deleted; deserialize it as `None` so the
-    /// orient layer can treat "no author" identically to a missing
-    /// `author` field.
+    /// Deleted-identity shapes (empty string, missing field) both
+    /// decode to absence so downstream axes treat them uniformly.
     #[serde(default, deserialize_with = "deserialize_optional_login")]
     pub login: Option<GitHubLogin>,
 }
@@ -93,9 +85,9 @@ where
 
 pub(crate) use ooda_core::PullRequestState;
 
-// GraphQL's `Mergeable` enum has a variant literally named
-// `MERGEABLE`; mirroring that preserves 1:1 alignment with the
-// source API at the cost of `Mergeable::Mergeable` tripping clippy.
+// Variant name matches the host's wire vocabulary 1:1 even though
+// it self-collides with the enum name; mirroring the source API
+// keeps the boundary mapping unambiguous.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -105,13 +97,10 @@ pub(crate) enum Mergeable {
     Unknown,
 }
 
-/// GitHub's full merge-readiness gate. Distinct from [`Mergeable`],
-/// which only reports tree-level conflicts.
-///
-/// `Unknown` is both GitHub's documented "still computing" state
-/// AND our `#[serde(other)]` catchall — any future status variant
-/// GitHub adds routes here too rather than aborting deserialization.
-/// Same pattern as `CheckState::Unknown`.
+/// Full merge-readiness gate, distinct from the tree-conflict bit
+/// above. The Unknown variant doubles as the catchall for unknown
+/// future states — forward-compat decode never aborts the observe
+/// pass on a new variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum MergeStateStatus {
@@ -137,9 +126,10 @@ fn deserialize_review_decision<'de, D>(d: D) -> Result<Option<ReviewDecision>, D
 where
     D: Deserializer<'de>,
 {
-    // GitHub returns one of: "APPROVED" | "REVIEW_REQUIRED" |
-    // "CHANGES_REQUESTED" | "" | null. Empty string and null both
-    // mean "no decision needed" (e.g., branch has no review policy).
+    // Absence shapes (null, empty string) both decode to "no
+    // decision needed" — the branch has no review policy. Unknown
+    // string values are decode errors so unmodeled future states
+    // surface explicitly.
     let raw: Option<String> = Option::deserialize(d)?;
     Ok(match raw.as_deref() {
         None | Some("") => None,
@@ -177,11 +167,9 @@ pub(crate) struct ReviewRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Commit {
     pub oid: GitCommitSha,
-    /// GraphQL's `committedDate` — when the commit was committed
-    /// (distinct from `authoredDate`, which can predate it on
-    /// rebased / cherry-picked commits). Used by the copilot health
-    /// axis to map a review round back to the HEAD SHA in flight at
-    /// the time of the request.
+    /// Commit time, distinct from author time (which can predate it
+    /// on rebased or cherry-picked commits). Anchors HEAD-at-time
+    /// queries used by health axes.
     pub committed_date: Timestamp,
 }
 

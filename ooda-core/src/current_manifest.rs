@@ -1,30 +1,31 @@
-//! Single mutable pointer to the current per-iteration state of a PR.
+//! Mutable pointer over an immutable per-iteration history.
 //!
-//! `CurrentManifest` is written atomically to `<pr_root>/CURRENT.json`
-//! after each iteration. It carries the run-id, iteration number,
-//! exit code, a short headline, and a map of symbolic artifact names
-//! to relative paths inside the per-iteration immutable directory
-//! (`runs/<run-id>/iterations/<NNNN>/`). The actual artifact bytes
-//! never move and never change once written; only this manifest
-//! mutates, and only by atomic replace.
+//! The recorder layout is a write-once history (one immutable
+//! directory per iteration, with all artifact bytes content-stable)
+//! plus a single mutable pointer file that names the current
+//! iteration. `CurrentManifest` is that pointer.
 //!
-//! Agents read this file to discover the current state, then follow
-//! `artifacts.*` paths to read the underlying immutable records.
-//! Historical iterations remain addressable by their per-iteration
-//! path; CURRENT.json only names the current one.
+//! # Invariants
 //!
-//! `keep_runs` lists run-ids that future garbage collection must
-//! preserve. The current run is implicitly retained (its run-id is
-//! `run_id`). Callers append additional run-ids here when they want
-//! to pin older runs for inspection.
+//! - **Immutability of history**: per-iteration artifact bytes are
+//!   never rewritten after their initial write.
+//! - **Single mutable head**: only this manifest mutates between
+//!   iterations, and only by atomic replace
+//!   (see [`crate::atomic_io`]) — concurrent readers observe either
+//!   the prior or the new manifest, never a torn intermediate.
+//! - **Address stability**: every historical iteration remains
+//!   addressable by its own path; the manifest names only the head.
 //!
-//! Blob-hash references are intentionally absent from v1: every
-//! per-iteration artifact and the run-level outcome are already
-//! content-addressed in `blobs/sha256/` (the recorder copies them
-//! there at write time). Readers wanting integrity verification or
-//! blob-store retrieval re-hash the file content or walk
-//! `blobs/sha256/` directly. If a future version surfaces hashes in
-//! the manifest, bump [`SCHEMA_VERSION`].
+//! Readers resolve `artifacts.*` relative paths against the
+//! recorder root to read the underlying immutable records.
+//! `keep_runs` pins additional run identifiers for retention
+//! against garbage collection; the current run is implicitly pinned.
+//!
+//! Integrity verification and content-addressed retrieval are out
+//! of scope for v1: per-iteration artifacts are already hashed at
+//! write time by the recorder, and readers re-hash the file content
+//! directly. Surfacing hashes in the manifest itself would be a
+//! breaking change — bump [`SCHEMA_VERSION`].
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -35,7 +36,7 @@ use std::path::PathBuf;
 /// before consuming.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// The mutable pointer at `<pr_root>/CURRENT.json`. See module docs.
+/// Mutable head pointer over the immutable iteration history.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CurrentManifest {
     pub schema_version: u32,
@@ -43,13 +44,15 @@ pub struct CurrentManifest {
     pub iteration: u32,
     pub exit_code: u8,
     pub headline: String,
-    /// Symbol → relative path under the `pr_root`. Always points into
-    /// `runs/<run-id>/iterations/<NNNN>/` (or `runs/<run-id>/` for
-    /// `outcome`). Conditional artifacts (`handoff`, `action`) are
-    /// simply absent when the iteration did not produce them.
+    /// Symbolic-name → relative path within the recorder root.
+    /// Paths address artifacts in the current iteration's immutable
+    /// directory (or the run root for run-scoped artifacts).
+    /// Conditional artifacts are simply absent when the iteration
+    /// did not produce them.
     pub artifacts: BTreeMap<String, PathBuf>,
-    /// Run-ids that garbage collection must preserve in addition to
-    /// `run_id` itself. Empty by default.
+    /// Additional run identifiers pinned against garbage collection.
+    /// The current run (`run_id`) is implicitly pinned and need not
+    /// appear here.
     pub keep_runs: Vec<String>,
 }
 

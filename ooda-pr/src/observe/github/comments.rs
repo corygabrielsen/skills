@@ -1,9 +1,6 @@
-//! Typed view of `GET /repos/{o}/{r}/issues/{n}/comments` (REST).
-//!
-//! Issue-level comments on a PR — distinct from inline review
-//! comments (which live on review threads). We model only the fields
-//! downstream stages use; the REST response includes body, URLs,
-//! timestamps, and reactions we do not need yet.
+//! Issue-level comments on a PR, distinct from inline review
+//! comments anchored on review threads. The model carries only the
+//! fields downstream stages use.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,18 +8,13 @@ use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json_paginate};
 
-/// Per-page projection — `gh api --paginate --jq` runs this filter
-/// against each page, emitting one JSON array per page.
-/// `gh_json_paginate` concatenates the per-page arrays.
-///
-/// The `user.login // ""` fallback covers GitHub returning
-/// `user: null` for deleted accounts, which would otherwise make
-/// `GitHubLogin` deserialization (non-empty) fail and abort the
-/// whole observe phase.
+/// Server-side per-page projection. The deleted-identity fallback
+/// is required so deleted-author rows do not abort decoding (the
+/// login type rejects empty strings).
 const COMMENT_JQ: &str =
     r#"[.[] | {id, user: {login: (.user.login // "[deleted]")}, body, created_at, html_url}]"#;
 
-/// Fetch issue-level comments on a PR (not inline review comments).
+/// Fetch every issue-level comment on a PR.
 pub(crate) fn fetch_issue_comments(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -35,14 +27,13 @@ pub(crate) fn fetch_issue_comments(
 pub(crate) struct IssueComment {
     pub id: u64,
     pub user: CommentUser,
-    /// `#[serde(default)]` so pre-existing fixtures (which omit
-    /// `body` / `created_at` / `html_url`) deserialize as empty
-    /// strings / fallback timestamp. Used by the Claude-review axis
-    /// to surface the latest Claude issue comment as a `Witness`.
+    /// Body content. Default-empty so legacy fixtures decode.
     #[serde(default)]
     pub body: String,
+    /// Creation timestamp. Default-epoch so legacy fixtures decode.
     #[serde(default = "default_timestamp")]
     pub created_at: Timestamp,
+    /// Permalink. Default-empty so legacy fixtures decode.
     #[serde(default)]
     pub html_url: String,
 }

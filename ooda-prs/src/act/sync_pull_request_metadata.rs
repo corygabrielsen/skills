@@ -1,9 +1,7 @@
-//! Compose the `SyncPullRequestMetadata` handoff prompt.
+//! Handoff-prompt composition for the PR-metadata sync candidate.
 //!
-//! `SyncPullRequestMetadata` is `ActionEffect::Agent` — `act()` never executes
-//! it; the runner converts it to `Outcome::HandoffAgent` and exits.
-//! This module only builds the prompt body the recipient agent
-//! reads.
+//! This candidate's effect is agent-handoff; no driver-side action
+//! runs. The module produces the prompt body the agent receives.
 
 use std::path::Path;
 
@@ -12,16 +10,13 @@ use ooda_core::HandoffPrompt;
 use crate::ids::PullRequestNumber;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
 
-/// Build the `SyncPullRequestMetadata` handoff prompt body.
+/// Build the PR-metadata sync handoff prompt body.
 ///
-/// `state` and `attest_path` together let the prompt pick the
-/// right "why" preamble (`Drift` cites commit count; `NeverAttested`
-/// states first-attestation) and surface the exact CLI invocation
-/// the agent must run after updating PR meta.
-///
-/// `attest_path` is `Option` because the binary may run without
-/// `--state-root`; the prompt then falls back to a placeholder
-/// invocation that asks the agent to supply the path.
+/// `state` selects the why-preamble that situates the work for the
+/// reader. `attest_path` is `Option` because the binary may run
+/// without a configured state root; when present it determines a
+/// literal CLI invocation, when absent the prompt falls back to a
+/// placeholder that asks the agent to supply the path.
 #[must_use]
 pub(crate) fn build_sync_pull_request_metadata_prompt(
     pr: PullRequestNumber,
@@ -84,9 +79,10 @@ fn cli_invocation(pr: PullRequestNumber, attest_path: Option<&Path>) -> String {
     }
 }
 
-/// Recover the state-root directory from the attestation path —
-/// `<state-root>/<pr-id>/pr_meta_attest.json`. Returns `None` if
-/// the structure does not match.
+/// Recover the state-root directory from the per-axis attestation
+/// path. The path layout nests the attestation under a per-PR
+/// directory under the state root; `None` is returned when the
+/// structure does not match.
 fn state_root_from_attest_path(path: &Path) -> Option<std::path::PathBuf> {
     let pr_dir = path.parent()?;
     let state_root = pr_dir.parent()?;

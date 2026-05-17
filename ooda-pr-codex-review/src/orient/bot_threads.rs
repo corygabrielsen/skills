@@ -1,5 +1,22 @@
-//! Shared bot-thread summarization. Parameterized by an identity
-//! predicate — the algorithm is identical across reviewer bots.
+//! Per-bot review-thread accounting, parameterized by an authorship
+//! predicate.
+//!
+//! # Invariants
+//!
+//! - **Originator-defines-authorship**: a thread is attributed to the
+//!   bot iff its first comment was authored by the bot. Subsequent
+//!   replies (human or bot) do not reassign attribution; the
+//!   originating utterance fixes the row.
+//! - **Lifecycle partition is total**: every counted thread falls
+//!   into exactly one of `resolved`, `outdated`, or `unresolved`, so
+//!   `total = resolved + outdated + unresolved` holds by construction.
+//! - **Outdated is not actionable**: outdated threads (anchor moved
+//!   by rebase/amend) are tracked separately for diagnostics but
+//!   never contribute to the actionable-work count that drives
+//!   remediation actions.
+//! - **Staleness needs an anchor**: a thread can only be stale
+//!   relative to a recorded review; absent that anchor the predicate
+//!   is silent, never false-positive.
 
 use crate::ids::Timestamp;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
@@ -9,28 +26,18 @@ use serde::Serialize;
 pub(crate) struct BotThreadSummary {
     pub total: u32,
     pub resolved: u32,
-    /// Threads that are `is_resolved=false` AND `is_outdated=false` —
-    /// the actor can act on them. Outdated threads are tracked
-    /// separately in `outdated`.
+    /// Actionable count — open and anchored to a live line.
     pub unresolved: u32,
-    /// Threads that are `is_resolved=false` AND `is_outdated=true` —
-    /// GitHub flagged the anchor line as moved by a rebase/amend.
-    /// Surfaced for diagnostics (e.g., fitness comment) but excluded
-    /// from `unresolved` so they do not drive `AddressThreads` actions.
+    /// Open but anchor moved by a rebase/amend. Diagnostic only;
+    /// excluded from the actionable count.
     pub outdated: u32,
-    /// Thread has any non-bot comment authored strictly after
-    /// `latest_reviewed_at` — the bot hasn't observed it.
+    /// Thread carries a non-bot reply newer than the last recorded
+    /// review by the same bot — the bot has not yet read the latest
+    /// human response.
     pub stale: u32,
 }
 
-/// Summarize review threads authored by a specific bot.
-///
-/// Authorship is determined by the *first* comment on the thread
-/// (the thread-opening comment). Subsequent replies do not change
-/// authorship for counting purposes.
-///
-/// `stale` only fires when `latest_reviewed_at` is `Some` — without
-/// a completed review, no thread can be stale relative to it.
+/// Summarize review threads attributed to the bot named by `is_bot`.
 pub(crate) fn count_bot_threads<F>(
     threads: &ReviewThreadsResponse,
     latest_reviewed_at: Option<&Timestamp>,

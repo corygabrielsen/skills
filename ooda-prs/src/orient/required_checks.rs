@@ -1,32 +1,34 @@
-//! Union of the two authoritative required-check sources:
-//!   - `rules/branches/{branch}` (modern rulesets)
-//!   - `branches/{branch}/protection/required_status_checks` (legacy)
+//! Resolve the gating check-context set for a branch.
 //!
-//! Either source alone is incomplete; repos may use one, the other,
-//! or both. The output is the deduped union of context names.
+//! # Invariants
+//!
+//! - **Source-completeness**: a repo may declare required checks via
+//!   any combination of the rule-source and the legacy-protection-
+//!   source. Either source read alone may understate the gate; the
+//!   resolved set is their union.
+//! - **Context-name as identity**: dedup partitions by check-context
+//!   name, not by `(name, app)`. The known false-green this admits
+//!   (same context name posted by two distinct apps) is documented
+//!   on the function and caught downstream by the merge-state
+//!   fallback.
+//! - **Order is source-precedence**: rule-sourced contexts precede
+//!   legacy-sourced contexts; within each source, input order is
+//!   preserved. Stable for human-readable rendering.
 
 use crate::ids::CheckName;
 use crate::observe::github::branch_protection::BranchProtectionRequiredStatusChecks;
 use crate::observe::github::branch_rules::BranchRule;
 use crate::observe::github::rulesets::RequiredStatusChecksParams;
 
-/// Resolve the full set of required check names from rulesets +
-/// legacy branch protection. Order is `rulesets-first, then
-/// protection`; duplicates dropped on second occurrence.
+/// Resolved required-check set as the union of the rule source and
+/// the legacy-protection source, deduped by context name.
 ///
-/// Known limitation — duplicate-context different-app:
-/// dedup is by `context` name only, not by `(context,
-/// integration_id)`. A repo configuring two required checks with
-/// the same name from different GitHub Apps (e.g. two CI
-/// providers each posting "Lint") collapses to one required entry,
-/// and a single passing check appears to satisfy both. End-to-end
-/// fix requires `gh pr checks` to surface `app_id` (it does not),
-/// so observed checks can be matched per-app. Until the source
-/// data carries integration identity, this configuration produces
-/// a green report when GitHub still blocks merge. Surface as a
-/// known false-green; the merge-state fallback (BLOCKED handoff)
-/// catches it via `mergeStateStatus` when no other axis explains
-/// the blockage.
+/// **Known false-green**: a repo configuring the same context name
+/// from two distinct GitHub Apps collapses to one entry, and a
+/// single passing check appears to satisfy both gates. Source data
+/// must carry integration identity to fix end-to-end. The
+/// merge-state fallback catches the residual case when no axis
+/// explains the merge block.
 pub(crate) fn required_check_names(
     branch_rules: &[BranchRule],
     protection: Option<&BranchProtectionRequiredStatusChecks>,

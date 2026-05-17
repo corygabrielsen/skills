@@ -2,33 +2,31 @@
 //!
 //! Re-exported from [`ooda_core`] specialised to this binary's
 //! [`ActionKind`]. The generic shape, exit-code mapping, and
-//! `HaltReason → Outcome` / `Decision → Outcome` conversions live
-//! in the shared crate. This module adds the per-binary
-//! `LoopError → Outcome` conversion.
+//! `From` conversions live in the shared crate. This module adds
+//! the per-binary `LoopError → Outcome` conversion.
 //!
-//! Domain mapping of the shared variants for the codex-review
-//! domain:
-//!   - `Outcome::DoneSucceeded` (exit 0) — fixed point reached at
-//!     the configured ceiling reasoning level. Per-binary
-//!     `render_outcome` emits `"DoneFixedPoint"` as the stderr
-//!     header.
-//!   - `Outcome::DoneAborted` (exit 8) — user aborted the review
-//!     loop (SIGINT, `--abort`). Renderer emits `"DoneAborted"`.
-//!   - `Outcome::Paused` (exit 7) — loop has nothing to drive this
-//!     pass. Renderer emits `"Idle"`.
+//! Domain projections (boundary type → stderr header token):
+//!
+//! | Boundary variant | Header token |
+//! |------------------|--------------|
+//! | `DoneSucceeded` | `DoneFixedPoint` |
+//! | `Paused` | `Idle` |
+//! | `DoneAborted` | `DoneAborted` |
+//!
+//! Numeric exit codes are owned by [`ooda_core::ExitCode`]; see
+//! that module for the wire-level contract.
 
 use crate::decide::action::ActionKind;
 use crate::runner::LoopError;
 
-/// Codex-review-domain `Outcome`. 1:1 variant → exit-code via
-/// [`ooda_core::Outcome::exit_code`].
+/// Codex-review-domain `Outcome`. Specialization of the generic
+/// boundary type at this binary's `ActionKind`.
 pub(crate) type Outcome = ooda_core::Outcome<ActionKind>;
 
-/// `LoopError` → `BinaryError(String)`. The caller sees a
-/// single-line human-triage string; the typed error is flattened
-/// via [`ooda_core::Outcome::binary_error`] so the stderr-header
-/// invariant ("first line is the header, nothing else follows
-/// except prompt blocks for handoff variants") holds.
+/// `LoopError` → `BinaryError`. Routes through
+/// [`ooda_core::Outcome::binary_error`] so the
+/// single-line-stderr-header invariant is established at the
+/// boundary by [`ooda_core::SingleLineString`].
 impl From<LoopError> for Outcome {
     fn from(err: LoopError) -> Self {
         Self::binary_error(err.to_string())

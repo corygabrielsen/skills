@@ -1,34 +1,31 @@
-//! Shared spine for the OODA skill family.
+//! Shared spine for OODA-loop binaries.
 //!
-//! Four binary skills in this repo (`ooda-pr`, `ooda-prs`,
-//! `ooda-codex-review`, `ooda-pr-codex-review`) drive an
-//! observe → orient → decide → act loop over different domains.
-//! The *boundary* shapes are identical across all four:
+//! A binary drives observe → orient → decide → act over a chosen
+//! domain. This crate fixes the cross-cutting boundary shape so
+//! every such binary produces caller-visible artifacts with the
+//! same algebra:
 //!
-//! * `Outcome<K>` — what an invocation produces. 1:1 variant →
-//!   exit-code mapping is the contract; wrappers dispatch on `$?`
-//!   alone.
-//! * `Decision<K>` / `DecisionHalt<K>` / `HaltReason<K>` — the
-//!   three-layered halt taxonomy. `decide()` returns `Decision`;
-//!   `run_loop` returns `HaltReason`. Splitting them gives the
-//!   compiler proof that decide-level renderers need not handle
-//!   `Stalled` / `CapReached`.
-//! * `Action<K>` — the operation `decide` prescribes. Generic over
-//!   the per-binary action-kind enum (`K`).
+//! * `Outcome<K>` — invocation result. The 1:1 variant ↔ exit-code
+//!   bijection IS the wire contract; wrappers dispatch on `$?` alone.
+//! * `Decision<K>` / `DecisionHalt<K>` / `HaltReason<K>` — layered
+//!   halt taxonomy. The pure decide-pass returns the narrower
+//!   `Decision`; the loop returns the wider `HaltReason`. Layering
+//!   makes "cap / stall are loop-only" a compile-time fact rather
+//!   than a documented convention.
+//! * `Action<K>` — what decide prescribes. Generic over a per-binary
+//!   action-kind enum (`K`).
 //! * `ActionEffect` / `Urgency` / `TargetEffect` / `BlockerKey` —
 //!   domain-agnostic fields of `Action`. `ActionEffect` fuses the
-//!   automation-kind discriminator with its correlated payload (a
-//!   log line for `Full` / `Wait`; a structured `HandoffPrompt`
-//!   for `Agent` / `Human`).
+//!   dispatch discriminator with its correlated payload so the
+//!   "handoff variants carry a prompt; in-loop variants carry a log
+//!   line" class invariant is structural.
 //!
-//! Per-binary domain modules supply `K` (the action-kind enum,
-//! implementing `ActionKindName`) and the observe / orient / decide
-//! / act / recorder layers. Anti-DRY copy-paste between sibling
-//! binaries continues for those layers; only the cross-cutting
-//! boundary types live here.
+//! # Scope
 //!
-//! No I/O, no async, no concurrency primitives — this crate is the
-//! type spine and exit-code contract, nothing else.
+//! No I/O, no async, no concurrency primitives. The crate is the
+//! type spine plus its exit-code contract. Per-domain observe /
+//! orient / decide / act / recorder layers live in the binaries
+//! that supply `K`.
 
 pub mod action;
 pub mod atomic_io;

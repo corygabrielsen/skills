@@ -1,10 +1,10 @@
-//! Claude-review candidates.
+//! Claude-review candidate.
 //!
-//! Emit `AddressClaudeReview` only when the orient axis is `Fresh`
-//! (Claude content past the attestation OR not yet attested). The
-//! `NoActivity` and `Addressed` cases stay silent — there is nothing
-//! for the agent to act on. Information-tier (Hygiene urgency) —
-//! never preempts a mechanical merge blocker.
+//! Content-keyed attestation: fires only when the axis reports
+//! review content past the last attestation. The quiet states
+//! (no surface to grade, already addressed) emit nothing because
+//! there is no agent action to take. Hygiene tier — advisory
+//! rather than blocking.
 
 use crate::act::address_claude_review::build_address_claude_review_prompt;
 use crate::ids::{BlockerKey, PullRequestNumber};

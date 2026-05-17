@@ -1,9 +1,9 @@
-//! Doc-review candidates.
+//! Doc-review candidate.
 //!
-//! Emit `ReviewDocs` when the orient axis is `Drift` or `NeverAttested`
-//! AND the PR has at least one commit. Same guards as
-//! `SyncPullRequestMetadata`. Information-tier (Hygiene urgency) —
-//! advisory; never preempts a mechanical merge blocker.
+//! SHA-keyed attestation: fires when the axis is unsynced and the
+//! PR carries at least one commit (an empty PR has no diff to
+//! review). Emitted at the hygiene tier — advisory rather than
+//! blocking, so a mechanical merge gate always preempts it.
 
 use std::path::Path;
 
@@ -35,6 +35,8 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
     let kind = ActionKind::ReviewDocs {
         attest_path: attest_path.to_path_buf(),
     };
+    // Distinct gate identity per state, so a transition between
+    // unsynced states is not masked as a stall.
     let blocker = match oriented.doc_review {
         DocReview::Drift { .. } => BlockerKey::from_static("doc_review_drift"),
         DocReview::NeverAttested => BlockerKey::from_static("doc_review_never_attested"),

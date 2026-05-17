@@ -1,20 +1,22 @@
-//! Binary boundary type — what each invocation produces.
+//! Binary-boundary type: one variant per invocation, one exit code.
 //!
-//! Internal types (`Decision`, `HaltReason`, plus per-binary loop
-//! errors) split halt-vs-execute and decide-level vs loop-level
-//! concerns. At the binary boundary those splits collapse: callers
-//! want **one** variant per invocation with **one** exit code.
+//! Internal types ([`crate::Decision`], [`crate::HaltReason`], plus
+//! per-binary loop errors) split halt-vs-execute and pure-decide vs
+//! full-loop concerns. At the binary boundary those splits collapse
+//! into a single sum type: callers want a single variant and a
+//! single exit code per invocation.
 //!
-//! `Outcome<K>` is that boundary type. The 1:1 variant → exit-code
-//! mapping is the contract; wrappers dispatch on `$?` alone.
+//! `Outcome<K>` is that boundary type; the 1:1 variant ↔ exit-code
+//! bijection IS the wire contract.
 //!
-//! Construction is via `From` impls — `HaltReason<K> → Outcome<K>`
-//! for loop mode, `Decision<K> → Outcome<K>` for inspect mode.
-//! Per-binary `LoopError` types convert via the
-//! [`Outcome::binary_error`] constructor — they're not uniform
-//! enough across binaries to support a blanket `From` here.
-//! Argument-parse and main-routine variants (`UsageError`,
-//! `Paused`, `DoneClosed`) are constructed directly.
+//! Construction:
+//! * [`From<HaltReason<K>>`] — for full-loop callers.
+//! * [`From<Decision<K>>`] — for single-pass / inspect callers.
+//! * [`Outcome::binary_error`] — per-binary loop-error types funnel
+//!   through here; their shapes are not uniform enough for a
+//!   blanket `From`.
+//! * Variants with no halt-source (CLI parse failure, paused) are
+//!   constructed directly.
 
 use crate::action::{Action, HandoffAction};
 use crate::decision::{Decision, DecisionHalt, HaltReason, Terminal};
@@ -24,63 +26,52 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub enum Outcome<K> {
-    /// Target reached its terminal success state. Domain-specific
-    /// instances: PR merged, codex-review ladder satisfied, etc.
-    /// Per-binary `render_outcome` emits the domain-specific stderr
-    /// header (e.g. `DoneMerged`, `DoneFixedPoint`); this variant
-    /// name is internal.
+    /// Target reached its terminal success state. Per-binary
+    /// renderers may emit a domain-specific header token; the
+    /// internal variant name is domain-neutral.
     DoneSucceeded,
-    /// Same `(kind, blocker)` action repeated on consecutive
-    /// non-`Wait` iterations. Carries the repeated action.
+    /// Stall halt: same `(kind_name, blocker)` repeated on
+    /// consecutive non-`Wait` iterations. Carries the repeated
+    /// action so callers triage without re-deriving from logs.
     ///
-    /// `Action` is boxed because `Outcome` is used as the `Err`
-    /// type in `Result<_, Outcome>` chains; keeping the variant
-    /// small avoids the `clippy::result_large_err` lint and keeps
-    /// the success path cheap.
+    /// Action payload is boxed: `Outcome` flows as the `Err` arm
+    /// of error-chain `Result`s, and keeping the variant small
+    /// avoids `clippy::result_large_err` plus a fat success path.
     StuckRepeated(Box<Action<K>>),
-    /// Iteration cap hit. Carries the last attempted action — the
-    /// natural triage anchor (`<ActionKind>:<BlockerKey>` shows
-    /// what was running when the cap fired). Boxed; see
-    /// [`Self::StuckRepeated`].
+    /// Iteration cap reached. Carries the last attempted action as
+    /// the triage anchor. Boxed; see [`Self::StuckRepeated`].
     StuckCapReached(Box<Action<K>>),
-    /// Decide selected an action requiring a human. Carries the
-    /// handoff projection; `act` did not run. Boxed; see
-    /// [`Self::StuckRepeated`].
+    /// Halt requiring a human. Carries the handoff projection; the
+    /// act stage did not run. Boxed; see [`Self::StuckRepeated`].
     HandoffHuman(Box<HandoffAction<K>>),
-    /// Inspect-only. Decide selected an `Execute(action)`; the loop
-    /// would have run it, inspect halts before acting. Boxed; see
-    /// [`Self::StuckRepeated`].
+    /// Inspect mode only. Decide selected an executable action;
+    /// the loop would have run it, inspect halts first. Boxed;
+    /// see [`Self::StuckRepeated`].
     WouldAdvance(Box<Action<K>>),
-    /// Decide selected an action requiring an agent. Carries the
-    /// handoff projection; `act` did not run. Boxed; see
-    /// [`Self::StuckRepeated`].
+    /// Halt requiring an agent. Same shape as [`Self::HandoffHuman`].
     HandoffAgent(Box<HandoffAction<K>>),
     /// Caught external failure (subprocess, network, IO). The
-    /// [`SingleLineString`] payload is for human triage; the
-    /// no-newlines invariant is enforced by the type so the
-    /// "stderr header is one line" contract holds by construction.
+    /// [`SingleLineString`] type structurally enforces the
+    /// "header is one line" contract on the diagnostic.
     BinaryError(SingleLineString),
-    /// Decide selected no candidate action — target is open with
-    /// no advancing work this pass. May re-invoke later.
+    /// No candidate this pass; target is in-flight with no
+    /// advancing work. May re-invoke later.
     Paused,
-    /// Target reached a terminal non-success state (PR closed, ladder
-    /// abandoned). Per-binary `render_outcome` emits the
-    /// domain-specific stderr header (e.g. `DoneClosed`,
-    /// `DoneAborted`).
+    /// Target reached a terminal non-success state. Per-binary
+    /// renderers may emit a domain-specific header token.
     DoneAborted,
-    /// CLI parse / validation failure. The [`SingleLineString`]
-    /// payload is the diagnostic; the no-newlines invariant is
-    /// enforced by the type.
+    /// CLI parse / validation failure. Diagnostic typed as
+    /// [`SingleLineString`] per the same invariant as
+    /// [`Self::BinaryError`].
     UsageError(SingleLineString),
 }
 
 impl<K> Outcome<K> {
-    /// 1:1 variant → exit-code. The contract.
+    /// 1:1 variant ↔ exit-code projection. The wire contract.
     ///
-    /// Returns an [`ExitCode`] rather than a raw `u8` so the
-    /// numeric values live in exactly one place
-    /// (`exit_code.rs`). Convert via `u8::from(_)` /
-    /// `i32::from(_)` when handing to `std::process::exit`.
+    /// Returns [`ExitCode`] rather than a raw `u8` so the numeric
+    /// values live only on the [`ExitCode`] enum; convert via
+    /// `u8::from` / `i32::from` for [`std::process::exit`].
     #[must_use]
     pub fn exit_code(&self) -> ExitCode {
         match self {
@@ -97,23 +88,21 @@ impl<K> Outcome<K> {
         }
     }
 
-    /// Per-binary loop errors funnel through here. The
-    /// [`SingleLineString`] type enforces the
-    /// "`BinaryError: <msg>` header is one line" invariant by
-    /// construction.
+    /// Construct from a loop-error message. The single-line
+    /// invariant on the stderr header is established by
+    /// [`SingleLineString`] at the type boundary.
     pub fn binary_error(msg: impl Into<SingleLineString>) -> Self {
         Self::BinaryError(msg.into())
     }
 
-    /// CLI parse / validation failure constructor. Same
-    /// single-line invariant as [`Self::binary_error`].
+    /// Construct from a CLI-validation diagnostic. Same invariant
+    /// as [`Self::binary_error`].
     pub fn usage_error(msg: impl Into<SingleLineString>) -> Self {
         Self::UsageError(msg.into())
     }
 }
 
-/// Loop mode: collapse the runner's `HaltReason` taxonomy into the
-/// boundary `Outcome`.
+/// Collapse the wider loop-halt taxonomy into the boundary type.
 impl<K> From<HaltReason<K>> for Outcome<K> {
     fn from(reason: HaltReason<K>) -> Self {
         match reason {
@@ -124,10 +113,9 @@ impl<K> From<HaltReason<K>> for Outcome<K> {
     }
 }
 
-/// Inspect mode: collapse a single decide pass into the boundary
-/// `Outcome`. `Execute(action)` becomes `WouldAdvance(action)`
-/// because inspect halts before `act`. Halts pass through via the
-/// shared `decision_halt_to_outcome`.
+/// Collapse a single decide pass into the boundary type. An
+/// `Execute` becomes [`Outcome::WouldAdvance`] since inspect mode
+/// halts before acting; the halt arms share the loop-mode mapping.
 impl<K> From<Decision<K>> for Outcome<K> {
     fn from(decision: Decision<K>) -> Self {
         match decision {

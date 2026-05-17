@@ -1,21 +1,16 @@
-//! Typed view of the Cursor Bugbot `check_suite` + child `check_run` on
-//! the current HEAD.
+//! Per-HEAD suite + run signal for the push-driven reviewer.
 //!
-//! Two endpoints, fused at observe boundary:
-//!   1. `GET /repos/{o}/{r}/commits/{sha}/check-suites` filtered by
-//!      `app.slug == "cursor"` — needed to detect the canonical
-//!      Cursor stall (a `queued` `check_suite` that never spawns a
-//!      child `check_run`). `gh pr checks` aggregates by check name
-//!      and cannot see this state — the suite has no name.
-//!   2. `GET /repos/{o}/{r}/commits/{sha}/check-runs?check_name=Cursor%20Bugbot`
-//!      — once the suite spawns a run, this carries the per-run
-//!      `started_at` (the per-run pickup anchor) that
-//!      `PullRequestCheck` does not surface.
+//! # Invariants
 //!
-//! The orient layer fuses these into the Cursor activity state. If
-//! the suite is absent, Cursor is not active for the current HEAD
-//! (or the PR's author was filtered server-side — that distinction
-//! lives in the Cursor orient axis, not here).
+//! - **Two endpoints, fused at the boundary**: the canonical stall
+//!   has no child run and is therefore invisible to name-filtered
+//!   check observation; only the suite endpoint witnesses it. The
+//!   run endpoint adds per-run timing once the suite spawns a run.
+//! - **Suite-presence gates run-fetch**: a run cannot exist without
+//!   a suite; the run call is skipped when no suite is observed.
+//! - **At most one run per suite for this reviewer**: when multiple
+//!   appear during eventual-consistency or re-run windows, the
+//!   most-recently-started row wins.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,18 +18,15 @@ use crate::ids::{GitCommitSha, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json};
 
-/// GitHub App slug for Cursor. Single canonical value; Cursor ships
-/// exactly one app (no `cursor-swe-agent` style confound — see
-/// `feedback-domain-shapes-design`).
+/// Originating-app slug. Single canonical value (no aliasing
+/// confound across distinct apps).
 const CURSOR_APP_SLUG: &str = "cursor";
 
-/// Display name of Cursor's `check_run`. Stable in their docs;
-/// reproduced here for the `check_name=` query filter.
+/// Run display name used for server-side filtering.
 const CURSOR_CHECK_RUN_NAME: &str = "Cursor Bugbot";
 
-// Wire shapes for `/commits/{sha}/check-suites`. The endpoint returns
-// `{ total_count, check_suites: [...] }`; we deserialize only the
-// fields the Cursor activity classifier consumes.
+// Wire shapes for the suite endpoint. Only the fields the activity
+// classifier consumes are decoded.
 
 #[derive(Debug, Clone, Deserialize)]
 struct CheckSuitesEnvelope {
@@ -54,7 +46,7 @@ struct AppRef {
     slug: String,
 }
 
-// Wire shapes for `/commits/{sha}/check-runs?check_name=`.
+// Wire shapes for the run endpoint.
 
 #[derive(Debug, Clone, Deserialize)]
 struct CheckRunsEnvelope {
@@ -71,8 +63,8 @@ struct CheckRunWire {
     started_at: Option<Timestamp>,
 }
 
-/// `status` field on a `check_suite`. Cursor's stall signature is a
-/// suite stuck in `Queued` with no child `check_run` ever appearing.
+/// Suite status. The canonical stall is a long-Queued suite with no
+/// child run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CheckSuiteStatus {
@@ -83,10 +75,9 @@ pub(crate) enum CheckSuiteStatus {
     Unknown,
 }
 
-/// `status` field on a `check_run`. Modeled separately from the
-/// `check_suite` status because the two carry semantically different
-/// state — a `completed` suite can host a `queued` run (rare) or
-/// vice versa during eventual-consistency windows.
+/// Run status. Modeled separately from suite status because the two
+/// carry distinct semantics and can disagree during eventual-
+/// consistency windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CheckRunStatus {
@@ -98,10 +89,9 @@ pub(crate) enum CheckRunStatus {
     Unknown,
 }
 
-/// `conclusion` field on a `completed` `check_run`. Modeled separately
-/// from `CheckState::Conclusion`/`WorkflowRunConclusion` because
-/// Cursor's neutral disambiguation logic reads this as a domain
-/// signal — not just a pass/fail bucket.
+/// Run conclusion. Modeled separately from sibling-axis conclusion
+/// enums because the disambiguation logic reads these values as
+/// domain signals, not just pass/fail buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CheckRunConclusion {
@@ -118,27 +108,21 @@ pub(crate) enum CheckRunConclusion {
     Unknown,
 }
 
-/// Fused Cursor signal on the current HEAD. `None` for `suite` means
-/// Cursor has not opened a `check_suite` for this commit — the orient
-/// axis interprets that against the PR author to distinguish
-/// "Cursor declined this PR" from "Cursor not active in this repo".
+/// Fused per-HEAD signal. Absent suite means no engagement on this
+/// HEAD; the orient axis disambiguates against the PR author.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CursorStatus {
-    /// `None` when Cursor has not opened a `check_suite` on this HEAD.
+    /// Absent when no suite opened on this HEAD.
     pub suite: Option<CursorCheckSuite>,
-    /// `None` when no child `check_run` exists. The suite may still
-    /// exist (this is the canonical stall pattern). At most one run
-    /// per suite — Cursor produces a single Bugbot run, not a fan-out.
+    /// Absent when no child run exists. Suite without run is the
+    /// canonical stall pattern.
     pub run: Option<CursorCheckRun>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CursorCheckSuite {
     pub status: CheckSuiteStatus,
-    /// Suite creation timestamp — when GitHub received the push
-    /// webhook for Cursor. Anchor for the `no child run` stall
-    /// detector: `now - created_at >= STALL_TIMEOUT` with no child
-    /// run is the canonical stuck-suite signature.
+    /// Suite-creation anchor for the stuck-suite detector.
     pub created_at: Timestamp,
 }
 
@@ -146,23 +130,20 @@ pub(crate) struct CursorCheckSuite {
 pub(crate) struct CursorCheckRun {
     pub status: CheckRunStatus,
     pub conclusion: Option<CheckRunConclusion>,
-    /// `None` when the run was created but never started (extremely
-    /// rare; the orient axis falls back to the suite's `created_at`).
+    /// Absent when the run was created but never started. The
+    /// orient layer falls back to the suite anchor.
     pub started_at: Option<Timestamp>,
 }
 
-/// Fetch the Cursor `check_suite` and `check_run` (if any) for `head`.
-/// Two REST calls in series — the suite alone tells us "is Cursor
-/// active at all on this HEAD"; the run carries the per-run timing
-/// when present. Bounded N (≤1 suite, ≤1 run per suite for Cursor).
+/// Fetch the suite (and optional run) for the given HEAD. Two
+/// serial calls — the suite witnesses engagement, the run carries
+/// per-run timing. Bounded N (≤1 suite, ≤1 run per suite).
 pub(crate) fn fetch_cursor_status(
     slug: &RepoSlug,
     head: &GitCommitSha,
 ) -> Result<CursorStatus, GhError> {
     let suite = fetch_cursor_check_suite(slug, head)?;
-    // Skip the check_runs call when no Cursor suite exists — the run
-    // can't exist without a suite, and the second REST call would
-    // just return an empty list.
+    // Suite-presence gates run-fetch — see module-level invariant.
     let run = if suite.is_some() {
         fetch_cursor_check_run(slug, head)?
     } else {
@@ -194,17 +175,16 @@ fn fetch_cursor_check_run(
     slug: &RepoSlug,
     head: &GitCommitSha,
 ) -> Result<Option<CursorCheckRun>, GhError> {
-    // `check_name=` filters server-side. URL-encode the space.
+    // Server-side name filter; the host requires whitespace URL-
+    // encoding inside query values.
     let path = format!(
         "repos/{slug}/commits/{}/check-runs?check_name={}&per_page=10",
         head.as_str(),
         CURSOR_CHECK_RUN_NAME.replace(' ', "%20"),
     );
     let env: CheckRunsEnvelope = gh_json(&["api", &path])?;
-    // Cursor produces exactly one check_run per suite. If multiple
-    // somehow appear (e.g. a re-run that didn't replace the prior
-    // row), take the most recently started one — the latest run's
-    // status reflects the current Cursor state.
+    // At most one run per suite for this reviewer — see module
+    // invariant. Most-recently-started wins when multiple appear.
     Ok(env
         .check_runs
         .into_iter()

@@ -1,19 +1,12 @@
-//! Cursor candidates.
+//! Bot-review axis candidate set for a degenerate health lattice.
 //!
-//! Six logical arms over the (`CursorActivity` × `InFlightHealth`) cross
-//! product:
-//!
-//!   `NotApplicable`          → no candidate (delegate)
-//!   Skipped(_)             → no candidate (delegate; reason in JSONL)
-//!   InFlight(Healthy)      → `WaitForCursorReview` (60s)
-//!   InFlight(Failed)       → `EscalateCursorStalled` (Human handoff)
-//!   Reviewed(Clean)        → no candidate (delegate)
-//!   Reviewed(HasFindings)  → no candidate (the generic `AddressThreads`
-//!                            on the reviews axis owns thread
-//!                            remediation; Cursor stays silent here)
-//!
-//! Cursor has no rerequest API and no Degraded intermediate — see
-//! `orient/cursor.rs` for the rationale.
+//! The activity cross-product partitions into wait / escalate /
+//! delegate. Unlike a fully-featured bot-review axis, this one
+//! exposes only Healthy and Failed in-flight states (no Degraded
+//! intermediate, no rerequest API) — the projection lives in the
+//! orient layer. Per-thread remediation is owned by the generic
+//! reviews axis; this axis stays silent on the has-findings case
+//! to avoid double-emission.
 
 use crate::ids::BlockerKey;
 
@@ -23,17 +16,17 @@ use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
 pub(super) fn candidates(report: &CursorReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
-    // Intentional exhaustive match per axis pattern; arms are kept
-    // distinct for spec clarity even when several emit no candidate.
+    // Exhaustive over activity variants; arms are kept distinct
+    // for spec clarity even when several emit no candidate.
     #[allow(clippy::match_same_arms)]
     match &report.activity {
         CursorActivity::NotApplicable => {
-            // Cursor not active in this repo. Nothing to do.
+            // Axis not applicable on this PR.
         }
         CursorActivity::Skipped(_) => {
-            // Cursor declined this PR (bot-class author, repo opt-out,
-            // or unknown). The variant is preserved on the report for
-            // JSONL but the decide layer has no remediation.
+            // Axis declined this PR. The reason is preserved on
+            // the report for trace; the decide layer has no
+            // remediation.
         }
         CursorActivity::InFlight(InFlightHealth::Healthy) => {
             out.push(Action {
@@ -51,24 +44,24 @@ pub(super) fn candidates(report: &CursorReport) -> Vec<Action> {
             out.push(failed_escalation(report));
         }
         CursorActivity::Reviewed(ReviewedState::Clean) => {
-            // Cursor reviewed and reports no findings.
+            // Reviewed with no findings.
         }
         CursorActivity::Reviewed(ReviewedState::HasFindings) => {
-            // Findings exist as review threads — the reviews axis's
-            // generic AddressThreads candidate owns remediation; the
-            // Cursor axis stays silent to avoid double-emission.
+            // Per-thread remediation is owned by the reviews axis;
+            // staying silent here avoids double-emission.
         }
     }
     out
 }
 
-/// Stall escalation. No symptom payload (Cursor has a single failure
-/// mode) and no act-layer side effect — the runner consumes
-/// `Outcome::HandoffHuman` and exits.
+/// Stall escalation. Payload-free (this axis has a single failure
+/// mode) and driver-side-effect-free — the runner routes this
+/// directly to its terminal human handoff outcome.
 ///
-/// Surfaces the suite's `created_at` (and elapsed minutes since)
-/// when known, plus the per-PR Cursor round count. Both come from the
-/// already-projected `CursorReport` — no new observation needed.
+/// The prompt is enriched from the report's existing projection:
+/// suite-open timestamp (when known) and the per-PR round count
+/// situate the failure in the axis's history. No new observation
+/// is required.
 fn failed_escalation(report: &CursorReport) -> Action {
     let stall_min = crate::orient::cursor::STALL_TIMEOUT.num_minutes();
     let headline = format!(
@@ -188,9 +181,8 @@ mod tests {
 
     #[test]
     fn reviewed_has_findings_yields_no_candidate_delegates_to_address_threads() {
-        // Thread remediation belongs to the reviews axis (the generic
-        // AddressThreads candidate). Cursor stays silent to avoid
-        // double-emission.
+        // Composition rule: per-thread remediation lives on the
+        // reviews axis; staying silent here avoids double-emission.
         assert!(
             candidates(&report(
                 CursorActivity::Reviewed(ReviewedState::HasFindings),
@@ -200,13 +192,13 @@ mod tests {
         );
     }
 
-    // ─── property test for the class invariant ──────────────────────
+    // ─── activity-coverage property ───────────────────────────────
     //
-    // Exhaustive coverage over the (CursorActivity × InFlightHealth ×
-    // ReviewedState × SkipReason) cross product. The match in
-    // `expected_cursor_axis_behavior` is structurally exhaustive —
-    // adding a variant to any of the four enums fails to compile here
-    // until a new arm is added AND a sample is registered below.
+    // Pins the axis contract: every state in the activity cross-
+    // product maps to a determined emission. The match below is
+    // structurally exhaustive; a new variant in any constituent
+    // enum fails to compile until an arm is added and a sample
+    // is registered.
 
     #[derive(Debug, PartialEq, Eq)]
     enum CursorAxisBehavior {
@@ -216,8 +208,7 @@ mod tests {
     }
 
     fn expected_cursor_axis_behavior(activity: &CursorActivity) -> CursorAxisBehavior {
-        // Intentional exhaustive match per axis pattern; arms are
-        // duplicated for spec clarity.
+        // Arms duplicated for spec clarity.
         #[allow(clippy::match_same_arms)]
         match activity {
             CursorActivity::NotApplicable => CursorAxisBehavior::NoCandidate,
@@ -270,17 +261,15 @@ mod tests {
     #[test]
     fn cursor_axis_property_holds_for_every_activity() {
         let activities = all_cursor_activities();
-        // NotApplicable (1) + Skipped×|SkipReason| (3) +
-        // InFlight×|InFlightHealth| (2) + Reviewed×|ReviewedState| (2)
-        // = 8. Adding a variant to any of those four enums requires
-        // updating this length sentinel AND the exhaustive match in
-        // `expected_cursor_axis_behavior` AND the sample list above.
+        // Length sentinel: 1 + 3 + 2 + 2 = 8 across the activity
+        // cross-product. A new variant in any constituent enum
+        // requires updating both the sample list and the sentinel.
         assert_eq!(
             activities.len(),
             8,
-            "`all_cursor_activities` must enumerate every \
-             (CursorActivity × InFlightHealth × ReviewedState × SkipReason) \
-             case: NotApplicable (1) + Skipped×3 + InFlight×2 + Reviewed×2 = 8.",
+            "Sample enumeration must cover NotApplicable + every \
+             Skipped reason + every in-flight health + every \
+             reviewed state.",
         );
         for activity in activities {
             let r = report(activity.clone(), CursorTier::Bronze);

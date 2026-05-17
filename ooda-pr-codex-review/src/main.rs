@@ -55,17 +55,17 @@ struct Args {
     status_comment: bool,
     state_root: Option<PathBuf>,
     trace: Option<PathBuf>,
-    /// Codex review ceiling. `None` means the axis is disabled
-    /// entirely (ooda-pr-equivalent behavior); `Some(level)` enables
-    /// the axis with that level as its upper bound.
+    /// Discriminant for the codex-review axis. `None` disables it
+    /// (axis-disabled behavior is observationally identical to the
+    /// no-codex sibling binary); `Some(level)` enables with that
+    /// level as the reasoning-ladder upper bound.
     codex_review_ceiling: Option<CodexReasoningLevel>,
-    /// Codex review floor — the starting rung of the ladder. Must be
-    /// ≤ ceiling when ceiling is set. Default `Low`.
+    /// Reasoning-ladder lower bound. Invariant: `floor ≤ ceiling`
+    /// when the axis is enabled (validated in `parse_args`).
     codex_review_floor: CodexReasoningLevel,
-    /// Number of parallel `codex review` subprocesses per batch.
-    /// Default 3, must be ≥ 1.
+    /// Per-batch parallelism. Invariant: ≥ 1.
     codex_review_n: u32,
-    /// Path to the `codex` binary. Default `codex` (PATH lookup).
+    /// Codex binary location. Defaults to PATH lookup.
     codex_review_bin: PathBuf,
 }
 
@@ -94,21 +94,25 @@ fn parse_level(s: &str, flag: &str) -> Result<CodexReasoningLevel, String> {
     }
 }
 
-/// Parse CLI args. On failure, returns `Outcome::UsageError(_)` so
-/// the boundary always speaks Outcome — no exception path.
+/// Parse CLI args into `Args` or a synthetic `Outcome::UsageError`.
 ///
-/// `-h` / `--help` short-circuits **before** any other validation:
-/// a pre-scan checks every argument for the help flag; if present
-/// anywhere (including after a malformed `--max-iter` etc.), usage
-/// is printed to stdout and the process exits 0. This matches the
-/// SKILL.md promise that `--help` is honored regardless of position.
+/// # Invariants
+///
+/// - **Totality over argv**: every reachable input yields either
+///   `Ok(Args)` or `Err(Outcome::UsageError(_))`; no panic, no
+///   exception path. The boundary speaks `Outcome` exclusively.
+/// - **Help dominates parse failure**: presence of `-h`/`--help`
+///   anywhere in argv triggers usage-to-stdout and `exit 0`,
+///   regardless of any neighboring malformed flag. Established by
+///   a pre-scan that precedes per-token parsing.
 //
-// Flat per-flag arg-parser table: length IS the spec, one arm per
-// known flag with its parse rules and error messages inline. Splitting
-// into helpers would scatter the flag contract across files.
+// One arm per known flag is intentional: length is the spec.
+// Extracting helpers would scatter the flag contract.
 #[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, Outcome> {
-    // Pre-scan: --help wins over any other parse failure.
+    // Help-pre-scan establishes the help-dominates-parse-failure
+    // invariant; without it, a malformed earlier flag would shadow a
+    // later `--help`.
     if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
         print_usage(&mut std::io::stdout());
         std::process::exit(0);
@@ -138,9 +142,10 @@ fn parse_args() -> Result<Args, Outcome> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                // Unreachable — pre-scan above caught these. Kept
-                // as defense-in-depth in case the pre-scan is ever
-                // restructured.
+                // Unreachable under the help-pre-scan invariant.
+                // Retained as a structural backstop: if the pre-scan
+                // is ever removed, this arm preserves the
+                // help-dominates-parse-failure contract.
                 print_usage(&mut std::io::stdout());
                 std::process::exit(0);
             }
@@ -159,11 +164,12 @@ fn parse_args() -> Result<Args, Outcome> {
                 let Some(v) = iter.next() else {
                     return Err(usage("--max-iter requires a value"));
                 };
-                // Distinguish three rejection cases for actionable error
-                // messages: negative (sign-prefix check), non-numeric
-                // (parse failure), and zero (parsed but invalid). The
-                // validated value flows out as `NonZeroU32` so the
-                // runner's "iter 1 always runs" invariant is structural.
+                // Three rejection classes — negative / non-numeric /
+                // zero — each yields a distinct diagnostic so the
+                // operator can correct without inspecting source.
+                // The validated value is `NonZeroU32`, lifting the
+                // "≥ 1" precondition from a runtime check into the
+                // type system.
                 if v.starts_with('-') {
                     return Err(usage(&format!(
                         "--max-iter must be ≥ 1; got negative value: {v}"
@@ -367,13 +373,12 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
             *o
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
-            // Rate-limited mid-inspect: no orient/decide possible
-            // (we have no observations). Surface the synthetic
-            // WaitForRateLimit through the same Outcome::from
-            // pipeline as any other Execute decision so wrappers
-            // see a `WouldAdvance` exit code with this action's
-            // payload — exactly what the full-loop runner would
-            // dispatch on iter 1.
+            // Rate-limit shortcircuit: with no observations,
+            // orient/decide are undefined. Inject a synthetic
+            // wait-action and project through the same
+            // `Outcome::from(Decision::Execute(_))` pipeline as any
+            // ordinary iteration — invariant: inspect's exit-code
+            // distribution is a subset of loop's.
             let line = format!(
                 "rate-limited on {}; would wait {}s",
                 hit.scope.name(),
@@ -398,9 +403,10 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         eprintln!("{line}");
         recorder.write_trace_line(&line);
     }
-    // Optional codex review observation. Inspect runs one pass — we
-    // only read the filesystem, never spawn — so even an enabled
-    // ceiling here is read-only.
+    // Inspect mode is observation-only: codex review state is
+    // read from the filesystem, never spawned. The axis-enabled /
+    // axis-disabled distinction collapses to "is there an artifact
+    // to read?"; either way, inspect performs no mutation.
     let codex_obs =
         match maybe_fetch_codex(args, recorder, obs.pull_request_view.head_ref_oid.as_str()) {
             Ok(o) => o,
@@ -509,10 +515,14 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
     decorate_handoff_human(outcome, &args.slug, args.pr, snapshot.as_ref())
 }
 
-/// Read the codex review batch state for inspect mode. Returns
-/// `Ok(None)` when the axis is disabled or the head SHA isn't
-/// available yet (codex review observation depends on the PR head
-/// SHA, which inspect gets from the just-completed `fetch_all`).
+/// Read codex-review batch state for inspect mode.
+///
+/// # Result discriminant
+///
+/// `Ok(None)` when the axis is disabled (ceiling unset) — the
+/// caller treats observations-absent and axis-disabled
+/// identically. `Ok(Some(_))` on a successful read; `Err(_)` on
+/// a read failure that warrants surfacing as a binary error.
 fn maybe_fetch_codex(
     args: &Args,
     recorder: &Recorder,
@@ -536,13 +546,22 @@ fn maybe_fetch_codex(
     }
 }
 
-/// Build the codex-review side of the `ActContext`. Returns `Ok(None)`
-/// when the axis is disabled; otherwise discovers the repo root via
-/// `git rev-parse --show-toplevel`, acquires an advisory `flock` on
-/// `<codex_pr_root>/.lock` (so concurrent invocations against the
-/// same PR don't race on batch dirs / `head_sha.txt`), and bundles
-/// the spawn-time data for the runner to refresh with the
-/// per-iteration head SHA + base branch.
+/// Construct the codex-review actuator context.
+///
+/// # Postcondition on `Ok(Some(_))`
+///
+/// - Repo root is resolved (via the VCS CLI).
+/// - The codex PR-root directory exists.
+/// - An advisory `flock` on `<codex_pr_root>/.lock` is held for
+///   the context's lifetime, establishing the
+///   single-active-invocation-per-PR invariant on shared batch
+///   state.
+/// - Per-iteration fields (`head_sha`, `base_branch`) hold
+///   placeholders the runner refreshes per iteration.
+///
+/// # Postcondition on `Ok(None)`
+///
+/// Axis is disabled; no filesystem state was touched.
 fn build_codex_act_context(
     args: &Args,
     recorder: &Recorder,
@@ -587,10 +606,11 @@ fn build_codex_act_context(
         repo_root,
         codex_pr_root,
         n: args.codex_review_n,
-        // head_sha and base_branch are refreshed by the runner each
-        // iteration; placeholders here keep the fields non-Option
-        // and avoid threading Option through the spawn path. Inspect
-        // mode never spawns codex so it does not need these.
+        // Per-iteration fields use non-`Option` placeholders; the
+        // runner refreshes them before each spawn. This sidesteps
+        // threading `Option` through the spawn path while keeping
+        // inspect mode (which never spawns) honest — it can ignore
+        // these fields entirely.
         head_sha: String::new(),
         base_branch: String::new(),
         _lock: lock,
@@ -639,11 +659,10 @@ fn post_result_line(
         Ok(true) => Some(format!("{prefix}: posted")),
         Ok(false) if verbose_skip => Some(format!("{prefix}: skipped (unchanged)")),
         Ok(false) => None,
-        // Flatten newlines so the comment-log line stays single-line
-        // — GhError::NonZero etc. don't strip embedded newlines from
-        // gh's stderr, so a multi-line error would otherwise break the
-        // implied one-line-per-comment-event contract documented in
-        // SKILL.md.
+        // Single-line invariant on comment-event log lines:
+        // `SingleLineString` flattens embedded newlines that the
+        // upstream error type does not strip. Discharges the
+        // one-line-per-comment-event contract at the type level.
         Err(e) => Some(format!(
             "{prefix}: {}",
             ooda_core::SingleLineString::new(e.to_string())
@@ -662,12 +681,9 @@ fn iteration_line(i: u32, d: &Decision) -> String {
             )
         }
         Decision::Halt(halt) => {
-            // Use halt.name() (finite token set) instead of {:?}
-            // so the per-iteration halt line stays single-line
-            // and bounded — Debug would expand AgentNeeded(Action {
-            // effect: ActionEffect::Agent { prompt: ... } }) into the
-            // action payload, which breaks the
-            // one-line-per-iteration invariant.
+            // `halt.name()` projects to a finite token set; `{:?}`
+            // would expand the payload and violate the
+            // one-line-bounded-length-per-iteration invariant.
             match halt_blocker(halt) {
                 Some(blocker) => format!(
                     "[iter {i}] halt: {} blocker: {}",
@@ -689,16 +705,16 @@ fn halt_blocker(halt: &DecisionHalt) -> Option<&ooda_core::BlockerKey> {
     }
 }
 
-/// Snapshot of the per-iteration state that the human-handoff
-/// decorator needs after `run_loop` returns. Captured from the last
-/// `on_state` callback so the post-loop decorator can render the PR
-/// link + a short situational summary without re-observing.
+/// Latest per-iteration context the post-loop handoff decorator
+/// requires. Invariant: captured during the final `on_state`
+/// callback, so decoration never re-observes — the loop's terminal
+/// observations are reused verbatim.
 ///
-/// `dashboard` carries the Phase-B preamble payload (tier-grouped
-/// candidates, per-axis signals, blockers). Constructed at the
-/// boundary from the same `(oriented, candidates, decision)` triple
-/// the recorder uses — option (a) from the spec, kept just-in-time
-/// so no new thread is plumbed through the runner.
+/// `dashboard` carries the tier-grouped candidates / per-axis
+/// signals / blockers projection derived from the same
+/// `(oriented, candidates, decision)` triple the recorder
+/// consumes. Constructed at the boundary so no shared mutable
+/// state crosses the runner seam.
 #[derive(Debug, Clone)]
 struct HandoffSnapshot {
     oriented: orient::OrientedState,
@@ -707,30 +723,28 @@ struct HandoffSnapshot {
     dashboard: Dashboard,
 }
 
-// Rebase is `HandoffAgent`, not `HandoffHuman` — `ActionEffect::Agent`
-// projects to `Outcome::HandoffAgent` in `classify()`. The boundary
-// decorator must cover both classes of outcome where the situational
-// context (PR URL, branch, CI snapshot) is useful to whoever picks up
-// the prompt. As more `HandoffAgent` actions need the same context,
-// add them to `agent_action_needs_context` rather than spawning a
-// sibling decorator per kind.
-/// Append a PR-context block to handoff prompts so the stderr
-/// hand-off is usable on its own — no tab-juggling. Covers every
-/// `HandoffHuman` and the `HandoffAgent` variants whose recipient
-/// also needs the situational frame. Pass-through for every other
-/// `Outcome` variant.
+/// Decorate a handoff `Outcome` so the stderr hand-off is
+/// self-contained: the recipient can act without re-querying the
+/// forge.
 ///
-/// Two layers of decoration:
-/// * The dashboard preamble (Phase B) — universal across every
-///   `HandoffHuman` and `HandoffAgent` outcome. Prepended to the
-///   prompt's sections so the recipient sees tier-grouped
-///   candidates, per-axis signals, and blockers before the
-///   per-action body.
-/// * The per-action context block (5bf9c7c) — gated by the
-///   `agent_action_needs_context` allowlist. Appended via
-///   `push_handoff_context` after the existing prompt body so
-///   `HandoffHuman` and allowlisted `HandoffAgent` recipients pick
-///   up PR URL / branch / CI / reviews on the trailing edge.
+/// # Decoration layers
+///
+/// - **Preamble (universal)**: prepends a dashboard projection —
+///   tier-grouped candidates, per-axis signals, blockers — to every
+///   `HandoffHuman` and `HandoffAgent` outcome. Established by
+///   `prepend_dashboard_preamble`.
+/// - **Per-action context (gated)**: appends PR URL / branch / CI
+///   summary / review summary to `HandoffHuman` outcomes and to
+///   `HandoffAgent` outcomes whose kind passes
+///   `agent_action_needs_context`. Established by
+///   `push_handoff_context`.
+///
+/// # Invariants
+///
+/// - Non-handoff `Outcome` variants pass through unchanged.
+/// - The handoff-agent gate is allowlist-shaped: new kinds opt in
+///   by extension of `agent_action_needs_context`, not by editing
+///   this decorator's match arms.
 fn decorate_handoff_human(
     outcome: Outcome,
     slug: &RepoSlug,
@@ -754,12 +768,11 @@ fn decorate_handoff_human(
     }
 }
 
-/// Prepend the dashboard preamble sections (tier-grouped
-/// candidates, per-axis signals, blockers) to the handoff prompt's
-/// sections vec. No-op when the snapshot is absent (e.g. usage
-/// errors that surface a synthetic handoff without ever entering
-/// the iteration loop) or when the dashboard projects no
-/// candidates (terminal halts already render an empty preamble).
+/// Prepend dashboard preamble sections onto the handoff prompt.
+///
+/// Identity on either of two preconditions: snapshot absent
+/// (synthetic handoff outside the iteration loop) or dashboard
+/// projects no sections (terminal halts).
 fn prepend_dashboard_preamble(
     handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
     snapshot: Option<&HandoffSnapshot>,
@@ -776,20 +789,19 @@ fn prepend_dashboard_preamble(
     handoff.prompt.sections = sections;
 }
 
-/// `HandoffAgent` actions whose prompts benefit from the same
-/// PR / branch / CI context the `HandoffHuman` decorator appends.
-/// Today: `Rebase` (returning human triages the merge state).
-/// Add new variants here rather than open-coding the match at the
-/// call site.
+/// Allowlist predicate: which `HandoffAgent` kinds receive the
+/// trailing per-action context block. Extension point — new kinds
+/// opt in here; callers do not branch on `kind`.
 fn agent_action_needs_context(kind: &decide::action::ActionKind) -> bool {
     matches!(kind, decide::action::ActionKind::Rebase)
 }
 
-/// Append the boundary context onto the handoff prompt.
-/// `HandoffAction` exposes `prompt` as a direct field, so there's
-/// no inner `match` on `ActionEffect` and no `unreachable!()` —
-/// the structural projection done in `classify()` carries the
-/// invariant.
+/// Append boundary context lines (PR URL, blocker, branch, CI,
+/// reviews) onto the handoff prompt.
+///
+/// Total over `HandoffAction`: `prompt` is a direct field, so the
+/// structural projection in `classify()` discharges what would
+/// otherwise be an `unreachable!()` arm over `ActionEffect`.
 fn push_handoff_context(
     handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
     slug: &RepoSlug,
@@ -829,11 +841,12 @@ fn push_handoff_context(
     }
 }
 
-/// Append a `Closeout: attested at <ts> (sha <short>)` line when the
-/// closeout axis is `Synced` at current HEAD AND the attestation file
-/// is readable. No line otherwise — the absence is itself a signal
-/// (Closeout never fires past convergence; absence on a `HandoffHuman`
-/// path implies the loop bailed out before reaching the gate).
+/// Append a closeout attestation line iff both: closeout axis is
+/// `Synced` at current HEAD, AND the attestation file is readable.
+///
+/// Absence is a signal: closeout does not fire past convergence,
+/// so an unattested handoff path implies the loop yielded before
+/// reaching the gate.
 fn push_closeout_context_line(
     prompt: &mut ooda_core::HandoffPrompt,
     oriented: &orient::OrientedState,
@@ -857,17 +870,19 @@ fn push_closeout_context_line(
     );
 }
 
-/// Render `Outcome` to a writer (typically stderr) per the SKILL
-/// contract: single-line header, optionally followed by a pointer
-/// block (`Handoff*` variants). No trailing content.
+/// Render `Outcome` to a writer (typically stderr).
 ///
-/// `handoff_path` is the absolute path of the per-iteration
-/// `handoff.md` file the recorder wrote for this outcome
-/// (`runs/<run-id>/iterations/<NNNN>/handoff.md`). When `Some`, the
-/// emitted block is `  see: <path>` (a 7-byte sentinel + absolute
-/// path on one line); the agent reads the prompt body from the
-/// file. When `None` (recorder unavailable, or tests), the
-/// fallback is the legacy `  prompt: <body>` inline block.
+/// # Output contract
+///
+/// - **Header**: exactly one line per call, of the form
+///   `<Variant>[: <suffix>]`.
+///   Carries the bounded-token-set variant name plus a per-variant
+///   single-line suffix.
+/// - **Body** (handoff variants only): one pointer block written by
+///   `write_handoff_block`, choosing path-form or inline form by
+///   the `handoff_path` discriminant.
+/// - **Trailer**: none, except `UsageError` which appends usage to
+///   the same writer.
 fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Option<&Path>) {
     match oc {
         Outcome::DoneSucceeded => {
@@ -921,22 +936,21 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
     }
 }
 
-/// Write the handoff block. Two shapes:
+/// Write the handoff block in one of two shapes.
 ///
-/// - **Path form** (`handoff_path = Some`): one line beginning with
-///   the literal 7-byte sequence `␣␣see:␣` (two spaces, "see",
-///   colon, space) followed by the absolute path of the
-///   per-iteration `handoff.md` file holding the prompt body
-///   (`runs/<run-id>/iterations/<NNNN>/handoff.md`). The agent
-///   reads that file to obtain the prompt; the file's size is
-///   observable via `stat` before commit, so consumption has no
-///   truncation pressure. This is the production path.
+/// # Path form (`handoff_path = Some`)
 ///
-/// - **Inline fallback** (`handoff_path = None`): one line beginning
-///   with the legacy 10-byte sequence `␣␣prompt:␣` followed by the
-///   description content. Continuation lines carry no prefix; the
-///   block ends at the last byte of content. Used by tests and as a
-///   defensive fallback when the recorder is unavailable.
+/// Single line with leading sentinel `␣␣see:␣` followed by an
+/// absolute path to a recorder-written file holding the prompt
+/// body. **Invariant**: prompt size is bounded by the file's stat
+/// — consumption is decoupled from the stderr stream's
+/// truncation budget. Production path.
+///
+/// # Inline fallback (`handoff_path = None`)
+///
+/// Single line with leading sentinel `␣␣prompt:␣` followed by the
+/// prompt body inline; continuation lines unprefixed. Used when
+/// the recorder is unavailable (e.g. tests).
 fn write_handoff_block(
     out: &mut dyn std::io::Write,
     description: &str,
@@ -949,11 +963,11 @@ fn write_handoff_block(
     }
 }
 
-/// Format `ActionEffect` for the `WouldAdvance` stderr render.
-/// `Wait{interval, ..}` becomes `Wait(<duration>)` with the duration
-/// in the smallest sensible compound unit (s, m, m+s). The log/prompt
-/// payload is intentionally omitted — that's what `write_prompt_block`
-/// renders separately for handoff variants.
+/// Project `ActionEffect` to a single-line tag suitable for the
+/// `WouldAdvance` header. The Wait variant carries a duration
+/// rendered in the smallest compound unit (s / m / m+s); payload
+/// fields (log, prompt) are discarded — handoff-prompt rendering
+/// is the responsibility of `write_handoff_block`.
 fn format_effect(e: &ActionEffect) -> String {
     match e {
         ActionEffect::Full { .. } => "Full".to_string(),

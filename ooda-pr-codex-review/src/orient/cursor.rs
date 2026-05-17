@@ -1,24 +1,23 @@
-//! Cursor orient: project Cursor's `check_suite` + `check_run` + reviews
-//! into the per-PR Cursor activity state.
+//! Project a push-driven reviewer's check-suite, check-run, and
+//! review submissions into a per-PR activity state.
 //!
-//! ## Why this axis diverges
+//! # Invariants
 //!
-//! Cursor's state machine is deliberately divergent from Copilot's
-//! (Idle/Requested(Health)/Working(Health)/Reviewed) and CI's
-//! (Idle/InFlight(Vec<PendingCheck>)/Resolved). Cursor is push-driven
-//! (no `review_requested` event), has no remediation API (cannot
-//! re-poke a stalled suite — posting a `cursor review` comment
-//! doesn't unstick Cursor's own backend queue), and has first-class
-//! non-presence states (`NotApplicable`, Skipped) because Cursor
-//! explicitly declines some PRs server-side (Dependabot author
-//! class, repo opt-out). See feedback-domain-shapes-design memory:
-//! when domains diverge, don't force a meta-structure across axes.
-//!
-//! Concretely, that means no `AxisHealth<S>` lift here — Cursor's
-//! health is binary (Healthy or Failed), the `InFlight` payload is
-//! nullary, the Skipped variant carries a `SkipReason` for diagnostic
-//! distinction, and there is no Symptom enum because Cursor has a
-//! single failure mode (stalled `check_suite` on Cursor's servers).
+//! - **Push-driven, not request-driven**: this reviewer self-elects
+//!   on push; there is no request-event in the lifecycle and no axis
+//!   action remediates a stalled queue (the reviewer's own backend
+//!   already holds the work).
+//! - **Binary in-flight health**: no degraded intermediate. Healthy
+//!   or Failed — without a remediation API, a degraded variant
+//!   carries no actionable distinction from Failed.
+//! - **First-class non-presence**: the reviewer explicitly declines
+//!   some authors and some repos server-side, so declination is a
+//!   typed lifecycle state, not an absence. Repo-level absence and
+//!   per-PR declination are distinct variants so post-hoc analysis
+//!   can tell them apart.
+//! - **Domain-honest shape**: the activity lattice diverges from
+//!   request-driven reviewer axes by design — when domains diverge,
+//!   accept divergence rather than force a meta-structure.
 
 use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::cursor_status::{
@@ -39,11 +38,10 @@ pub(crate) fn is_cursor(login: &str) -> bool {
     CURSOR_LOGINS.contains(&login)
 }
 
-/// Login slugs Cursor's server-side filter declines automatically.
-/// Hardcoded short list is fine for v1; extend when a new automation
-/// vendor enters the org's PR mix. Matches the bare login AND the
-/// `[bot]`-suffixed form because the GraphQL and REST surfaces emit
-/// different shapes.
+/// Login slugs the reviewer's server-side filter declines on author
+/// class. Covers both the bare and bot-suffixed forms because the
+/// host's GraphQL and REST surfaces emit different shapes for the
+/// same identity.
 const BOT_AUTHOR_SLUGS: &[&str] = &[
     "dependabot[bot]",
     "dependabot",
@@ -62,15 +60,11 @@ fn is_bot_author(author: &PullRequestAuthor) -> bool {
 
 // ── Stall threshold ──────────────────────────────────────────────────
 
-/// Time Cursor is allowed between `check_suite` creation (or `check_run`
-/// start) and a terminal state before the in-flight stage is treated
-/// as Failed.
-//
-// ~2× p95 pickup of 7.3m (n=126 across protocol/infrastructure/
-// explorer, ~30d sample). Below the observed max of 2.6h (outliers
-// at p99=14.6m), pads enough that healthy pickups don't trip the
-// detector while still catching the canonical stuck-suite pattern
-// (suite stuck queued > 1h).
+/// Maximum dwell from suite creation (or run start) to a terminal
+/// state before the in-flight stage classifies as Failed. Sized at
+/// ~2× the observed p95 pickup latency over a multi-repo sample —
+/// pads well above legitimate pickups while catching the canonical
+/// stuck-suite pattern.
 pub(crate) const STALL_TIMEOUT: chrono::Duration = chrono::Duration::minutes(15);
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -86,101 +80,74 @@ pub(crate) struct CursorReport {
     pub tier: CursorTier,
     /// Latest review observed at HEAD (`latest.commit == head`).
     pub fresh: bool,
-    /// `created_at` from the Cursor `check_suite` when present.
-    /// `None` when no suite has been observed for this PR
-    /// (`NotApplicable`, Skipped, or a round-only history). Decide's
-    /// `EscalateCursorStalled` prompt surfaces the suite's age so
-    /// the human sees "stalled since <ts>, ~N minutes ago" rather
-    /// than just a generic `STALL_TIMEOUT` mention.
+    /// Suite-creation timestamp when a suite has been observed.
+    /// Surfaced so the escalation prompt anchors the stall in
+    /// absolute time rather than only naming the threshold.
     pub suite_created_at: Option<Timestamp>,
 }
 
-// Cursor's state machine is deliberately divergent from Copilot's
-// (Idle/Requested(Health)/Working(Health)/Reviewed) and CI's
-// (Idle/InFlight(Vec<PendingCheck>)/Resolved). Cursor is push-driven
-// (no request event), has no remediation API (cannot poke), and has
-// first-class non-presence states (NotApplicable, Skipped). See
-// feedback-domain-shapes-design memory — don't force a meta-structure
-// across axes when domains diverge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum CursorActivity {
-    /// Cursor not active in this repo — no Cursor `check_suite` ever
-    /// observed for this PR's HEAD AND the author isn't on the
-    /// bot-class skip list. Repo-level absence.
+    /// Repo-level absence — no suite ever observed and no per-PR
+    /// declination signal.
     NotApplicable,
-    /// Cursor declined this PR. Per-PR refusal — distinct from
-    /// repo-level `NotApplicable` for diagnostic purposes (the JSONL
-    /// record carries the reason).
+    /// Per-PR declination — distinct from repo-level absence so
+    /// post-hoc analysis can identify which class of refusal fired.
     Skipped(SkipReason),
-    /// Cursor's `check_suite` (and maybe child `check_run`) is pending.
-    /// Health is binary — see [`InFlightHealth`].
+    /// Suite (and optionally run) is in flight. Health is binary;
+    /// see [`InFlightHealth`].
     InFlight(InFlightHealth),
-    /// Cursor's `check_run` reached a terminal state on this HEAD.
+    /// Run reached a terminal state on this HEAD.
     Reviewed(ReviewedState),
 }
 
-// First-class distinction from Copilot/CI: Cursor explicitly declines
-// some PRs (e.g., Dependabot author class). NotApplicable is
-// repo-level absence; Skipped is per-PR refusal. Distinguishing them
-// helps post-hoc analysis even though both delegate to no action.
-//
-// `RepoConfig` and `Unknown` are part of the contract but v1's
-// classifier only emits `AuthorClass` — no Cursor config-fetch path
-// exists yet, and the classifier falls back to `NotApplicable` rather
-// than `Skipped(Unknown)` to avoid noise. The variants stay first-
-// class so the JSONL schema is stable when those paths land.
+// Variants are emitted selectively — `AuthorClass` is the only one
+// the present classifier produces. `RepoConfig` and `Unknown` are
+// reserved for paths that gain evidence (config probe, additional
+// disambiguators); their presence locks the wire schema against
+// silent rename when those paths land.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum SkipReason {
-    /// Author is in Cursor's bot-class filter (Dependabot, Renovate,
-    /// GitHub Actions). Detected at observe boundary; the activity
-    /// classifier never sees a "missing check" it can't explain for
-    /// these PRs.
+    /// Author belongs to the reviewer's bot-class filter. Detected at
+    /// the observe boundary; the activity classifier never sees a
+    /// missing-check it cannot explain on such PRs.
     AuthorClass,
-    /// Repo opted out of Cursor (configurable on cursor.com). v1 does
-    /// not have a config probe; this variant is reserved for the
-    /// future config-fetch path. Today the classifier emits Unknown
-    /// instead.
+    /// Repo-level opt-out via reviewer-side configuration.
     RepoConfig,
-    /// Suite absent but author isn't bot-class — could be repo
-    /// opt-out, seat coverage gap, or a silent Cursor backend failure
-    /// we cannot disambiguate from outside. Catch-all rather than a
-    /// false-positive InFlight(Failed).
+    /// Suite absent and no positive signal disambiguates between
+    /// opt-out, seat-coverage gap, or silent backend failure. Catch-
+    /// all that prevents false-positive in-flight classification.
     Unknown,
 }
 
-// Two states only: Healthy or Failed. No Degraded intermediate.
-// Rationale: when Cursor's check_suite is stalled on Cursor's servers,
-// posting a 'cursor review' comment doesn't unstick the queue (Cursor
-// already knows about the PR). No remediation → no retry budget →
-// straight to escalation on threshold trip.
+// Binary by design: with no remediation API, a degraded intermediate
+// carries no actionable distinction from Failed — threshold trip goes
+// straight to escalation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum InFlightHealth {
-    /// Within `STALL_TIMEOUT` of either the suite's creation (when no
-    /// child run exists yet) or the run's `started_at` (or the
-    /// suite's `created_at` as fallback when the run has no
-    /// `started_at`).
+    /// Within `STALL_TIMEOUT` of the most-specific available anchor:
+    /// run-start when present, else suite-creation.
     Healthy,
-    /// `STALL_TIMEOUT` elapsed. No remediation; the decide layer
-    /// escalates directly to a human handoff.
+    /// `STALL_TIMEOUT` elapsed. Decide escalates to human handoff.
     Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ReviewedState {
-    /// Run completed with no findings posted as a review on this
-    /// commit. Cursor's `success` conclusion is normal-and-quiet.
+    /// Run completed without findings posted as a review on this
+    /// commit.
     Clean,
-    /// Run completed with findings. Either `success` + a cursor[bot]
-    /// review row exists on this commit, or `neutral` disambiguated
-    /// to "issues found" via the cross-ref join on `/pulls/{n}/reviews`.
-    /// Existing thread-addressing path (the generic `AddressThreads`
-    /// from the reviews axis) handles the actual remediation.
+    /// Run completed with findings on this commit. Resolved either
+    /// by a positive conclusion plus a co-located review row, or by
+    /// disambiguating an overloaded conclusion via the same cross-
+    /// ref. Remediation is handled by the generic threads axis.
     HasFindings,
 }
 
-/// Project Cursor activity onto a dashboard signal. `NotApplicable`
-/// returns `None` — repo/PR has no Cursor signal at all.
+/// Project the activity into a dashboard signal. `NotApplicable`
+/// returns `None` so the dashboard does not emit a row when the
+/// reviewer is silent on this PR.
 pub(crate) fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
@@ -235,9 +202,9 @@ pub(crate) struct CursorSeverityBreakdown {
 }
 
 impl CursorSeverityBreakdown {
-    /// `["2 high", "1 medium"]` — only non-zero buckets, in order.
-    /// Used to render compact severity summaries in prompts and
-    /// PR comments.
+    /// Compact severity rendering — non-zero buckets only, in
+    /// descending-severity order. Used by prompt and PR-comment
+    /// renderers.
     pub(crate) fn nonzero_parts(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if self.high > 0 {
@@ -253,8 +220,9 @@ impl CursorSeverityBreakdown {
     }
 }
 
-/// Same tier lattice as Copilot — kept as a separate type to prevent
-/// accidental cross-bot comparison without explicit choice.
+/// Reviewer-specific tier lattice. Distinct type from sibling
+/// reviewer tiers so cross-reviewer comparison is an explicit
+/// choice at every call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum CursorTier {
     Bronze,
@@ -276,18 +244,13 @@ impl CursorTier {
 
 // ── Public entry point ───────────────────────────────────────────────
 
-/// Project Cursor's per-HEAD signal into the orient state. Always
-/// returns `Some` once any signal exists; emits `Some(NotApplicable)`
-/// only when both Cursor and the per-PR Skip detector agree there's
-/// nothing here.
+/// Project per-HEAD reviewer signal into the orient state.
 ///
-/// Returns `None` purely to preserve the existing
-/// `Option<CursorReport>` field shape — `None` happens when neither
-/// the suite, prior rounds, nor an author signal give the classifier
-/// anything to project. In practice this collapses with `NotApplicable`;
-/// the Option layer is kept so the rendering and JSONL paths can
+/// Returns `Some` once any signal exists (suite, round, or author);
+/// returns `None` when no observation source contributes anything.
+/// The Option layer is preserved so downstream consumers can
 /// distinguish "no observation at all" from "observation says
-/// `NotApplicable`".
+/// `NotApplicable`."
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn orient_cursor(
     reviews: &[PullRequestReview],
@@ -299,9 +262,9 @@ pub(crate) fn orient_cursor(
 ) -> Option<CursorReport> {
     let rounds = correlate_rounds(reviews);
 
-    // No signal at all → no report. The Option carries this
-    // distinction even though NotApplicable would render identically;
-    // a downstream JSONL consumer can tell the two apart.
+    // No signal → no report; preserves the "no observation" vs
+    // "NotApplicable observation" distinction for downstream
+    // consumers.
     if rounds.is_empty() && cursor_status.suite.is_none() && author.is_none() {
         return None;
     }
@@ -328,11 +291,11 @@ pub(crate) fn orient_cursor(
 
 // ── Body parsing ─────────────────────────────────────────────────────
 
-/// Parse "found N potential issue(s)" from a Cursor review body.
-/// Digit-run after `found ` is the authoritative terminator;
-/// `" potential issue"` is no longer required as a delimiter (was
-/// brittle to wording shifts that placed other text between count
-/// and noun).
+/// Extract the integer finding count from a review body.
+///
+/// Class invariant: the digit-run immediately following the count
+/// prefix is the authoritative terminator. Surrounding-noun matching
+/// is brittle to wording drift; the digit run is not.
 pub(crate) fn parse_findings_count(body: &str) -> u32 {
     let Some(start) = body.find("found ") else {
         return 0;
@@ -342,12 +305,12 @@ pub(crate) fn parse_findings_count(body: &str) -> u32 {
     digits.parse().unwrap_or(0)
 }
 
-/// Parse the first severity tag — `**High Severity**` etc. — in a
-/// thread comment body. Picks the severity whose literal appears
-/// earliest positionally in `body`; previous version found the
-/// first `**` then required the next `**` to close around
-/// `[High|Medium|Low] Severity`, which broke on any other bold
-/// span preceding the severity tag.
+/// Extract the leading severity tag from a thread body.
+///
+/// Class invariant: positional-earliest literal wins. Delimiter-
+/// shape matching (find an opener, expect a literal between
+/// closers) admits false anchors from any other emphasis span;
+/// positional-min over literal scans is robust to that.
 fn parse_severity(body: &str) -> Option<Severity> {
     [
         ("**High Severity**", Severity::High),
@@ -394,9 +357,9 @@ fn correlate_rounds(reviews: &[PullRequestReview]) -> Vec<CursorReviewRound> {
         .collect()
 }
 
-/// Cross-ref join: does cursor[bot] have a review row anchored to
-/// `head`? This is the disambiguator for the `neutral` conclusion AND
-/// the witness for `success` + findings-present.
+/// Witness predicate: a co-located review row anchored to HEAD.
+/// Disambiguates the overloaded conclusion arm and witnesses
+/// findings-present on the success arm.
 fn reviews_at_head(reviews: &[PullRequestReview], head: &GitCommitSha) -> bool {
     reviews.iter().any(|r| {
         r.commit_id == *head && r.user.as_ref().is_some_and(|u| is_cursor(u.login.as_str()))
@@ -432,11 +395,11 @@ fn count_severity(threads: &ReviewThreadsResponse) -> CursorSeverityBreakdown {
 
 // ── Tier scoring ─────────────────────────────────────────────────────
 
-/// Tier rules (first match wins):
-///   bronze:   unresolved>0 OR (no rounds AND no suite)
-///   silver:   unresolved=0 AND suite `queued/in_progress` AND prior round
-///   gold:     unresolved=0 AND rounds present AND no in-flight suite
-///   platinum: suite completed with success-conclusion run at HEAD
+/// Tier classification, first-match-wins:
+///   bronze:   actionable threads present OR no rounds and no suite
+///   silver:   no actionable threads, suite still in flight, prior round
+///   gold:     no actionable threads, rounds present, no in-flight suite
+///   platinum: suite completed with a success-conclusion run at HEAD
 fn score_tier(
     rounds: &[CursorReviewRound],
     threads: &BotThreadSummary,
@@ -491,11 +454,9 @@ fn derive_activity(
     has_review_row_at_head: bool,
     now: Timestamp,
 ) -> CursorActivity {
-    // Must query check_suites endpoint, not just check_runs. The
-    // canonical Cursor stall (~7% of PRs in a 30d sample) is a stuck
-    // check_suite (queued, no child check_run ever created).
-    // Invisible to `check_name=Cursor Bugbot` filtering, which is
-    // what `PullRequestCheck` ultimately sees.
+    // The canonical stall has no child run — it is suite-only and
+    // therefore invisible to name-filtered check observation. The
+    // suite source is the only one that can witness it.
     let Some(suite) = cursor_status.suite.as_ref() else {
         return classify_no_suite(author);
     };
@@ -507,11 +468,9 @@ fn derive_activity(
             (CheckRunStatus::Completed, Some(concl)) => {
                 classify_completed(concl, has_review_row_at_head)
             }
-            // Completed without a conclusion is an undocumented but
-            // observed eventual-consistency state (the API has
-            // marked the run completed before the conclusion field
-            // populates). Treat as still-running for the threshold
-            // calculation — re-observe on next tick.
+            // Eventual-consistency window: status reaches a terminal
+            // value before conclusion populates. Treated as still-
+            // running so the next observation tick reconciles.
             (CheckRunStatus::Completed, None) => {
                 in_flight_health_from_run_anchor(run.started_at, suite.created_at, now)
             }
@@ -527,33 +486,26 @@ fn derive_activity(
     }
 }
 
-// Cursor declines Dependabot-class PRs by author policy (their
-// server-side filter). Detect at observe boundary; surface as
-// Skipped(AuthorClass) so the health detector doesn't false-positive
-// on the 'no check at all' signal.
+// No-suite branch: classify the absence rather than collapse it to
+// the in-flight lattice. Bot-class authorship witnesses a per-PR
+// declination; everything else (no author, non-bot author with no
+// suite) routes to repo-level absence — the classifier has no
+// positive evidence the reviewer is active here.
 fn classify_no_suite(author: Option<&PullRequestAuthor>) -> CursorActivity {
     match author {
         Some(a) if is_bot_author(a) => CursorActivity::Skipped(SkipReason::AuthorClass),
-        // No author available — treat as repo-level absence to avoid
-        // a noisy Skipped(Unknown) when the PR view fetch race-
-        // conditioned the author field. Same fallback as a known
-        // non-bot author on a repo that's never seen a Cursor run:
-        // the activity classifier has no positive evidence Cursor
-        // is active here.
         Some(_) | None => CursorActivity::NotApplicable,
     }
 }
 
 fn classify_suite_without_run(suite: &CursorCheckSuite, now: Timestamp) -> CursorActivity {
     match suite.status {
-        CheckSuiteStatus::Completed => {
-            // Suite reported `completed` without ever spawning a
-            // child run — Cursor cancelled before producing output.
-            // No review on this HEAD by construction (the run is
-            // where the review would have come from). Treat as a
-            // backend cancellation: Failed.
-            CursorActivity::InFlight(InFlightHealth::Failed)
-        }
+        // Suite terminal without ever spawning a run is a backend-
+        // cancellation signature — no run means no possible review
+        // on this HEAD. Failed by construction.
+        CheckSuiteStatus::Completed => CursorActivity::InFlight(InFlightHealth::Failed),
+        // Still-pending suite: classify by the stall threshold from
+        // suite creation.
         CheckSuiteStatus::Queued | CheckSuiteStatus::InProgress | CheckSuiteStatus::Unknown => {
             if now.at() - suite.created_at.at() >= STALL_TIMEOUT {
                 CursorActivity::InFlight(InFlightHealth::Failed)
@@ -564,12 +516,10 @@ fn classify_suite_without_run(suite: &CursorCheckSuite, now: Timestamp) -> Curso
     }
 }
 
-// Cursor's neutral conclusion is overloaded: could mean 'issues found
-// and posted as review comments' OR 'Cursor backend cancelled /
-// internal error'. Disambiguate via cross-ref join on
-// /pulls/{n}/reviews — if cursor[bot] review row exists on this
-// commit, treat as HasFindings; otherwise treat as backend-cancel →
-// InFlight(Failed).
+// The neutral arm is overloaded — findings-posted vs backend-cancel
+// share the same wire value. Disambiguate via the co-located-review-
+// row predicate: presence witnesses findings, absence routes to
+// failure.
 fn classify_completed(
     conclusion: CheckRunConclusion,
     has_review_row_at_head: bool,
@@ -593,9 +543,8 @@ fn classify_completed(
         | CheckRunConclusion::TimedOut
         | CheckRunConclusion::Cancelled
         | CheckRunConclusion::StartupFailure => CursorActivity::InFlight(InFlightHealth::Failed),
-        // Skipped / ActionRequired / Stale / Unknown: treat as
-        // "Cursor decided not to act on this run". No actionable
-        // remediation; collapse to Clean so the loop doesn't loop.
+        // Reviewer-declined-to-act conclusions. Collapse to Clean so
+        // the loop does not loop on a non-actionable signal.
         CheckRunConclusion::Skipped
         | CheckRunConclusion::ActionRequired
         | CheckRunConclusion::Stale
@@ -603,9 +552,10 @@ fn classify_completed(
     }
 }
 
-/// Health from the per-run timing anchor. Uses `started_at` when
-/// present, else falls back to the suite's `created_at` (a run that
-/// has not yet started has no per-run anchor of its own).
+/// Classify in-flight health against the most-specific timing
+/// anchor available: run-start when populated, otherwise suite-
+/// creation. Threshold-cross routes to Failed; under-threshold
+/// routes to Healthy.
 fn in_flight_health_from_run_anchor(
     started_at: Option<Timestamp>,
     suite_created_at: Timestamp,

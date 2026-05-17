@@ -1,15 +1,15 @@
-//! Act stage: execute Full actions, sleep on Wait actions.
+//! Act stage: realise an action's side effect.
 //!
-//! Decide has already routed Agent and Human actions to Halt — they
-//! never reach act. Anything that arrives here is either Full (we
-//! run it) or Wait (we sleep `interval` and return).
+//! Domain invariant: only the two driver-side action effects reach
+//! this stage. Decide is responsible for halting on the external-
+//! resolver arms (Agent / Human) before they get here; an
+//! external-resolver action arriving at this boundary is a
+//! programmer error and surfaces as `UnsupportedAutomation`.
 //!
-//! `ActContext` carries per-iteration runtime configuration so the
-//! action enum can stay payload-slim. The PR-side fields
-//! (`slug`, `pr`) are always populated. The optional `codex` field
-//! is `Some` whenever the codex review axis is enabled and supplies
-//! the spawn-time data (binary path, repo root, batch dir root,
-//! current head SHA).
+//! Runtime configuration travels alongside the action via
+//! [`ActContext`] rather than on the action payload, keeping the
+//! decide-stage type narrow. Optional axes (codex) attach optional
+//! sub-contexts that act draws on only when their action arms fire.
 
 pub(crate) mod address_claude_review;
 mod ci;
@@ -33,16 +33,17 @@ use crate::orient::state::WIP_LABEL;
 
 #[derive(Debug)]
 pub enum ActError {
-    /// Decide guarantees `act()` only sees Full or Wait actions; an
-    /// Agent or Human action here is a programmer error.
+    /// An external-resolver action reached the driver. Decide is
+    /// contractually obliged to halt on those; reaching here is a
+    /// programmer error rather than a runtime condition.
     UnsupportedAutomation,
-    /// `gh` subprocess failed for a Full action.
+    /// Subprocess invocation for a driver-side action failed.
     Gh(GhError),
-    /// A codex review action fired but the runner's `ActContext`
-    /// has `codex = None` (codex axis disabled). Programmer error:
-    /// the codex axis must be enabled before its actions can dispatch.
+    /// A codex-axis action dispatched while the per-iteration
+    /// context lacks the codex sub-context. Programmer error: the
+    /// sub-context is the witness that the axis is enabled.
     CodexDisabled,
-    /// Codex review subprocess spawn / I/O error.
+    /// Codex subprocess spawn or backing I/O failed.
     CodexSpawn { slot: u32, source: std::io::Error },
 }
 
@@ -73,41 +74,40 @@ impl From<GhError> for ActError {
     }
 }
 
-/// Codex review side of [`ActContext`]. Static per invocation
-/// except `head_sha` and `base_branch`, which the runner refreshes
-/// from each iteration's observe so the batch directory naming and
-/// the `head_sha.txt` stamp track the PR's head, and the spawned
-/// `codex review --base <base>` argv stays consistent with what
-/// the PR's `pull_request_view.base_ref_name` reports.
+/// Codex-axis attachment for [`ActContext`].
 ///
-/// `_lock` is an advisory `flock(2)` on `<codex_pr_root>/.lock`
-/// held for the duration of the invocation; concurrent
-/// `ooda-pr-codex-review` runs against the same PR with codex
-/// enabled would otherwise race on batch directory writes and the
-/// `head_sha.txt` stamps. The lock is FD-tied, so it releases on
-/// process exit even on SIGKILL — stale `.lock` files from crashed
-/// processes never block subsequent runs.
+/// Static-per-invocation fields name the side-effect surface (binary,
+/// repo root, batch tree root). `head_sha` and `base_branch` refresh
+/// each iteration from observe so the side-effects continue to anchor
+/// on the PR's current head and base — without that the batch tree
+/// and the spawned argv would silently desynchronise.
+///
+/// `_lock` is an advisory file lock held FD-tied for the invocation's
+/// lifetime; concurrent drivers against the same PR would otherwise
+/// race on batch directory writes. The lock releases on process exit
+/// by any path (including SIGKILL), so a crashed process never leaves
+/// a stale lock that blocks subsequent invocations.
 #[derive(Debug)]
 pub(crate) struct CodexActContext {
     pub codex_bin: PathBuf,
     pub repo_root: PathBuf,
-    /// `<state-root>/github.com/<owner>/<repo>/prs/<pr>/codex/`
+    /// Root of the per-PR codex batch tree.
     pub codex_pr_root: PathBuf,
-    /// Configured `-n`.
+    /// Configured spawn count per batch.
     pub n: u32,
-    /// PR head SHA observed this iteration. Drives the batch dir
-    /// (one batch tree per head SHA — stale heads survive as cache).
+    /// PR head SHA at this iteration. Partitions the batch tree
+    /// by head — stale heads survive as cache rather than being
+    /// overwritten.
     pub head_sha: String,
-    /// PR base branch observed this iteration. Passed verbatim to
-    /// `codex review --base <branch>` so the review diffs the local
-    /// worktree against the PR's GitHub-recorded base.
+    /// PR base branch at this iteration. Forwarded to the codex
+    /// subprocess so the diff base tracks the PR's recorded base.
     pub base_branch: String,
-    /// Advisory lock file handle. Held for the invocation's
-    /// lifetime; releases on FD close (process exit).
+    /// FD-tied advisory lock. Released on FD close.
     pub _lock: std::fs::File,
 }
 
-/// Per-iteration act-stage context.
+/// Per-iteration act-stage context. The action enum stays narrow
+/// because runtime data lives here.
 #[derive(Debug)]
 pub(crate) struct ActContext {
     pub slug: RepoSlug,
@@ -115,8 +115,7 @@ pub(crate) struct ActContext {
     pub codex: Option<CodexActContext>,
 }
 
-/// Execute (or wait for) one action. Returns Ok on success;
-/// caller's loop re-iterates after this returns.
+/// Realise one action's side effect; the caller re-iterates on Ok.
 pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => run_full(&action.kind, ctx),
@@ -131,6 +130,8 @@ pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
 }
 
 fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
+    // Borrow targets for the subprocess's borrowed argv must
+    // outlive the call.
     let pr_s = ctx.pr.to_string();
     let slug_s = ctx.slug.to_string();
     match kind {
@@ -146,9 +147,8 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
         ])?,
         ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(&ctx.slug, ctx.pr)?,
         ActionKind::ReRunWorkflow { checks } => {
-            // Iterate every degraded check; each carries its own
-            // workflow run handle. Fail-fast on the first GH error —
-            // the next iteration re-observes from scratch.
+            // Fail-fast on the first per-check error; the next
+            // iteration re-observes from a fresh upstream state.
             for c in checks {
                 ci::rerun_workflow(&ctx.slug, &c.run_id)?;
             }
@@ -218,11 +218,9 @@ fn spawn_codex_review_batch(
     Ok(())
 }
 
-/// Build the `codex review --base <PR base>` argv. The runner runs
-/// the unified binary against a PR whose head is checked out locally,
-/// so the `--base` selection drives codex to review the diff between
-/// the current worktree and the PR's base branch (typed payload from
-/// [`CodexActContext::base_branch`], refreshed each iteration).
+/// Build the codex-subprocess argv. The reasoning level and the
+/// PR's recorded base branch are the only per-spawn parameters;
+/// everything else is invariant across the batch.
 fn build_codex_args(level: CodexReasoningLevel, base_branch: &str) -> Vec<OsString> {
     vec![
         OsString::from("review"),

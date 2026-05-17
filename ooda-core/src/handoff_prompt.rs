@@ -1,73 +1,56 @@
 //! Structured handoff prompt body.
 //!
-//! When an action carries `ActionEffect::Agent` or `ActionEffect::Human`,
-//! the binary surfaces a *prompt* to the caller — the most
-//! caller-visible artifact the family produces. A prompt is what
-//! a human reads to triage a PR, what an agent receives as its
-//! instruction stream, what gets stored in the recorder as the
-//! handoff payload.
+//! A handoff effect surfaces a *prompt* to its caller — the most
+//! externally-visible artifact a binary in this family produces.
+//! [`HandoffPrompt`] gives that artifact structural shape so it is
+//! addressable component-by-component rather than as a free string:
 //!
-//! [`HandoffPrompt`] gives that artifact type-level structure:
+//! * `headline` — the first-read one-line summary. The
+//!   [`SingleLineString`] type forbids embedded newlines.
+//! * `sections` — ordered components, each variant of
+//!   [`PromptSection`] capturing a distinct rendering shape (prose,
+//!   numbered list, per-item witnesses with bodies, key/value
+//!   triage context).
 //!
-//! * `headline` — the first line, a one-line summary the recipient
-//!   reads first. [`SingleLineString`] enforces no embedded
-//!   newlines.
-//! * `sections` — ordered structured components. Each
-//!   [`PromptSection`] variant captures a distinct rendering shape
-//!   (free prose, numbered list, per-item witnesses with bodies,
-//!   key/value triage context).
-//!
-//! Previously the prompt was a freeform `String` assembled via
-//! `format!` / `push_str`, with the boundary "context block" (PR
-//! URL, blocker, branch, CI snapshot, reviews) string-concatenated
-//! on at handoff time. The new shape preserves the same rendered
-//! output — `Display` produces a byte-identical text block — while
-//! making the components individually addressable for any future
-//! programmatic consumer.
+//! `Display` is the canonical text projection; programmatic
+//! consumers can also walk `sections` directly.
 
 use crate::non_empty::NonEmpty;
 use crate::single_line_string::SingleLineString;
 use serde::Serialize;
 use std::fmt;
 
-/// Structured handoff prompt — payload of an `Action` whose
-/// `automation` is `Agent` or `Human`.
+/// Structured handoff prompt — the payload carried by handoff
+/// variants of [`crate::ActionEffect`] and [`crate::HandoffAction`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HandoffPrompt {
     pub headline: SingleLineString,
     pub sections: Vec<PromptSection>,
 }
 
-/// One structured component of a [`HandoffPrompt`]. Variants
-/// correspond to recurring shapes across the existing prompt
-/// builders.
+/// One structured component of a [`HandoffPrompt`]. Each variant
+/// captures a recurring rendering shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PromptSection {
-    /// Free prose paragraph. May contain embedded newlines (the
-    /// caller's renderer is allowed to wrap or split it).
+    /// Free prose paragraph. May contain embedded newlines.
     Paragraph(String),
-    /// Numbered list — renders as `1. <item>` / `2. <item>` / …
-    /// Items are individually single-line for stable rendering;
-    /// for multi-line entries with bodies, prefer
-    /// [`Self::Witnesses`].
+    /// Numbered list — `1. <item>` / `2. <item>` / … Items are
+    /// individually single-line. For multi-line entries with
+    /// bodies, prefer [`Self::Witnesses`].
     NumberedList(NonEmpty<SingleLineString>),
-    /// Per-item witnesses — each has a one-line label (identifier +
-    /// location + tags) and a free-form body. Used for review threads,
-    /// codex verdicts, etc., where the recipient needs both an
-    /// identifier and the full content.
+    /// Per-item witnesses — each carries a one-line label and a
+    /// free-form body. Used when the recipient needs both a stable
+    /// identifier and full content per item.
     Witnesses(NonEmpty<Witness>),
-    /// Key/value triage context appended at the handoff boundary:
-    /// PR URL, blocker key, branch, CI snapshot, etc. Each line
-    /// renders as `<key>: <value>` (single-line both sides so the
-    /// block is regex-friendly).
+    /// Key/value triage context — `<key>: <value>` lines, both
+    /// sides single-line so the block stays regex-friendly.
     Context(NonEmpty<ContextLine>),
 }
 
 /// One witness in a [`PromptSection::Witnesses`] section.
 ///
-/// `url`, when `Some`, renders as a trailing `URL: <url>` line below
-/// the body. `None` omits the line entirely — the renderer never
-/// emits a bare `URL:` header.
+/// `url: Some(_)` renders as a trailing `URL: <url>` line; `None`
+/// omits the line entirely. A bare `URL:` header is unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Witness {
     pub label: SingleLineString,
@@ -110,10 +93,10 @@ impl HandoffPrompt {
         self.sections.push(PromptSection::Witnesses(items));
     }
 
-    /// Append (or extend the trailing) context block. If the last
-    /// section is already a `Context`, the new line joins it; this
-    /// matches the boundary-time pattern where multiple decorators
-    /// each add their own lines.
+    /// Append a context line. Coalesces with a trailing
+    /// `Context` section if present, otherwise starts a new one.
+    /// The coalescing rule lets multiple boundary decorators each
+    /// add their own lines without producing fragmented blocks.
     pub fn push_context_line(
         &mut self,
         key: impl Into<SingleLineString>,
@@ -131,9 +114,8 @@ impl HandoffPrompt {
         }
     }
 
-    /// Chainable form of [`Self::push_paragraph`] — for prompt
-    /// builders that assemble a [`HandoffPrompt`] in expression
-    /// position (struct-literal field, function return).
+    /// Chainable form of [`Self::push_paragraph`] for
+    /// expression-position construction.
     #[must_use]
     pub fn with_paragraph(mut self, text: impl Into<String>) -> Self {
         self.push_paragraph(text);

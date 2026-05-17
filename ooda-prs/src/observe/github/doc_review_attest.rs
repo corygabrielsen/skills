@@ -1,11 +1,10 @@
-//! Observe the doc-review attestation file plus its drift against
-//! the current PR head.
+//! Observation for the doc-hygiene attestation axis.
 //!
-//! Mirrors `pull_request_metadata_attestation` byte-for-byte in
-//! shape — same triple, same fallback semantics, same compare
-//! semantics. The two axes deliberately share the protocol; the
-//! only divergence is the attestation file name and the schema
-//! type (independent `version` namespace).
+//! Same protocol shape as the sibling SHA-keyed attestation
+//! observation — attestation read, optional compare-distance query
+//! on SHA mismatch, malformed-file degradation to absence. Schema
+//! namespace is distinct so an attestation from one axis never
+//! satisfies the other.
 
 use std::path::PathBuf;
 
@@ -26,9 +25,9 @@ pub(crate) struct DocReviewObservation {
     pub attest_path: Option<PathBuf>,
 }
 
-/// Compose the doc-review attestation file path. Pulled out so the
-/// act-layer prompt composer can surface the same absolute path the
-/// agent must pass to `ooda-attest doc-review`.
+/// Compose the attestation file path. Shared with the prompt-
+/// composition layer so the agent receives the same absolute path
+/// it must record against.
 #[must_use]
 pub(crate) fn doc_review_attest_path(
     state_root: &std::path::Path,
@@ -37,7 +36,8 @@ pub(crate) fn doc_review_attest_path(
     state_root.join(pr.to_string()).join(DOC_REVIEW_FILE)
 }
 
-/// Observe the doc-review attestation + drift against `head_sha`.
+/// Read the attestation plus the optional drift distance against
+/// the current HEAD.
 pub(crate) fn observe_doc_review(
     state_root: Option<&std::path::Path>,
     slug: &RepoSlug,

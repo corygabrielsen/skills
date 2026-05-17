@@ -1,12 +1,21 @@
-//! Claude-review attestation axis.
+//! Reviewer-content attestation axis.
 //!
-//! Diverges from the SHA-based `pull_request_metadata` / `doc_review`
-//! axes: Claude does not re-fire on `synchronize`, so HEAD drift past
-//! the attested SHA is not actionable on its own. The signal is
-//! *content drift* — has Claude posted new review material past the
-//! last attestation? — projected to `NoActivity` / `Addressed` /
-//! `Fresh`. Aggregates across three GitHub surfaces (review
-//! submissions, issue comments, inline review threads).
+//! # Invariants
+//!
+//! - **Content drift, not SHA drift**: the reviewer in this domain
+//!   does not re-fire on push, so HEAD movement past the recorded SHA
+//!   carries no signal. The trigger is whether new reviewer content
+//!   exists past the attestation timestamp.
+//! - **Surface aggregation**: a single content stream is built by
+//!   taking the max timestamp across every surface the reviewer
+//!   writes to (top-level review submissions, issue-level comments,
+//!   inline thread comments). Adding a surface is an extension to
+//!   the aggregator, never a new axis.
+//! - **Body witness ≠ drift witness**: the timestamp driving drift
+//!   classification (max-across-surfaces) is distinct from the
+//!   timestamp of the body selected as the prompt witness. A newer
+//!   secondary-surface comment can re-arm the axis while the
+//!   surfaced body remains the canonical structured review.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -28,14 +37,13 @@ pub(crate) enum ClaudeReview {
     NoActivity,
     Addressed,
     Fresh {
-        /// Max timestamp across all Claude surfaces. Drives drift
-        /// detection against the attestation.
+        /// Drift witness — max content timestamp across every surface
+        /// the reviewer writes to.
         latest_claude_at: DateTime<Utc>,
-        /// Timestamp of the SELECTED body (review submission's
-        /// `submitted_at` when the body comes from a review;
-        /// otherwise the issue comment's `created_at`). Drives the
-        /// Witness label so the reader sees the timestamp of the
-        /// content they are about to read, not the drift signal.
+        /// Prompt witness — timestamp of the body selected for the
+        /// reader. Distinct from `latest_claude_at` so the surfaced
+        /// label timestamps the content shown, not the unrelated
+        /// surface that re-armed the axis.
         body_at: DateTime<Utc>,
         latest_claude_body: String,
         latest_claude_url: String,

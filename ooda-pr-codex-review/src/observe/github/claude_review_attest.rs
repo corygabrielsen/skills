@@ -1,12 +1,19 @@
-//! Aggregate Claude's PR-review surface plus the local attestation file.
+//! Observation for the reviewer-content attestation axis.
 //!
-//! Diverges from `doc_review_attest` in shape, not in role. Claude
-//! does not re-fire on `synchronize`, so SHA drift past the
-//! attestation is not actionable on its own — the meaningful signal
-//! is *content* freshness across the three GitHub surfaces Claude
-//! writes to (issue comments, review submissions, review threads).
-//! This module reads the attestation file and aggregates the Claude-
-//! authored data already in the observe bundle; no new `gh` fetch.
+//! # Invariants
+//!
+//! - **Content drift, not SHA drift**: the reviewer in this domain
+//!   does not re-fire on push, so SHA movement past the recorded
+//!   attestation carries no signal. The trigger is whether new
+//!   reviewer content exists past the attestation timestamp.
+//! - **Surface aggregation, no new fetch**: per-surface data is
+//!   reused from the existing observation bundle — this module
+//!   adds a single filesystem read (the attestation file), never a
+//!   new host call.
+//! - **Body witness ≠ drift witness**: the prompt witness body
+//>   carries its own timestamp distinct from the cross-surface drift
+//>   timestamp; the two are computed independently and surfaced as
+//>   independent fields.
 
 use std::path::PathBuf;
 
@@ -26,27 +33,26 @@ const CLAUDE_REVIEW_FILE: &str = "claude_review_attest.json";
 pub(crate) struct ClaudeReviewObservation {
     pub attestation: Option<ClaudeReviewAttestation>,
     pub head_sha: GitCommitSha,
-    /// Always `None` for this axis — Claude content drift, not SHA
-    /// drift, drives the orient projection. Field kept for parity
-    /// with the sibling attestation observations so downstream
-    /// serialization stays uniform.
+    /// Always absent for this axis — content drift, not SHA drift,
+    /// drives orient. Field kept for serialization parity with
+    /// sibling attestation observations.
     pub commits_behind: Option<usize>,
     pub attest_path: Option<PathBuf>,
-    /// Max timestamp across all Claude surfaces — drives drift
-    /// detection against the attestation.
+    /// Cross-surface drift witness — max content timestamp across
+    /// every surface the reviewer writes to.
     pub latest_claude_at: Option<DateTime<Utc>>,
-    /// Timestamp of the SELECTED body (review's `submitted_at` when
-    /// the body comes from a review; otherwise the issue comment's
-    /// `created_at`). Drives the Witness label in the act layer.
+    /// Prompt-witness body timestamp. Distinct from the drift
+    /// witness — anchors the surfaced body, not the unrelated
+    /// surface that re-armed the axis.
     pub body_at: Option<DateTime<Utc>>,
     pub latest_claude_body: Option<String>,
     pub latest_claude_url: Option<String>,
     pub inline_thread_count: usize,
 }
 
-/// Compose the Claude-review attestation file path. Pulled out so
-/// the act-layer prompt composer surfaces the same absolute path the
-/// agent must pass to `ooda-attest claude-review`.
+/// Compose the attestation file path for this axis. Shared with the
+/// prompt-composition layer so the agent receives the same absolute
+/// path it must record against.
 #[must_use]
 pub(crate) fn claude_review_attest_path(
     state_root: &std::path::Path,
@@ -55,10 +61,9 @@ pub(crate) fn claude_review_attest_path(
     state_root.join(pr.to_string()).join(CLAUDE_REVIEW_FILE)
 }
 
-/// Observe the Claude-review attestation plus aggregated Claude
-/// content across the three surfaces already in the observation
-/// bundle. The caller supplies `reviews`, `issue_comments`, and
-/// `threads` from the existing observe layer — no new fetch.
+/// Observe the attestation plus aggregated reviewer content across
+/// every surface in the existing bundle. No new host fetch is
+/// performed; per-surface data is supplied by the caller.
 pub(crate) fn observe_claude_review(
     state_root: Option<&std::path::Path>,
     pr: PullRequestNumber,
@@ -100,9 +105,10 @@ fn aggregate_claude_content(
     issue_comments: &[IssueComment],
     threads: &ReviewThreadsResponse,
 ) -> ClaudeAggregate {
-    // Priority: latest Claude REVIEW submission wins; otherwise
-    // latest Claude ISSUE comment. Within each surface, max by
-    // timestamp.
+    // Body-surface priority: structured-review submission wins over
+    // issue-level comment; within each surface, latest timestamp
+    // wins. Drift timestamp is computed independently as the max
+    // across both surfaces.
     let latest_review = reviews
         .iter()
         .filter(|r| r.user.as_ref().is_some_and(|u| is_claude(u.login.as_str())))
@@ -120,8 +126,9 @@ fn aggregate_claude_content(
     {
         (Some((rt, rev)), Some(ic)) => {
             let combined_max = std::cmp::max(rt.at(), ic.created_at.at());
-            // Body / URL priority: review submission wins when present.
-            // body_at therefore tracks the review's submission time.
+            // Body/URL/body-at follow the structured-review
+            // submission per the priority invariant; drift witness
+            // is the cross-surface max.
             (
                 Some(combined_max),
                 Some(rt.at()),

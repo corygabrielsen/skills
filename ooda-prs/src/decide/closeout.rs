@@ -1,15 +1,15 @@
-//! Closeout candidates.
+//! Closeout candidate — the convergence gate.
 //!
-//! Emit `Closeout` when the axis is `Drift` or `NeverAttested`, at
-//! `Urgency::Closeout` — strictly the least-urgent tier so the
-//! reducer outranks Closeout with any other axis's candidate. The
-//! gate fires only when every other axis is silent, making
-//! `HandoffHuman` conditional on an agent-signed attestation at
-//! current HEAD.
+//! Fires when the axis is unsynced, at the least-urgent tier in
+//! the priority lattice. The urgency placement is the mechanism:
+//! every other axis preempts the closeout by construction, so the
+//! candidate is selected only on global quiescence and the
+//! terminal human handoff is conditional on an explicit
+//! agent-signed attestation at HEAD.
 //!
-//! No commit-count guard: Closeout fires on zero-commit PRs too.
-//! The closeout is about pre-handoff sign-off, not hygiene-when-
-//! there's-work.
+//! Unlike the SHA-keyed attestation axes, the closeout fires on
+//! zero-commit PRs as well — the gate is about pre-handoff
+//! sign-off rather than hygiene-when-there-is-work.
 
 use std::path::Path;
 
@@ -38,6 +38,8 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
     let kind = ActionKind::Closeout {
         attest_path: attest_path.to_path_buf(),
     };
+    // Distinct keys for distinct gate identities so a transition
+    // from never-attested to drift is not masked as a stall.
     let blocker = match oriented.closeout {
         Closeout::Drift { .. } => BlockerKey::from_static("closeout_drift"),
         Closeout::NeverAttested => BlockerKey::from_static("closeout_never_attested"),
@@ -172,9 +174,9 @@ mod tests {
 
     #[test]
     fn never_attested_with_zero_commits_still_emits() {
-        // Distinct from PR-metadata / doc-review: Closeout fires even
-        // on a zero-commit PR. The closeout is about pre-handoff sign-
-        // off, not hygiene-when-there's-work.
+        // The closeout's commit-count contract diverges from the
+        // SHA-keyed attestation axes: pre-handoff sign-off is the
+        // gate, independent of whether work has shipped.
         let cs = candidates(&oriented(0, Closeout::NeverAttested), pr());
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].blocker.as_str(), "closeout_never_attested");
@@ -260,9 +262,8 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
-        // The reducer's `max` over urgency will only select Closeout
-        // when no other axis emitted anything; this assertion documents
-        // the structural invariant.
+        // Structural witness for the global-quiescence gate: the
+        // tier sits strictly below every other axis's tier.
         assert!(Urgency::Hygiene < a.urgency);
         assert!(Urgency::Critical < a.urgency);
     }

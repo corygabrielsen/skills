@@ -1,15 +1,13 @@
-//! Compose the `Closeout` handoff prompt.
+//! Handoff-prompt composition for the closeout candidate.
 //!
-//! `Closeout` is `ActionEffect::Agent` — `act()` never executes it;
-//! the runner converts it to `Outcome::HandoffAgent` and exits. This
-//! module only builds the prompt body the recipient agent reads.
+//! This candidate's effect is agent-handoff; no driver-side action
+//! runs. The prompt is the agent's input.
 //!
-//! The prompt is prescriptive about checks the Dashboard preamble
-//! (injected separately by the runner) does NOT surface — leftover
-//! scaffolding, description-to-diff alignment, label appropriateness,
-//! commit-message hygiene. Axis-observable signals (CI, threads,
-//! Copilot, Cursor, hygiene attestations) reach the agent via the
-//! Dashboard preamble; the body here addresses the remainder.
+//! Composition with the dashboard preamble (injected separately
+//! upstream) is what determines the prompt's scope: per-axis
+//! signals are already surfaced by the preamble, so the body here
+//! is prescriptive only about the residue — the checks no axis
+//! catches automatically.
 
 use std::path::Path;
 
@@ -18,11 +16,12 @@ use ooda_core::HandoffPrompt;
 use crate::ids::PullRequestNumber;
 use crate::orient::closeout::Closeout;
 
-/// Build the `Closeout` handoff prompt body.
+/// Build the closeout handoff prompt body.
 ///
-/// `state` selects the "why" preamble; `attest_path` is recovered to
-/// the state-root for the literal CLI invocation. `attest_path` is
-/// `Option` because the binary may run without `--state-root`.
+/// `state` selects the why-preamble. `attest_path` is `Option`
+/// because the binary may run without a configured state root;
+/// when present the prompt surfaces a literal CLI invocation,
+/// when absent the prompt asks the agent to supply the path.
 #[must_use]
 pub(crate) fn build_closeout_prompt(
     pr: PullRequestNumber,
@@ -101,9 +100,10 @@ fn cli_invocation(pr: PullRequestNumber, attest_path: Option<&Path>) -> String {
     }
 }
 
-/// Recover the state-root directory from the attestation path —
-/// `<state-root>/<pr-id>/closeout_attest.json`. Returns `None` if
-/// the structure does not match.
+/// Recover the state-root directory from the per-axis attestation
+/// path. The path layout nests the attestation under a per-PR
+/// directory under the state root; `None` when the structure
+/// does not match.
 fn state_root_from_attest_path(path: &Path) -> Option<std::path::PathBuf> {
     let pr_dir = path.parent()?;
     let state_root = pr_dir.parent()?;

@@ -1,17 +1,26 @@
-//! Copilot orient: project events + reviews + threads into the
-//! per-PR Copilot review state.
+//! Project event timeline, review submissions, and threads into the
+//! per-PR state of a request-driven reviewer.
 //!
-//! This is the most complex orient axis so far — joins three
-//! observation sources, runs a state machine (request → ack →
-//! review) to assemble rounds, and parses Copilot's review bodies
-//! for visible/suppressed counts.
+//! # Invariants
 //!
-//! Returns `Option<CopilotReport>`: `None` iff the repo ruleset
-//! has Copilot disabled. When enabled-but-never-engaged on this
-//! PR, returns `Some(report)` with `activity = Idle` — letting
-//! downstream code distinguish "no policy" from "policy but
-//! dormant" rather than collapsing both, which was the source of
-//! the false-stall bug in pr-fitness.
+//! - **Configuration distinguishes from engagement**: `None` is
+//!   emitted iff no reviewer policy applies; an enabled-but-dormant
+//!   reviewer emits `Some(Idle)`. Collapsing the two would lose the
+//!   "policy exists, no engagement" signal that drives request
+//!   actions.
+//! - **Round assembly is single-pass**: the timeline merge walks
+//!   events and reviews in chronological order, attaching each
+//!   review to the most-recent open request when possible and
+//!   emitting a synthetic round otherwise. Auto-review acks (no
+//!   preceding request) read directly from the timeline; this is
+//!   the only orphan-ack path.
+//! - **Health requires HEAD anchoring**: in-flight health is
+//!   computed against rounds anchored to the current HEAD. HEAD
+//!   movement implicitly resets the budget via SHA-equality
+//!   filtering; orphaned rounds at an old HEAD do not feed health.
+//! - **Tier is total**: every round set + thread state classifies
+//!   into exactly one tier; the rules are evaluated first-match-
+//!   wins.
 
 use crate::ids::{GitCommitSha, Timestamp};
 use crate::observe::github::issue_events::IssueEvent;
@@ -26,14 +35,13 @@ use super::bot_threads::{BotThreadSummary, count_bot_threads};
 
 // ── Identity ─────────────────────────────────────────────────────────
 
-/// Canonical login string for adding Copilot as a reviewer (POST
-/// `requested_reviewers`). The `[bot]` suffix variant is the only
-/// form the write API accepts.
+/// Canonical write-side identity. The host's write surface accepts
+/// only this form; read-side surfaces emit several aliases.
 pub(crate) const COPILOT_REVIEWER_LOGIN: &str = "copilot-pull-request-reviewer[bot]";
 
-/// Every known Copilot login variant. GitHub returns different
-/// strings on different API surfaces (REST reviews vs GraphQL vs
-/// `requested_reviewers`); we accept all of them on read.
+/// Read-side identity aliases. The host emits different forms on
+/// different surfaces; the predicate accepts every variant so the
+/// axis classifies the reviewer consistently regardless of surface.
 const COPILOT_LOGINS: &[&str] = &[
     COPILOT_REVIEWER_LOGIN,
     "Copilot",
@@ -55,7 +63,7 @@ pub(crate) struct CopilotReport {
     pub rounds: Vec<CopilotReviewRound>,
     pub threads: BotThreadSummary,
     pub tier: CopilotTier,
-    /// Latest review observed at HEAD (`latest.commit == head`).
+    /// Latest round's review-commit equals current HEAD.
     pub fresh: bool,
 }
 
@@ -76,9 +84,9 @@ impl From<CopilotCodeReviewParams> for CopilotRepoConfig {
     }
 }
 
-// Health embedded in in-flight variants. Idle and Reviewed carry no
-// Health by design — the "health is meaningful only when in flight"
-// invariant is type-structural here, not enforced at runtime.
+// Health attaches only to in-flight variants. Idle and Reviewed
+// carry no health — the "health is meaningful only when in flight"
+// invariant is encoded structurally in the variant set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum CopilotActivity {
     Idle,
@@ -96,9 +104,8 @@ pub(crate) enum CopilotActivity {
     },
 }
 
-/// Project Copilot activity onto a dashboard signal. `Idle` returns
-/// `None` — the axis is dormant and should not emit a row. Every
-/// other variant emits the icon+summary the spec table fixes.
+/// Project the activity into a dashboard signal. `Idle` returns
+/// `None` so the dashboard does not emit a row for a dormant axis.
 pub(crate) fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
@@ -139,44 +146,40 @@ pub(crate) fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashbo
     })
 }
 
-// Per-axis health projection. CI axis (queue stalls) and any
-// subsequent reviewer axis will wear the same shape. On the third
-// axis, lift to ooda_core::AxisHealth<S>.
+// Per-axis health lattice. Same Healthy/Degraded/Failed shape as
+// the sibling check axis's in-flight health; held independently per
+// the anti-DRY mirror rule until a third axis surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum InFlightHealth {
-    /// In flight within the configured timeout window — keep waiting.
+    /// In flight within the timing budget.
     Healthy,
-    /// Timeout crossed once for this round at the current HEAD. One
-    /// re-request remediation is in budget before escalation.
+    /// Threshold crossed once at the current HEAD; one remediation
+    /// remains in budget before escalation.
     Degraded,
-    /// Timeout crossed and the per-HEAD budget is exhausted —
-    /// re-requesting again would only restart the same failure mode.
+    /// Threshold crossed and remediation budget exhausted; further
+    /// re-requests would only restart the same failure mode.
     Failed,
 }
 
-// Axis-local. The future AxisHealth<S> parameterization carries this
-// per axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Symptom {
-    /// `copilot_work_started` never landed within the start window
-    /// after `review_requested`.
+    /// Request received no acknowledgement within the start budget.
     StartTimeout,
-    /// Started but no review submitted within the review window
-    /// after the start event.
+    /// Acknowledgement received but no review submitted within the
+    /// review budget.
     ReviewTimeout,
 }
 
-/// Time Copilot is allowed to ack a fresh review request before the
-/// round is treated as `StartTimeout`-degraded.
+/// Maximum request-to-ack dwell before a round classifies as start-
+/// degraded.
 pub(crate) const THRESHOLD_START_TIMEOUT: chrono::Duration = chrono::Duration::minutes(10);
 
-/// Time Copilot is allowed between ack and review submission before
-/// the round is treated as `ReviewTimeout`-degraded.
+/// Maximum ack-to-review dwell before a round classifies as review-
+/// degraded.
 pub(crate) const THRESHOLD_REVIEW_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
 
-/// Per-HEAD remediation budget — number of Degraded rounds at the
-/// current HEAD we will tolerate before promoting to `Failed` and
-/// handing off to a human.
+/// Per-HEAD remediation budget. Degraded rounds tolerated at the
+/// current HEAD before promotion to Failed.
 pub(crate) const HEALTH_REMEDIATION_BUDGET: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -202,9 +205,10 @@ pub(crate) enum CopilotTier {
 }
 
 impl CopilotTier {
-    /// Lowercase, stable slug for use in user-facing strings and
-    /// blocker keys. Coupled to the variant *names* in the type
-    /// contract — renaming a variant requires updating this impl.
+    /// Stable lowercase slug per variant. Identity-bearing —
+    /// distinct tiers map to distinct slugs and renaming a variant
+    /// requires updating this impl in lockstep with downstream
+    /// gate-key consumers.
     pub(crate) fn slug(self) -> &'static str {
         match self {
             Self::Bronze => "bronze",
@@ -221,23 +225,22 @@ impl std::fmt::Display for CopilotTier {
     }
 }
 
-// CopilotTier is a finite enum (4 variants); its slug is gate-
-// stable per variant. Same tier → same string; distinct tiers →
-// distinct strings.
+// Finite, slug-stable enum: same variant → same slug; distinct
+// variants → distinct slugs. Satisfies gate-identity.
 impl ooda_core::GateIdentity for CopilotTier {}
 
 // ── Public entry point ───────────────────────────────────────────────
 
-/// Returns `None` iff the repo ruleset has no active
-/// `copilot_code_review` rule (i.e. Copilot is not configured for
-/// this repo at all). When configured, always returns `Some` even
-/// if Copilot has never engaged on this PR.
+/// Project per-PR reviewer signal into the orient state.
 ///
-/// The parameter list is long because the copilot axis joins more
-/// observation sources than other axes (timeline, reviews, threads,
-/// requested reviewers, commits, plus a clock). Bundling into a
-/// "context" struct would only shift the surface area without
-/// shrinking it; the long list pays for itself in call-site clarity.
+/// Returns `None` iff the reviewer is not configured for this repo;
+/// otherwise always `Some`. Engagement is encoded in the activity
+/// variant, not in the Option layer.
+///
+/// The parameter list is long by design: this axis joins more
+/// observation sources than its siblings. A context struct would
+/// shift the surface area without shrinking it; the explicit list
+/// keeps call-site clarity high.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn orient_copilot(
     config: CopilotRepoConfig,
@@ -281,13 +284,12 @@ pub(crate) fn orient_copilot(
     })
 }
 
-/// Filter `events` to those that legitimately reflect the Copilot
-/// **reviewer** axis.
-//
-// Two GitHub Apps share the "Copilot" identity:
-// copilot-pull-request-reviewer (review path) and copilot-swe-agent
-// (coding-agent path). They emit identical event types. Filter at
-// the axis boundary; upstream consumers see only reviewer events.
+/// Filter the event stream to reviewer-axis events.
+///
+/// Class invariant: two distinct apps share an ambiguous display
+/// identity but emit the same event names. Disambiguation must
+/// happen at the axis boundary via the originating app slug;
+/// downstream consumers never re-classify.
 fn copilot_reviewer_events(events: &[IssueEvent]) -> Vec<&IssueEvent> {
     const COPILOT_REVIEWER_APP: &str = "copilot-pull-request-reviewer";
     events
@@ -304,12 +306,13 @@ fn copilot_reviewer_events(events: &[IssueEvent]) -> Vec<&IssueEvent> {
 
 // ── Body parsing ─────────────────────────────────────────────────────
 
-/// Parse `(visible, suppressed)` counts from a Copilot review body.
+/// Extract the visible-count and suppressed-count integers from a
+/// review body.
 ///
-/// Matches:
-///   "generated N comment(s)" → visible = N
-///   "generated no new comments" → visible = 0
-///   "Comments suppressed due to low confidence (N…)" → suppressed = N
+/// Class invariant: a digit-run immediately following the count
+/// prefix is the authoritative terminator. Surrounding-token
+/// matching admits false anchors when the body wording shifts; the
+/// digit-run does not.
 pub(crate) fn parse_copilot_review_body(body: &str) -> (u32, u32) {
     let visible = if body.contains("generated no new comments") {
         0
@@ -320,11 +323,9 @@ pub(crate) fn parse_copilot_review_body(body: &str) -> (u32, u32) {
     (visible, suppressed)
 }
 
-/// Find the leading run of ASCII digits immediately after `prefix`
-/// in `body`. Digit-run is the authoritative terminator — previous
-/// versions used `find(suffix)` which truncated mid-token if the
-/// body added a parenthesized clarifier (e.g. "(N of M)" → first
-/// `)` lands inside the count region).
+/// Parse the leading ASCII-digit run immediately after `prefix`.
+/// Digit-run termination is robust to parenthesized clarifiers and
+/// any tokens that follow the count region.
 fn find_count(body: &str, prefix: &str) -> Option<u32> {
     let start = body.find(prefix)? + prefix.len();
     let rest = &body[start..];
@@ -378,27 +379,18 @@ fn copilot_timeline(events: &[&IssueEvent]) -> Vec<TimelinePoint> {
     points
 }
 
-/// Build per-round Copilot review state by chronologically merging
-/// the timeline (Requested + Ack events) with the review submissions.
+/// Assemble per-round state via a single chronological merge of
+/// timeline points (request, ack) and review submissions.
 ///
-/// Single invariant: every review either pairs with the open round
-/// (anchored on the most recent Requested event) or becomes a
-/// synthetic round on its own. Replaces the prior 3-drain
-/// implementation (pre-request, same-window, post-loop) with one
-/// merge-walk — the invariant is enforced inline at every step
-/// instead of bolted on at three separate "didn't we forget this
-/// edge?" points.
+/// Class invariant: every review either pairs with the open round
+/// or emits a synthetic round. A single merge-walk enforces this
+/// inline; multi-pass drains would distribute the invariant across
+/// disjoint code paths and admit edge omissions.
 ///
-/// Three review-on-push edge cases the merge-walk covers naturally:
-///   - Reviews submitted before any Requested event → no open round
-///     when the review arrives → synthetic round.
-///   - Multiple reviews inside one request window → first pairs
-///     with the round; subsequent ones land while `paired` is true
-///     → synthetic rounds.
-///   - Ack arriving without a preceding Requested event (auto-review
-///     `copilot_work_started` only) → no open round → Ack ignored
-///     here. `derive_activity` reads the timeline directly for
-///     orphan Acks and reports `Working`, so the signal isn't lost.
+/// Push-driven auto-review submissions, multiple reviews inside one
+/// request window, and orphan acks are all covered uniformly by the
+/// same walk. Orphan acks (no preceding request) generate no round
+/// here — `derive_activity` reads them directly from the timeline.
 fn correlate_rounds(
     timeline: &[TimelinePoint],
     reviews: &[&PullRequestReview],
@@ -406,11 +398,12 @@ fn correlate_rounds(
     let mut sorted_reviews: Vec<&PullRequestReview> = reviews.to_vec();
     sorted_reviews.sort_by_key(|a| a.submitted_at);
 
-    // Round numbers are assigned at the very end after a final sort
-    // by `requested_at`. Without this, the open round (anchored on
-    // an earlier Requested event) would land AFTER a synthetic round
-    // that was emitted while open was still being assembled — wrong
-    // chronological order, wrong `rounds.last()`, wrong tier scoring.
+    // Round indices are assigned after a final sort by anchor
+    // timestamp. The open round may anchor earlier than synthetic
+    // rounds emitted while it was still being assembled; only a
+    // post-sort renumber preserves chronological order — and
+    // therefore the correctness of last-round selection and tier
+    // scoring.
     let mut rounds: Vec<CopilotReviewRound> = Vec::new();
     let mut open: Option<CopilotReviewRound> = None;
     let mut paired = false;
@@ -425,10 +418,9 @@ fn correlate_rounds(
     };
 
     for point in timeline {
-        // Before processing this timeline point, drain every review
-        // strictly earlier than it. Each review either pairs with
-        // the open round (if any and not yet paired) or becomes a
-        // synthetic round.
+        // Pre-point drain: every review strictly earlier than the
+        // current timeline point lands now — either pairing with
+        // the open round or emitting a synthetic round.
         while let Some(rev) = sorted_reviews.get(review_idx)
             && rev.submitted_at.as_ref().is_some_and(|t| t < &point.at)
         {
@@ -466,14 +458,14 @@ fn correlate_rounds(
                 {
                     round.ack_at = Some(point.at);
                 }
-                // Orphan Acks (auto-review with no Requested event)
-                // don't land here. derive_activity reads them from
-                // the raw timeline and reports Working.
+                // Orphan acks (no preceding request) generate no
+                // round here; the activity classifier reads them
+                // from the raw timeline.
             }
         }
     }
 
-    // Drain remaining reviews after the last timeline event.
+    // Post-timeline drain: reviews after the last event.
     while let Some(rev) = sorted_reviews.get(review_idx) {
         match (&mut open, paired) {
             (Some(round), false) => {
@@ -490,22 +482,19 @@ fn correlate_rounds(
         rounds.push(round);
     }
 
-    // Final pass: sort by anchor and renumber. Stable sort keeps
-    // the relative order of rounds with the same `requested_at`
-    // (only happens for synthetic rounds with identical review
-    // timestamps — preserve insertion order).
+    // Final pass: stable-sort by anchor and renumber. Ties on
+    // anchor (synthetic rounds with identical review timestamps)
+    // preserve insertion order.
     rounds.sort_by_key(|r| r.requested_at);
     for (i, r) in rounds.iter_mut().enumerate() {
-        // Review-round count fits in u32 by construction: bounded by
-        // GitHub's per-PR review history (orders of magnitude < 4B).
         r.round = u32::try_from(i).expect("review round index fits in u32") + 1;
     }
     rounds
 }
 
-/// Synthetic round for a review with no preceding Requested event.
-/// The review's own timestamp serves as the round anchor — there is
-/// no real request, ack, or window to derive.
+/// Round for a review with no preceding request. The review's own
+/// timestamp serves as the anchor; ack and request are absent by
+/// construction.
 fn synthetic_round(rev: &PullRequestReview, round_no: u32) -> CopilotReviewRound {
     let counts = parse_copilot_review_body(&rev.body);
     let anchor = rev
@@ -524,11 +513,11 @@ fn synthetic_round(rev: &PullRequestReview, round_no: u32) -> CopilotReviewRound
 
 // ── Tier scoring ─────────────────────────────────────────────────────
 
-/// Tier rules (first match wins):
-///   bronze:   no review yet OR latest still in flight OR unresolved>0
-///   silver:   reviewed, no unresolved, suppressed>0
-///   gold:     reviewed, no unresolved, no suppressed, (stale>0 OR latest!=HEAD)
-///   platinum: reviewed, no unresolved, no suppressed, no stale, latest=HEAD
+/// Tier classification, first-match-wins:
+///   bronze:   no review, or in-flight, or actionable threads present
+///   silver:   reviewed, no actionable threads, suppressed findings present
+///   gold:     reviewed, no actionable, no suppressed, but stale or off-HEAD
+///   platinum: reviewed, no actionable, no suppressed, no stale, latest at HEAD
 fn score_tier(
     rounds: &[CopilotReviewRound],
     threads: &BotThreadSummary,
@@ -564,10 +553,9 @@ fn is_fresh(rounds: &[CopilotReviewRound], head: &GitCommitSha) -> bool {
 
 // ── Activity derivation ──────────────────────────────────────────────
 
-/// Bare in-flight stage — what kind of pending work, divorced from
-/// health. `derive_activity` first computes this from the existing
-/// timeline/rounds/requested signals, then wraps in-flight stages
-/// with [`InFlightHealth`] derived from per-round timing.
+/// In-flight stage divorced from health. The activity derivation
+/// computes the bare stage first, then wraps in-flight stages with
+/// timing-derived health.
 enum BareStage {
     Idle,
     Requested {
@@ -631,23 +619,17 @@ fn bare_stage(
         .filter(|p| p.kind == TimelineKind::Requested)
         .max_by_key(|p| p.at);
 
-    // Phase 1: Working signal — an Ack newer than the latest review
-    // means Copilot is actively reviewing right now. The guard must
-    // accept the right cases without false-firing on the
-    // request-withdrawn-after-ack case:
-    //   - currently_pending(requested) catches re-request mid-flight
-    //     (new Requested + Ack landed; issue_events propagating).
-    //   - latest_ack_is_orphan catches review_on_push auto-review:
-    //     a new copilot_work_started fires WITHOUT a Requested event
-    //     (so it doesn't appear as ack_at on any round). Works both
-    //     when rounds is empty AND when prior rounds exist (a NEW
-    //     auto-review after a previous Reviewed round) — a guard of
-    //     "rounds.is_empty()" missed the latter case and let decide
-    //     re-request Copilot mid-flight.
-    // Class invariant: an Ack is orphan iff its timestamp does NOT
-    // appear as ack_at on any existing round. The withdrawn-after-
-    // ack case has its Ack already paired (via correlate_rounds),
-    // so it's not orphan and Phase 1 doesn't fire — Idle remains.
+    // Phase 1: working detector. An ack newer than the latest
+    // review witnesses active review work — but only when the work
+    // is genuinely in flight, not when the request was withdrawn
+    // after ack.
+    //
+    // Class invariant: an ack is orphan iff its timestamp does not
+    // pair with any round's ack. Genuine-in-flight is witnessed
+    // either by a currently-pending request (re-request mid-flight)
+    // or by an orphan ack (auto-review from push). Withdrawn-after-
+    // ack does not qualify — its ack is already paired and the
+    // detector falls through.
     let ack_after_review = match (latest_ack, latest_review_ts) {
         (Some(ack), Some(rev)) => &ack.at > rev,
         (Some(_), None) => true,
@@ -671,13 +653,12 @@ fn bare_stage(
 
     if let Some(latest) = rounds.last() {
         if latest.reviewed_at.is_some() {
-            // Reviewed branch: if Copilot is currently in
-            // requested_reviewers but no Ack has landed yet, this is
-            // a re-request that hasn't propagated to issue_events yet.
-            // Pre-fix this returned Reviewed → decide() emitted
-            // RerequestCopilot (Full) again → runner's repeated-Full
-            // guard halted Stalled. Treat as Requested (waiting for
-            // ack) so the loop emits WaitForCopilotAck instead.
+            // Class invariant: a reviewer in the currently-
+            // requested set overrides a prior Reviewed state — the
+            // re-request has not yet propagated to the event
+            // stream. Collapsing to Reviewed would trigger a
+            // redundant request action and the repeated-action
+            // guard would halt the loop.
             if currently_pending(requested) {
                 let req_at = latest_request.map_or_else(|| latest.requested_at, |r| r.at);
                 return BareStage::Requested {
@@ -689,13 +670,10 @@ fn bare_stage(
             };
         }
         if let Some(ack) = &latest.ack_at {
-            // Stale-round case: an Ack landed but the review request
-            // was withdrawn before the review. Without the
-            // currently_pending guard, decide emits
-            // WaitForCopilotReview indefinitely (Wait actions are
-            // stall-exempt). Class invariant: every "still working"
-            // Copilot activity requires Copilot to actually be in
-            // the current requested_reviewers set.
+            // Class invariant: in-flight working state requires the
+            // reviewer to be in the currently-requested set. Acked-
+            // then-withdrawn does not qualify; otherwise the wait
+            // action runs unbounded (Wait is stall-exempt).
             if currently_pending(requested) {
                 return BareStage::Working {
                     requested_at: latest.requested_at,
@@ -704,8 +682,8 @@ fn bare_stage(
             }
             return BareStage::Idle;
         }
-        // No ack on the latest round. Distinguish "still pending"
-        // from "request withdrawn before ack".
+        // No ack on the latest round — distinguish pending-request
+        // from request-withdrawn-before-ack.
         if currently_pending(requested) {
             return BareStage::Requested {
                 requested_at: latest.requested_at,
@@ -715,14 +693,11 @@ fn bare_stage(
     }
     let pending = currently_pending(requested);
     if pending {
-        // Eventual-consistency window: requested_reviewers shows
-        // Copilot but issue_events hasn't surfaced the
-        // review_requested/copilot_work_started event yet. Fall
-        // back to a synthetic "epoch" timestamp so decide() still
-        // emits WaitForCopilotAck instead of letting the PR halt
-        // Success while Copilot review is pending. The Requested
-        // activity is what matters; downstream consumers don't
-        // anchor on the requested_at timestamp.
+        // Eventual-consistency window: the reviewer is in the
+        // currently-requested set but no timeline event has
+        // surfaced yet. Synthetic anchor preserves the Requested
+        // stage so the wait action keeps the loop alive instead of
+        // halting Success while the review is genuinely pending.
         let requested_at = timeline.last().map_or_else(
             || Timestamp::parse("1970-01-01T00:00:00Z").unwrap(),
             |p| p.at,
@@ -738,17 +713,16 @@ fn currently_pending(requested: &RequestedReviewers) -> bool {
 
 // ── Health computation ───────────────────────────────────────────────
 
-/// Per-round seal: classify a round's terminal state given the
-/// chronological horizon `tau` (either the next round's request
-/// timestamp, for non-tail rounds, or `now` for the tail).
+/// Per-round terminal classification against horizon `tau`. For
+/// non-tail rounds `tau` is the next round's request timestamp; for
+/// the tail it is `now`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Sealed {
     Resolved,
     Healthy,
     Degraded(Symptom),
-    /// A non-tail round superseded by a later request before any
-    /// terminal signal (resolution or timeout) landed. Only emitted
-    /// for non-tail rounds — the tail has no next request by zip
+    /// Non-tail round superseded by a later request before any
+    /// terminal signal landed. Tail rounds cannot reach this by
     /// construction.
     Preempted,
 }
@@ -771,9 +745,9 @@ fn seal(round: &CopilotReviewRound, next_req_at: Option<Timestamp>, tau: Timesta
     }
 }
 
-// SHA-equality partition; head_ref_force_pushed events are
-// unreliable (GitHub drops them under comment-burst conditions). The
-// stored HEAD SHA is the source of truth.
+// Filter by SHA-equality against the current HEAD. Push-event
+// signals are unreliable under load; the stored HEAD SHA is the
+// authoritative anchor.
 fn filter_to_current_head<'a>(
     rounds: &'a [CopilotReviewRound],
     commits: &[Commit],
@@ -785,10 +759,9 @@ fn filter_to_current_head<'a>(
         .collect()
 }
 
-/// The HEAD SHA in flight at `t`: the most-recent commit whose
-/// `committed_date <= t`. `None` when `commits` is empty or every
-/// commit was authored after `t` (a pre-history request — treat as
-/// not-at-current-head).
+/// HEAD-at-time projection: the most-recent commit on or before `t`.
+/// Absent when `commits` is empty or every commit is strictly after
+/// `t` (pre-history request).
 fn head_at(commits: &[Commit], t: Timestamp) -> Option<GitCommitSha> {
     commits
         .iter()
@@ -805,23 +778,14 @@ fn compute_in_flight_health(
 ) -> InFlightHealth {
     let rounds_h = filter_to_current_head(rounds, commits, head);
     if rounds_h.is_empty() {
-        // Distinguish two surface-identical sub-cases:
-        //   (a) `rounds.is_empty()` — no events observed at all
-        //       (synthetic Requested via `bare_stage`, or genuine
-        //       eventual-consistency lag right after a fresh
-        //       request). No timing signal yet; Healthy.
-        //   (b) `rounds.is_not_empty()` — events exist but were all
-        //       filtered out by `filter_to_current_head`. A
-        //       force-push moved HEAD past every round's
-        //       `requested_at`. If `THRESHOLD_START_TIMEOUT` has
-        //       elapsed since the HEAD commit was pushed, the events
-        //       feed had time to deliver a fresh request event and
-        //       didn't — Copilot's pending-reviewer slot is orphaned
-        //       at the new HEAD. RerequestCopilot is empirically a
-        //       no-op against pending state (see
-        //       `act/copilot.rs`), so skip the budget dance and
-        //       escalate directly to Failed → EscalateCopilotFailed
-        //       → HandoffHuman.
+        // Two surface-identical sub-cases get distinct treatment:
+        //   - No rounds at all: no timing signal; Healthy.
+        //   - Rounds exist but all filtered to past HEADs (post-
+        //     force-push). If enough time has elapsed since the new
+        //     HEAD landed for a fresh request to surface and none
+        //     has, the request slot is orphaned at the new HEAD and
+        //     remediation cannot recover — escalate to Failed
+        //     directly, skipping the budget dance.
         if rounds.is_empty() {
             return InFlightHealth::Healthy;
         }
@@ -835,9 +799,9 @@ fn compute_in_flight_health(
         };
     }
     let tail_idx = rounds_h.len() - 1;
-    // Walk back from the tail; for each round, tau is the next
-    // round's requested_at (non-tail) or `now` (tail). Stop at the
-    // first non-Degraded.
+    // Walk tail-first; for each round, tau is the next round's
+    // request anchor (non-tail) or `now` (tail). Counting halts at
+    // the first non-Degraded round.
     let mut degraded_run = 0usize;
     for rev_idx in 0..rounds_h.len() {
         let abs_idx = tail_idx - rev_idx;
@@ -858,19 +822,18 @@ fn compute_in_flight_health(
     }
 
     let tail: &CopilotReviewRound = rounds_h[tail_idx];
-    // Intentional exhaustive match per axis pattern; Resolved and
-    // Healthy are kept distinct for spec clarity even though both
-    // collapse to `Healthy` at the tail.
+    // Resolved and Healthy collapse to Healthy at the tail; the
+    // arms are kept distinct for parity with the per-round seal
+    // classifier.
     #[allow(clippy::match_same_arms)]
     match seal(tail, None, now) {
         Sealed::Resolved => InFlightHealth::Healthy,
         Sealed::Healthy => InFlightHealth::Healthy,
         Sealed::Degraded(_) if degraded_run >= HEALTH_REMEDIATION_BUDGET => InFlightHealth::Failed,
         Sealed::Degraded(_) => InFlightHealth::Degraded,
-        // Tail has no successor by construction — `next_req_at` we
-        // passed above is None, and `seal` only returns Preempted
-        // when `next_req_at.is_some()`. This arm is genuinely
-        // uninhabitable.
+        // Tail never has a successor: `next_req_at` passed in is
+        // None, and the seal classifier only emits Preempted when
+        // next_req_at is Some. Genuinely uninhabitable.
         Sealed::Preempted => unreachable!("tail round has no next request by construction"),
     }
 }

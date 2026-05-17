@@ -1,13 +1,14 @@
 //! Codex-domain observations.
 //!
-//! Submodules split by concern:
-//!   - [`verdict`] — pure text extraction + classification of the
-//!     `codex` verdict block within a single log file.
-//!   - [`batch`] — filesystem scan of the per-level batch directory
-//!     to produce a [`BatchState`].
+//! Two submodules split by concern:
 //!
-//! [`fetch_all`] is the boundary entry point; the runner closure
-//! calls it once per OODA iteration to refresh observations.
+//! - [`verdict`] — pure text extraction + classification of the
+//!   verdict block within a single log file.
+//! - [`batch`] — filesystem scan of the per-level batch directory
+//!   producing a [`BatchState`].
+//!
+//! [`fetch_all`] is the entry point; the loop calls it once per
+//! iteration to refresh observations.
 
 pub(crate) mod batch;
 pub(crate) mod verdict;
@@ -24,37 +25,29 @@ use batch::{BatchState, scan_batch};
 
 pub(crate) use verdict::VerdictClass;
 
-/// Per-iteration observation bundle. The runner closure constructs
-/// this each iteration; orient consumes it.
+/// Per-iteration observation bundle. Constructed once per
+/// iteration; consumed by orient.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CodexObservations {
     pub repo_id: RepoId,
     pub target: ReviewTarget,
     pub current_level: CodexReasoningLevel,
     pub batch_state: BatchState,
-    /// The directory the batch was scanned from. Recorded so the
-    /// orient/decide layers can reference log paths in handoff
-    /// prompts without re-deriving the layout.
+    /// Directory the batch was scanned from. Carried so downstream
+    /// layers can cite per-log paths without re-deriving layout.
     pub batch_dir: PathBuf,
-    /// Configured `n` for this batch — how many `codex review`
-    /// processes were launched. Forwarded from the caller; observe
-    /// does not derive it. Decide uses it as the floor for
-    /// `pending = expected - completed`.
+    /// Configured batch fan-out. Forwarded from the caller, not
+    /// derived from the filesystem — distinguishes "review hasn't
+    /// started" from "review crashed before its first write".
     pub expected: u32,
 }
 
-/// Read filesystem state for one OODA iteration.
+/// Read filesystem state for one iteration.
 ///
-/// Inputs:
-///   - `repo_id`, `target`: identity, passed through into the
-///     observation bundle for downstream rendering / recorder
-///     keying. Observe never derives them.
-///   - `batch_dir`: where the per-level log files live.
-///   - `level`: which `{level}-*.log` files to scan.
-///   - `expected`: the configured `n` for this batch.
-///
-/// All filesystem reads are scoped to `batch_dir`; no subprocess
-/// spawn, no network. Spawn lives in `act`.
+/// `repo_id` and `target` pass through as identity for downstream
+/// rendering/keying — observe never derives them. All reads are
+/// scoped to `batch_dir`; no subprocess, no network. Subprocess
+/// spawning lives in act.
 pub(crate) fn fetch_all(
     repo_id: RepoId,
     target: ReviewTarget,

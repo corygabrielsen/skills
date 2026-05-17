@@ -1,46 +1,33 @@
-// Side effects for Copilot health remediation. Sibling act/ci.rs
-// etc. will follow.
+//! Driver-side effects for the bot-review axis.
 
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
 use crate::orient::copilot::COPILOT_REVIEWER_LOGIN;
 
-/// Re-request Copilot as a reviewer on the PR via REST. Used by both
-/// the tier-advancement path (`symptom = None`) and the
-/// health-remediation path (`symptom = Some(_)`); the side effect is
-/// identical — the symptom only travels in the action's blocker tag
-/// so the stall comparator separates the cases.
+/// Re-request the bot as a reviewer via the upstream REST surface.
 ///
-/// ## GitHub API for Copilot reviewer state
+/// The driver-side effect is identical for the health-remediation
+/// and tier-advancement paths; the symptom carried on the action
+/// only affects the blocker key so the stall comparator separates
+/// the cases.
 ///
-/// All facts below are empirically measured against an open PR
-/// with Copilot configured as an auto-reviewer. A naive reading
-/// of the GitHub REST docs predicts most of these wrong; do not
-/// "fix" by switching to GraphQL `requestReviews` or
-/// delete-and-re-add — neither is necessary and both have been
-/// ruled out at design time.
+/// # Empirically verified upstream contract
 ///
-/// - **POST slug**: `copilot-pull-request-reviewer[bot]` (the bot's
-///   app slug with `[bot]` suffix). Stripping `[bot]` returns
-///   HTTP 422 "Reviews may only be requested from collaborators".
-/// - **GET login** (returned in `requested_reviewers[].login`):
-///   `Copilot` (user-facing display name). The same reviewer is
-///   addressable by three distinct surfaces — `Copilot`,
-///   `copilot-pull-request-reviewer`, and
-///   `copilot-pull-request-reviewer[bot]` — and the surface that
-///   works depends on the verb.
-/// - **DELETE slug**: `Copilot` (the GET login), **not** the POST
-///   slug. Using the POST slug in DELETE returns HTTP 422
-///   "Validation Failed". This asymmetry is non-obvious and not
-///   documented by GitHub.
-/// - **Idempotency**: repeat POST against pending state returns
-///   2xx and does NOT generate a duplicate `review_requested`
-///   timeline event. Safe to retry from the OODA loop without
-///   inflating the orient layer's round count.
-/// - **Timeline event**: each state-changing POST generates
-///   exactly one `review_requested` issue event with
-///   `requested_reviewer.login = "Copilot"`. The orient layer's
-///   `correlate_rounds` depends on this event's `created_at`.
+/// The upstream reviewer endpoint for this bot has three
+/// non-obvious properties that any change to this call site must
+/// preserve:
+///
+/// - **Verb-asymmetric identity**. The POST and DELETE verbs
+///   address the same reviewer by different identifiers; using
+///   one identifier on the wrong verb returns a 422. Switching
+///   to a unified identifier is not an option at this layer.
+/// - **Idempotent re-POST**. A repeat POST against pending state
+///   succeeds without emitting a duplicate timeline event, so
+///   retries from the loop do not inflate the per-PR round count
+///   observed by the orient layer.
+/// - **Exactly-one-event-per-state-change**. Each state-changing
+///   POST produces exactly one timeline event; the orient layer
+///   correlates rounds against the event's timestamp.
 pub(super) fn rerequest_copilot(slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), GhError> {
     let path = format!("repos/{slug}/pulls/{pr}/requested_reviewers");
     let reviewer = format!("reviewers[]={COPILOT_REVIEWER_LOGIN}");

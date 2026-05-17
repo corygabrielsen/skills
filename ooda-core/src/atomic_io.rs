@@ -1,43 +1,45 @@
 //! Atomic + durable file writes for stable read surfaces.
 //!
-//! Stable read surfaces are files that another process / iteration
-//! / user reads as authoritative state: `CURRENT.json`,
-//! `dedup.json`, attestation files, manifest files. They must
-//! never be observed in a partial state by a concurrent reader,
-//! and must survive a crash without truncation.
+//! A *stable read surface* is a file observed by concurrent readers
+//! as authoritative state — pointer files (a single mutable head
+//! into an immutable history), manifest files (the symbol → path
+//! map of an artifact set), dedup snapshots, signed attestations.
+//! Two failure modes are excluded:
 //!
-//! The pattern is "write to tmp, fsync tmp, rename, fsync parent":
+//! - **Torn read** — a reader observes a partial write.
+//! - **Lost durability** — a successful write disappears on crash.
 //!
-//! 1. Open `<path>.tmp.<pid>.<nanos>` in the destination's directory
-//!    (must be the same filesystem for `rename` atomicity).
-//! 2. Write the bytes.
-//! 3. `sync_all()` the tmp file — flushes the data to disk before
-//!    we rename it into place.
-//! 4. `rename(tmp, path)` — atomic on POSIX (`man 2 rename`) and on
-//!    Windows ≥ 10 with `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`.
-//! 5. Open the parent directory and `sync_all()` it — flushes the
-//!    directory entry update so the rename survives crash.
+//! # Protocol
 //!
-//! Without step 5, the rename is durable for the file *contents*
-//! but the directory entry pointing at it may be lost on power
-//! failure (the inode is committed, the dirent isn't). The Linux
-//! manpage for `rename` says: "If newpath already exists, it will
-//! be atomically replaced ... callers ... must ensure that the
-//! directory entries are durably written by calling `fsync` on the
-//! containing directory."
+//! `write-tmp → fsync(tmp) → rename(tmp, path) → fsync(parent_dir)`,
+//! with `tmp` a sibling of `path` on the same filesystem (cross-
+//! filesystem rename is not atomic).
 //!
-//! Step 5 is a no-op on Windows (NTFS has no concept of fsync-ing
-//! a directory handle); the `sync_all` call there reduces to a
-//! handle-flush that returns `Ok(())` without doing anything
-//! observable. Documented for portability.
+//! # Invariants
+//!
+//! - **Atomicity**: at every instant, `path` contains either the
+//!   prior bytes or the new bytes — never a prefix of either.
+//!   Established by `rename`, atomic on POSIX and on Windows ≥ 10
+//!   with `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`.
+//! - **Content durability**: on successful return, the new bytes
+//!   are flushed past the page cache to durable storage. Established
+//!   by `fsync(tmp)` before the rename.
+//! - **Dirent durability**: on successful return, the directory
+//!   entry pointing at the new inode survives a crash. Established
+//!   by `fsync(parent_dir)` after the rename. Omitting this leaves
+//!   content durable but admits dirent loss on power failure.
+//!
+//! On platforms without directory fsync (Windows / NTFS), dirent
+//! durability is supplied by the filesystem journal; the parent
+//! fsync reduces to a no-op handle flush. The API contract is
+//! identical across platforms.
 //!
 //! # When NOT to use this
 //!
-//! Append-only logs (events.jsonl, ledger.md, trace.md) don't need
-//! the tmp+rename pattern — partial appends are truncated by the
-//! reader at the last good record. Content-addressed blobs
-//! (blobs/sha256/.../<hash>.zst) are write-once and named by their
-//! own hash; a torn write is detectable and regeneratable.
+//! - **Append-only logs** — readers truncate at the last good
+//!   record; partial appends are self-detecting.
+//! - **Content-addressed write-once files** — content identity is
+//!   the hash; torn writes are detectable and regeneratable.
 
 use std::fs;
 use std::io::Write;
@@ -54,19 +56,19 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write `bytes` to `path` atomically and durably.
 ///
-/// On success the destination contains exactly `bytes` and the
-/// rename + directory update are flushed to disk.
+/// **Postcondition on success**: `path` contains exactly `bytes`;
+/// content and dirent are both flushed past the page cache.
 ///
-/// On failure the tmp file is left in place under
-/// `<path>.tmp.<pid>.<nanos>.<seq>`; callers may treat the tmp as
-/// debris and ignore it (a subsequent successful write removes it
-/// only if it was the one this call created; tmp files from
-/// crashed prior invocations stay until a janitor removes them).
+/// **Postcondition on failure**: `path` is unchanged. A tmp sibling
+/// of `path` may persist as debris (name disambiguated by pid +
+/// nanosecond + monotonic counter, so concurrent writers do not
+/// collide); readers of `path` are unaffected. Cleanup of debris
+/// from crashed invocations is the caller's responsibility.
 ///
 /// # Errors
 ///
-/// Propagates any [`std::io::Error`] from the tmp file open, write,
-/// sync, rename, or parent-dir sync steps.
+/// Propagates any [`std::io::Error`] from the underlying tmp open,
+/// write, sync, rename, or parent-dir sync.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(

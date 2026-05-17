@@ -34,10 +34,12 @@ main : Argv → MultiOutcome → ExitCode
 ExitCode = MultiOutcome.exit_code()       (priority projection; see MultiOutcome)
 ```
 
-`recorder` is the always-on per-PR memory harness (keyed by
-`forge + repo + PR`; identical to `/ooda-pr`). `suite_recorder`
-is the suite-level harness, keyed by `<suite-id>` per invocation.
-The two are independent and coexist on the same state-root tree.
+`recorder` is the always-on per-PR memory harness, keyed by
+`forge + repo + PR` (identical to `/ooda-pr`'s recorder).
+`suite_recorder` is the suite-level harness, keyed by a
+per-invocation suite identifier. Both harnesses are
+single-writer per key and coexist on the same state-root tree
+under disjoint sub-paths — no shared mutable file.
 
 ### Shared boundary types (`ooda-core` crate)
 
@@ -165,10 +167,10 @@ GhError =
   ⊕ ...
 ```
 
-**Concurrency:** nine fetchers fan out under `thread::scope`;
-first-error fail-fast. Terminal short-circuit:
-`state ∈ {Merged, Closed} → terminal_observations(pull_request_view)` skips
-auxiliary endpoints whose base may have been deleted post-merge.
+**Concurrency:** fetchers fan out in parallel, joined before
+return; first-error fail-fast. Terminal short-circuit:
+`state ∈ {Merged, Closed}` skips auxiliary endpoints whose base
+may have been deleted post-merge.
 
 ---
 
@@ -716,16 +718,17 @@ against overlapping PRs each get a distinct `<suite-id>`; per-PR
        Stdout JSONL records carry the per-PR detail for each branch.
 
 [P8] No surviving counterexample. (Sweep:)
-       (a) panic in PR_i: thread::scope propagates on join; per-PR
-           Recorders for completed siblings remain on disk.
-       (b) gh rate-limit cascade: --concurrency K bounds the request
-           burst; default = |suite|.
-       (c) two ooda-prs invocations on overlapping PRs: distinct
-           <suite-id> + <run-id> per process; CURRENT.json /
-           ledger collide harmlessly (last-writer-wins on
-           CURRENT.json via atomic replace; appends on ledger,
-           same as /ooda-pr). Per-iteration immutables live under
-           disjoint runs/<run-id>/iterations/ paths and never collide.
+       (a) panic in PR_i: worker-scope propagates panics on join;
+           per-PR Recorders for completed siblings remain on disk.
+       (b) upstream rate-limit cascade: --concurrency K bounds the
+           request burst; default = |suite|.
+       (c) two invocations on overlapping PRs: distinct suite +
+           run identifiers per process; the per-PR mutable
+           pointer is last-writer-wins via atomic replace and
+           per-PR append-only logs splice cleanly (records carry
+           run_id for read-side disambiguation). Per-iteration
+           immutables live under disjoint per-run paths and never
+           collide.
        (d) |suite| = 1: degenerate but valid; one stdout record;
            $? = that PR's per-PR exit code (since no other PR
            contributes to the priority projection).

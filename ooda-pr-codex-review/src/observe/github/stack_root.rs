@@ -1,18 +1,21 @@
-//! Walk down a PR stack to find the branch it ultimately merges into.
+//! Resolve a stacked PR's protected root by walking the open-PR
+//! head→base chain.
 //!
-//! `branch_rules` and `branch_protection` are configured at the
-//! repo's protected base (typically `master`). For a stacked PR
-//! whose `base_ref_name` is some intermediate branch, querying
-//! those endpoints against the intermediate branch returns nothing
-//! and the required-check list reads as empty — wrong.
+//! # Invariants
 //!
-//! This helper resolves the *root* branch by repeatedly asking
-//! "is there an open PR whose head is the current branch?" and
-//! following its base. Terminates when no open PR has the current
-//! branch as its head (= we've reached the protected root).
-//!
-//! Cycles can't happen with the open-PR head→base graph in
-//! practice; we still cap iterations defensively.
+//! - **Branch-rule scoping requires the protected root**: rule and
+//!   protection sources resolve against the protected root, not
+//!   intermediate stack branches. Querying an intermediate yields an
+//!   empty rule set and silently disables the required-check axis.
+//! - **Termination**: the walk ends when no open PR claims the
+//!   current branch as its head. Cycles are impossible on the
+//!   acyclic open-PR head→base graph; a defensive iteration cap
+//!   bounds the walk regardless.
+//! - **Per-step root re-check**: the root predicate is evaluated
+//!   inside the loop, not only at entry. Without this, following
+//!   base→head once onto a root branch could then chase an
+//!   unrelated PR rooted at the same head and resolve the wrong
+//!   branch.
 
 use serde::Deserialize;
 
@@ -22,9 +25,9 @@ use super::gh::{GhError, gh_json};
 
 const MAX_DEPTH: usize = 16;
 
-/// Branches that are always protected roots in our repos. Skipping
-/// the head→base walk here saves a ~500ms `gh pr list` per
-/// iteration on non-stacked PRs.
+/// Branch names treated as protected roots without further probing.
+/// Conventional defaults; short-circuits the head→base walk on non-
+/// stacked PRs.
 const ROOT_BRANCHES: &[&str] = &["master", "main"];
 
 #[derive(Debug, Deserialize)]
@@ -33,9 +36,9 @@ struct StackParent {
     base_ref_name: BranchName,
 }
 
-/// Walk down the stack from `start_branch` and return the ultimate
-/// base. For non-stacked PRs (start = master/main), returns
-/// `start_branch` unchanged without an API call.
+/// Resolve the protected root reachable from `start_branch` along
+/// the open-PR head→base chain. Returns `start_branch` unchanged
+/// when it already names a protected root; no API call in that case.
 pub(crate) fn resolve_stack_root(
     slug: &RepoSlug,
     start_branch: &BranchName,
@@ -48,13 +51,8 @@ pub(crate) fn resolve_stack_root(
     let slug_s = slug.to_string();
 
     for _ in 0..MAX_DEPTH {
-        // Re-check root inside the loop, not just at entry. Without
-        // this, after following base→head once and landing on
-        // master/main, we'd issue another `gh pr list --head master`,
-        // which can return an unrelated PR (e.g. a release-sync PR
-        // whose head IS master) and silently follow its base —
-        // resulting in branch_rules / branch_protection / Copilot
-        // config being fetched for the wrong branch.
+        // Per-step root check: enforces the per-step-recheck
+        // invariant in the module-level doc.
         if ROOT_BRANCHES.contains(&current.as_str()) {
             return Ok(current);
         }
@@ -80,15 +78,14 @@ pub(crate) fn resolve_stack_root(
     Ok(current)
 }
 
-/// Result of one stack-walk step. Split out from the gh-bound loop
-/// body so cycle detection, empty-list termination, and the
-/// "advance to parent" branch are unit-testable without subprocesses.
+/// Per-step outcome. Split from the subprocess-bound loop body so
+/// the termination, cycle, and advancement branches are unit-
+/// testable without subprocess.
 #[derive(Debug, PartialEq, Eq)]
 enum AdvanceStep {
-    /// Terminal: stop walking and return this branch.
+    /// Terminal — return this branch.
     Reached(BranchName),
-    /// Non-terminal: continue the walk with this branch as the new
-    /// current head.
+    /// Non-terminal — continue with this branch.
     Continue(BranchName),
 }
 
@@ -98,11 +95,12 @@ fn advance_root(
     visited: &mut Vec<BranchName>,
 ) -> AdvanceStep {
     let Some(first) = parents.into_iter().next() else {
-        // No open PR with `current` as head → we're at the root.
+        // No parent → current is the root.
         return AdvanceStep::Reached(current);
     };
     if visited.contains(&first.base_ref_name) {
-        // Cycle (shouldn't happen, but bail safely).
+        // Cycle guard — pathologically not reachable on the open-PR
+        // graph, kept defensively.
         return AdvanceStep::Reached(current);
     }
     visited.push(first.base_ref_name.clone());

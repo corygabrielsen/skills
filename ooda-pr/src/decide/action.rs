@@ -1,11 +1,11 @@
 //! Action shapes — the concrete operations decide can prescribe.
 //!
-//! [`Action`], [`ActionEffect`], [`TargetEffect`], [`Urgency`] are
-//! re-exported from [`ooda_core`] — the cross-binary spine. This
-//! module owns the per-binary [`ActionKind`] enum (the PR domain's
-//! action variants) and its [`ActionKindName`] impl. Payloads use
-//! domain newtypes (`CheckName`, `GitHubLogin`) so a "right name in
-//! the wrong position" bug is a compile error.
+//! The generic action carrier and its effect / target / urgency
+//! shapes live in the shared crate. This module fixes the type
+//! parameter to the PR-domain action variant and supplies the
+//! discriminant projection. Payloads carry domain newtypes so a
+//! type-correct call cannot mix identifiers from different
+//! namespaces.
 
 use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
 use crate::observe::github::workflow_runs::WorkflowRunId;
@@ -16,15 +16,13 @@ pub(crate) use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect,
 use ooda_core::{RateLimitHit, RateLimitScope};
 use serde::Serialize;
 
-/// PR-domain `Action`. Concrete instantiation of the generic
-/// [`ooda_core::Action`] over this binary's [`ActionKind`].
+/// PR-domain action specialised to this binary's discriminant.
 pub(crate) type Action = ooda_core::Action<ActionKind>;
 
-/// Payload for [`ActionKind::ReRunWorkflow`]: one degraded check
-/// with its workflow run handle (consumed by the act layer to issue
-/// the rerun) and the triggering symptom (recorded in the blocker
-/// tag so the stall comparator separates queue-timeout from
-/// run-timeout stalls).
+/// Per-check payload for the workflow-rerun action: identifier, the
+/// upstream run handle the act layer needs to issue the rerun, and
+/// the symptom carried into the blocker key so distinct timeout
+/// classes do not collide in stall detection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DegradedCheck {
     pub name: CheckName,
@@ -32,22 +30,20 @@ pub struct DegradedCheck {
     pub symptom: CiSymptom,
 }
 
-/// Payload for [`ActionKind::EscalateCiFailed`]: one Failed check
-/// with the triggering symptom. No workflow run handle — escalation
-/// has no side effect, only naming.
+/// Per-check payload for the failed-CI escalation. No run handle —
+/// the escalation has no driver-side effect; it names what needs
+/// human attention.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FailedCheckHandle {
     pub name: CheckName,
     pub symptom: CiSymptom,
 }
 
-/// Synthesize the action the runner executes when observe surfaces a
-/// rate-limit hit. The action's effect is a [`ActionEffect::Wait`]
-/// for the scope's `retry_after` — `act()` sleeps that duration and
-/// the next iteration re-observes from fresh state. Urgency is
-/// `Critical` because no other axis can produce useful work while
-/// throttled; the blocker tag is the scope name so the recorder's
-/// stall key separates rate-limit waits from other Waits.
+/// Synthesize the action for an observed rate-limit hit. The effect
+/// is a Wait for the upstream's retry window; urgency is the most
+/// critical tier because no other axis can produce useful work while
+/// throttled. The blocker key is the scope identifier so distinct
+/// upstream quota buckets do not collide in stall detection.
 pub(crate) fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
     let log = format!(
         "rate-limited on {}; sleeping {}s",
@@ -75,44 +71,37 @@ pub enum ActionKind {
     WaitForCi {
         pending: NonEmpty<CheckName>,
     },
-    /// CI is blocked on a fan-in (e.g. Mergeability) AND something
-    /// genuinely ambiguous is co-occurring (advisory failure). Hand
-    /// to an agent to triage.
+    /// CI is blocked on a fan-in AND an ambiguous advisory failure
+    /// co-occurs. The combined signal needs agent triage.
     TriageWait {
         blocked_checks: NonEmpty<CheckName>,
     },
-    /// Health-driven remediation. One or more required checks crossed
-    /// a queue/run timeout on the current HEAD and re-run budget is
-    /// not yet exhausted. The act layer issues `POST
-    /// /repos/:o/:r/actions/runs/:run_id/rerun` for each entry; the
-    /// next iteration sees a fresh workflow run as Healthy.
+    /// Driver-side remediation: required checks crossed a timeout
+    /// at HEAD with per-check rerun budget remaining. The act layer
+    /// issues the rerun and the next iteration re-observes.
     ReRunWorkflow {
         checks: NonEmpty<DegradedCheck>,
     },
-    /// Per-(check, HEAD) re-run budget exhausted on at least one
-    /// required check; humans must triage. No automatic side effect
-    /// — decide hands off via `ActionEffect::Human`. The action
-    /// payload carries every Failed check so the prompt names them.
+    /// Per-(check, HEAD) rerun budget exhausted. Decide hands off
+    /// to a human; the payload names every failed check so the
+    /// prompt can list them.
     EscalateCiFailed {
         checks: NonEmpty<FailedCheckHandle>,
     },
 
     // ── Reviews ──
-    /// Carries the live (non-resolved, non-outdated) review threads
-    /// the actor must address. The full thread bodies travel with
-    /// the action so the actor receives prompt material directly —
-    /// no second `gh api graphql` round-trip to discover what to
-    /// fix. `threads.len()` is the count; cardinality is a derived
-    /// projection, not a stored field. (See feedback memory:
-    /// "witness, not cardinality.")
+    /// Carries the unresolved review threads the actor must address.
+    /// Payload-as-witness: the full thread bodies travel inline, so
+    /// the actor consumes one prompt instead of round-tripping to
+    /// the upstream review API. Count is derived from the payload,
+    /// never stored separately.
     AddressThreads {
         threads: NonEmpty<ReviewThread>,
     },
-    /// GitHub reports `CHANGES_REQUESTED` but no inline review threads
-    /// exist (summary-only change request, or threads resolved without
-    /// a re-approval). Distinct from `AddressThreads` because there is
-    /// no thread payload to walk — the agent must read the latest
-    /// `CHANGES_REQUESTED` review body and address the summary.
+    /// Summary-only change request: the upstream reports
+    /// changes-requested but no inline threads exist. Distinct from
+    /// the per-thread case because the only feedback to address is
+    /// the latest review body.
     AddressChangeRequest,
     RequestApproval,
 
@@ -123,14 +112,12 @@ pub enum ActionKind {
     ShortenTitle {
         current_len: u32,
     },
-    /// GitHub is still computing mergeability; observe again
-    /// after a delay rather than halting Success on a transient
-    /// post-push UNKNOWN.
+    /// Upstream mergeability is still computing; wait and
+    /// re-observe rather than halting on a transient unknown.
     WaitForMergeability,
-    /// `mergeStateStatus == BLOCKED` with no modeled axis
-    /// explaining the blockage — typically an unmodeled merge
-    /// policy (deployment protection, signed commits, custom
-    /// ruleset). Hand off to a human; we don't know the gate.
+    /// Upstream reports merge-blocked but no modeled axis
+    /// explains the gate — an unmodeled merge policy is in play.
+    /// Human triage owns it; the gate is not known to the driver.
     ResolveMergePolicy,
 
     // ── Metadata hygiene ──
@@ -139,19 +126,17 @@ pub enum ActionKind {
     AddDescription,
 
     // ── Bot tier advancement ──
-    // Degraded-axis remediation. CI's ReRunWorkflow +
-    // EscalateCiFailed (above) wear the same Healthy/Degraded/Failed
-    // shape; on the 3rd axis lift to ooda_core::AxisHealth<S>.
+    // Bot-axis remediation wears the same Healthy/Degraded/Failed
+    // shape CI uses; a future third axis can lift the common form.
     RerequestCopilot {
-        /// Health-driven remediation carries the triggering symptom;
-        /// tier-advancement re-requests (no health degradation) pass
-        /// `None`. The variant is the same — the side effect is
-        /// identical (POST `requested_reviewers`).
+        /// `Some(symptom)` when the re-request is health-driven;
+        /// `None` for tier-advancement re-requests on a healthy
+        /// axis. The side effect is the same — only the blocker
+        /// key separates the cases.
         symptom: Option<Symptom>,
     },
-    /// Per-HEAD health budget exhausted; humans must triage. No
-    /// automatic side effect — decide hands off via
-    /// `ActionEffect::Human`.
+    /// Per-HEAD health budget exhausted. Hand off to a human; no
+    /// driver-side side effect.
     EscalateCopilotFailed {
         symptom: Symptom,
     },
@@ -161,16 +146,10 @@ pub enum ActionKind {
         count: u32,
     },
     WaitForCursorReview,
-    /// Cursor's `check_suite` is stalled past `STALL_TIMEOUT` on Cursor's
-    /// backend and there is no remediation API (posting a `cursor
-    /// review` comment does not unstick Cursor's own queue). Hand off
-    /// to a human; no side effect — decide emits this via
-    /// `ActionEffect::Human`, the runner translates to
-    /// `Outcome::HandoffHuman`, and the act layer never sees it.
-    /// Deliberately payload-free: Cursor has a single failure mode
-    /// (stalled suite), unlike Copilot's StartTimeout/ReviewTimeout
-    /// or CI's QueueTimeout/RunTimeout, so there is no Symptom to
-    /// carry.
+    /// Cursor's review surface is stalled past the upstream timeout
+    /// with no remediation API. Hand off to a human. Payload-free:
+    /// this axis has a single failure mode, so there is no symptom
+    /// discriminator to carry.
     EscalateCursorStalled,
 
     // ── Pending reviewers ──
@@ -185,66 +164,53 @@ pub enum ActionKind {
     },
 
     // ── Rate limits ──
-    /// GitHub returned a rate-limit response from one of its quota
-    /// buckets. The runner sleeps `retry_after` (carried on the
-    /// `ActionEffect::Wait`) and re-observes from a clean state on
-    /// the next iteration. Scope is preserved so the JSONL record
-    /// and status comment identify which bucket fired.
+    /// Upstream throttled the observe stage. The driver sleeps
+    /// the retry window carried on the Wait effect and re-observes
+    /// on the next iteration. Scope is preserved so distinct
+    /// upstream quota buckets remain distinguishable in records.
     WaitForRateLimit {
         scope: RateLimitScope,
     },
 
     // ── PR metadata attestation ──
-    /// PR title / description / labels are out of sync with HEAD
-    /// (Drift) or have never been attested for this PR
-    /// (`NeverAttested`). Hand off to an agent to refresh PR meta and
-    /// re-run `ooda-attest pr-meta` to write a fresh attestation.
-    /// Payload carries the absolute path of the attestation file so
-    /// the prompt can surface the exact CLI invocation.
+    /// PR metadata attestation drifted from HEAD or has never been
+    /// recorded. Agent handoff to refresh metadata and re-attest;
+    /// payload carries the attestation file path so the prompt
+    /// can surface the exact CLI invocation.
     SyncPullRequestMetadata {
         attest_path: std::path::PathBuf,
     },
 
     // ── Doc review attestation ──
-    /// Doc / comment hygiene attestation is out of sync with HEAD
-    /// (Drift) or has never been recorded (`NeverAttested`). Hand off
-    /// to an agent to review the full PR diff and re-run
-    /// `ooda-attest doc-review`.
+    /// Doc / comment hygiene attestation drifted from HEAD or has
+    /// never been recorded. Agent handoff to review the diff and
+    /// re-attest.
     ReviewDocs {
         attest_path: std::path::PathBuf,
     },
 
     // ── Claude review attestation ──
-    /// Claude has posted review content past the last attestation
-    /// (`Fresh`). Hand off to an agent to address the threads + body
-    /// and re-run `ooda-attest claude-review`. Distinct from the
-    /// SHA-based attestation axes: the trigger is *content* drift,
-    /// not HEAD-SHA drift.
+    /// Content-keyed attestation: review content has advanced past
+    /// the last attestation. The trigger is content drift rather
+    /// than HEAD drift.
     AddressClaudeReview {
         attest_path: std::path::PathBuf,
     },
 
     // ── Closeout attestation ──
-    /// The convergence-gate attestation. Emitted at `Urgency::Closeout`
-    /// (strictly the least-urgent tier) whenever the closeout axis is
-    /// `Drift` or `NeverAttested`. Wins only on global quiescence —
-    /// when no other axis emits anything. The agent performs a final
-    /// pre-handoff sweep, then runs `ooda-attest closeout` at current
-    /// HEAD. `HandoffHuman` then fires from the empty-candidate-set
-    /// arm with the strong precondition that the agent has explicitly
-    /// signed off.
+    /// Convergence-gate attestation. Emitted at the least-urgent
+    /// tier so it wins only on global quiescence; the agent
+    /// performs a pre-handoff sweep and re-attests at HEAD before
+    /// the terminal human handoff fires.
     Closeout {
         attest_path: std::path::PathBuf,
     },
 }
 
 impl ActionKind {
-    /// The variant name only — the leading `Identifier` of the
-    /// `Debug` form, with any payload (`{ ... }` or `(...)`)
-    /// stripped. Used for the `<ActionKind>` placeholder in the
-    /// SKILL.md stderr contract: caller-stable identity, no
-    /// payload noise (which would expose internal data shapes
-    /// and break the single-line invariant).
+    /// Payload-free discriminant — caller-stable identity for
+    /// surfaces that must be single-line and decoupled from
+    /// internal payload shape (logs, headers, dedup keys).
     pub fn name(&self) -> &'static str {
         ActionKindName::name(self)
     }
@@ -293,11 +259,10 @@ mod tests {
     use super::*;
     use ooda_core::PollingInterval;
 
-    /// Hand-maintained sample list of every [`RateLimitScope`]
-    /// variant. The match in `rate_limit_action_round_trips_scope`
-    /// is compile-checked exhaustive, so adding a new scope variant
-    /// fails to compile until both this sample list and that match
-    /// are updated.
+    /// Hand-maintained sample list — one entry per scope variant.
+    /// Paired with a compile-checked exhaustive match in the
+    /// round-trip test below, so a new variant fails to compile
+    /// until both are updated.
     fn rate_limit_scope_samples() -> Vec<RateLimitScope> {
         vec![
             RateLimitScope::GitHubGraphqlPrimary,
@@ -314,9 +279,7 @@ mod tests {
                 retry_after: PollingInterval::from_secs(60),
             };
             let action = rate_limit_wait_action(hit);
-            // Compile-checked: every scope must route through this
-            // match. Adding a variant breaks both this and ooda-core's
-            // own exhaustive-match-as-contract test.
+            // Compile-checked exhaustive over scope variants.
             match scope {
                 RateLimitScope::GitHubGraphqlPrimary
                 | RateLimitScope::GitHubRestPrimary
@@ -326,8 +289,8 @@ mod tests {
             assert!(matches!(action.effect, ActionEffect::Wait { .. }));
             assert_eq!(action.urgency, Urgency::Critical);
             assert_eq!(action.target_effect, TargetEffect::Blocks);
-            // Blocker tag mirrors the scope so a primary-vs-secondary
-            // rate-limit produces a distinct stall key.
+            // Blocker carries scope identity ⇒ distinct upstream
+            // buckets project to distinct stall keys.
             assert_eq!(action.blocker.as_str(), scope.name());
         }
     }

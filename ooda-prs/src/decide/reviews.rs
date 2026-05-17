@@ -1,5 +1,9 @@
-//! Review candidates: address threads, wait on pending reviewers,
-//! request approval.
+//! Review-axis candidates.
+//!
+//! Three families: per-thread remediation (drives agent work on
+//! unresolved feedback), per-reviewer wait (bot and human), and
+//! decision-derived candidates that close the review loop
+//! (approval request, summary-only change-request).
 
 use crate::ids::{BlockerKey, Timestamp};
 
@@ -41,25 +45,22 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             effect: ActionEffect::Agent { prompt },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            // Stable key — the action carries the witness; the
-            // blocker remains a fixed tag so 3→2 progress doesn't
-            // mask as stall. Live and Outdated threads share this
-            // tag because both require per-thread agent judgment;
-            // the per-thread state is carried through in the prompt.
+            // Gate-stable: progress on cardinality must not mask
+            // as stall. The witness travels on the action; the key
+            // names the gate (one or more unresolved threads),
+            // which is identical for live and outdated entries —
+            // both demand per-thread agent judgment.
             blocker: BlockerKey::from_static("unresolved_threads"),
         });
     }
 
-    // When the copilot axis is active (repo has the copilot_code_review
-    // ruleset), let IT own Copilot's pending-state polling — its
-    // `WaitForCopilotAck` runs at a 15s interval and feeds the timing-
-    // aware health classifier. Reviews-axis emission of `WaitForBotReview`
-    // for the same login would shadow it: both fire at `BlockingWait`,
-    // stable-sort tiebreaker puts reviews first (axis order: state → ci
-    // → reviews → copilot → ...), so a 60s presence-only poll wins and
-    // the 15s timing-aware poll never fires. Filter Copilot here when
-    // the axis exists; non-Copilot bots (Renovate, Dependabot, etc.)
-    // and Copilot-on-repos-without-the-axis are unaffected.
+    // When the bot-review axis is active, ownership of that bot's
+    // pending-state polling belongs to it — its timing-aware
+    // classifier needs the dedicated wait shape. Filter the bot's
+    // login from this axis's pending list so the two axes do not
+    // emit colliding waits in the same tier and the more granular
+    // one is not shadowed by axis-order tiebreaking. Generic bots
+    // and bots-on-repos-without-the-axis are unaffected.
     let bots_filtered: Vec<_> = if oriented.copilot.is_some() {
         reviews
             .pending_reviews
@@ -81,8 +82,8 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            // Stable across iterations: gate is "≥1 pending bot
-            // review". Reviewer list is on the action payload.
+            // Gate identity: "≥1 pending bot review". Reviewer
+            // identities travel on the payload.
             blocker: BlockerKey::from_static("pending_bot_review"),
         });
     }
@@ -98,25 +99,23 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            // Stable across iterations: gate is "≥1 pending human
-            // review". Reviewer list is on the action payload.
+            // Gate identity: "≥1 pending human review". Reviewer
+            // identities travel on the payload.
             blocker: BlockerKey::from_static("pending_human_review"),
         });
     }
 
-    // Approval request only when nothing else is in flight AND
-    // the only missing thing is approval. ChangesRequested is
-    // explicitly NOT a request-approval state — the reviewer
-    // needs the changes addressed and a re-review, not another
-    // approve click. Summary-only change requests (no thread
-    // payload) would otherwise mis-route through this branch.
+    // Approval is the loop-closing candidate: it fires only when
+    // the upstream decision asks for review and no other work is
+    // in flight. A changes-requested decision is explicitly not
+    // an approval-request situation — the requested changes must
+    // be addressed before re-review.
     let needs_approval = matches!(reviews.decision, Some(ReviewDecision::ReviewRequired));
     let ci_clean = ci.required.fail() == 0 && ci.required.pending() == 0;
-    // Symmetric with the AddressThreads filter: a thread that is
-    // Outdated but not Resolved still requires per-thread agent
-    // judgment (anchor moved, but the logical feedback may still
-    // apply), so RequestApproval / AddressChangeRequest must wait
-    // until every thread has reached the Resolved state.
+    // Gate symmetry with the address-threads filter: an outdated
+    // thread is still unresolved feedback (anchor moved, content
+    // may still apply), so any approval-closing candidate must
+    // wait for the resolved state on every thread.
     let threads_clean = !oriented
         .threads
         .iter()
@@ -133,20 +132,15 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
         });
     }
 
-    // Summary-only change request: ChangesRequested with no inline
-    // threads means the reviewer left feedback in the review body
-    // (or all threads were resolved without re-approval). Without
-    // this candidate, decide() would see an empty action set and
-    // halt Success on a still-blocked PR. Class invariant: every
-    // blocking ReviewDecision must produce a candidate.
+    // Summary-only change request: a changes-requested decision
+    // with no inline thread payload. Without this candidate, the
+    // empty action set on a still-blocked PR would halt Success.
     //
-    // Suppress when ANY reviewer is already pending re-review: the
-    // change has been addressed and a re-request is outstanding.
-    // Without this gate, AddressChangeRequest (BlockingFix) shadows
-    // WaitForHumanReview / WaitForBotReview (BlockingHuman/Wait) on
-    // the urgency sort and the loop hands work back to the agent
-    // even though the right next action is to wait for the
-    // re-review.
+    // Class invariant — *every blocking review decision must
+    // produce a candidate*. Suppression on pending re-review is
+    // the composition rule: a re-request is already outstanding,
+    // so re-firing as an agent fix would shadow the more
+    // appropriate wait at a higher urgency tier.
     let changes_requested = matches!(reviews.decision, Some(ReviewDecision::ChangesRequested));
     let no_pending_re_review =
         reviews.pending_reviews.bots.is_empty() && reviews.pending_reviews.humans.is_empty();
@@ -167,14 +161,13 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
     out
 }
 
-/// Build the `AddressChangeRequest` prompt. When the latest human
-/// `CHANGES_REQUESTED` review is observed, inline its author, timestamp,
-/// and full body as a `Witness` so the agent does not need a
-/// `gh pr view --json reviews` round-trip to see what was asked. When
-/// the projection found no human review (bots-only change request, or
-/// a race between the GraphQL `review_decision` and the REST reviews
-/// feed) the prompt falls back to the prior fetch-it-yourself
-/// instruction.
+/// Build the summary-only-change-request prompt. When a human
+/// changes-requested review is observed, inline its author,
+/// timestamp, and body as a witness so the agent reads what was
+/// asked without a round-trip to the upstream review surface.
+/// Absent that observation (bots-only path, or an upstream race
+/// between the decision feed and the reviews feed) the prompt
+/// falls back to fetch-it-yourself instructions.
 fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt {
     let mut prompt =
         HandoffPrompt::new("Address summary-only change-request review (no inline threads).");
@@ -221,14 +214,11 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
     prompt
 }
 
-/// Build the `RequestApproval` prompt. Surfaces who must approve
-/// (required reviewers from `requested_reviewers`) and the current
-/// `approvals_on_head` ratio so the human handoff knows exactly which
-/// approval signature is missing. When no required reviewers have
-/// been recorded yet, the headline alone covers the situation —
-/// CODEOWNERS- or branch-rule-derived requirements may not be present
-/// on the `requested_reviewers` REST endpoint until GitHub fans them
-/// in.
+/// Build the approval-request prompt. Surfaces the required-reviewer
+/// list and the current approval ratio at HEAD so the human knows
+/// which signature is missing. When the required-reviewer list is
+/// empty (upstream has not yet fanned in code-owner or branch-rule
+/// requirements) the headline alone is sufficient.
 fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
     let denom = reviews.requested_reviewers.bots.len() + reviews.requested_reviewers.humans.len();
     let headline = if denom == 0 {
@@ -264,22 +254,14 @@ fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
     prompt
 }
 
-/// Build the `AddressThreads` prompt with the threads themselves
-/// inlined as witnesses. Structure:
-///
-/// * `headline` — count, with a Live/Outdated breakdown when the
-///   set is mixed.
-/// * Paragraph — per-author breakdown.
-/// * Witnesses — one per thread; label = numbered location +
-///   `[outdated]` tag + `thread_id`; body = quoted comment lines.
-/// * Paragraph — class-of-issue generalization directive.
-/// * Paragraph (optional) — verify-then-act-or-resolve directive
-///   for the outdated subset.
-/// * Paragraph — `resolveReviewThread` GraphQL template plus
-///   idempotency note.
-///
-/// The actor receives the prompt material directly — no second
-/// `gh api graphql` round-trip required to discover what to fix.
+/// Build the address-threads prompt, inlining each thread as a
+/// witness so the actor's input is self-contained — no round-trip
+/// to the upstream review surface to discover what to address.
+/// Sections compose around the thread payload: headline (with a
+/// live/outdated breakdown when relevant), per-author tally,
+/// witnesses, class-of-issue generalization directive, optional
+/// outdated-judgment directive, and the resolve-template with
+/// idempotency note.
 fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::HandoffPrompt {
     use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
@@ -319,14 +301,14 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
         prompt.push_paragraph(format!("{}.", bits.join(" · ")));
     }
 
-    // `enumerate_map_ref` preserves the non-empty invariant
-    // structurally: input `NonEmpty<ReviewThread>` ⇒ output
-    // `NonEmpty<Witness>`, no runtime check on cardinality.
+    // `enumerate_map_ref` carries the non-empty invariant through
+    // the map structurally; no runtime cardinality check is
+    // needed at the output boundary.
     let witnesses = threads.enumerate_map_ref(|i, t| {
         let tag = match t.state {
             ThreadState::Outdated => "    [outdated]",
-            // Live and Resolved both render without a tag;
-            // Resolved is excluded by the caller's filter.
+            // Live renders unadorned; Resolved cannot reach here
+            // because the caller filters it out.
             _ => "",
         };
         let label = SingleLineString::new(format!(
@@ -394,9 +376,9 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
     prompt
 }
 
-/// Group threads by author preserving first-seen order. Linear scan
-/// — sufficient for the realistic case (a handful of authors per
-/// PR) and avoids requiring `Hash`/`Ord` on the author sum type.
+/// Tally by author, preserving first-seen order. Linear scan is
+/// sufficient for the realistic per-PR scale and avoids requiring
+/// hashability or ordering on the author sum.
 fn count_by_author(threads: &[ReviewThread]) -> Vec<(ThreadAuthor, usize)> {
     let mut counts: Vec<(ThreadAuthor, usize)> = Vec::new();
     for t in threads {
@@ -575,9 +557,9 @@ mod tests {
 
     #[test]
     fn outdated_unresolved_threads_emit_address_threads() {
-        // Bug fix: GitHub's isOutdated is positional, not
-        // content-relevance. Outdated unresolved threads still need
-        // per-thread agent judgment and must reach AddressThreads.
+        // The upstream's outdated marker is positional only; the
+        // content may still apply. Per-thread agent judgment is
+        // still required, so the address-threads candidate fires.
         let r = clean_reviews();
         let threads = vec![outdated_thread(
             "src/foo.rs",
@@ -818,10 +800,10 @@ mod tests {
 
     #[test]
     fn summary_only_change_request_emits_address_change_request() {
-        // ChangesRequested with no unresolved threads = summary-only
-        // change request (or all threads resolved without re-approval).
-        // Without this candidate, decide() would halt Success on a
-        // still-blocked PR.
+        // Witness for the class invariant: a blocking review
+        // decision with no thread payload must still produce a
+        // candidate, or the loop would halt Success on a still-
+        // blocked PR.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         r.threads_unresolved = 0;
@@ -842,9 +824,9 @@ mod tests {
 
     #[test]
     fn changes_requested_with_threads_does_not_double_emit() {
-        // When threads exist, AddressThreads handles the work. The
-        // summary-only candidate is gated on threads_clean to avoid
-        // emitting two redundant blockers for the same review state.
+        // Suppression rule: the per-thread candidate already
+        // covers the work; the summary-only candidate must not
+        // emit a redundant gate.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         let threads = vec![
@@ -876,8 +858,8 @@ mod tests {
 
     #[test]
     fn change_request_fires_even_when_ci_failing() {
-        // CI status is independent of the review-state class invariant.
-        // A summary-only change request is a blocker regardless of CI.
+        // CI is orthogonal to the review-decision invariant; the
+        // summary-only candidate fires on the review axis alone.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         let mut o = oriented_with(r);
@@ -895,11 +877,9 @@ mod tests {
 
     #[test]
     fn change_request_suppressed_when_re_review_pending() {
-        // The change has been addressed and a re-review is pending.
-        // AddressChangeRequest (BlockingFix) would otherwise sort
-        // ahead of WaitForHumanReview/WaitForBotReview and send the
-        // loop back to the agent unnecessarily. The pending wait
-        // covers it.
+        // Composition rule: an outstanding re-review wait at a
+        // higher urgency tier covers the gate; re-firing as an
+        // agent fix would send work back unnecessarily.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
         r.pending_reviews.humans = vec![Reviewer::User(GitHubLogin::parse("alice").unwrap())];
@@ -916,39 +896,30 @@ mod tests {
         );
     }
 
-    // ─── property tests for the class invariant ─────────────────────
+    // ─── decision-coverage property ───────────────────────────────
     //
-    // Class invariant from `candidates`'s docs: "Every blocking
-    // ReviewDecision must produce a candidate." In a clean baseline
-    // state (no threads, no pending reviewers, no CI gates), the
-    // review axis produces exactly one decision-derived candidate
-    // — or none, for the non-blocking decisions.
-    //
-    // The exhaustive match in `expected_review_axis_behavior` is the
-    // contract. Adding a new `ReviewDecision` variant fails to
-    // compile here until the new arm is added.
+    // Pins the class invariant: every blocking review decision
+    // produces exactly one decision-derived candidate in the
+    // baseline configuration; non-blocking decisions produce none.
+    // The exhaustive match below is the contract; a new variant
+    // fails to compile until handled.
 
-    /// Decision-axis behavior in a clean baseline state. The axis
-    /// also emits `WaitForBotReview` / `WaitForHumanReview` when
-    /// pending reviewers exist — those are not decision-driven and
-    /// are deliberately excluded by this property test's setup.
+    /// Decision-derived axis behaviour in the baseline. Pending-
+    /// reviewer waits are not decision-driven and are excluded by
+    /// this property test's setup.
     #[derive(Debug, PartialEq, Eq)]
     enum ReviewAxisBehavior {
-        /// No decision-derived candidate (decision is None or Approved).
+        /// Decision is non-blocking (none or already approved).
         NoBlocker,
-        /// `RequestApproval` — `ReviewRequired` with everything else
-        /// clean: agent has nothing left to do, human must approve.
+        /// Approval-closing candidate fires.
         EmitRequestApproval,
-        /// `AddressChangeRequest` — `ChangesRequested` with no inline
-        /// threads (summary-only review) and no pending re-review.
+        /// Summary-only-change-request candidate fires.
         EmitAddressChangeRequest,
     }
 
-    /// Exhaustive over `Option<ReviewDecision>`. The compiler
-    /// enforces that every variant has an explicit behavior arm.
+    /// Exhaustive contract over `Option<ReviewDecision>`.
     fn expected_review_axis_behavior(decision: Option<ReviewDecision>) -> ReviewAxisBehavior {
-        // Intentional exhaustive match per axis pattern; arms are
-        // duplicated for spec clarity.
+        // Arms duplicated for spec clarity.
         #[allow(clippy::match_same_arms)]
         match decision {
             None => ReviewAxisBehavior::NoBlocker,
@@ -990,10 +961,9 @@ mod tests {
         assert_eq!(
             decisions.len(),
             4,
-            "`all_review_decisions` must include `None` plus one sample \
-             per `ReviewDecision` variant; adding a new variant requires \
-             adding both an arm in `expected_review_axis_behavior` AND a \
-             sample here.",
+            "Sample enumeration must cover `None` plus every decision \
+             variant. A new variant requires both a sample here and an \
+             arm in the exhaustive contract above.",
         );
         for decision in decisions {
             let mut r = clean_reviews();

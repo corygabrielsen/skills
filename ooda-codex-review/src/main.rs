@@ -1,7 +1,11 @@
-//! ooda-codex-review — anti-DRY copy of /ooda-pr retargeted at
-//! `codex review`. Drives n parallel reviews per reasoning level,
-//! halts for AddressBatch/Retrospective handoffs to the outer
-//! Claude session. See `project_ooda_codex_review.md` for the plan.
+//! ooda-codex-review — drive `codex review` to fixed point across
+//! a reasoning-level ladder.
+//!
+//! Each iteration spawns `n` parallel review subprocesses at the
+//! current level. The loop transitions per the in-batch state
+//! machine (see [`decide`]); fixed point at the configured ceiling
+//! halts terminally, otherwise the loop hands off to an outer
+//! orchestrator for address-batch or retrospective work.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -56,44 +60,40 @@ struct Args {
     state_root: PathBuf,
     codex_bin: PathBuf,
     fresh: bool,
-    /// Side-effect requested by the orchestrator. `None` means
-    /// "run the OODA loop". `Some(_)` short-circuits the loop and
-    /// returns directly with the variant's documented Outcome.
+    /// Side-effect requested by the orchestrator. `None` runs the
+    /// OODA loop; `Some(_)` skips the loop and applies one recorder
+    /// mutation, returning the variant's documented Outcome.
     side_effect: Option<SideEffect>,
 }
 
-/// Side-effect commands. Mutually exclusive within a single
-/// invocation. Each opens the recorder (resuming the prior run),
-/// performs its mutation, and returns a documented Outcome
-/// without running the OODA loop.
+/// Out-of-band recorder mutations the orchestrator may apply
+/// instead of running the loop. Mutually exclusive per invocation.
+/// Each opens the recorder (resuming the prior run), performs one
+/// mutation, and returns a documented [`Outcome`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SideEffect {
-    /// `--advance-level` — climb one rung. Idle at ceiling.
+    /// `--advance-level` — climb one rung; idempotent at ceiling.
     AdvanceLevel,
-    /// `--drop-level` — drop one rung, clamp at floor. Idle at
-    /// floor.
+    /// `--drop-level` — drop one rung, clamped at floor;
+    /// idempotent at floor.
     DropLevel,
     /// `--restart-from-floor` — reset `current_level` to floor.
     RestartFromFloor,
-    /// `--mark-retro-clean` — orchestrator reports the
-    /// retrospective produced no architectural changes. Records
-    /// `LevelOutcome::Clean`. At ceiling: emit `DoneFixedPoint`.
-    /// Below ceiling: advance and emit `Idle`.
+    /// `--mark-retro-clean` — retrospective produced no
+    /// architectural changes. Records the clean outcome; at
+    /// ceiling halts terminal, otherwise advances.
     MarkRetroClean,
-    /// `--mark-retro-changes "<reason>"` — orchestrator reports
-    /// the retrospective surfaced architectural changes. Records
-    /// `LevelOutcome::RetrospectiveChanges` and restarts from
-    /// floor. Emits `Idle`.
+    /// `--mark-retro-changes "<reason>"` — retrospective surfaced
+    /// architectural changes. Records the outcome and restarts
+    /// from floor.
     MarkRetroChanges(String),
-    /// `--mark-address-passed` — orchestrator reports the address
-    /// agent fixed the batch and tests passed. Records
-    /// `LevelOutcome::Addressed` (with the issue count derived
-    /// from the current batch's verdicts) and drops one level
-    /// (clamped at floor). Emits `Idle`.
+    /// `--mark-address-passed` — address agent fixed the batch
+    /// and tests passed. Records the addressed outcome and drops
+    /// one level (clamped at floor).
     MarkAddressPassed,
-    /// `--mark-address-failed "<details>"` — orchestrator reports
-    /// post-address tests failed. No transition; emits
-    /// `HandoffHuman` with the details as the prompt.
+    /// `--mark-address-failed "<details>"` — post-address tests
+    /// failed. No state transition; emits a human handoff with
+    /// the details as the prompt.
     MarkAddressFailed(String),
 }
 
@@ -135,9 +135,9 @@ fn parse_positive_u32(flag: &str, raw: &str) -> Result<std::num::NonZeroU32, Out
     std::num::NonZeroU32::new(n).ok_or_else(|| usage(format!("{flag} must be ≥ 1; got 0")))
 }
 
-// Flat per-flag arg-parser table: length IS the spec, one arm per
-// known flag with its parse rules and error messages inline. Splitting
-// into helpers would scatter the flag contract across files.
+// Flat per-flag table: length IS the spec; one arm per known flag
+// with its parse rules and error messages inline. Splitting into
+// helpers would scatter the flag contract across files.
 #[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, Outcome> {
     if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
@@ -266,12 +266,10 @@ fn parse_args() -> Result<Args, Outcome> {
         )));
     }
 
-    // --fresh + a side-effect has no defined semantics: starting a
-    // new run and immediately mutating its empty manifest produces
-    // a meaningless state (e.g. --mark-address-passed records issue
-    // count 0; --mark-retro-clean records Clean against a level
-    // with no review history). Reject the combination at parse
-    // time to keep the surface honest.
+    // `--fresh` + side-effect has no coherent semantics: a
+    // side-effect mutates state that was just emptied by `--fresh`,
+    // producing a manifest with no review history to justify the
+    // mutation. Reject the combination at parse time.
     if fresh && side_effect.is_some() {
         return Err(usage(
             "--fresh cannot be combined with a side-effect flag (--mark-* / --advance-level / --drop-level / --restart-from-floor): the side-effect would mutate a brand-new manifest with no review history",
@@ -365,11 +363,10 @@ fn compute_repo_id(repo_root: &Path) -> Result<RepoId, String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // Include the canonical worktree path in the hash so parallel
-    // worktrees of the same repo (multi-clone polyrepo workflows,
-    // `git worktree add`) get distinct repo_ids automatically.
-    // Same-worktree sequential invocations still resume because
-    // `git rev-parse --show-toplevel` is symlink-resolved and stable.
+    // Mix the canonical worktree path into the hash so parallel
+    // worktrees of one repo get distinct repo_ids; same-worktree
+    // sequential invocations still resume because the toplevel
+    // path is symlink-resolved and stable.
     let toplevel = repo_root.display().to_string();
     let key = match url {
         Some(u) => format!("{u}@{toplevel}"),
@@ -477,16 +474,18 @@ fn run_session(args: &Args) -> Outcome {
 
 /// Apply one side-effect against the recorder and return the
 /// documented Outcome. Each command writes a human-readable line
-/// to stdout describing what changed so the orchestrator can log
-/// it.
+/// to stdout describing what changed.
 ///
-/// Outcome map:
-///   `AdvanceLevel` / `DropLevel` / `RestartFromFloor`    -> Idle
-///   `MarkRetroClean` (below ceiling)                 -> Idle
-///   `MarkRetroClean` (at ceiling)                    -> `DoneFixedPoint`
-///   `MarkRetroChanges`                               -> Idle
-///   `MarkAddressPassed`                              -> Idle
-///   `MarkAddressFailed`                              -> `HandoffHuman`
+/// Outcome map (see [`SideEffect`] for the per-variant rationale):
+///
+/// | SideEffect | Outcome |
+/// |------------|---------|
+/// | `AdvanceLevel` / `DropLevel` / `RestartFromFloor` | `Paused` |
+/// | `MarkRetroClean` below ceiling | `Paused` |
+/// | `MarkRetroClean` at ceiling | `DoneSucceeded` |
+/// | `MarkRetroChanges` | `Paused` |
+/// | `MarkAddressPassed` | `Paused` |
+/// | `MarkAddressFailed` | `HandoffHuman` |
 fn apply_side_effect(
     recorder: &mut Recorder,
     ceiling: CodexReasoningLevel,
@@ -613,10 +612,9 @@ fn apply_mark_address_passed(recorder: &mut Recorder, current: CodexReasoningLev
     }
 }
 
-/// Walk the verdicts in the current batch dir and return how many
-/// reviewers flagged issues. Best-effort — returns 0 on read
-/// errors so the side-effect path stays robust to filesystem
-/// transients (the count is observational, not load-bearing).
+/// Count how many reviewers in the current batch flagged issues.
+/// Observational only: read errors collapse to 0 so the
+/// side-effect path stays total over filesystem transients.
 fn count_current_batch_issues(recorder: &Recorder, level: CodexReasoningLevel) -> u32 {
     let batch_size = recorder.manifest().batch_size;
     match observe::codex::batch::scan_batch(&recorder.batch_dir(), level, batch_size) {
@@ -663,9 +661,9 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
-/// Render `Outcome` to stderr per the SKILL contract: single-line
-/// header, optionally followed by a prompt block for `Handoff*`
-/// variants.
+/// Render `Outcome` to stderr per the wire contract: single-line
+/// variant header on the first line, with a following prompt
+/// block only for handoff variants.
 fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
     match oc {
         Outcome::DoneSucceeded => {
@@ -735,23 +733,19 @@ mod tests {
         assert!(p.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 
-    /// Two worktrees of the same remote (but different toplevel paths)
-    /// must hash to distinct `repo_id`s so their state dirs are
-    /// isolated. The test exercises the hash-input construction
-    /// (without invoking git) since `compute_repo_id` shells out for
-    /// the remote URL. We reproduce the same key shape inline.
+    /// Two worktrees of the same remote at different toplevel
+    /// paths must hash to distinct `repo_id`s so their state dirs
+    /// stay isolated. The test reproduces the key-construction
+    /// shape inline rather than invoking the git-shelling
+    /// production path.
     #[test]
     fn worktree_path_disambiguates_repo_id_hash() {
-        let url = "git@github.com:w3-io/protocol.git";
-        let key_perf2 = format!("{url}@/home/cory/code/w3io/perf2/protocol");
-        let key_b = format!("{url}@/home/cory/code/w3io/b/protocol");
-        let h_perf2 = sha256_prefix(&key_perf2, 12);
+        let url = "git@example.invalid:org/repo.git";
+        let key_a = format!("{url}@/work/a/repo");
+        let key_b = format!("{url}@/work/b/repo");
+        let h_a = sha256_prefix(&key_a, 12);
         let h_b = sha256_prefix(&key_b, 12);
-        assert_ne!(
-            h_perf2, h_b,
-            "different worktree paths must hash differently"
-        );
-        // Same key reproduces the same hash (resume invariant).
-        assert_eq!(h_perf2, sha256_prefix(&key_perf2, 12));
+        assert_ne!(h_a, h_b, "different worktree paths must hash differently");
+        assert_eq!(h_a, sha256_prefix(&key_a, 12), "same key, same hash");
     }
 }

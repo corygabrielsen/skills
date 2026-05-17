@@ -1,38 +1,32 @@
-//! Single-line string newtype.
+//! No-newlines `String` newtype.
 //!
-//! The OODA binaries' stderr header invariant is "the first line
-//! is the variant header; nothing else appears on that line except
-//! the variant's documented payload format". Two `Outcome`
-//! variants — `BinaryError(_)` and `UsageError(_)` — carry a
-//! free-form message in their payload. If that message contains a
-//! newline, the header line silently splits and the regex-based
-//! header parser callers use against stderr breaks.
+//! A binary in this family emits a one-line header on stderr; any
+//! payload that may carry a free-form message risks splitting that
+//! header line with an embedded `\n` and breaking caller-side
+//! line-oriented parsing. [`SingleLineString`] makes the
+//! no-newlines invariant structural: every constructor flattens
+//! `\n` at the type boundary, so a value containing `\n` is
+//! unrepresentable.
 //!
-//! [`SingleLineString`] makes the no-newlines invariant
-//! structural: every constructor flattens newlines at the
-//! boundary, so it is impossible to produce a value of this type
-//! containing `\n`. The variant payloads can then be typed
-//! `SingleLineString` instead of `String`, and the
-//! `flatten_one_line` helper that used to live in `outcome.rs`
-//! disappears.
+//! Typing the relevant payload fields as `SingleLineString` rather
+//! than `String` eliminates the need for an ad-hoc flatten helper
+//! anywhere downstream.
 //!
-//! `Display` and `Serialize` both emit the inner string as-is
-//! (which is, by construction, single-line), so call sites that
-//! used `format!("{msg}")` or `json!({"msg": msg})` keep working.
+//! `Display` and `Serialize` both emit the inner string verbatim
+//! (single-line by construction).
 
 use serde::{Serialize, Serializer};
 use std::fmt;
 
-/// A `String` guaranteed by construction to contain no `\n`.
-/// `\r` and other control bytes are not modified — only `\n` is
-/// significant for stderr-header parsing.
+/// A `String` guaranteed by construction to contain no `\n`. Only
+/// `\n` is line-significant for header parsing; `\r` and other
+/// control bytes pass through unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SingleLineString(String);
 
 impl SingleLineString {
-    /// Construct from any `Into<String>`. Any `\n` in the input is
-    /// replaced with a single space; other characters pass
-    /// through unchanged.
+    /// Construct from any `Into<String>`, flattening `\n` to a
+    /// single space. Other characters pass through unchanged.
     pub fn new(s: impl Into<String>) -> Self {
         let s = s.into();
         if s.contains('\n') {

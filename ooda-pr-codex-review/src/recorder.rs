@@ -1,9 +1,24 @@
 //! Always-on PR memory harness.
 //!
-//! The recorder is the single persistence boundary for `ooda-pr`.
-//! Runtime code reports observations, decisions, tool calls, actions,
-//! comments, waits, and outcomes here; this module owns the on-disk
-//! layout, event ordering, artifact storage, CURRENT.json pointer, and ledger views.
+//! # Role
+//!
+//! Sole persistence boundary for the per-PR loop. Runtime code
+//! reports events (observations, decisions, tool calls, actions,
+//! comments, waits, outcomes) via this module's API; all on-disk
+//! representations are owned here.
+//!
+//! # Invariants
+//!
+//! - **Single writer per PR**: one `Recorder` per `(slug, pr)`;
+//!   internal mutation serialized by `Arc<Mutex<_>>`.
+//! - **Append-only event log**: per-iteration events monotonic in
+//!   `sequence`; existing records are never rewritten.
+//! - **Immutable per-iteration artifacts**: each artifact is
+//!   content-addressed; the pointer manifest (`CURRENT.json`) is
+//!   the only mutable file at the PR root.
+//! - **Atomic pointer publication**: every write to a stable
+//!   read-surface file flows through `write_atomic` so concurrent
+//!   readers observe pre- or post-state, never a tear.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -243,22 +258,27 @@ impl Recorder {
             .unwrap_or_default()
     }
 
-    /// Write the `Handoff*` prompt body as the per-iteration
-    /// `handoff.md` inside `runs/<run-id>/iterations/<NNNN>/` and
-    /// return its absolute path. Pure: no shared-state mutation —
-    /// just writes the file (content-addressed into the blob store
-    /// like every other per-iteration artifact) and returns the path.
-    /// `publish_current` later derives the relative-path for the
-    /// CURRENT.json `artifacts.handoff` entry from the same
-    /// (`run_id`, iteration) tuple, so no plumbing is needed between
-    /// this call and `record_outcome`.
-    /// Stderr emits a `see: <path>` pointer to this file in place
-    /// of the inline prompt block; callers consume the prompt via a
-    /// file read with observable size rather than tail-truncating an
-    /// unbounded stream.
-    /// Returns `None` if the write fails or the recorder has no
-    /// current iteration — caller falls back to inline stderr
-    /// emission so the prompt is never lost.
+    /// Persist a handoff prompt body as a per-iteration artifact
+    /// and return its absolute path.
+    ///
+    /// # Postcondition
+    ///
+    /// On `Some(path)`: bytes are durable, content-addressed in the
+    /// blob store, and reachable from `CURRENT.json` via the
+    /// deterministic derivation in `publish_current` — no
+    /// cross-call state-passing is needed.
+    ///
+    /// # Failure modes
+    ///
+    /// Returns `None` when the write fails or no iteration is set.
+    /// Caller must fall back to inline stderr emission so the
+    /// prompt is never lost.
+    ///
+    /// # Invariant
+    ///
+    /// Decouples prompt consumption from stderr's truncation
+    /// budget: the file's size is observable via `stat`, so readers
+    /// have no streaming-truncation pressure.
     pub(crate) fn write_handoff_md(&self, prompt: &str) -> Option<PathBuf> {
         let mut inner = self.inner.lock().ok()?;
         let iteration = inner.current_iteration?;
@@ -315,11 +335,12 @@ impl Recorder {
                 candidates,
                 "application/json",
             )?;
-            // `decision_envelope.json` carries the Execute/Halt
-            // structure (the runner's typed dispatch input); paired
-            // with `dashboard.json` which carries the human-shaped
-            // tier-grouped projection. Distinct filenames keep the
-            // two schemas separable for any downstream consumer.
+            // Two projections of the same decision, distinct
+            // schemas: `decision_envelope.json` is the runner's
+            // typed dispatch input (Execute/Halt); `dashboard.json`
+            // is the tier-grouped human-shaped projection.
+            // Separable filenames so downstream consumers select
+            // by schema, not by parsing.
             let decision_envelope_ref = inner.write_json_artifact(
                 Some(iteration),
                 "decision_envelope.json",
@@ -333,11 +354,13 @@ impl Recorder {
                 "application/json",
             )?;
 
-            // Per-iteration markdown surfaces — written inline; no
-            // cross-call state. `publish_current` derives the
-            // CURRENT.json artifacts map from `(run_id, iteration)`
-            // deterministically, so it doesn't need to know which
-            // markdowns landed here.
+            // Markdown surfaces are written here inline; the
+            // pointer manifest is derived deterministically from
+            // `(run_id, iteration)` in `publish_current`. Invariant:
+            // the producer and the manifest projection share no
+            // mutable index — adding a surface requires editing
+            // both sites, and the deterministic derivation catches
+            // omissions.
             let index_md = render_iteration_index_md(
                 &inner.slug,
                 inner.pr,
@@ -364,11 +387,11 @@ impl Recorder {
                 "text/markdown",
             )?;
 
-            // Serialize whichever payload the decision carries
-            // (Action for Execute / Stuck-equivalents; HandoffAction
-            // for AgentNeeded/HumanNeeded). Both implement Serialize
-            // with their own schema; downstream tooling discriminates
-            // by the surrounding decision-projection record.
+            // `action.json` carries the decision's payload, whose
+            // type depends on the variant: `Action` for `Execute`,
+            // `HandoffAction` for `AgentNeeded`/`HumanNeeded`.
+            // Both `Serialize`; discrimination lives in the
+            // enclosing decision-projection record, not here.
             match decision {
                 Decision::Execute(action) => {
                     inner.write_json_artifact(
@@ -687,21 +710,21 @@ impl Inner {
             .join("iterations")
             .join(format!("{iteration:04}"))
             .join("event-range.json");
+        // `first_sequence` resolution forms a fallback chain over
+        // the file's state:
+        //   parseable  → trust its `first_sequence`.
+        //   corrupt    → re-derive from the authoritative event log.
+        //   absent     → this is the iteration's first event;
+        //                first == last == sequence.
+        // The append-only event log is the source of truth; the
+        // event-range file is a derivable index.
         let first_sequence = match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<EventRange>(&bytes) {
                 Ok(range) => range.first_sequence,
-                // event-range.json exists but is corrupt (legacy
-                // torn write from before atomic_io migration, or
-                // external mutation). The authoritative event log
-                // (trace.jsonl) still has the iteration's events;
-                // re-derive `first_sequence` by scanning for the
-                // first event with this iteration number.
                 Err(_) => self
                     .first_sequence_for_iteration(iteration)
                     .unwrap_or(sequence),
             },
-            // File doesn't exist yet: this is the iteration's
-            // first event, so first == last == sequence.
             Err(_) => sequence,
         };
         let range = EventRange {
@@ -711,11 +734,11 @@ impl Inner {
         Self::write_json_at(&path, &range)
     }
 
-    /// Re-derive the first sequence number for `iteration` by
-    /// scanning the per-run event log. Returns `None` if the log
-    /// cannot be read, parses ambiguously, or has no event with
-    /// the requested iteration. Used as a recovery path when
-    /// `event-range.json` is corrupt.
+    /// Recovery projection: minimum sequence over the iteration's
+    /// events in the authoritative event log. `None` when the log
+    /// is unreadable, malformed, or carries no event for the
+    /// iteration. The append-only log is the source of truth;
+    /// derivable index files can always be rebuilt from it.
     fn first_sequence_for_iteration(&self, iteration: u32) -> Option<u64> {
         let path = self.run_root.join("trace.jsonl");
         let content = fs::read_to_string(&path).ok()?;
@@ -817,23 +840,25 @@ impl Inner {
         Ok(())
     }
 
-    /// Atomically write `<pr_root>/CURRENT.json` reflecting the
-    /// terminal outcome of the most-recent invocation. The manifest
-    /// names the run-id, iteration, exit-code, headline, and a
-    /// symbol → relative-path map of artifacts derived
-    /// deterministically from `(run_id, current_iteration)` plus the
-    /// terminal outcome shape. No cross-call shared state.
+    /// Atomically publish the pointer manifest reflecting this
+    /// invocation's terminal outcome.
     ///
-    /// Conditional inclusion:
-    /// - `action` present iff the terminal outcome carries an
-    ///   `Action` or `HandoffAction` payload (any of `WouldAdvance`,
-    ///   `HandoffAgent`, `HandoffHuman`, `StuckRepeated`,
-    ///   `StuckCapReached`).
-    /// - `handoff` present iff `handoff_path` is `Some` (caller
-    ///   guarantees the file was written; we just record the path).
+    /// # Invariants
     ///
-    /// `keep_runs` is empty by default; future GC passes will
-    /// preserve any run-ids listed here in addition to `run_id`.
+    /// - **Deterministic projection**: the symbol → relative-path
+    ///   map is a pure function of `(run_id, iteration,
+    ///   outcome-shape, handoff_path)` — no shared mutable state
+    ///   crosses the producer/projection seam.
+    /// - **Conditional inclusion**:
+    ///   - `action` ⇔ outcome carries an `Action`/`HandoffAction`
+    ///     payload (predicate: `outcome_has_action`).
+    ///   - `handoff` ⇔ `handoff_path` is `Some` (caller's
+    ///     postcondition: the file is durable).
+    /// - **Atomic publication**: `write_atomic` guarantees readers
+    ///   observe the prior or new manifest, never a torn write.
+    ///
+    /// `keep_runs` is the GC retention extension point — empty by
+    /// default; entries pin additional run-ids past the active run.
     fn publish_current(
         &self,
         outcome: &Outcome,
@@ -894,10 +919,11 @@ impl Inner {
     }
 }
 
-/// True when the terminal outcome carries an `Action` or
-/// `HandoffAction` payload (and therefore `record_iteration` wrote
-/// `action.json` at the terminal iteration). Mirrors the variants
-/// that `record_iteration` matches on for `action.json` writes.
+/// Outcome → action-payload predicate. True ⇔ the per-iteration
+/// `action.json` write fired for this outcome's terminal iteration.
+/// The variant set here is the dual of the match in
+/// `record_iteration`; the two sites are kept congruent by the
+/// `Action`/`HandoffAction`-carrying invariant of these outcomes.
 fn outcome_has_action(outcome: &Outcome) -> bool {
     matches!(
         outcome,
@@ -909,9 +935,10 @@ fn outcome_has_action(outcome: &Outcome) -> bool {
     )
 }
 
-/// Per-iteration index.md body. No link section — CURRENT.json is
-/// the link catalog; this surface is for human readers who want a
-/// glance at "what is iteration N about."
+/// Render the human-readable iteration summary. Disjoint
+/// responsibility from the pointer manifest: this surface answers
+/// "what is iteration N about"; the manifest answers "where does
+/// each per-iteration artifact live".
 fn render_iteration_index_md(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -1079,11 +1106,11 @@ fn append_file(path: &Path) -> Result<File, io::Error> {
 }
 
 fn write_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
-    // Atomic + durable: stable read-surface files (CURRENT.json,
-    // per-iteration artifacts, event-range.json, manifest.json) must
-    // never be observed partially-written by a concurrent reader or
-    // survive a crash truncated. write_atomic does
-    // tmp+rename+fsync(tmp)+fsync(parent).
+    // All recorder writes flow through `write_atomic`, which
+    // establishes atomicity, content durability, and dirent
+    // durability (see `ooda_core::atomic_io`). Invariant: stable
+    // read-surface files are never observable in a torn state by
+    // a concurrent reader and never survive a crash truncated.
     ooda_core::atomic_io::write_atomic(path, bytes)
 }
 
@@ -1214,11 +1241,10 @@ mod tests {
 
     // ─── recorder JSONL schema goldens ─────────────────────────────
     //
-    // Exhaustive snapshot tests for `action_projection`. The contract
-    // is the field set written into per-iteration JSONL records under
-    // the recorder tree. The match in `recorder_action_golden` is
-    // exhaustive over `ActionEffect`, so adding a new variant fails
-    // to compile until a golden arm is added.
+    // Exhaustiveness over `ActionEffect` is structural: the match
+    // in `recorder_action_golden` denies a non-exhaustive arm at
+    // compile time. Adding a variant requires extending the golden
+    // — the type system catches schema drift before runtime.
 
     fn sample_action(effect: ActionEffect) -> Action {
         Action {
@@ -1230,10 +1256,10 @@ mod tests {
         }
     }
 
-    /// Canonical JSON shape for an `Action` written into the
-    /// recorder JSONL by `action_projection`. The variant-specific
-    /// tail lives inside `effect`; the surrounding object fields
-    /// are constant across variants.
+    /// Canonical schema for an `action_projection` output: a
+    /// constant outer object whose `effect` field carries the
+    /// variant-specific tail. The outer shape is invariant; the
+    /// effect tail is variant-dispatched.
     fn recorder_action_golden(action: &Action) -> Value {
         let effect_json = match &action.effect {
             ActionEffect::Full { log } => json!({"Full": {"log": log}}),
@@ -1351,8 +1377,10 @@ mod tests {
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
 
         let pr_root = recorder.pull_request_root();
-        // CURRENT.json names the outcome.json path; the blob lives
-        // content-addressed under blobs/sha256/<aa>/<bb>/<hash>.zst.
+        // Two layouts coexist: the pointer manifest names the
+        // outcome.json path; the same bytes also live
+        // content-addressed in the dedup store. Reachability via
+        // either path is invariant.
         let current_bytes = fs::read(pr_root.join("CURRENT.json")).unwrap();
         let current: ooda_core::CurrentManifest = serde_json::from_slice(&current_bytes).unwrap();
         assert_eq!(current.headline, "Paused");
@@ -1389,8 +1417,9 @@ mod tests {
             legacy_trace: None,
         })
         .unwrap();
-        // write_handoff_md requires a current iteration; the runner
-        // sets this via set_iteration before each iteration begins.
+        // Precondition for `write_handoff_md`: a current iteration
+        // is set. The runner establishes this via `set_iteration`
+        // before each iteration; tests must re-establish it.
         recorder.set_iteration(Some(1));
 
         let body = "Rebase onto base\n\nContinuation line.";
@@ -1411,11 +1440,9 @@ mod tests {
 
     // ── iteration_decided envelope golden ──
     //
-    // Phase A (b272b80) added `dashboard_ref` as the 5th artifact in
-    // the on-disk `iteration_decided` event. The envelope contract is
-    // load-bearing for downstream readers — lock it with a golden so
-    // a future drop or reorder fails CI rather than silently breaking
-    // the caller surface.
+    // The on-disk envelope is a load-bearing contract: downstream
+    // readers index artifacts positionally. Lock the artifact count
+    // and order with a golden so silent reordering fails CI.
 
     fn ts(s: &str) -> crate::ids::Timestamp {
         crate::ids::Timestamp::parse(s).unwrap()
@@ -1522,10 +1549,10 @@ mod tests {
         assert_eq!(
             arr.len(),
             5,
-            "iteration_decided envelope must carry 5 artifact refs \
-             (observations, oriented, candidates, decision, dashboard); \
-             adding a 6th artifact requires updating this golden AND \
-             downstream consumers.",
+            "envelope cardinality is load-bearing: 5 artifact refs \
+             in fixed order (observations, oriented, candidates, \
+             decision, dashboard). Extending requires coordinated \
+             updates to downstream consumers AND this golden.",
         );
         let paths: Vec<String> = arr
             .iter()
@@ -1552,7 +1579,7 @@ mod tests {
         );
         assert!(
             basenames.contains(&"dashboard.json"),
-            "dashboard_ref must appear in artifacts (Phase A contract)",
+            "dashboard.json membership is a load-bearing contract for downstream tier-grouped consumers",
         );
 
         assert_eq!(

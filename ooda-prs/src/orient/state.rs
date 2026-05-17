@@ -1,12 +1,18 @@
-//! State orient: project PR metadata into the typed state axis.
+//! Project PR view + branch-rule context into the typed state axis.
 //!
-//! Primary projection is over `PullRequestView`; the ruleset-derived
-//! fields (`active_branch_rule_types`,
-//! `required_check_names_per_ruleset`,
-//! `missing_required_check_names_on_head`) are computed by the caller
-//! from `branch_rules` + observed HEAD checks and supplied as
-//! pre-projected inputs so this module stays free of the rule-typing
-//! plumbing.
+//! # Invariants
+//!
+//! - **Single observation source per field**: every projected field
+//!   reads exactly one observation source. Rule-typing plumbing stays
+//!   at the boundary; this module never re-parses ruleset parameters
+//!   that the caller already projected.
+//! - **Stack-topology vs merge-state separation**: stack-topology
+//!   facts (e.g., open-parent presence) come from the resolved stack
+//!   root; merge-state facts come from the host's merge-state field.
+//!   The two are surfaced as orthogonal projections; do not collapse.
+//! - **Title budget includes auto-suffix**: title length accounts for
+//!   the stack-tooling auto-appendage so the gate matches what lands
+//!   after submission, not what was typed.
 
 use std::collections::HashSet;
 
@@ -42,64 +48,44 @@ pub(crate) struct PullRequestProjection {
     pub reviewers: usize,
     pub merge_when_ready: bool,
     pub commits: usize,
-    /// `true` when the base branch has advanced past the merge base
-    /// (i.e. PR needs rebasing for stack hygiene).
+    /// Base advanced past the merge base; rebase needed for stack
+    /// hygiene.
     pub behind: bool,
-    /// `true` when this PR's `base_ref_name` is itself the head of
-    /// another open PR — i.e. this PR is stacked on top of an
-    /// unmerged parent. Computed by comparing the PR's immediate base
-    /// against the walked stack root: when they differ, at least one
-    /// open PR sits between this PR and the protected trunk.
-    ///
-    /// Drives decisions that depend on stack topology rather than
-    /// just merge state: Graphite's `mergeability_check` will not
-    /// pass for a stacked-top PR until the parent merges, and a
-    /// generic `git rebase` would orphan stacked branches.
+    /// PR is stacked atop another open PR. Distinct from merge state:
+    /// stack-topology gates (e.g., parent-must-merge-first checks)
+    /// fire here even when merge state is otherwise clean, and a
+    /// rebase that ignores topology orphans dependent branches.
     pub has_open_parent_pr: bool,
-    /// Full merge state from GitHub. Preserved (not collapsed to
-    /// `behind`) so decide can surface unmodeled merge blockers
-    /// like deployment protection or custom rulesets — without
-    /// this, a non-Clean status with otherwise-clean axes would
-    /// halt as Success even though GitHub still blocks merge.
+    /// Host's full merge-state field. Preserved (not collapsed) so
+    /// decide can surface unmodeled gates — custom rulesets,
+    /// deployment protection — that would otherwise let the loop
+    /// halt Success while the host still blocks merge.
     pub merge_state_status: MergeStateStatus,
     pub updated_at: Timestamp,
-    /// HEAD commit author timestamp. None when unavailable.
+    /// HEAD commit author timestamp; absent when unobservable.
     pub last_commit_at: Option<Timestamp>,
-    /// Sorted, deduplicated rule types active on the resolved
-    /// target branch — raw strings as GitHub returns them. Empty
-    /// when no rulesets target the branch. Consumed by the
-    /// `merge_blocked_unmodeled` fallback prompt to name the
-    /// candidate gates a human should inspect.
+    /// Sorted, deduped rule-type identifiers active on the resolved
+    /// target branch. Drives the fallback prompt's enumeration of
+    /// candidate gates when no modeled axis explains a merge block.
     pub active_branch_rule_types: Vec<String>,
-    /// Check contexts marked required by any `required_status_checks`
-    /// rule on the target branch. Empty when no such rule is active
-    /// or when the rule lists no contexts. Subset of, not aggregated
-    /// with, legacy branch-protection required checks.
+    /// Check contexts required by rule-source declarations on the
+    /// target branch. Subset of, not aggregated with, the legacy-
+    /// source required checks — that union lives in a separate
+    /// projection.
     pub required_check_names_per_ruleset: Vec<String>,
-    /// Required check contexts (from `required_check_names_per_ruleset`)
-    /// for which no check run with that name is present on HEAD.
-    /// Presence is name-equality only; conclusion state is ignored
-    /// — pass / fail / pending all count as present. Empty when
-    /// every required check has a run on HEAD.
+    /// Required contexts with no run of matching name on HEAD.
+    /// Presence is name-equality only; conclusion is ignored —
+    /// pass, fail, pending all count as present.
     pub missing_required_check_names_on_head: Vec<String>,
 }
 
-/// Orient the PR-view observation into the state axis.
+/// Project a PR view + branch-rule context into the state axis.
 ///
-/// `last_commit_at` comes from a separate observation source (git
-/// log on HEAD); the caller supplies it. Passed in rather than derived
-/// here because it crosses an observation boundary.
-///
-/// `stack_root` is the protected base resolved by walking the
-/// open-PR head→base chain (see `observe::github::stack_root`).
-/// When `pr.base_ref_name != stack_root`, this PR is stacked on top
-/// of another open PR — the parent must merge before this PR's
-/// Graphite mergeability check can pass.
-///
-/// `branch_rules` is the full ruleset rule list for the resolved
-/// target branch; `head_checks` is the observed check-run set on
-/// HEAD. Both seed the ruleset-derived projection fields consumed
-/// by the merge-state fallback prompt.
+/// `last_commit_at` crosses an observation boundary (separate source
+/// from the PR view) and is supplied by the caller. `stack_root` is
+/// the resolved protected base; inequality with the PR's immediate
+/// base witnesses an unmerged parent PR. `branch_rules` and
+/// `head_checks` seed the rule-source projections.
 pub(crate) fn orient_state(
     pr: &PullRequestView,
     last_commit_at: Option<Timestamp>,
@@ -110,8 +96,9 @@ pub(crate) fn orient_state(
     let body = pr.body.as_deref().unwrap_or_default();
     let label_names: Vec<&str> = pr.labels.iter().map(|l| l.name.as_str()).collect();
 
-    // Graphite appends a " (#NNN)" suffix to commit subjects on submit.
-    // The 50-char title rule budgets for that auto-appendage.
+    // Title-length budget covers the stack-tooling auto-suffix that
+    // lands on submit, so the gate matches what merges, not what was
+    // typed.
     let suffix_len = format!(" (#{})", pr.number).len();
     let title_len = pr.title.chars().count() + suffix_len;
 
@@ -185,9 +172,9 @@ fn missing_on_head(required: &[String], head_checks: &[PullRequestCheck]) -> Vec
         .collect()
 }
 
-/// True iff the body has a line starting with `## <heading>` (case
-/// insensitive on the heading text only — `##` itself must be at line
-/// start). Mirrors pr-fitness's regex `/^## <heading>/im`.
+/// True iff any line begins with `## <heading>` (case-insensitive on
+/// the heading text; `##` anchored at line start). Inline mentions in
+/// prose do not satisfy the predicate.
 fn has_section_heading(body: &str, heading: &str) -> bool {
     let needle = format!("## {}", heading.to_ascii_lowercase());
     body.lines()

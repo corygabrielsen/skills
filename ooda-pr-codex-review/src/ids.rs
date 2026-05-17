@@ -1,5 +1,15 @@
-//! Branded identifier types. Each wraps a primitive with a validating
-//! constructor so invalid IDs cannot be constructed outside this module.
+//! Branded identifier types.
+//!
+//! Each wraps a primitive (`String` / `u64` / instant) behind a
+//! validating constructor. Two invariants hold:
+//!
+//! - **Parse, don't validate**: a value of the branded type is
+//!   evidence that its domain rule has already passed. Downstream
+//!   code never re-checks.
+//! - **Cross-domain distinctness**: types that share a primitive
+//!   carrier (branch name, team name, check name) are
+//!   structurally distinct, so a "right shape, wrong namespace"
+//!   bug is a compile error.
 
 use std::fmt;
 
@@ -257,8 +267,11 @@ impl fmt::Display for GitCommitSha {
 
 // -- GitHubLogin -----------------------------------------------------
 
-/// A GitHub account login. Bot accounts canonically end in `[bot]`
-/// when returned by REST; GraphQL may return the unsuffixed form.
+/// A GitHub account login. Bot identity is encoded by the `[bot]`
+/// suffix on one API surface and absent on another, so [`is_bot`]
+/// inspects the suffix rather than carrying a separate flag.
+///
+/// [`is_bot`]: GitHubLogin::is_bot
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct GitHubLogin(String);
@@ -301,24 +314,28 @@ impl fmt::Display for GitHubLogin {
 
 // -- BlockerKey ------------------------------------------------------
 
-/// Stable iteration key for stall detection. Two consecutive
-/// iterations with the same `(ActionKind discriminant, BlockerKey)`
-/// halt the loop with `Stalled`.
+/// Stable iteration key for stall detection.
 ///
-/// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
-/// constructor, and infallible `tag` live in the shared crate.
+/// Invariant: a `BlockerKey` identifies a *gate*, not the current
+/// witnesses behind it. Two consecutive iterations with the same
+/// `(action discriminant, BlockerKey)` halt the loop as stalled, so
+/// any progress marker (count, cohort identity, timestamp) embedded
+/// in the key would mask real progress as repetition. Per-iteration
+/// payload travels on the action; the key names what is gated.
+///
+/// Re-exported from [`ooda_core::BlockerKey`]; the type and its
+/// validating constructor live in the shared crate.
 pub(crate) use ooda_core::BlockerKey;
 
 // -- BranchName ------------------------------------------------------
 
-/// A git branch name. Validated against git's `check_ref_format`
-/// rules: non-empty, no `..`, no leading/trailing `/`, no leading
-/// `-`, no whitespace, no control bytes. Permits the punctuation
-/// branch names actually use (`feature/foo`, `release-1.2`, etc.).
+/// A git branch name. Constructor enforces git's `check_ref_format`
+/// subset: non-empty, no `..`, no leading or trailing `/`, no leading
+/// `-`, no whitespace, no control bytes.
 ///
-/// Newtype prevents the cross-domain confusion that's possible
-/// when branch names, ruleset names, team names, and CI check
-/// names all flow through `String`.
+/// The newtype keeps branch identifiers structurally distinct from
+/// other primitives carried as `String`, so passing one in the
+/// position of another is a type error rather than a silent confusion.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct BranchName(String);
@@ -369,14 +386,12 @@ impl fmt::Display for BranchName {
 
 // -- TeamName --------------------------------------------------------
 
-/// A GitHub team identifier as returned by GraphQL
-/// `RequestedReviewer { ... on Team { name } }`. Lives in a
-/// different namespace from `GitHubLogin` (a user/bot login):
-/// `Cory` is a login, `backend-team` is a team. Both are
-/// non-empty strings, but they index distinct GitHub primitives.
+/// A GitHub team identifier. Lives in a different namespace from
+/// [`GitHubLogin`]: both are non-empty strings, but they index
+/// distinct GitHub primitives (account vs. group of accounts).
 ///
-/// Newtype prevents the "looks the same, means different things"
-/// confusion that `Vec<String>` had previously.
+/// The newtype makes that distinction structural, so a team handle
+/// cannot be passed where a login is expected.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct TeamName(String);
@@ -415,13 +430,12 @@ impl fmt::Display for TeamName {
 
 // -- Reviewer --------------------------------------------------------
 
-/// A pending PR reviewer. GitHub allows two distinct kinds: a
-/// concrete user identity ([`GitHubLogin`]) or a team ([`TeamName`]).
-/// Both arms now carry validated newtypes — the sum is symmetric
-/// and structurally distinguishes the two GitHub primitives.
+/// A pending PR reviewer — either a user account or a team.
+/// The sum is symmetric over [`GitHubLogin`] and [`TeamName`]; each
+/// arm carries the appropriate validated identifier.
 ///
-/// `Display` writes the login or team name verbatim — both forms
-/// are what GitHub's UI shows.
+/// `Display` writes the underlying identifier verbatim: the rendered
+/// form matches what the reviewer surface in GitHub's UI shows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum Reviewer {
     User(GitHubLogin),
@@ -439,9 +453,11 @@ impl fmt::Display for Reviewer {
 
 // -- CheckName -------------------------------------------------------
 
-/// A GitHub status-check / check-run name (e.g. `Build / test`).
-/// Names may contain spaces, slashes, and unicode — the only
-/// invariant is non-emptiness.
+/// A GitHub status-check / check-run name.
+///
+/// The wire form admits spaces, slashes, and unicode; the only
+/// constructor invariant is non-emptiness. Anything stricter would
+/// reject names the GitHub API already accepts.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CheckName(String);
@@ -478,18 +494,18 @@ impl fmt::Display for CheckName {
     }
 }
 
-// CheckName names a single CI check. Same check → same name across
-// iterations; distinct checks → distinct names. Gate-stable by
-// construction.
+// A check name is gate-stable: identity is preserved across
+// iterations and distinct gates carry distinct names.
 impl ooda_core::GateIdentity for CheckName {}
 
 // -- Timestamp -------------------------------------------------------
 
-/// An RFC-3339 / ISO-8601 timestamp parsed into a structured
-/// `chrono::DateTime<Utc>`. `Ord`/`Eq`/`Hash` operate on the
-/// instant — surface forms (`...Z` vs `...+00:00`) representing the
-/// same instant compare equal. Display normalizes to RFC-3339 with
-/// `+00:00` suffix; nothing downstream depends on byte-identity.
+/// An instant in UTC, parsed from RFC-3339 / ISO-8601.
+///
+/// Equality and ordering are over the underlying instant, not its
+/// surface form: two timestamps written with different offsets that
+/// denote the same instant compare equal. `Display` normalises to a
+/// canonical RFC-3339 rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Timestamp(chrono::DateTime<chrono::Utc>);
@@ -531,11 +547,17 @@ impl fmt::Display for Timestamp {
 
 // -- CodexReasoningLevel --------------------------------------------------
 
-/// Reasoning effort level for the codex review axis. Totally ordered
-/// `Low < Medium < High < Xhigh`. The token strings (`low`, `medium`,
-/// `high`, `xhigh`) are the canonical surface across the CLI, batch
-/// directory names, and `-c model_reasoning_effort=<level>` codex
-/// review args.
+/// Reasoning effort level for the codex-review axis. The variants
+/// form a four-rung totally ordered ladder; [`higher`] and [`lower`]
+/// project that ladder to the canonical climb / drop morphisms,
+/// returning `None` at the endpoints.
+///
+/// The lowercase token (`low`, `medium`, `high`, `xhigh`) is the
+/// stable surface form across every external boundary the axis
+/// touches.
+///
+/// [`higher`]: CodexReasoningLevel::higher
+/// [`lower`]: CodexReasoningLevel::lower
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CodexReasoningLevel {
@@ -580,8 +602,8 @@ impl fmt::Display for CodexReasoningLevel {
     }
 }
 
-// 4-variant enum (low/medium/high/xhigh); same level → same string
-// across iterations. Gate-stable by construction.
+// Gate-stable: every level projects to a single fixed token, and
+// distinct levels project to distinct tokens.
 impl ooda_core::GateIdentity for CodexReasoningLevel {}
 
 // -- Tests -----------------------------------------------------------
@@ -629,7 +651,7 @@ mod tests {
         assert!(GitCommitSha::parse(&"g".repeat(40)).is_err());
         let upper = "A".repeat(40);
         let lower = "a".repeat(40);
-        // Uppercase input normalizes to lowercase.
+        // Surface form is normalised; case does not survive parsing.
         assert_eq!(GitCommitSha::parse(&upper).unwrap().as_str(), &lower);
     }
 
@@ -671,23 +693,20 @@ mod tests {
         assert!(Timestamp::parse("").is_err());
         assert!(Timestamp::parse("not a timestamp").is_err());
         let t = Timestamp::parse("2026-04-23T10:00:00Z").unwrap();
-        // Display normalizes the surface form to RFC-3339 with explicit
-        // offset; nothing downstream depends on byte-identity.
+        // Display is the canonical surface form, not the input form.
         assert_eq!(t.to_string(), "2026-04-23T10:00:00+00:00");
         assert_eq!(t.at().to_rfc3339(), "2026-04-23T10:00:00+00:00");
     }
 
     #[test]
     fn timestamp_orders_by_time_not_lexicographic() {
-        // Lexicographic ordering coincides with chronological for
-        // ISO-8601 UTC, but breaks for offset variants. Exercise
-        // both to lock the structural-comparison invariant.
+        // Equality and ordering range over the instant, not the
+        // surface form: two renderings of the same instant must
+        // compare equal even when their bytes differ.
         let t1 = Timestamp::parse("2026-04-23T10:00:00Z").unwrap();
         let t2 = Timestamp::parse("2026-04-23T10:00:00+00:00").unwrap();
         let t3 = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
         assert!(t1 < t3);
-        // Same instant in different surface forms: equal under Ord
-        // AND under Eq (byte-identity is not preserved).
         assert_eq!(t1.cmp(&t2), std::cmp::Ordering::Equal);
         assert_eq!(t1, t2);
     }

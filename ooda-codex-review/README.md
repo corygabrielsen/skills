@@ -97,13 +97,14 @@ VerdictRecord = { slot: u32, body: String, class: VerdictClass }
 VerdictClass  = Clean | HasIssues
 ```
 
-Pure read of the run dir. `verdict::extract_verdict` is the
-awk-equivalent (last `^codex$` marker wins; non-empty body required
-for completion). `batch::scan_batch` walks `<batch_dir>/{level}-*.log`
-plus matching `.exit` files and produces the `BatchState`.
-Nonzero child exits and zero exits without a non-empty verdict block
-return an IO error so the runner emits `BinaryError` instead of
-waiting forever.
+Pure read of the run dir. Verdict extraction follows an
+awk-equivalent rule: last `^codex$` marker wins; a non-empty
+body after the marker is required to count as Complete. Batch
+scanning walks each reviewer slot's stdout/stderr log plus its
+matching exit-status file and produces the `BatchState`.
+Nonzero child exits, and zero exits without a non-empty verdict
+block, surface as IO errors so the runner emits `BinaryError`
+instead of waiting forever.
 
 ## O = orient
 
@@ -188,19 +189,21 @@ ActError = UnsupportedAutomation | UnsupportedTarget | NotImplemented
 `Wait` sleeps the configured interval. `Full` dispatches by
 ActionKind:
 
-- `RunReviews` → synchronously create `<batch_dir>/<level>-<slot>.log`,
-  spawn `n` wrapper subprocesses, redirect child stdout/stderr to
-  the log, write `<level>-<slot>.exit` on child completion, then
-  return immediately
-- (other Full kinds: NotImplemented; the ladder transitions
-  happen via `--mark-*` invocations that call the recorder
-  directly, not via decide-emitted actions)
+- `RunReviews` → synchronously create one log file per reviewer
+  slot in the batch directory, spawn `n` reviewer subprocesses
+  with stdout/stderr redirected to that slot's log, write a
+  per-slot exit-status file on child completion, return
+  immediately. The act call does NOT wait for the children —
+  polling is the `AwaitReviews` action's job.
+- Other Full kinds are `NotImplemented` today; ladder
+  transitions happen via side-effect CLI flags that call the
+  recorder directly, not via decide-emitted actions.
 
-`Agent`/`Human` are an invariant violation in act — decide should
-have halted instead.
+`Agent`/`Human` reaching act is an invariant violation —
+decide should have halted instead.
 
-`build_codex_command` is split out as a pure function so the argv
-shape is unit-tested without spawning.
+Argv construction is factored out as a pure function so the
+codex invocation shape is unit-testable without spawning.
 
 ## runner
 
@@ -245,20 +248,25 @@ Layout (one tree per `(repo, target)`):
       <L>-<slot>.exit
 ```
 
-Resume rules — all must hold:
+Resume invariant — a fresh run is opened unless ALL of:
 
-- `cfg.fresh` is false
-- `latest` exists, non-empty
-- the run dir it names exists
-- `manifest.json` parses
-- `manifest.start_level == cfg.start_level`
+- `--fresh` was not passed
+- the pointer file exists and is non-empty
+- the run directory it names exists
+- the manifest parses
+- the manifest's recorded start_level matches the invocation's
+  `(target, start_level)` resume key
 
-Mutations (`advance_level`, `drop_level`, `restart_from_floor`,
-`start_next_batch_at_current_level`, `record_outcome`) write the
-manifest immediately. Level transitions select the next unused
-`batch_number` for the destination level; same-level rebatching
-selects the next unused batch at the current level. `record_outcome`
-appends to `level_history` without touching `current_level`.
+Any failure of these silently yields a fresh run; no error
+surfaces. The pointer's purpose is to make resume the default
+without forbidding mismatched fresh starts.
+
+Mutations are atomic with respect to manifest persistence —
+each level transition (advance / drop / restart-from-floor /
+same-level rebatch) writes the new manifest immediately and
+allocates the next unused batch slot at the destination level.
+Recording an outcome appends to `level_history` without
+touching `current_level`.
 
 The orchestrator-facing CLI exposes these through `--mark-*`
 subcommands. Each one combines a `record_outcome` call with the
@@ -298,12 +306,12 @@ The exit-code mapping is the binary's contract. Callers dispatch on
 
 ## Conventions
 
-- All filesystem operations scoped to `state_root`. No global state.
-- Subprocess spawn lives in `act`, not `observe`. Observe is
-  read-only filesystem.
-- `--pr` is resolved to a base branch; branch checkout remains the
-  caller's responsibility.
-- Identifiers are newtypes — no raw `String`s cross module
-  boundaries.
-- `cargo fmt` and `cargo clippy --all-targets -- -D warnings`
-  enforced via pre-commit.
+- **State containment**: all filesystem operations scoped to
+  `state_root`; no process-wide mutable state.
+- **Read/write separation**: observe is read-only filesystem;
+  subprocess spawn lives only in act.
+- **Branch responsibility**: `--pr` resolves a PR's base branch
+  for the reviewer; the caller owns the checkout state of the
+  worktree under review.
+- **Typed boundaries**: identifiers are newtypes — no raw
+  `String`s cross module boundaries.

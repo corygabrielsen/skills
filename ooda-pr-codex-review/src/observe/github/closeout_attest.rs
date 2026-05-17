@@ -1,11 +1,8 @@
-//! Observe the closeout attestation file plus its drift against
-//! the current PR head.
+//! Observation for the final sign-off attestation axis.
 //!
-//! Closeout differs from the other SHA-keyed attestation axes
-//! (`pull_request_metadata_attestation`, `doc_review_attest`) in
-//! shape: HEAD-equality is the only signal. No `commits_behind`
-//! count, no `gh api compare` call — drift is binary (the SHAs
-//! match or they don't), and the closeout gate fires either way.
+//! Diverges from sibling SHA-keyed observations: drift is the SHA-
+//! inequality bit alone — no distance metric, no compare call. The
+//! handoff prompt is a fresh full read, not an incremental review.
 
 use std::path::PathBuf;
 
@@ -23,15 +20,15 @@ pub(crate) struct CloseoutObservation {
     pub attest_path: Option<PathBuf>,
 }
 
-/// Compose the closeout attestation file path. Pulled out so the
-/// act-layer prompt composer can surface the same absolute path the
-/// agent must pass to `ooda-attest closeout`.
+/// Compose the attestation file path. Shared with the prompt-
+/// composition layer so the agent receives the same absolute path
+/// it must record against.
 #[must_use]
 pub(crate) fn closeout_attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathBuf {
     state_root.join(pr.to_string()).join(CLOSEOUT_FILE)
 }
 
-/// Observe the closeout attestation + drift against `head_sha`.
+/// Read the attestation against the current HEAD.
 pub(crate) fn observe_closeout(
     state_root: Option<&std::path::Path>,
     pr: PullRequestNumber,

@@ -1,9 +1,8 @@
-//! Compose the `AddressClaudeReview` handoff prompt.
+//! Handoff-prompt composition for the address-claude-review
+//! candidate.
 //!
-//! `AddressClaudeReview` is `ActionEffect::Agent` — `act()` never
-//! executes it; the runner converts it to `Outcome::HandoffAgent` and
-//! exits. This module only builds the prompt body the recipient agent
-//! reads.
+//! This candidate's effect is agent-handoff; no driver-side action
+//! runs. The module produces the prompt body the agent receives.
 
 use std::path::Path;
 
@@ -12,16 +11,15 @@ use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString, Witness};
 
 use crate::ids::PullRequestNumber;
 
-/// Build the `AddressClaudeReview` handoff prompt body.
+/// Build the address-claude-review handoff prompt body.
 ///
-/// `body_at` is the timestamp of the selected body (review submission
-/// when present, else issue comment); it labels the Witness so the
-/// reader sees the timestamp of the content they are about to read.
-/// The latest Claude review body is inlined as a [`Witness`] so the
-/// recipient agent does not need a `gh` round-trip to read the
-/// review material. `attest_path` is recovered to the state-root for
-/// the literal CLI invocation. `attest_path` is `Option` because the
-/// binary may run without `--state-root`.
+/// The review body is inlined as a witness so the agent has the
+/// material in hand — no round-trip to the upstream review
+/// surface. `body_at` labels the witness with the timestamp of
+/// the content the agent will read. `attest_path` is `Option`
+/// because the binary may run without a configured state root;
+/// when present it determines a literal CLI invocation, when
+/// absent the prompt asks the agent to supply the path.
 #[must_use]
 pub(crate) fn build_address_claude_review_prompt(
     pr: PullRequestNumber,

@@ -1,22 +1,25 @@
-//! OODA loop driver — observe → orient → decide → act → repeat
-//! until a halt condition fires.
+//! OODA loop driver: iterate observe → orient → decide → act until
+//! a halt fires.
 //!
-//! Stall detection: if the same (kind, blocker) pair fires twice
-//! in a row, the loop halts Stalled. Coarse — only catches the
-//! one-action-spinning case. The iteration cap is the second line
-//! of defense and surfaces as `HaltReason::CapReached`.
+//! # Invariants
 //!
-//! The loop returns `HaltReason` directly — there is no separate
-//! "outcome" type. Cap, stall, success, terminal, and handoff are
-//! all variants of the same partition. Exit-code mapping lives on
-//! `HaltReason::exit_code()`.
+//! - **Iteration ≥ 1**: at least one full cycle runs on every
+//!   invocation. Established by carrying the cap as `NonZeroU32`
+//!   and unrolling the first iteration before the loop body.
+//! - **Last-attempted is typed**: the cap-reached path returns the
+//!   most recent action as `Action`, not `Option<Action>`. The
+//!   unrolled first iteration is the proof that an action exists.
+//! - **Stall detection on a stable key**: two consecutive Execute
+//!   iterations with the same `(action discriminant, blocker)`
+//!   halt as stalled. Wait actions are exempt — they are the
+//!   designed shape for "no progress, by intent".
+//! - **One halt taxonomy**: `HaltReason` partitions every exit
+//!   path (success, terminal, handoff, stall, cap). There is no
+//!   parallel "outcome" type at the loop boundary; exit-code
+//!   projection lives on `HaltReason`.
 //!
-//! `LoopConfig::max_iterations` is `NonZeroU32` so iter 1 is
-//! structurally guaranteed to run; the driver splits iter 1 from
-//! the subsequent iterations so `last_attempted` flows as a typed
-//! `Action` (not `Option<Action>`) into the eventual
-//! `HaltReason::CapReached` — eliminating the runtime expect that
-//! previously documented this invariant.
+//! Stall detection is coarse — it catches single-action spinning,
+//! not multi-step cycles. The iteration cap bounds the worst case.
 
 use std::num::NonZeroU32;
 
@@ -33,13 +36,14 @@ use crate::orient::orient;
 use crate::recorder::Recorder;
 use ooda_core::decide_from_candidates;
 
-/// Read the wall-clock once per iteration. Axes that need a clock
-/// (copilot health, future CI queue-stall) take this as a parameter
-/// so behavior under test is deterministic.
+/// Wall-clock for one iteration's worth of orient work.
+///
+/// Read once per iteration so every axis sees the same instant.
+/// Axes that need the clock take it as a parameter — tests pass a
+/// fixed value to keep behaviour deterministic.
 pub(crate) fn current_timestamp() -> Timestamp {
     let now = chrono::Utc::now().to_rfc3339();
-    // `to_rfc3339` always produces a parseable RFC-3339 string;
-    // this round-trip cannot fail.
+    // System clock's RFC-3339 rendering round-trips by construction.
     Timestamp::parse(&now).expect("chrono::Utc::now() round-trips through RFC-3339")
 }
 
@@ -63,15 +67,22 @@ impl std::fmt::Display for LoopError {
 impl std::error::Error for LoopError {}
 
 pub(crate) struct LoopConfig {
-    /// Iteration cap. `NonZeroU32` so the driver's "iter 1
-    /// always runs" guarantee is structural.
+    /// Iteration cap. Carrying it as `NonZeroU32` makes the
+    /// "iteration ≥ 1" invariant structural — input validation
+    /// happens once at the boundary, and the loop body relies on
+    /// the type rather than re-checking.
     pub max_iterations: NonZeroU32,
-    /// Codex review ladder configuration. `None` disables the
-    /// codex review axis entirely (observe skips the filesystem
-    /// scan, orient gets `codex_review = None`).
+    /// Codex-axis configuration. `None` makes the axis structurally
+    /// absent for this invocation: observe skips the filesystem scan
+    /// and orient projects `codex_review = None`, recovering the
+    /// non-codex baseline.
     pub codex_review: Option<CodexReviewConfig>,
 }
 
+/// Bounds of the codex reasoning-level ladder for this invocation.
+/// `floor` and `ceiling` form an inclusive range over the totally
+/// ordered ladder; the codex slice in orient walks within those
+/// bounds and yields the current ladder action.
 #[derive(Debug, Clone)]
 pub(crate) struct CodexReviewConfig {
     pub floor: CodexReasoningLevel,
@@ -87,21 +98,25 @@ impl Default for LoopConfig {
     }
 }
 
-/// One iteration's typed outcome. The loop body produces either
-/// an early-halt (`Decision::Halt` or stall-detected) or a completed
-/// Execute that we keep as the running "last attempted" anchor.
+/// One iteration's terminal step. Partitions an iteration's outcome
+/// into the two arms the driver dispatches on: an early-halt that
+/// short-circuits the loop, or a completed Execute that the driver
+/// records as the running last-attempted action.
 enum IterStep {
+    /// Halt immediately with this reason.
     Halt(HaltReason),
+    /// Executed; this action becomes last-attempted and (if not a
+    /// Wait) updates the stall comparator.
     Executed(Action),
 }
 
 /// Drive a PR until a halt fires or the iteration cap trips.
 ///
-/// `on_state` is called once per iteration after decide and before
-/// act, with the iteration index, raw observation bundle, oriented
-/// state, full candidate set, and chosen decision. Halt decisions
-/// also fire it before returning. Use it to render iteration logs,
-/// post comments, and record the run bundle.
+/// `on_state` runs once per iteration between decide and act, and
+/// once again on a halt decision before returning. It is the only
+/// observer of per-iteration intermediate state — rendering, comment
+/// posting, and run-bundle recording hang off it without further
+/// coupling to the driver.
 pub(crate) fn run_loop(
     mut ctx: ActContext,
     state_root: Option<&std::path::Path>,
@@ -112,8 +127,8 @@ pub(crate) fn run_loop(
     let max_iter = config.max_iterations.get();
     let codex_cfg = config.codex_review;
 
-    // Iter 1 is guaranteed by NonZeroU32. Stall is structurally
-    // impossible there (no prior key).
+    // First iteration is unrolled: the NonZeroU32 cap guarantees it
+    // runs, and a stall comparator does not exist yet.
     let mut last_attempted: Action = match run_iter(
         &mut ctx,
         state_root,
@@ -126,11 +141,9 @@ pub(crate) fn run_loop(
         IterStep::Halt(reason) => return Ok(reason),
         IterStep::Executed(action) => action,
     };
-    // Wait is stall-exempt; any axis adding health detection MUST
-    // emit a non-Wait action when degraded (see
-    // CopilotActivity::Requested(InFlightHealth::Degraded) →
-    // Full(RerequestCopilot)). Changing only the Wait's blocker tag
-    // is invisible here.
+    // Wait does not seed the stall comparator. An axis that detects
+    // degradation must surface it as a non-Wait action; varying only
+    // the blocker on a Wait is invisible to this comparator.
     let mut last_non_wait_key = if last_attempted.effect.is_wait() {
         None
     } else {
@@ -158,11 +171,16 @@ pub(crate) fn run_loop(
         }
     }
 
+    // `last_attempted: Action` is the witness for the cap-reached
+    // path: the unrolled first iteration either returned a Halt or
+    // populated it.
     Ok(HaltReason::CapReached(last_attempted))
 }
 
-/// Run one full observe (PR + optional codex) → orient → decide →
-/// act cycle. Returns either a halt reason or the action executed.
+/// One observe → orient → decide → act cycle. Returns an early-halt
+/// reason or the action that just executed; observation failures
+/// bubble as `LoopError`. The codex observe pass is gated on the
+/// per-invocation configuration plus the per-iteration context.
 #[allow(clippy::too_many_arguments)]
 fn run_iter(
     ctx: &mut ActContext,
@@ -184,11 +202,11 @@ fn run_iter(
             *obs
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
-            // Rate-limited mid-observe. Synthesize the
-            // WaitForRateLimit action and sleep its retry window;
-            // the next iteration re-observes from fresh state.
-            // No orient/decide call this iteration — every axis
-            // would be operating on stale or absent data.
+            // Observe was throttled before all axes could be seen.
+            // The only valid response is to wait the upstream's
+            // retry window and re-observe from a clean slate;
+            // running orient/decide on a partial bundle would
+            // surface false halts.
             recorder.record_observe_end(iter, Ok(()));
             let action = rate_limit_wait_action(hit);
             recorder.record_action_start(iter, &action);
@@ -211,11 +229,11 @@ fn run_iter(
         }
     };
 
-    // Refresh the codex side of the act context with this
-    // iteration's head SHA and base branch so RunCodexReviewBatch
-    // spawns under the correct batch directory, writes
-    // head_sha.txt consistently with what observe just read, and
-    // points `codex review --base` at the PR's actual base.
+    // Refresh the codex sub-context with this iteration's head SHA
+    // and base branch so the side-effect surface (batch directory,
+    // head stamp, codex --base argv) stays anchored on what observe
+    // just read. Without this refresh the act stage could write into
+    // a stale batch directory or diff against the wrong base.
     let codex_obs: Option<CodexObservations> =
         if let (Some(codex_cfg), Some(codex_ctx)) = (codex_cfg, ctx.codex.as_mut()) {
             codex_ctx.head_sha = obs.pull_request_view.head_ref_oid.as_str().to_string();
@@ -246,6 +264,11 @@ fn run_iter(
     match decision {
         Decision::Halt(halt) => Ok(IterStep::Halt(HaltReason::Decision(halt))),
         Decision::Execute(action) => {
+            // Stall comparison runs *before* the side effect: a
+            // Full action whose upstream is eventually consistent
+            // must not fire twice while the prior call is still
+            // propagating. Equality on `StallKey<K>` — the
+            // `(discriminant, blocker)` pair — is the test.
             let current_key = action.stall_key();
             if last_non_wait_key == Some(&current_key) {
                 return Ok(IterStep::Halt(HaltReason::Stalled(action)));

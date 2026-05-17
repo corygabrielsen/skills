@@ -1,28 +1,23 @@
-//! Typed view of `GET /rate_limit`.
+//! Quota-snapshot projection.
 //!
-//! The `/rate_limit` endpoint is **free** — it does not count against
-//! quota — and returns every bucket's current counters in one
-//! response. The loop calls it once per iteration so the recorder
-//! has a per-iteration snapshot of `{ core, graphql }.{ remaining,
-//! limit, reset_at }`. Today nothing acts on the snapshot beyond
-//! recorder logging; see [`ooda_core::RateLimitBudget`]'s doc for
-//! the named-but-unimplemented routing concepts (`BucketBias`,
-//! iterations-of-headroom).
+//! # Invariants
 //!
-//! GitHub's wire shape names the field `reset` (unix epoch seconds);
-//! [`ooda_core::BucketState`] uses `reset_at_epoch` internally for
-//! clarity. The local wire types here do the rename so the boundary
-//! mapping is explicit and confined to one function.
+//! - **Free endpoint**: the snapshot does not consume quota, so it
+//!   runs once per iteration alongside other observations without
+//!   distorting the buckets it reports.
+//! - **Boundary rename, single site**: the wire shape names the
+//!   reset field one way; the internal type names it another. The
+//!   rename lives in one boundary-mapping function so the contract
+//!   is unambiguous and confined.
 
 use ooda_core::{BucketState, RateLimitBudget};
 use serde::Deserialize;
 
 use super::gh::{GhError, gh_json};
 
-/// Fetch the current rate-limit snapshot. Calling this does NOT
-/// consume quota. Returns the two buckets the OODA family uses
-/// (REST primary + GraphQL primary); secondary-limit counters and
-/// the legacy top-level `rate` field are ignored.
+/// Fetch the current quota snapshot. Does not consume quota.
+/// Projects only the two buckets the loop uses; legacy and
+/// secondary counters are ignored.
 pub(crate) fn fetch_rate_limit_budget() -> Result<RateLimitBudget, GhError> {
     let wire: RateLimitWire = gh_json(&["api", "rate_limit"])?;
     Ok(RateLimitBudget {

@@ -1,13 +1,22 @@
-//! CI orient: project observed check-runs against the configured
-//! required-check set, producing the `CiReport` decide consumes.
+//! Project observed checks against the required-check set.
 //!
-//! Two layers:
-//!   1. `CiSummary` — pass / fail / pending bucket counts.
-//!      Backs the comment renderer and the legacy decide paths.
-//!   2. `CiActivity` — Idle | InFlight(checks) | Resolved(state).
-//!      Carries per-check `CheckHealth` so decide can branch on
-//!      Healthy (Wait), Degraded (`ReRunWorkflow`), or Failed
-//!      (`EscalateCiFailed`). Mirrors `CopilotActivity`'s shape.
+//! # Invariants
+//>
+//! - **Two parallel projections, one report**: the report carries a
+//!   bucket projection (for rendering) and an activity projection
+//!   (for decide). They share inputs and never contradict —
+//!   activity is computed against the same bucket counts.
+//! - **Required-vs-advisory partition is total**: every observed
+//!   check lands in either the required or advisory bucket; the
+//!   required-name set decides membership and no check appears in
+//!   both.
+//! - **Health threshold + remediation budget**: in-flight checks
+//!   carry per-check health driven by two timing thresholds and a
+//!   per-(name, HEAD) attempt budget. Force-push moves HEAD and
+//!   implicitly resets the budget via SHA-equality filtering.
+//! - **Eventual-consistency tolerance**: a pending check with no
+//!   matching run-row falls through to a coarser resolved state
+//!   rather than synthesising fake health.
 
 use std::collections::HashMap;
 
@@ -36,9 +45,9 @@ impl CiSummary {
     }
 }
 
-/// Counts + names + failed-detail tuples for one bucket of checks
-/// (required *or* advisory). Same shape on both sides so callers can
-/// reason uniformly.
+/// One bucket's projection: pass count, failed details, pending
+/// names. Required and advisory buckets share the shape so callers
+/// can reason uniformly.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub(crate) struct CheckBucket {
     pub pass: usize,
@@ -69,68 +78,58 @@ pub(crate) struct FailedCheck {
     pub link: String,
 }
 
-/// Graphite's check name. Filtered from the required set when the PR
-/// is stacked on top of an unmerged parent (the check stays pending
-/// until the parent merges, so waiting on it is futile).
+/// Stack-tool-emitted check that gates a stacked PR on parent
+/// merge. Removed from the required set under the stack-topology
+/// witness — waiting on it cannot resolve until the parent merges,
+/// so leaving it required would loop the wait action.
 const GRAPHITE_MERGEABILITY_CHECK: &str = "Graphite / mergeability_check";
 
 // ── Health layer ────────────────────────────────────────────────────
 
-/// Time a workflow run is allowed to sit `queued` before its check
-/// is treated as `QueueTimeout`-degraded.
-//
-// 1.5x observed max (12.3 min queue, 30d sample across 3 repos);
-// pads above the longest legitimate pickup observed in
-// queue-latency telemetry.
+/// Maximum queue dwell before a check classifies as queue-degraded.
+/// Sized at ~1.5× the observed max legitimate queue latency.
 pub(crate) const QUEUE_TIMEOUT: chrono::Duration = chrono::Duration::minutes(20);
 
-/// Time a workflow run is allowed to spend `in_progress` before its
-/// check is treated as `RunTimeout`-degraded.
-//
-// 1.5x observed max (28 min, dominated by the "CI" workflow); the
-// 6h GHA hard ceiling acts as an absolute Failed backstop above this.
+/// Maximum in-progress dwell before a check classifies as run-
+/// degraded. Sized at ~1.5× the observed max run duration; the
+/// host's hard ceiling acts as an absolute Failed backstop above.
 pub(crate) const RUN_TIMEOUT: chrono::Duration = chrono::Duration::minutes(30);
 
-/// Per-(check, HEAD) re-run budget — number of distinct workflow
-/// runs by name on the current HEAD allowed before the check
-/// promotes from `Degraded` to `Failed`.
-//
-// Matches `crate::orient::copilot::HEALTH_REMEDIATION_BUDGET`. Per
-// the anti-DRY mirror rule, both wear the constant independently
-// until a 3rd axis lifts it into ooda_core.
+/// Per-(check, HEAD) remediation budget. Distinct attempts on the
+/// current HEAD allowed before a degraded check promotes to Failed.
+/// Same value as the sibling reviewer axis; held independently per
+/// the anti-DRY mirror rule until a third axis surfaces.
 pub(crate) const BUDGET: usize = 2;
 
-// CI-axis Symptom. Note that QueueTimeout/RunTimeout are nullary
-// like Copilot's StartTimeout/ReviewTimeout. If a future Symptom
-// carries a payload (e.g., a Duration for a tail-percentile bucket),
-// the eventual AxisHealth<S> generic must accommodate.
+// Per-axis symptom. Nullary variants match the shape used by sibling
+// axes; payload variants stay possible for a future lift to a
+// generic health type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Symptom {
-    /// `created_at + QUEUE_TIMEOUT` elapsed with no `run_started_at`.
+    /// Threshold crossed against the queue anchor (no run start
+    /// observed within the queue budget).
     QueueTimeout,
-    /// `run_started_at + RUN_TIMEOUT` elapsed with no completion.
+    /// Threshold crossed against the run-start anchor (no completion
+    /// observed within the run budget).
     RunTimeout,
 }
 
-// Same shape as CopilotActivity's InFlightHealth. Both axes wear
-// Healthy/Degraded/Failed; on the 3rd axis, lift to
-// ooda_core::AxisHealth<S>. Per anti-DRY mirror rule, keep
-// per-binary until then.
+// Per-check health lattice. Same Healthy/Degraded/Failed shape as
+// the sibling reviewer axis's in-flight health; held independently
+// per the anti-DRY mirror rule until a third axis surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum CheckHealth {
-    /// In flight within timeout windows — keep waiting.
+    /// In flight within the timing budget.
     Healthy,
-    /// Timeout crossed for this check at the current HEAD. Re-run is
-    /// in budget before escalation.
+    /// Threshold crossed; remediation still in budget.
     Degraded(Symptom),
-    /// Timeout crossed AND the per-(check, HEAD) re-run budget is
-    /// exhausted — re-running again would only restart the same
-    /// failure mode. Hand off to a human.
+    /// Threshold crossed and remediation budget exhausted; further
+    /// re-runs would only restart the same failure mode.
     Failed(Symptom),
 }
 
-/// One pending check on the current HEAD, with the workflow run
-/// handle (for re-run side effects) and its current health.
+/// Pending required check on the current HEAD. Carries the run
+/// handle (for remediation side effects) and the projected health.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct PendingCheck {
     pub name: CheckName,
@@ -138,49 +137,44 @@ pub(crate) struct PendingCheck {
     pub health: CheckHealth,
 }
 
-/// Terminal-state classification for `CiActivity::Resolved`. Mirrors
-/// the existing `CiSummary` fields decide already branches on so
-/// the Resolved arms are byte-equivalent to the pre-health logic.
+/// Terminal classification for the resolved activity arm. Total over
+/// the post-pending state of the required-check set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum ResolvedState {
-    /// Every required check completed successfully.
+    /// Every required check is positive.
     AllGreen,
-    /// At least one required check failed (or terminally cancelled,
-    /// timed out, etc). The pre-existing `FixCi` path consumes this.
+    /// At least one required check reached a non-positive terminal
+    /// state.
     HasFailures(Vec<CheckName>),
-    /// Required checks configured but absent from observed set after
-    /// all in-flight work resolved. Drives `WaitForCi (missing)`.
+    /// Required contexts configured but absent from observation
+    /// after pending work resolved.
     MissingRequired(Vec<CheckName>),
 }
 
-// InFlight carries per-check health (worst-of aggregation in
-// decide). Resolved states cover the existing post-completion paths.
-// Idle is the no-required-checks case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum CiActivity {
-    /// No required checks observed (e.g. repo with no branch
-    /// protection or stacked-PR with Graphite filter active).
+    /// No required checks gate this PR (no policy or stack-topology
+    /// filter applied).
     Idle,
-    /// At least one required check is queued or `in_progress`. The
-    /// non-empty invariant is structural; an empty vec routes to
-    /// `Resolved` instead.
+    /// At least one required check is pending. Non-empty by
+    /// construction — empty pending routes to `Resolved` instead.
+    /// Decide aggregates worst-of health across the vector.
     InFlight(Vec<PendingCheck>),
-    /// Every required check has reached a terminal state. The
-    /// resolved variant carries the original-vs-failure split decide
-    /// branches on.
+    /// All required checks reached terminal state.
     Resolved(ResolvedState),
 }
 
-/// The full CI report decide consumes. Pairs the bucket projection
-/// (used by render + main) with the typed activity (used by decide).
+/// Full CI report — bucket projection plus typed activity, both
+/// derived from the same observation set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CiReport {
     pub summary: CiSummary,
     pub activity: CiActivity,
 }
 
-/// Project CI activity onto a dashboard signal. `Idle` returns
-/// `None` — repo has no required checks active on this PR.
+/// Project the activity into a dashboard signal. `Idle` returns
+/// `None` so the dashboard skips axes with no gate active on this
+/// PR.
 pub(crate) fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
@@ -242,23 +236,15 @@ fn join_check_names(names: &[CheckName]) -> String {
 
 // ── Orient entry point ──────────────────────────────────────────────
 
-/// Orient observed checks against the required-name set.
+/// Project observed checks against the required-context set.
 ///
-/// `required_names` is the union of branch-rules required-status-checks
-/// and legacy branch-protection contexts (assembled by the caller).
-///
-/// `has_open_parent_pr` filters `Graphite / mergeability_check` from
-/// the required set: Graphite leaves that check pending on every
-/// stacked-top PR until the parent merges, so treating it as required
-/// would cycle `WaitForCi` to the iteration cap on every otherwise-
-/// clean stacked PR. The check still surfaces in `advisory` (visible
-/// in the snapshot), it just stops gating progress. Bottom-of-stack
-/// PRs (or non-stacked PRs) keep the check as required.
-///
-/// `workflow_runs` and `head` together drive the per-check health
-/// projection: timing comes from the `workflow_run`'s `created_at` /
-/// `run_started_at`, and the per-(name, HEAD) attempt count
-/// (re-run budget) comes from counting runs on the same `head_sha`.
+/// `required_names` is supplied pre-resolved (caller-side union of
+/// rule-source and legacy-source contexts). The stack-topology bit
+/// removes the stack-tooling mergeability check from the required
+/// set so the wait action does not loop on a gate that cannot
+/// resolve until the parent merges. `workflow_runs` and `head` drive
+/// per-check timing and the re-run budget; HEAD movement implicitly
+/// resets the budget via SHA-equality filtering.
 pub(crate) fn orient_ci(
     checks: &[PullRequestCheck],
     required_names: &[CheckName],
@@ -277,9 +263,9 @@ fn build_summary(
     required_names: &[CheckName],
     has_open_parent_pr: bool,
 ) -> CiSummary {
-    // HashSet for O(1) advisory partitioning; order-bearing iteration
-    // walks the input slice so pending_names / missing_names preserve
-    // the caller's order.
+    // Set membership for O(1) bucket assignment; ordered iteration
+    // walks the input slice so the rendered name lists preserve
+    // caller-supplied order.
     let required_set: std::collections::HashSet<&str> = required_names
         .iter()
         .filter(|n| !(has_open_parent_pr && n.as_str() == GRAPHITE_MERGEABILITY_CHECK))
@@ -369,9 +355,8 @@ fn compute_ci_activity(
         return CiActivity::Idle;
     }
 
-    // Phase 1: assemble the in-flight set with per-check health. The
-    // observation source is `PullRequestCheck`s in pending state,
-    // joined to workflow runs on the current HEAD by workflow name.
+    // Phase 1: assemble in-flight entries by joining pending checks
+    // to runs on the current HEAD by workflow name.
     let pending: Vec<&PullRequestCheck> = checks
         .iter()
         .filter(|c| summary.required.pending_names.contains(&c.name))
@@ -382,14 +367,10 @@ fn compute_ci_activity(
             .iter()
             .filter_map(|c| build_pending_check(c, workflow_runs, head, now))
             .collect();
-        // A required check listed as pending in the summary may have
-        // no matching workflow_run row yet (eventual consistency:
-        // the row arrives in `gh pr checks` before the workflow_runs
-        // feed catches up). When that happens, fall through to the
-        // "still in flight, no health signal" path: emit an
-        // InFlight with a synthetic Healthy entry so decide still
-        // emits Wait. If even that produces zero entries, treat the
-        // check as Resolved::MissingRequired below.
+        // Eventual-consistency window: the check is pending but no
+        // matching run-row has propagated yet. Empty in-flight set
+        // here falls through to the resolved classification rather
+        // than fabricating a health signal.
         if !in_flight.is_empty() {
             return CiActivity::InFlight(in_flight);
         }
@@ -419,24 +400,17 @@ fn build_pending_check(
     head: &GitCommitSha,
     now: Timestamp,
 ) -> Option<PendingCheck> {
-    // Per-check attempt count: count distinct workflow runs by name
-    // on the current HEAD. Force-push to a new HEAD implicitly
-    // resets the budget via SHA filter (matches Copilot's pattern).
-    //
-    // Derivable from observed workflow_runs filtered by
-    // (workflow.name, head_sha). No orient state. The count includes
-    // every attempt — both the freshly-enqueued one and any
-    // historical attempts at this HEAD.
+    // Attempt count = distinct runs for this name on the current
+    // HEAD. HEAD movement (force-push) implicitly resets the budget
+    // via SHA-equality filtering — no orient-side state needed.
     let runs_for_check: Vec<&WorkflowRun> = workflow_runs
         .iter()
         .filter(|r| r.head_sha == *head && r.name == check.name.as_str())
         .collect();
 
-    // The pending check must correspond to at least one observed
-    // workflow_run on the current HEAD. Eventual-consistency window:
-    // `gh pr checks` saw the row but `/actions/runs` hasn't caught
-    // up yet. Skip with None; the caller falls through to a coarser
-    // Resolved classification rather than synthesising a fake health.
+    // Eventual-consistency tolerance: a pending check without a
+    // matching run-row returns None; the caller routes to a coarser
+    // resolved classification rather than fabricating health.
     let latest_pending_run = runs_for_check
         .iter()
         .filter(|r| {

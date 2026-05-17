@@ -1,20 +1,16 @@
-//! Typed view of `GET /repos/{o}/{r}/compare/{base}...{head}`.
+//! Merge-base-relative comparison source.
 //!
-//! The compare endpoint is the only source for merge-base-relative
-//! facts: how many commits the PR is behind, which files master
-//! touched since the merge base, and (by intersection with the
-//! branch's own diff) the empty-or-non-empty conflict surface.
+//! # Invariants
 //!
-//! `gh pr view` exposes only the `behind` enum bit, not a count or
-//! a file list — both required to enrich the Rebase prompt with a
-//! concrete recommendation rather than a generic "rebase now."
-//
-// This module is the first piece of "compare endpoint" data the
-// loop observes. Future questions about ancestor state — e.g. how
-// many merge conflicts would actually surface, which commits the
-// branch is ahead by, base-commit author churn — extend
-// `MergeBaseDelta` rather than spawning sibling structs. One fetch,
-// one observation, one place to grow.
+//! - **Sole source for merge-base facts**: counts, file lists, and
+//!   conflict-surface intersection are computed by the host against
+//!   the merge base, not the tip of base. The aggregated PR-view
+//!   projection exposes only the behind bit; rebase prompts need
+//!   the richer shape this source carries.
+//! - **One observation, additive growth**: future ancestor-state
+//!   questions extend the delta projection rather than spawn
+//!   sibling sources — one fetch, one observation, one place to
+//!   grow.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,36 +18,30 @@ use crate::ids::{BranchName, GitCommitSha, RepoSlug, Timestamp};
 
 use super::gh::{GhError, encode_path_segment, gh_json};
 
-/// Merge-base-relative delta between a PR's head and its base. All
-/// counts and file lists are computed by GitHub against the *merge
-/// base*, not the tip of base, so they describe exactly the work a
-/// rebase would replay.
+/// Merge-base-relative delta. Counts and file sets describe the
+/// work a rebase would replay.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct MergeBaseDelta {
-    /// Count of commits on base since the merge base.
+    /// Commits on base since merge base.
     pub commits_behind: u32,
-    /// Count of commits on the branch since the merge base.
+    /// Commits on branch since merge base.
     pub commits_ahead: u32,
-    /// Files touched on the base side of the compare (commits on
-    /// base since the merge base, unioned across all commits).
+    /// Files touched on the base side, unioned across base commits.
     pub master_files: Vec<String>,
-    /// Files touched on the branch side of the compare.
+    /// Files touched on the branch side.
     pub branch_files: Vec<String>,
-    /// Intersection of `master_files` and `branch_files`. Computed
-    /// at observation time so consumers don't need to recompute the
-    /// set everywhere it matters.
+    /// Intersection of base-side and branch-side file sets — the
+    /// would-conflict surface. Pre-computed so downstream consumers
+    /// share the canonical value.
     pub conflict_surface: Vec<String>,
-    /// Author timestamp of the oldest commit on base since the merge
-    /// base — "behind since when." `None` when `commits_behind == 0`
-    /// or when no commit carries an author date.
+    /// Author timestamp of the oldest base-side commit — "behind
+    /// since when." Absent when there are no base-side commits or
+    /// when none carries an author date.
     pub oldest_master_commit_at: Option<Timestamp>,
 }
 
-// Wire shapes for `/repos/{o}/{r}/compare/{base}...{head}`. We
-// deserialize only the fields `MergeBaseDelta` consumes; the
-// endpoint also returns merge_base_commit, total_commits, status,
-// permalink_url etc. — adding those is a strictly additive
-// extension when a consumer arrives.
+// Wire shapes. Only the fields the delta projection consumes are
+// decoded; the boundary tolerates additional fields without change.
 
 #[derive(Debug, Clone, Deserialize)]
 struct CompareEnvelope {
@@ -90,31 +80,20 @@ struct CompareFileWire {
     filename: String,
 }
 
-/// Fetch the compare-endpoint delta between `head` and `base`.
+/// Fetch the merge-base-relative delta between head and base.
 ///
-/// GitHub computes the comparison from the *merge base* of the two
-/// refs, so `behind_by` / `ahead_by` and the file lists describe
-/// exactly the divergence a rebase would replay.
-///
-/// `gh api compare` returns `files` aggregated across the branch
-/// side. The base-side file list lives inside `commits[].files` —
-/// the v3 `commits[]` array only includes a `files` payload when
-/// fetched with the appropriate Accept header; when absent, we
-/// approximate `master_files` as empty and `conflict_surface` falls
-/// back to empty as well. This is the rare path; the typical path
-/// returns the per-commit file list inline.
+/// Base-side file lists are aggregated from per-commit payloads
+/// when populated; when absent (rare wire shape), the base-side
+/// file set is empty and the conflict surface degrades to empty
+/// rather than fail.
 pub(crate) fn fetch_merge_base_delta(
     slug: &RepoSlug,
     base: &BranchName,
     head: &GitCommitSha,
 ) -> Result<MergeBaseDelta, GhError> {
-    // Three-dot syntax `{base}...{head}` asks GitHub for the merge-
-    // base-relative comparison. Two-dot `{base}..{head}` would be a
-    // direct ref-to-ref diff with different semantics (no behind_by).
-    //
-    // Branch names containing `/` (release/1.2) must remain one
-    // segment — encode them so `gh api` doesn't reparse into
-    // additional path components.
+    // Three-dot syntax requests the merge-base-relative comparison;
+    // the two-dot form is direct-ref-to-ref and has no behind-by
+    // semantics. Branch name is path-segment-encoded.
     let path = format!(
         "repos/{slug}/compare/{}...{}",
         encode_path_segment(base.as_str()),

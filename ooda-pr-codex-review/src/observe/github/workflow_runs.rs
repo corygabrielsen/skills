@@ -1,16 +1,15 @@
-//! Typed view of `GET /repos/{o}/{r}/actions/runs?head_sha={sha}`.
+//! Per-HEAD run-row source for CI health.
 //!
-//! `gh pr checks` surfaces only the latest state per check name —
-//! no `run_id`, no `created_at`, no `run_started_at`, no attempt
-//! history. The CI health detector needs all three for per-check
-//! timing and per-(name, HEAD) attempt counting. Fetch the workflow
-//! runs scoped to the current HEAD here; orient joins by workflow
-//! name + `head_sha` at decide time.
-//
-// gh pr checks does not surface created_at/run_started_at; fetch via
-// /actions/runs?head_sha=. Bounded N (only runs on current HEAD,
-// typically 0-30). Preserves orient's pure-projection invariant —
-// no hidden state.
+//! # Invariants
+//!
+//! - **Health needs timing + attempts**: per-check health requires
+//>   the per-run `created_at`/`run_started_at` anchors and per-(name,
+//>   HEAD) attempt counts. The aggregated check projection drops
+//>   both; this source is the only way to recover them.
+//! - **Bounded N**: a single HEAD typically carries 0-30 rows; one
+//!   page suffices.
+//! - **No orient state**: counts are derivable from the wire shape
+//!   alone — orient stays a pure projection.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +17,9 @@ use crate::ids::{GitCommitSha, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json};
 
-/// Stable handle for a workflow run. GitHub Actions returns this as
-/// a JSON integer on the wire (`/repos/:o/:r/actions/runs`); modeling
-/// it as `String` aborted observe with a `serde` type error on every
-/// PR that had any workflow runs. `u64` matches the wire shape and
-/// the documented ID range; Display formats as decimal so the act-
-/// stage URL builder (`/actions/runs/{run_id}/rerun`) stays correct.
+/// Stable run handle. Modeled as `u64` to match the wire shape and
+/// the documented ID range; Display renders decimal so URL builders
+/// embed the canonical form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct WorkflowRunId(pub u64);
@@ -34,38 +30,28 @@ impl std::fmt::Display for WorkflowRunId {
     }
 }
 
-/// Disposition tag for a cancelled workflow run. GitHub Actions
-/// emits `cancelled` for auto-cancel-by-concurrency (PR superseded
-/// by newer push) AND for genuine outage-cancels. Distinguish at
-/// the observe boundary so the health detector sees only the latter.
-//
-// v1 heuristic: a cancelled run is `Superseded` if a strictly newer
-// run (greater run_attempt OR newer created_at) for the same workflow
-// name exists on the same head_sha. Otherwise `Terminal`. The full
-// "superseded by a newer PUSH" detection lives in a future
-// cross-SHA join — see workflow_runs spec note.
-//
-// Reserved for the upcoming Resolved-cancelled disambiguation path —
-// no consumer in v1 because cancelled runs route through CiSummary's
-// existing failed bucket (preserves prior decide behavior). The
-// type exists so the wire model is correctly shaped at the boundary;
-// a future iteration wires the disposition into orient/ci.rs.
+/// Disposition tag for a cancelled run. The host emits the same
+/// wire value for auto-cancellation-by-concurrency and for genuine
+/// terminal cancellation; this tag disambiguates them at the observe
+/// boundary so health classification sees only the latter.
+///
+/// Variants are reserved for the disambiguation path; current
+/// consumers do not construct them. Their presence locks the wire
+/// schema against silent rename when the path comes online.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum CancelledDisposition {
-    /// Auto-cancel-by-concurrency: another run on the same `head_sha`
-    /// supersedes this one. The health detector ignores these — they
-    /// represent normal developer push churn, not a failure mode.
+    /// Auto-cancellation by concurrency — superseded by a newer run
+    /// on the same HEAD. Health ignores these; they are normal push
+    /// churn.
     Superseded,
-    /// Genuine terminal cancellation. Either GitHub Actions outage,
-    /// manual cancel, or a workflow-level failure. The health detector
-    /// treats these as terminal Failed.
+    /// Genuine terminal cancellation. Health classifies as Failed.
     Terminal,
 }
 
-/// Wire status of a workflow run. Mirrors GitHub's vocabulary; an
-/// unknown future variant routes to `Unknown` for forward
-/// compatibility (same pattern as `CheckState::Unknown`).
+/// Run-level status. The Unknown catchall routes any future variant
+/// to a known value so observation never aborts on unmodeled wire
+/// shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkflowRunStatus {
@@ -79,8 +65,7 @@ pub(crate) enum WorkflowRunStatus {
     Unknown,
 }
 
-/// Wire conclusion of a completed workflow run. `None` when the run
-/// has not completed yet.
+/// Run-level conclusion. Absent until the run completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkflowRunConclusion {
@@ -97,35 +82,33 @@ pub(crate) enum WorkflowRunConclusion {
     Unknown,
 }
 
-/// A single workflow run. Carries the timing and identity fields
-/// the CI health detector needs; richer fields (URLs, actor, etc.)
-/// are deliberately not modeled — add them only when a consumer
-/// arrives.
+/// A single run row. Carries the identity and timing fields health
+/// classification needs; richer fields are not modeled until a
+/// consumer arrives.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct WorkflowRun {
     pub id: WorkflowRunId,
-    /// Workflow display name. Joined against `PullRequestCheck.name`
-    /// at orient time.
+    /// Workflow name. Join key against the aggregated check
+    /// projection at orient time.
     pub name: String,
-    /// HEAD commit SHA the run was enqueued against. Used to scope
-    /// the per-(name, HEAD) budget — force-push to a new HEAD
-    /// implicitly resets the budget via SHA equality.
+    /// HEAD SHA the run was enqueued against. Per-(name, HEAD)
+    /// attempt-budget scoping resets implicitly via SHA equality on
+    /// HEAD movement.
     pub head_sha: GitCommitSha,
     pub status: WorkflowRunStatus,
-    /// `None` until the run completes.
+    /// Absent until the run completes.
     #[serde(default)]
     pub conclusion: Option<WorkflowRunConclusion>,
-    /// Enqueue time (when the run row was created in GHA).
+    /// Enqueue time.
     pub created_at: Timestamp,
-    /// `None` when the run has not yet started (still queued).
+    /// Absent until the run begins executing.
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     pub run_started_at: Option<Timestamp>,
-    /// 1-indexed attempt counter; increments on re-runs of the same
-    /// underlying run row. The per-(name, HEAD) budget compares the
-    /// COUNT of distinct workflow runs by name on a given HEAD, not
-    /// this attempt counter — re-runs of one row still consume one
-    /// slot in the budget.
+    /// 1-indexed re-run attempt counter on this row. The attempt
+    /// budget is computed over distinct run rows by name on the
+    /// current HEAD, not over this counter — re-runs of one row
+    /// consume one budget slot.
     #[serde(default = "default_run_attempt")]
     pub run_attempt: u32,
 }
@@ -138,8 +121,8 @@ fn deserialize_optional_timestamp<'de, D>(d: D) -> Result<Option<Timestamp>, D::
 where
     D: serde::Deserializer<'de>,
 {
-    // The API emits null when the run has not started; some clients
-    // (and replay fixtures) emit "" instead. Normalise both to None.
+    // Absence shapes (null, empty string) both decode to None so
+    // downstream consumers handle them uniformly.
     let raw: Option<String> = Option::deserialize(d)?;
     match raw.as_deref() {
         None | Some("") => Ok(None),
@@ -155,9 +138,8 @@ struct WorkflowRunsEnvelope {
     workflow_runs: Vec<WorkflowRun>,
 }
 
-/// Fetch every workflow run on `head_sha` for `slug`. The set is
-/// bounded — typically 0-30 rows on a single commit — so a single
-/// page suffices (`per_page=100`).
+/// Fetch every run row on the given HEAD. Bounded N — one page
+/// suffices.
 pub(crate) fn fetch_workflow_runs_for_head(
     slug: &RepoSlug,
     head_sha: &GitCommitSha,

@@ -1,10 +1,8 @@
-//! PR-meta candidates.
+//! PR-metadata sync candidate.
 //!
-//! Emit `SyncPullRequestMetadata` when the orient axis is `Drift` or
-//! `NeverAttested` AND the PR has at least one commit. Skip for
-//! `Synced` (no work) and for empty PRs (no commits to attest
-//! against). Information-tier — advisory; never preempts a
-//! mechanical merge blocker.
+//! SHA-keyed attestation: fires when the axis is unsynced and the
+//! PR carries at least one commit (an empty PR has no work to
+//! attest against). Hygiene tier — advisory rather than blocking.
 
 use std::path::Path;
 
@@ -40,11 +38,13 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
     let kind = ActionKind::SyncPullRequestMetadata {
         attest_path: attest_path.to_path_buf(),
     };
+    // Distinct gate identity per state, so a transition between
+    // unsynced states is not masked as a stall. The Synced arm is
+    // unreachable in practice — filtered upstream — and exists
+    // only to keep the match exhaustive.
     let blocker = match oriented.pull_request_metadata {
         PullRequestMetadata::Drift { .. } => BlockerKey::from_static("pr_meta_drift"),
         PullRequestMetadata::NeverAttested => BlockerKey::from_static("pr_meta_never_attested"),
-        // Synced is filtered above; the match is exhaustive for
-        // clippy, the arm is unreachable in practice.
         PullRequestMetadata::Synced => BlockerKey::from_static("pr_meta_synced"),
     };
     vec![Action {
@@ -130,7 +130,6 @@ mod tests {
             copilot: None,
             cursor: None,
             threads: vec![],
-            codex_review: None,
             merge_base_delta: None,
             pull_request_metadata,
             attest_path: Some(std::path::PathBuf::from("/state/753/pr_meta_attest.json")),
@@ -138,6 +137,7 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            codex_review: None,
             closeout: crate::orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
         }

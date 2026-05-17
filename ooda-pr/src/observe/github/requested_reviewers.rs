@@ -1,9 +1,6 @@
-//! Typed view of `GET /repos/{o}/{r}/pulls/{n}/requested_reviewers`.
-//!
-//! Currently-pending reviewer requests, separated into users and
-//! teams. The endpoint returns richer user objects (avatar URLs,
-//! `type`, etc.) and additional team fields; we model only what
-//! downstream stages use.
+//! Currently-pending reviewer requests, partitioned into user and
+//! team rows. The model carries only the fields downstream stages
+//! use.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +28,7 @@ pub(crate) struct RequestedReviewers {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RequestedUser {
     pub login: GitHubLogin,
-    /// `User`, `Bot`, `Organization`, or `Mannequin`.
+    /// Identity class.
     #[serde(rename = "type")]
     pub user_type: UserType,
 }

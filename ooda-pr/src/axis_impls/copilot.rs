@@ -1,18 +1,15 @@
 //! `CopilotAxis` — `Axis` impl wrapping the Copilot bot-review lane.
 //!
-//! Same shape as [`super::cursor::CursorAxis`]: `Report =
-//! Option<CopilotReport>`. The Option carries two distinct
-//! absences:
+//! Same shape as [`super::cursor::CursorAxis`]: thin wrapper
+//! around `orient_copilot` + `decide::copilot::candidates`. Two
+//! distinct absences produce an empty candidate set:
 //!
 //! - **No policy**: `config` is `None` — the repo has no Copilot
-//!   reviewer configured. The wrapper short-circuits to `None`
-//!   without calling `orient_copilot`, mirroring the call-site
-//!   shape (`obs.copilot_config.map(...).and_then(...)`).
+//!   reviewer configured. The wrapper short-circuits without
+//!   calling `orient_copilot`, mirroring the call-site shape
+//!   (`obs.copilot_config.map(...).and_then(...)`).
 //! - **Disabled policy**: `config` is `Some` but
-//!   `config.enabled` is false. `orient_copilot` itself returns
-//!   `None` in that case.
-//!
-//! Either way the candidate set is empty.
+//!   `config.enabled` is false. `orient_copilot` returns `None`.
 //!
 //! # Cross-axis deps
 //!
@@ -25,7 +22,7 @@ use crate::observe::github::pull_request_view::Commit;
 use crate::observe::github::requested_reviewers::RequestedReviewers;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
-use crate::orient::copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
+use crate::orient::copilot::{CopilotRepoConfig, orient_copilot};
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`CopilotAxis`].
@@ -45,17 +42,18 @@ pub(crate) struct CopilotObservation<'a> {
     pub now: Timestamp,
 }
 
-/// Wrapper exposing Copilot's project + candidates as an [`Axis`] impl.
+/// Wrapper exposing Copilot as an [`Axis`] impl.
 #[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CopilotAxis;
 
 impl<'a> Axis<CopilotObservation<'a>> for CopilotAxis {
-    type Report = Option<CopilotReport>;
     type ActionKind = ActionKind;
 
-    fn project(&self, obs: &CopilotObservation<'a>) -> Self::Report {
-        let config = obs.config?;
-        orient_copilot(
+    fn candidates(&self, obs: &CopilotObservation<'a>) -> Vec<Action> {
+        let Some(config) = obs.config else {
+            return Vec::new();
+        };
+        let Some(report) = orient_copilot(
             config,
             obs.events,
             obs.reviews,
@@ -64,14 +62,10 @@ impl<'a> Axis<CopilotObservation<'a>> for CopilotAxis {
             obs.head,
             obs.commits,
             obs.now,
-        )
-    }
-
-    fn candidates(&self, report: &Self::Report) -> Vec<Action> {
-        match report {
-            Some(r) => crate::decide::copilot::candidates(r),
-            None => Vec::new(),
-        }
+        ) else {
+            return Vec::new();
+        };
+        crate::decide::copilot::candidates(&report)
     }
 }
 
@@ -83,8 +77,6 @@ mod tests {
 
     #[test]
     fn copilot_axis_emits_no_candidates_when_no_policy() {
-        // config: None ⇒ no Copilot reviewer configured ⇒ project
-        // short-circuits without invoking orient_copilot.
         let axis = CopilotAxis;
         let threads = empty_review_threads_response();
         let requested = RequestedReviewers::default();
@@ -98,12 +90,10 @@ mod tests {
             commits: &[],
             now: Timestamp::parse("2026-05-17T12:00:00Z").unwrap(),
         };
-        let report = axis.project(&obs);
-        assert!(report.is_none(), "absent config should produce no report");
-        let candidates = axis.candidates(&report);
+        let candidates = axis.candidates(&obs);
         assert!(
             candidates.is_empty(),
-            "absent copilot report should emit no candidates; got {:?}",
+            "absent config should emit no candidates; got {:?}",
             candidates.iter().map(|a| &a.kind).collect::<Vec<_>>(),
         );
     }

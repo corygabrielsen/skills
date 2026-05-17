@@ -2,25 +2,38 @@
 //!
 //! # Definition
 //!
-//! An [`Axis`] is a typed projection from per-axis observation
-//! into per-axis report, paired with a candidate emitter that the
-//! driver merges by phase-aware urgency. The trait is the minimum
-//! contract that any concern-level state machine must satisfy to
-//! participate in a [`super::Driver`] (forthcoming).
+//! An [`Axis`] is a typed candidate emitter over a per-axis
+//! observation slice. The driver merges candidates across axes by
+//! phase-aware urgency. The trait is the minimum contract that any
+//! concern-level state machine must satisfy to participate in a
+//! [`super::Driver`] (forthcoming).
+//!
+//! # Why no projection method
+//!
+//! An earlier sketch split projection (`project(obs) -> Report`)
+//! from decision (`candidates(report)`). The shape held for the
+//! local-projection health axes (CI, Cursor, Copilot) but broke
+//! for convergence axes — reviews, mechanical state, attestations,
+//! closeout — whose candidates read across multiple axes' reports
+//! and cannot be expressed as a function of a single per-axis
+//! `Report`. Collapsing the trait to candidates-only restores
+//! uniform shape across both kinds. Projection survives as a
+//! private helper inside each impl when the impl wants it; the
+//! contract no longer mandates it.
 //!
 //! # Invariants
 //!
 //! - **No cross-axis state mutation**: [`Axis::candidates`] takes
-//!   `&self` and an immutable `Report`; it cannot reach into other
+//!   `&self` and an immutable `&O`; it cannot reach into other
 //!   axes' state.
 //! - **Per-domain, not cross-domain**: all `Axis` impls within a
 //!   single driver share `ActionKind` and `MidTier`. Cross-domain
 //!   composition is a separate concern (the `Outcome` contract
 //!   between drivers, not the `Axis` trait).
-//! - **Report is the public face**: `Report` is exposed to other
-//!   axes (via the driver's orient bundle) and to display
-//!   consumers. Any state an axis wants visible cross-axis or
-//!   for instrumentation lives in `Report`.
+//! - **Observation slices the inputs honestly**: each axis's `O`
+//!   names every input it reads — local observations and refs to
+//!   upstream axes' projected state alike. Cross-axis dependencies
+//!   are visible in the type.
 //!
 //! # Out of scope for v1
 //!
@@ -54,28 +67,21 @@ use crate::action::{Action, ActionKindName};
 ///
 /// `O` is the axis's observation-input type. Each axis declares
 /// its own observation slice; the driver constructs it from the
-/// global observation bundle plus any cross-axis reports the axis
+/// global observation bundle plus any cross-axis state the axis
 /// names as dependencies.
 pub trait Axis<O> {
-    /// Typed projection of the axis's observation. Publicly
-    /// exposed: other axes may read this via the driver's orient
-    /// bundle; displays render it.
-    type Report;
-
     /// Domain-typed action variants this axis can emit. Must
     /// implement [`ActionKindName`] for log-line rendering and
     /// stall-comparator stability.
     type ActionKind: ActionKindName;
 
-    /// Project the per-axis observation into the typed report.
-    /// Pure: same observation → same report. State that varies
+    /// Emit candidate actions from the observation slice. Each
+    /// action carries phase-aware urgency (`Urgency<MidTier>`);
+    /// the driver merges across axes by lex order.
+    ///
+    /// Pure: same observation → same candidates. State that varies
     /// across runs lives in the driver's recorder, not here.
-    fn project(&self, obs: &O) -> Self::Report;
-
-    /// Emit candidate actions from the report. Each action carries
-    /// phase-aware urgency (`Urgency<MidTier>`); the driver merges
-    /// across axes by lex order.
-    fn candidates(&self, report: &Self::Report) -> Vec<Action<Self::ActionKind>>;
+    fn candidates(&self, obs: &O) -> Vec<Action<Self::ActionKind>>;
 }
 
 #[cfg(test)]
@@ -102,26 +108,14 @@ mod tests {
         needs_sync: bool,
     }
 
-    /// Minimal report: same shape.
-    struct DocAxisReport {
-        needs_sync: bool,
-    }
-
     /// Trait-validation impl: smallest possible axis.
     struct DocAxis;
 
     impl Axis<DocAxisObservation> for DocAxis {
-        type Report = DocAxisReport;
         type ActionKind = DocAxisKind;
 
-        fn project(&self, obs: &DocAxisObservation) -> Self::Report {
-            DocAxisReport {
-                needs_sync: obs.needs_sync,
-            }
-        }
-
-        fn candidates(&self, report: &Self::Report) -> Vec<Action<Self::ActionKind>> {
-            if report.needs_sync {
+        fn candidates(&self, obs: &DocAxisObservation) -> Vec<Action<Self::ActionKind>> {
+            if obs.needs_sync {
                 vec![Action {
                     kind: DocAxisKind::Sync,
                     effect: ActionEffect::Full { log: "sync".into() },
@@ -139,8 +133,7 @@ mod tests {
     fn axis_smoke_test_with_minimal_impl() {
         let axis = DocAxis;
         let obs = DocAxisObservation { needs_sync: true };
-        let report = axis.project(&obs);
-        let candidates = axis.candidates(&report);
+        let candidates = axis.candidates(&obs);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].kind.name(), "Sync");
         assert_eq!(candidates[0].urgency, Urgency::Pre);
@@ -150,7 +143,6 @@ mod tests {
     fn axis_emits_no_candidate_on_silent_state() {
         let axis = DocAxis;
         let obs = DocAxisObservation { needs_sync: false };
-        let report = axis.project(&obs);
-        assert!(axis.candidates(&report).is_empty());
+        assert!(axis.candidates(&obs).is_empty());
     }
 }

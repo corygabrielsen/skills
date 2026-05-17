@@ -1,22 +1,20 @@
 //! `CursorAxis` — `Axis` impl wrapping the Cursor bot-review lane.
 //!
-//! Same shape as [`super::ci::CiAxis`]: thin wrapper around the
-//! existing `orient/cursor.rs` and `decide/cursor.rs` free
-//! functions. No new logic.
+//! Same shape as [`super::ci::CiAxis`]: a thin wrapper around
+//! `orient/cursor.rs` + `decide/cursor.rs`. Projection lives
+//! inside [`Axis::candidates`] as a private helper.
 //!
-//! # Report shape
+//! # Absent-observation case
 //!
 //! `orient_cursor` returns `Option<CursorReport>` to distinguish
 //! "no observation at all" from "observation says
-//! `NotApplicable`." The trait's `Report` associated type carries
-//! the `Option` through; `candidates` short-circuits to an empty
-//! vec on `None`, matching how `decide.rs` calls the inner
-//! `cursor::candidates` only when `oriented.cursor` is `Some`.
+//! `NotApplicable`." When the inner projection is `None` the
+//! axis emits no candidates — mirroring how `decide.rs` only
+//! calls `cursor::candidates` when `oriented.cursor` is `Some`.
 //!
 //! # Cross-axis deps
 //!
-//! None. Every field of [`CursorObservation`] reads from the
-//! global observation slice directly.
+//! None. Every field reads from the global observation slice.
 
 use crate::decide::action::{Action, ActionKind};
 use crate::ids::{GitCommitSha, Timestamp};
@@ -24,7 +22,7 @@ use crate::observe::github::cursor_status::CursorStatus;
 use crate::observe::github::pull_request_view::PullRequestAuthor;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
-use crate::orient::cursor::{CursorReport, orient_cursor};
+use crate::orient::cursor::orient_cursor;
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`CursorAxis`].
@@ -38,33 +36,25 @@ pub(crate) struct CursorObservation<'a> {
     pub now: Timestamp,
 }
 
-/// Wrapper exposing Cursor's project + candidates as an [`Axis`] impl.
-///
-/// Zero-sized; per-tick state lives in the projected
-/// `Option<CursorReport>`.
+/// Wrapper exposing Cursor as an [`Axis`] impl.
 #[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CursorAxis;
 
 impl<'a> Axis<CursorObservation<'a>> for CursorAxis {
-    type Report = Option<CursorReport>;
     type ActionKind = ActionKind;
 
-    fn project(&self, obs: &CursorObservation<'a>) -> Self::Report {
-        orient_cursor(
+    fn candidates(&self, obs: &CursorObservation<'a>) -> Vec<Action> {
+        let Some(report) = orient_cursor(
             obs.reviews,
             obs.threads,
             obs.cursor_status,
             obs.author,
             obs.head,
             obs.now,
-        )
-    }
-
-    fn candidates(&self, report: &Self::Report) -> Vec<Action> {
-        match report {
-            Some(r) => crate::decide::cursor::candidates(r),
-            None => Vec::new(),
-        }
+        ) else {
+            return Vec::new();
+        };
+        crate::decide::cursor::candidates(&report)
     }
 }
 
@@ -76,8 +66,6 @@ mod tests {
 
     #[test]
     fn cursor_axis_emits_no_candidates_when_no_observation() {
-        // No reviews, no cursor suite, no author → orient_cursor
-        // returns None → candidates short-circuits to empty.
         let axis = CursorAxis;
         let threads = empty_review_threads_response();
         let cursor_status = CursorStatus {
@@ -92,12 +80,10 @@ mod tests {
             head: &GitCommitSha::parse(&"a".repeat(40)).unwrap(),
             now: Timestamp::parse("2026-05-17T12:00:00Z").unwrap(),
         };
-        let report = axis.project(&obs);
-        assert!(report.is_none(), "no signal should produce no report");
-        let candidates = axis.candidates(&report);
+        let candidates = axis.candidates(&obs);
         assert!(
             candidates.is_empty(),
-            "absent cursor report should emit no candidates; got {:?}",
+            "no signal should emit no candidates; got {:?}",
             candidates.iter().map(|a| &a.kind).collect::<Vec<_>>(),
         );
     }

@@ -1,28 +1,24 @@
 //! `CiAxis` — canonical first impl of [`ooda_core::Axis`].
 //!
-//! Validates the trait shape against real PR-domain code. The
-//! existing `orient/ci.rs` and `decide/ci.rs` modules retain their
-//! free-function shape; this file is a thin wrapper that exposes
-//! them as a single [`ooda_core::Axis`] impl.
+//! Wraps the existing `orient/ci.rs` projection and
+//! `decide/ci.rs` candidate emitter behind a single trait method.
+//! Projection (`orient_ci`) survives as a private helper called
+//! inside [`Axis::candidates`]; it is no longer part of the trait
+//! contract (see `ooda_core::axis` module doc).
 //!
-//! # Why this shape (per [[project-axis-trait-next-steps]])
+//! # Per-axis observation
 //!
-//! - **Per-axis [`CiObservation`]**: the axis declares its input
-//!   slice explicitly, including cross-axis dependencies
-//!   (`has_open_parent_pr` reads through from the state axis's
-//!   `PullRequestProjection`). The driver constructs `CiObservation`
-//!   from the global `GitHubObservations` plus the state-axis's
-//!   report, in topological order.
-//!
-//! - **No new logic**: `project` calls the existing `orient_ci`;
-//!   `candidates` calls the existing `decide::ci::candidates`. The
-//!   refactor lifts the surface, not the contents.
+//! [`CiObservation`] names every input CI reads, including
+//! cross-axis dependencies (`has_open_parent_pr` reads through
+//! from the state axis's `PullRequestProjection`). The driver
+//! constructs `CiObservation` from the global `GitHubObservations`
+//! plus the state-axis report in topological order.
 
 use crate::decide::action::{Action, ActionKind};
 use crate::ids::{CheckName, GitCommitSha, Timestamp};
 use crate::observe::github::checks::PullRequestCheck;
 use crate::observe::github::workflow_runs::WorkflowRun;
-use crate::orient::ci::{CiReport, orient_ci};
+use crate::orient::ci::orient_ci;
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`CiAxis`].
@@ -39,30 +35,24 @@ pub(crate) struct CiObservation<'a> {
     pub now: Timestamp,
 }
 
-/// Wrapper exposing CI's project + candidates as an [`Axis`] impl.
-///
-/// Zero-sized; the axis carries no per-instance state. Per-tick
-/// state lives in the projected [`CiReport`].
+/// Wrapper exposing CI as an [`Axis`] impl. Zero-sized; per-tick
+/// state lives in the report computed inside [`Axis::candidates`].
 #[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CiAxis;
 
 impl<'a> Axis<CiObservation<'a>> for CiAxis {
-    type Report = CiReport;
     type ActionKind = ActionKind;
 
-    fn project(&self, obs: &CiObservation<'a>) -> Self::Report {
-        orient_ci(
+    fn candidates(&self, obs: &CiObservation<'a>) -> Vec<Action> {
+        let report = orient_ci(
             obs.checks,
             obs.required,
             obs.has_open_parent_pr,
             obs.workflow_runs,
             obs.head,
             obs.now,
-        )
-    }
-
-    fn candidates(&self, report: &Self::Report) -> Vec<Action> {
-        crate::decide::ci::candidates(report)
+        );
+        crate::decide::ci::candidates(&report)
     }
 }
 
@@ -83,8 +73,7 @@ mod tests {
             head: &GitCommitSha::parse(&"a".repeat(40)).unwrap(),
             now: Timestamp::parse("2026-05-17T12:00:00Z").unwrap(),
         };
-        let report = axis.project(&obs);
-        let candidates = axis.candidates(&report);
+        let candidates = axis.candidates(&obs);
         assert!(
             candidates.is_empty(),
             "idle CI should emit no candidates; got {:?}",

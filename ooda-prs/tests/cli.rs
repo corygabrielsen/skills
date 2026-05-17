@@ -29,7 +29,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn run(args: &[&str]) -> (i32, String, String) {
     let root = temp_path("state");
     let out = command(args)
-        .env("OODA_PR_STATE_HOME", &root)
+        .env("OODA_STATE_HOME", &root)
         .output()
         .expect("spawn ooda-prs");
     (
@@ -71,7 +71,6 @@ fn help_long_exits_zero_via_stdout() {
         "stdout should begin with binary name; got: {stdout:?}"
     );
     assert!(stdout.contains("--state-root PATH"));
-    assert!(stdout.contains("--trace PATH"));
     assert_eq!(stderr, "", "--help must not write to stderr");
 }
 
@@ -264,23 +263,11 @@ fn state_root_repeated_rejected() {
 }
 
 #[test]
-fn trace_no_value_rejected() {
-    assert_usage_error(&["--trace"], "--trace requires a value");
-}
-
-#[test]
-fn trace_repeated_rejected() {
-    assert_usage_error(
-        &[
-            "--trace",
-            "/tmp/a.log",
-            "--trace",
-            "/tmp/b.log",
-            "owner/repo",
-            "1",
-        ],
-        "--trace repeated",
-    );
+fn trace_flag_removed() {
+    // `--trace` was removed when the per-PR recorder shifted to
+    // the domain-agnostic on-disk model. The flag now falls
+    // through to the catch-all "unknown flag" arm.
+    assert_usage_error(&["--trace", "owner/repo", "1"], "unknown flag: --trace");
 }
 
 // ─── inspect placement ──────────────────────────────────────────
@@ -358,47 +345,48 @@ fn state_root_records_even_when_observe_fails() {
     assert_eq!(code, 70, "stderr: {stderr}");
     assert!(stderr.starts_with("BinaryError: observe:"));
 
-    let pr_root = state_root.join("github.com/owner/repo/prs/1");
-    assert!(pr_root.join("events.jsonl").exists());
-    assert!(pr_root.join("CURRENT.json").exists());
-    assert!(pr_root.join("ledger.jsonl").exists());
-
-    let events = std::fs::read_to_string(pr_root.join("events.jsonl")).unwrap();
-    assert!(events.contains(r#""kind":"run_started""#), "{events}");
-    assert!(events.contains(r#""kind":"observe_started""#), "{events}");
-    assert!(
-        events.contains(r#""kind":"tool_call_finished""#),
-        "{events}"
-    );
-    assert!(events.contains(r#""kind":"observe_finished""#), "{events}");
-    assert!(events.contains(r#""kind":"outcome""#), "{events}");
-
-    let run_dirs: Vec<_> = std::fs::read_dir(pr_root.join("runs"))
-        .unwrap()
+    // Domain-agnostic on-disk model: one run-dir per worker under
+    // `<state-root>/runs/<run-id>/`. PR identity lives only in
+    // events.jsonl payloads, not in the path.
+    let run_dirs: Vec<_> = std::fs::read_dir(state_root.join("runs"))
+        .expect("runs/ created")
         .map(|entry| entry.unwrap().path())
         .collect();
-    assert_eq!(run_dirs.len(), 1);
-    assert!(run_dirs[0].join("manifest.json").exists());
-    assert!(run_dirs[0].join("trace.md").exists());
+    assert_eq!(run_dirs.len(), 1, "expected one run dir");
+    let run_dir = &run_dirs[0];
+    assert!(run_dir.join("events.jsonl").exists());
+    assert!(run_dir.join("blobs").exists());
+
+    let events = std::fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+    assert!(events.contains(r#""kind":"run_started""#), "{events}");
+    assert!(events.contains(r#""domain":"pr""#), "{events}");
     assert!(
-        run_dirs[0]
-            .join("iterations/0001/event-range.json")
-            .exists()
+        events.contains(r#""kind":"domain_specific""#) && events.contains("observe_started"),
+        "{events}"
     );
+    assert!(events.contains("tool_call_finished"), "{events}");
+    assert!(events.contains("observe_finished"), "{events}");
+    assert!(events.contains(r#""kind":"run_halted""#), "{events}");
+
+    // Live marker is cleared after the terminal RunHalted event.
+    let live_entries: Vec<_> = std::fs::read_dir(state_root.join("live"))
+        .expect("live/ created")
+        .collect();
+    assert!(live_entries.is_empty(), "live marker should be cleared");
 }
 
 // ─── multi-PR suite grammar ─────────────────────────────────────
 
 /// Helper: invoke with PATH=empty so observe always fails. This
 /// gives us a deterministic per-PR `BinaryError` outcome and lets
-/// us assert on stdout JSONL shape, $? aggregation, and suite
-/// recorder layout — without needing live GitHub access.
+/// us assert on stdout JSONL shape, `$?` aggregation, and run-dir
+/// layout — without needing live GitHub access.
 fn run_with_failing_gh(args: &[&str], state_root: &std::path::Path) -> (i32, String, String) {
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
     let out = command(args)
         .env("PATH", &empty_path)
-        .env("OODA_PR_STATE_HOME", state_root)
+        .env("OODA_STATE_HOME", state_root)
         .output()
         .expect("spawn ooda-prs");
     (
@@ -590,12 +578,12 @@ fn concurrency_capped_run_completes_all_prs() {
     assert_eq!(stdout.lines().count(), 3);
 }
 
-// ─── suite-level recorder ───────────────────────────────────────
+// ─── per-PR run dirs + run_id in JSONL records ──────────────────
 
 #[test]
-fn suite_recorder_writes_manifest_pointers_outcome_and_trace() {
-    let state = temp_path("suite-recorder");
-    let (code, _stdout, _stderr) = run_with_failing_gh(
+fn each_pull_request_gets_its_own_run_dir_and_run_id_threads_through_jsonl() {
+    let state = temp_path("multi-run-dirs");
+    let (code, stdout, _stderr) = run_with_failing_gh(
         &[
             "--state-root",
             state.to_str().unwrap(),
@@ -609,55 +597,47 @@ fn suite_recorder_writes_manifest_pointers_outcome_and_trace() {
     );
     assert_eq!(code, 70);
 
-    // <state>/suites/<suite-id>/ has all four artifacts.
-    let suite_dirs: Vec<_> = std::fs::read_dir(state.join("suites"))
-        .expect("suites/ dir created")
+    // Two PRs → two distinct runs/<run-id>/ directories. Run dirs
+    // carry no domain identity in the path; domain semantics live
+    // inside events.jsonl.
+    let run_dirs: Vec<_> = std::fs::read_dir(state.join("runs"))
+        .expect("runs/ dir created")
         .map(|e| e.unwrap().path())
         .collect();
-    assert_eq!(suite_dirs.len(), 1, "expected exactly one suite dir");
-    let suite_dir = &suite_dirs[0];
-    assert!(suite_dir.join("manifest.json").exists());
-    assert!(suite_dir.join("pointers.json").exists());
-    assert!(suite_dir.join("outcome.json").exists());
-    assert!(suite_dir.join("trace.md").exists());
+    assert_eq!(run_dirs.len(), 2, "expected two run dirs");
 
-    // pointers.json links each (slug, pr) to a per-PR run_id.
-    let pointers: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(suite_dir.join("pointers.json")).unwrap()).unwrap();
-    let prs = pointers["prs"].as_array().expect("prs is array");
-    assert_eq!(prs.len(), 2);
-    for p in prs {
-        let slug = p["slug"].as_str().unwrap();
-        let pr = p["pr"].as_u64().unwrap();
-        let run_id = p["run_id"].as_str().unwrap();
-        // Each run_id must correspond to a real per-PR runs/ dir.
-        let pr_run_dir = state
-            .join("github.com")
-            .join(slug)
-            .join("prs")
-            .join(pr.to_string())
-            .join("runs")
-            .join(run_id);
-        assert!(
-            pr_run_dir.exists(),
-            "per-PR run dir {} missing",
-            pr_run_dir.display()
-        );
+    // Stdout JSONL records carry the opaque `run_id` keyed to the
+    // per-run audit trail.
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "stdout: {stdout}");
+    let mut seen_run_ids = std::collections::BTreeSet::new();
+    for line in &lines {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let run_id = v["run_id"].as_str().expect("run_id present in JSONL");
+        assert!(!run_id.is_empty(), "run_id must not be empty: {line}");
+        // Each JSONL record's run_id must correspond to a real
+        // on-disk run dir.
+        let dir = state.join("runs").join(run_id);
+        assert!(dir.exists(), "run dir for {run_id} missing");
+        seen_run_ids.insert(run_id.to_string());
     }
+    assert_eq!(
+        seen_run_ids.len(),
+        2,
+        "each PR should have a distinct run_id",
+    );
 
-    // outcome.json carries the aggregate exit code and the typed
-    // MultiOutcome.
-    let outcome: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(suite_dir.join("outcome.json")).unwrap()).unwrap();
-    assert_eq!(outcome["exit_code"], 70);
-    assert!(outcome["multi_outcome"]["Bundle"].is_array());
-
-    // trace.md contains the human-readable summary table.
-    let trace = std::fs::read_to_string(suite_dir.join("trace.md")).unwrap();
-    assert!(trace.contains("Per-PR results"));
-    assert!(trace.contains("acme/widget"));
-    assert!(trace.contains("acme/infra"));
-    assert!(trace.contains("Aggregate exit: **70**"));
+    // Each run's events.jsonl carries the terminal RunHalted event
+    // (BinaryError outcome) and the live marker is cleared.
+    for dir in &run_dirs {
+        let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+        assert!(events.contains(r#""kind":"run_halted""#), "{events}");
+        assert!(events.contains(r#""outcome":"BinaryError""#), "{events}");
+    }
+    let live_entries: Vec<_> = std::fs::read_dir(state.join("live"))
+        .expect("live/ created")
+        .collect();
+    assert!(live_entries.is_empty(), "all live markers cleared at halt");
 }
 
 #[test]

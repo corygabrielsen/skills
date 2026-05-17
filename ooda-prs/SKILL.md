@@ -11,11 +11,9 @@ args:
   - name: --concurrency K
     description: Maximum simultaneously-active PRs (workers). Parser default is None; None resolves to the suite size at the spawn loop (no cap). Must be ≥1; the unspecified-default case serializes as `null` in `manifest.json`.
   - name: --status-comment
-    description: Post a status comment to each PR every iteration. Per-PR deduped via the always-on state root.
+    description: Post a status comment to each PR every iteration. Per-run deduped via the always-on state root.
   - name: --state-root PATH
     description: Override the always-on local state root for this invocation.
-  - name: --trace PATH
-    description: Also append the compact trace to PATH (per-PR appends; lines are not slug-prefixed).
   - name: -h, --help
     description: Print usage to stdout and exit 0. Only invocation that writes structured stdout other than the JSONL stream.
 ---
@@ -27,10 +25,14 @@ act until each halts. `/ooda-prs` is a fork of `/ooda-pr` and
 duplicates the per-PR pipeline source code module-by-module; the
 **recorder** module diverges (per-PR thread-local instead of
 process-global) so concurrent worker threads do not alias their
-tool-call sinks. The on-disk schema and decide/act semantics are
-unchanged. Each invocation returns one `MultiOutcome`; the caller
+tool-call sinks. The on-disk model is the shared `ooda-state`
+crate (`<state-root>/runs/<run-id>/{events.jsonl, blobs/}` plus
+`live/<run-id>` markers); decide/act semantics are unchanged from
+`/ooda-pr`. Each invocation returns one `MultiOutcome`; the caller
 dispatches on the aggregate exit code, parses the per-PR JSONL
-records on stdout, and surfaces stderr to humans for triage.
+records on stdout (each record carries an opaque `run_id` that
+keys back to the per-run audit trail), and surfaces stderr to
+humans for triage.
 
 ## Names
 
@@ -40,7 +42,7 @@ records on stdout, and surfaces stderr to humans for triage.
 | `ooda-prs`  | The compiled Rust binary at `target/release/ooda-prs`, sibling to this `SKILL.md` in the source tree.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `run`       | The wrapper script at `~/.claude/skills/ooda-prs/run`. Runs `(cd "$DIR" && cargo build --release --quiet) >&2` in a **subshell** so the parent shell's cwd is untouched — that's what preserves the user's cwd into the `exec`d binary (cwd-slug inference via `gh repo view` depends on it). Then `exec`s `"$DIR/target/release/ooda-prs" "$@"`. The wrapper uses `set -euo pipefail`, so a cargo build failure causes `run` to exit with cargo's non-zero exit code **before** the binary executes — that exit code is NOT one of the `Outcome` exit codes in the contract below; treat cargo build failures as a build-system error class distinct from `BinaryError`. |
 | Suite       | The non-empty, distinct `Vec⟨(RepoSlug, PullRequestNumber)⟩` parsed from the suite grammar (duplicates are rejected as `UsageError`, not silently de-duplicated). Drives `run_loop` per pair in loop mode; drives `run_inspect` per pair in inspect mode.                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `/ooda-pr`  | The single-PR sibling skill, installed at `~/.claude/skills/ooda-pr/`. The fork shares the on-disk **state schema** (state-root chain, per-PR ledger layout) but does not depend on `/ooda-pr` being installed at runtime — the per-PR pipeline (observe / orient / decide / act / runner) is a code-level duplicate inside `/ooda-prs/src/`. The `recorder` module differs between the two: `/ooda-prs` uses a `thread_local!` recorder cell so per-PR threads do not alias their tool-call sinks. The on-disk format is unchanged.                                                                                                                                      |
+| `/ooda-pr`  | The single-PR sibling skill, installed at `~/.claude/skills/ooda-pr/`. `/ooda-prs` does not depend on `/ooda-pr` being installed at runtime — the per-PR pipeline (observe / orient / decide / act / runner) is a code-level duplicate inside `/ooda-prs/src/`. The `recorder` module differs from `/ooda-pr`'s: `/ooda-prs` uses a `thread_local!` recorder cell so per-PR threads do not alias their tool-call sinks. Both binaries write the same on-disk `ooda-state` model (`<state-root>/runs/<run-id>/{events.jsonl, blobs/}` plus `live/<run-id>` markers), so the two skills' audit trails coexist on the same state root.                                       |
 
 Always invoke `run`; never the binary directly.
 
@@ -77,9 +79,14 @@ unchanged. The Outcomes table below shows both representations.
 
 **Per-binary code (not lifted):** `runner.rs` (per-PR
 iteration loop), `recorder.rs` with `thread_local!` cell for
-parallel workers, `suite_recorder.rs`, `multi_outcome.rs`,
-`decide/action.rs::ActionKind` and its `ActionKindName` impl,
-and the per-binary `From<LoopError> for Outcome`.
+parallel workers, `multi_outcome.rs`, `decide/action.rs::ActionKind`
+and its `ActionKindName` impl, and the per-binary
+`From<LoopError> for Outcome`.
+
+**Shared crates the recorder depends on:** `ooda-state` (the
+domain-agnostic on-disk model — `runs/<run-id>/{events.jsonl, blobs/}`
+plus `live/<run-id>` markers) and `ooda-core` (boundary types).
+The recorder is a thin per-PR adapter onto `ooda-state::RunWriter`.
 
 See `ooda-core/README.md` and `ooda-core/src/lib.rs` for the
 shared-spine design rationale.
@@ -155,8 +162,9 @@ next action, and (c) catch cases where the orchestrator is about
 to act on a wrong reading. Format is the consumer's choice
 (verbatim fenced block, structured render, collapsible per-PR
 section, etc.) — fidelity is the constraint, not format. The
-per-PR `runs/<run-id>/iterations/<NNNN>/handoff.md` and per-PR
-`runs/<run-id>/trace.md` carry the same content for any consumer
+per-PR handoff blob at
+`<state-root>/runs/<run-id>/blobs/<sha>.md` (pointed at by the
+stderr `see:` line) carries the same content for any consumer
 that prefers files over JSONL field reads. See
 `/ooda-pr` SKILL.md §`Handoff*` prompt format → "Surface to
 the user" for the single-PR rationale; the same applies per-PR
@@ -283,217 +291,111 @@ in real use (see "Calling discipline" above).
 ~/.claude/skills/ooda-prs/run inspect [options] <suite>    # one pass per PR
 ```
 
-| Flag                | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--max-iter N`      | **Per-PR** iteration cap. Default 50. Must be ≥ 1. Inspect mode runs once per PR (cap unused, but `--max-iter 0` still rejects).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `--concurrency K`   | Maximum simultaneously-active PRs (workers). Default is the suite size (no cap). Must be ≥ 1; `K = 0` is rejected at the parser. `K > suite size` is silently clamped to the suite size. With `K < suite size`, `K` worker threads pull PRs from an atomic counter — a worker may handle multiple PRs sequentially while another is on its first PR.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `--status-comment`  | Post status comments to each PR every iteration. Per-PR dedup at `<state-root>/github.com/<owner>/<repo>/prs/<pr>/status-comment/dedup.json`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `--state-root PATH` | Override the always-on state root. Resolution chain (first that yields a value wins): (1) `--state-root PATH` if given, (2) `$OODA_PR_STATE_HOME` if set and **non-empty**, (3) `$XDG_STATE_HOME/ooda-pr` if `$XDG_STATE_HOME` is set and non-empty, (4) `$HOME/.local/state/ooda-pr` if `$HOME` is set and non-empty, (5) `std::env::temp_dir().join("ooda-pr")` (e.g. `/tmp/ooda-pr` on Linux). Empty env vars are treated as **unset** (a `=""` value falls through). Steps (1) and (2) are used **verbatim** — no `ooda-pr` slug is appended. Steps (3)–(5) append `ooda-pr` because the slug is part of the **state-schema name**, deliberately shared with `/ooda-pr` so per-PR ledgers coexist across both skills. There is no `OODA_PRS_STATE_HOME`; the `OODA_PR_` prefix is the canonical env var.                                                                                                 |
-| `--trace PATH`      | Also append the compact trace to PATH. Each PR's `Recorder` opens its own file handle on PATH and appends. Under `--concurrency > 1`, writes from different PRs are not slug-prefixed. POSIX `O_APPEND` gives the **seek-to-end + write** pair atomicity-with-respect-to-other-writers' offset updates (so two writers cannot truncate each other's output via stale offsets), but POSIX does **not** guarantee per-call data atomicity for arbitrary write sizes on regular files — `PIPE_BUF`-bounded no-interleave guarantees apply only to pipes/FIFOs. Rust's `writeln!` typically emits one `write` syscall for line-sized payloads, so adjacent records usually do not splice; long lines or busy concurrent writers can still produce interleave windows. Prefer the per-PR `runs/<run-id>/trace.md` files (one file per PR per run, always written, no cross-PR interleaving) for live attribution. |
-| `-h`, `--help`      | Print usage to stdout, exit 0. Pre-scan short-circuits all other validation including flag-repetition checks (`--help --help` exits 0).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Flag                | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--max-iter N`      | **Per-PR** iteration cap. Default 50. Must be ≥ 1. Inspect mode runs once per PR (cap unused, but `--max-iter 0` still rejects).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--concurrency K`   | Maximum simultaneously-active PRs (workers). Default is the suite size (no cap). Must be ≥ 1; `K = 0` is rejected at the parser. `K > suite size` is silently clamped to the suite size. With `K < suite size`, `K` worker threads pull PRs from an atomic counter — a worker may handle multiple PRs sequentially while another is on its first PR.                                                                                                                                                                                                                                                                                                   |
+| `--status-comment`  | Post status comments to each PR every iteration. Per-run dedup at `<state-root>/runs/<run-id>/status_comment_dedup.json`. Dedup is scoped to a single run — re-invoking the binary opens a fresh run with no prior dedup memory.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--state-root PATH` | Override the always-on state root. Resolution chain (first that yields a value wins): (1) `--state-root PATH` if given, (2) `$OODA_STATE_HOME` if set and **non-empty**, (3) `$XDG_STATE_HOME/ooda` if `$XDG_STATE_HOME` is set and non-empty, (4) `$HOME/.local/state/ooda` if `$HOME` is set and non-empty, (5) `std::env::temp_dir().join("ooda")` (e.g. `/tmp/ooda` on Linux). Empty env vars are treated as **unset** (a `=""` value falls through). The state root is **domain-agnostic** — one root per machine, shared by every OODA agent. PR identity lives only inside event records (`target.{forge,slug,pr}`), never in the on-disk path. |
+| `-h`, `--help`      | Print usage to stdout, exit 0. Pre-scan short-circuits all other validation including flag-repetition checks (`--help --help` exits 0).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 **Repeating a flag** (`--max-iter`, `--concurrency`,
-`--status-comment`, `--state-root`, `--trace`) is a `UsageError`,
-**except** `-h` / `--help`, whose pre-scan short-circuits all
-parser validation.
+`--status-comment`, `--state-root`) is a `UsageError`, **except**
+`-h` / `--help`, whose pre-scan short-circuits all parser
+validation.
 
 ## Always-on state
 
-An invocation that **parses successfully** writes per-PR audit
-trails and (best-effort) a suite-level audit trail. On `UsageError`
-(parser failure) **neither tree is written** — both `Recorder::open`
-and `SuiteRecorder::open` are gated on the `Ok(args)` parse branch.
+An invocation that **parses successfully** opens one per-PR run
+through [`ooda-state`]. On `UsageError` (parser failure) no run is
+opened. A per-PR recorder-open failure turns into that PR's
+`Outcome::BinaryError`; other PRs proceed independently.
 
-When parsing succeeds:
+### Layout
 
-- The per-PR `Recorder` is required per PR: a recorder-open failure
-  for a specific PR turns into that PR's `Outcome::BinaryError`
-  and that PR's ledger does not appear (other PRs proceed).
-- The suite-level `SuiteRecorder` is best-effort: if its `open`
-  fails, `main` prints `warning: suite recorder open failed: …`
-  on stderr and proceeds with all per-PR work. A partial-failure
-  inside `open` (e.g. manifest write fails after `mkdir -p`) leaves
-  the suite directory present but partially populated, not absent.
-
-### Per-PR (shared with `/ooda-pr`)
-
-Same layout as `/ooda-pr`. Keyed by forge + repo + PR, so the same
-PR driven from `/ooda-pr` and `/ooda-prs` shares one host-local
-memory.
+The on-disk model is **domain-agnostic**: paths carry no PR
+identity. PR slug / PR number / mode / etc. live only inside event
+records.
 
 ```text
-<root>/github.com/<owner>/<repo>/prs/<pr>/
-  CURRENT.json   mutable pointer to the current run + iteration.
-                 Fields: schema_version, run_id, iteration, exit_code,
-                 headline, artifacts (BTreeMap<symbol, relative-path>),
-                 keep_runs. Atomic replace; the per-iteration immutables
-                 it names never move once written. Agents read this file
-                 first, then follow `artifacts.*` paths into the
-                 per-iteration directory below. Conditional artifacts
-                 (`handoff`, `action`) are simply absent from the map
-                 when the iteration didn't produce them.
-  ledger.md      cross-run; one bullet line per event:
-                   - <rfc3339-ts> `<run-id>` <summary>
-                 (the run-id is wrapped in literal backticks; the
-                  hyphen and spacing above are exact)
-  ledger.jsonl   cross-run; one JSON object per event:
-                   {schema_version, timestamp, run_id, kind, summary}
-                 (jsonl carries `kind` and `schema_version`; md is a
-                  visualization that drops them — not the same fields)
-  events.jsonl   all events, all runs (single file appended-to)
-  status-comment/
-    dedup.json    JSON object {hash, dedup_key, updated_at}.
-                  `hash` is a 16-hex-char FNV-1a 64-bit hash (NOT
-                  sha256, NOT cryptographic) of the renderer's
-                  `dedup_key` string — chosen for stability across
-                  Rust toolchain versions. Written **after** the
-                  first successful post in --status-comment mode;
-                  absent otherwise. No `rendered.json` /
-                  `result.json` siblings here: those artifacts live
-                  per-iteration under
-                  `runs/<run-id>/iterations/<NNNN>/status-comment/`.
-  blobs/sha256/<aa>/<bb>/<hash>.zst                        # zstd-compressed,
-                                                           # content-addressed
-  runs/<run-id>/
-    manifest.json                                          # one per run
-    outcome.json  the final per-PR Outcome serialized as JSON,
-                  written by record_outcome at run end. Also addressable
-                  as `artifacts.outcome` in CURRENT.json.
-    trace.md      human-readable run header + per-iter lines
-                  (header line is `===== ooda-pr <ts> repo=…` —
-                   the literal `ooda-pr` is the per-PR Recorder's
-                   schema slug, deliberately shared with `/ooda-pr`;
-                   it does NOT mean the run was driven by `/ooda-pr`)
-    trace.jsonl   per-run event stream. Each record is one
-                  `EventRecord` — the SAME records also appended
-                  to the cross-run `events.jsonl` above. Bit-
-                  identical content; only file scope differs.
-    iterations/<NNNN>/                                     # zero-padded
-                                                           # to width 4
-      event-range.json    # first/last event sequence numbers for
-                          # this iteration (cross-references
-                          # events.jsonl entries)
-      normalized.json     # raw observe bundle for this iteration
-      oriented.json       # OrientedState (CURRENT.json artifacts.state)
-      candidates.json     # ranked candidate Vec<Action>
-      decision_envelope.json  # Execute/Halt envelope (runner's typed input)
-      dashboard.json      # tier-grouped human-shaped projection
-      action.json         # present iff Decision carries an Action / HandoffAction
-      index.md            # per-iteration human surface
-      blockers.md
-      next.md
-      handoff.md          # present only when this iteration's outcome
-                          # is Handoff* (exit 3 / 4); pointed to by the
-                          # stderr `  see:` line and by
-                          # CURRENT.json's `artifacts.handoff` entry
-      act-result.json     # present after act() returns
-      status-comment/
-        rendered.json     # present per iteration when --status-comment
-                          # is set (one per record_status_comment_rendered
-                          # call); the artifact also gets a content-addressed
-                          # copy under blobs/sha256/...
-        result.json       # present after each post attempt
-      tool-calls/<call-id>/                                # nested under
-        stdout.bin, stderr.bin, record.json                # this iteration,
-                                                           # not at run_root
+<state-root>/
+├── runs/<run-id>/
+│   ├── events.jsonl                 # source of truth (append-only)
+│   ├── blobs/<sha>.<ext>            # content-addressed payloads
+│   └── status_comment_dedup.json    # per-run mutable; present only
+│                                    # when --status-comment fires
+└── live/<run-id>                    # empty marker; presence = "active"
 ```
 
-### Suite-level (new in `/ooda-prs`)
+One `runs/<run-id>/` directory per worker. Two PRs in the same
+suite yield two distinct `<run-id>` directories under the shared
+`<state-root>/runs/`; the `<run-id>` is opaque (`<YYYYMMDDTHHMMSSZ>-<nanos>-p<pid>`
+shape, see `ooda_state::RunId::generate`).
 
-```text
-<root>/suites/<suite-id>/
-  manifest.json    -- schema_version, suite_id, started_at, forge,
-                      mode, max_iter, status_comment, concurrency,
-                      cwd, argv, suite (Vec⟨{slug, pr}⟩)
-                      Field encodings:
-                        forge          : "github.com" (the only currently
-                                          supported forge)
-                        mode           : "loop" | "inspect" (lowercase
-                                          serde rename_all="snake_case")
-                        concurrency    : integer ≥ 1, OR `null` when
-                                          --concurrency was not given
-                                          (the spawn loop resolves null
-                                          to the suite size at runtime)
-                        status_comment : boolean
-  pointers.json    -- schema_version, suite_id,
-                      prs : Vec⟨{slug, pr, run_id}⟩
-                      Rewritten in full each time a worker calls
-                      register_pr. Writers are serialized by an
-                      Arc⟨Mutex⟨Inner⟩⟩, but the on-disk write is
-                      a non-atomic `fs::write` (open + truncate +
-                      write); concurrent external readers may
-                      observe a torn or empty file briefly. Final
-                      content after all workers register is the
-                      complete in-memory `Vec<PullRequestPointer>`.
-  outcome.json     -- schema_version, suite_id, finished_at,
-                      exit_code, multi_outcome
-  trace.md         -- Written at open: a SINGLE-line banner
-                        `===== ooda-prs <rfc3339-ts> suite_id=<id> state_root=<path> mode=<loop|inspect> max_iter=<n> status_comment=<bool> concurrency=<n_or_unbounded> =====`
-                        (where `<n_or_unbounded>` is the literal
-                        decimal `<n>` when `--concurrency` was given,
-                        or the bare token `unbounded` (no quotes)
-                        when it was not)
-                        followed by a blank line, then a single line
-                        `Suite: <slug>#<pr>, <slug>#<pr>, …`.
-                      In the banner, an unspecified --concurrency
-                      renders as the literal string "unbounded",
-                      DIVERGING from manifest.json where the same
-                      case serializes as JSON `null`.
-                      Appended at finalize (after all workers join,
-                      only when SuiteRecorder was opened — i.e.
-                      parser succeeded): a `## Per-PR results`
-                      markdown table with columns
-                      `| slug | pr | run_id | outcome | exit |`
-                      (one row per PR), then a final
-                      `Aggregate exit: **<code>** (started_at=…,
-                      finished_at=…)` line with rfc3339 timestamps.
-                      (The UsageError code path inside
-                      write_trace_summary is structurally unreachable
-                      because SuiteRecorder is never opened on parse
-                      failure.)
-```
+### Event stream
 
-`<suite-id>` and per-PR `<run-id>` share one format string,
-`{utc:%Y%m%dT%H%M%SZ}-{nanos:09}-p{pid}` (e.g.
-`20260505T120000Z-000000000-p1234`): basic-ISO 8601 UTC (no
-hyphens or colons), the wall-clock subsecond nanosecond field
-(`Utc::now().timestamp_subsec_nanos()`, 9-digit zero-padded — NOT
-a process-local counter; uniqueness across rapid opens depends on
-clock resolution), and the process pid prefixed with `p`. Inside
-a single suite invocation, `Recorder::open` is called concurrently
-from K worker threads; collisions on `<run-id>` would require two
-threads to obtain the **same** `Utc::now()` instant in the same
-process, which is rare on modern systems with high clock resolution
-but not formally prevented. Distinct `(slug, pr)` pairs (enforced
-by the parser) live under disjoint `<root>/.../prs/<pr>/runs/`
-directories, so even a `<run-id>` collision across two threads
-would not collide in path because the parent path differs. Two
-simultaneous invocations from
-distinct processes against overlapping PRs each get a distinct
-`<suite-id>` and distinct per-PR `<run-id>`s.
+`runs/<run-id>/events.jsonl` is the append-only source of truth.
+Each line is a typed event with a `kind` discriminator:
 
-The per-PR `runs/<run-id>/` subtree and the suite-level
-`<state-root>/suites/<suite-id>/` subtree are the only fully
-collision-free zones across simultaneous invocations on the same
-PR. The shared per-PR root has two file classes with different
-collision profiles:
+| `kind`               | Carries                                                               |
+| -------------------- | --------------------------------------------------------------------- |
+| `run_started`        | `domain: "pr"`, `target: {forge, slug, pr, mode, max_iter, …}`        |
+| `iteration_observed` | `iteration`, `blob` (normalized observation snapshot)                 |
+| `iteration_oriented` | `iteration`, `blob` (oriented snapshot)                               |
+| `iteration_decided`  | `iteration`, `decision_kind`                                          |
+| `iteration_executed` | `iteration`, `action_kind`                                            |
+| `iteration_waited`   | `iteration`, `action_kind`, `interval_ms`                             |
+| `iteration_handoff`  | `iteration`, `variant`, `action_kind`, `blob` (prompt body)           |
+| `run_halted`         | `outcome` (variant name), `exit_code`                                 |
+| `domain_specific`    | `kind_suffix`, `payload` — observe / action / wait / tool-call frames |
 
-- `ledger.md`, `ledger.jsonl`, `events.jsonl` are opened with
-  `OpenOptions::append(true)`. Concurrent invocations append; each
-  record carries `run_id` so the streams stay disambiguable on
-  read. Per-write atomicity for typical line-sized records is
-  preserved by the OS, so records do not splice.
-- `CURRENT.json` and `status-comment/dedup.json` are written via
-  atomic replace (`tmp + rename + fsync`) or truncate-overwrite
-  respectively. `CURRENT.json` itself never tears (readers see either
-  the prior manifest or the new one), but it is **last-writer-wins**
-  under simultaneity: two concurrent runs each publish their own
-  manifest and the survivor is whichever wrote last. The per-iteration
-  artifacts that `CURRENT.json` points at live under disjoint
-  `runs/<run-id>/iterations/<NNNN>/` paths, so they never collide.
+The `domain_specific` kind is the catch-all the recorder uses for
+PR-domain observability events that don't have a typed counterpart
+in `ooda-state`. The `kind_suffix` distinguishes them at read time
+(`observe_started`, `observe_finished`, `action_started`,
+`action_finished`, `wait_started`, `wait_finished`,
+`tool_call_started`, `tool_call_finished`,
+`status_comment_rendered`, `status_comment_result`, `decision_envelope`,
+`dashboard`, `outcome`, `trace_line`).
 
-Same risk profile as `/ooda-pr`; see README invariant `[P8](c)`
-for the enumerated sweep.
+### Blobs
+
+Iteration snapshots (normalized observation, oriented state),
+handoff prompt bodies, and tool-call stdout / stderr captures are
+written as content-addressed blobs in `runs/<run-id>/blobs/`. Each
+event referencing a blob carries a `BlobRef` (`sha`, `size`,
+`ext`). Dedup is per-run automatic — repeated identical bytes
+write only one file.
+
+The handoff prompt path surfaced on the stderr `see:` pointer
+targets a blob directly:
+`<state-root>/runs/<run-id>/blobs/<sha>.md`.
+
+### Live marker
+
+`<state-root>/live/<run-id>` is an empty file present from
+`run_started` to terminal (`run_halted` / `run_stalled` /
+`run_cap_reached`). Audit / cockpit tooling can enumerate
+`live/` to find currently-active runs; on terminal events the
+marker is removed.
+
+### Concurrency
+
+Each worker writes a distinct `runs/<run-id>/` directory; no two
+workers share a subtree. The state root's `runs/` and `live/`
+parents are shared but every leaf write is scoped to its own
+run-id, so there is no cross-worker contention or torn-write
+hazard at the recorder layer. Two simultaneous invocations
+across overlapping PRs each get distinct `<run-id>`s; the
+per-run dirs are disjoint by construction.
+
+### Joining JSONL records back to the audit trail
+
+Each per-PR stdout JSONL record (see "Output channels") carries a
+`run_id` field. The corresponding on-disk audit trail lives at
+`<state-root>/runs/<run-id>/events.jsonl`. There is no separate
+suite-level manifest or pointer file — the `(slug, pr, run_id)`
+triple on each stdout record is the index.
 
 ## MultiOutcome
 
@@ -588,17 +490,17 @@ would be: keys sorted lexicographically (e.g. `action`, `blocker`,
 records).
 
 ```jsonl
-{"slug":"acme/widget","pr":1,"outcome":"DoneMerged","exit":0}
-{"slug":"acme/widget","pr":2,"outcome":"HandoffAgent","exit":4,"action":"AddressThreads","blocker":"unresolved_threads","prompt":"Address 2 unresolved review threads.\nCopilot: 2 issues.\n\n1. Copilot @ src/foo.rs:42\n   > body line 1\n\n…"}
-{"slug":"acme/infra","pr":100,"outcome":"HandoffHuman","exit":3,"action":"RequestApproval","blocker":"not_approved","prompt":"Request or self-approve"}
+{"slug":"acme/widget","pr":1,"pr_url":"https://github.com/acme/widget/pull/1","run_id":"20260517T142500Z-000000123-p4242","outcome":"DoneMerged","exit":0}
+{"slug":"acme/widget","pr":2,"pr_url":"https://github.com/acme/widget/pull/2","run_id":"20260517T142500Z-000000456-p4242","outcome":"HandoffAgent","exit":4,"action":"AddressThreads","blocker":"unresolved_threads","prompt":"Address 2 unresolved review threads.\nCopilot: 2 issues.\n\n1. Copilot @ src/foo.rs:42\n   > body line 1\n\n…"}
+{"slug":"acme/infra","pr":100,"pr_url":"https://github.com/acme/infra/pull/100","run_id":"20260517T142500Z-000000789-p4242","outcome":"HandoffHuman","exit":3,"action":"RequestApproval","blocker":"not_approved","prompt":"Request or self-approve"}
 ```
 
 **Inspect-mode example** (`ooda-prs inspect …`; advancing actions
 become `WouldAdvance` because `act` is skipped):
 
 ```jsonl
-{"slug":"acme/widget","pr":1,"outcome":"WouldAdvance","exit":2,"action":"MarkReady","blocker":"draft","automation":"Full"}
-{"slug":"acme/infra","pr":100,"outcome":"WouldAdvance","exit":2,"action":"WaitForCi","blocker":"ci_pending: build","automation":"Wait(1m)"}
+{"slug":"acme/widget","pr":1,"pr_url":"https://github.com/acme/widget/pull/1","run_id":"20260517T142500Z-000000123-p4242","outcome":"WouldAdvance","exit":2,"action":"MarkReady","blocker":"draft","effect":"Full"}
+{"slug":"acme/infra","pr":100,"pr_url":"https://github.com/acme/infra/pull/100","run_id":"20260517T142500Z-000000789-p4242","outcome":"WouldAdvance","exit":2,"action":"WaitForCi","blocker":"ci_pending: build","effect":"Wait(1m)"}
 ```
 
 The two modes do not mix in a single invocation. Loop-mode bundles
@@ -619,6 +521,8 @@ the duration's value):
 | ------------ | ------- | :-------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `slug`       | string  |       yes       | `<owner>/<repo>`                                                                                                                                                                                                                                  |
 | `pr`         | integer |       yes       | positive integer                                                                                                                                                                                                                                  |
+| `pr_url`     | string  |       yes       | `https://github.com/<owner>/<repo>/pull/<pr>`                                                                                                                                                                                                     |
+| `run_id`     | string  |       yes       | Opaque [`ooda_state`] run id. Joins the record back to `<state-root>/runs/<run-id>/events.jsonl`. Empty string when the per-PR recorder failed to open (the same condition that produced `Outcome::BinaryError` for the PR).                      |
 | `outcome`    | string  |       yes       | variant name; **9 reachable values** in stdout: `DoneMerged`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`, `WouldAdvance`, `HandoffAgent`, `BinaryError`, `Paused`, `DoneClosed`. `UsageError` is suite-level only and never appears here. |
 | `exit`       | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 70}` — the 1:1 mapping inherited from `/ooda-pr`. `64` does **not** appear in JSONL records (UsageError emits no stdout); `130`/`143` are signal-synthesized and the binary never returns them.     |
 | `action`     | string  |   conditional   | present iff `outcome ∈ {StuckRepeated, StuckCapReached, HandoffHuman, HandoffAgent, WouldAdvance}` — the `ActionKind::name()` (e.g. `"Rebase"`, `"AddressThreads"`)                                                                               |
@@ -660,11 +564,11 @@ because the post step there sets `verbose_skip = true`.)
 After the per-iteration lines, each PR emits its final variant
 block (the `Outcome` rendered the same way `/ooda-pr` renders it on
 exit — header line plus, for `Handoff*`, a single
-`  see: <abs-path-to-handoff.md>` pointer line. The path points at
-the per-iteration `runs/<run-id>/iterations/<NNNN>/handoff.md` and
-is also exposed as `artifacts.handoff` in that PR's `CURRENT.json`.
-The prompt body lives in the file, not on stderr — read the file in
-full rather than tail-truncating stderr).
+`  see: <abs-path>` pointer line. The path points at a
+content-addressed blob `<state-root>/runs/<run-id>/blobs/<sha>.md`
+in the per-run blob store; the same `run_id` appears in the PR's
+stdout JSONL record. The prompt body lives in the file, not on
+stderr — read the file in full rather than tail-truncating stderr).
 
 **Inspect mode** runs no iteration loop, so it emits no `[iter N]`
 lines at all. What can reach stderr in inspect mode:
@@ -677,7 +581,7 @@ lines at all. What can reach stderr in inspect mode:
   emitted by the post step.
 - The final variant block (header + optional `  see: <path>`
   pointer line for `Handoff*` — prompt body lives in the
-  per-iteration `runs/<run-id>/iterations/<NNNN>/handoff.md`,
+  per-run blob `<state-root>/runs/<run-id>/blobs/<sha>.md`,
   not on stderr).
 
 **Concurrent interleaving.** Lines from different PRs are NOT
@@ -691,19 +595,12 @@ fine-grained interleave between adjacent lines is possible. With
 which PR emitted which line. For attributable per-PR audit use one
 of:
 
-- The per-PR `runs/<run-id>/trace.md` (always written, **live**:
+- The per-PR `runs/<run-id>/events.jsonl` (always written, **live**:
   appended as iterations happen — the only PR-attributed source of
-  per-iteration logs during a run).
-- The suite-level `<state-root>/suites/<suite-id>/trace.md` (a
-  header written at open; the per-PR results table is appended
-  only at finalize, after all workers join — useful for post-run
-  audit, **not** for live attribution).
+  per-iteration events during a run).
 - The stdout JSONL stream (already PR-keyed by construction;
+  carries `run_id` so each record joins back to its run dir;
   available only after the binary exits).
-
-The `--trace PATH` file inherits the same un-prefixed concurrency
-hazard — prefer the per-PR or suite-level trace files when you need
-attribution.
 
 ### `$?` — aggregate dispatch
 
@@ -806,11 +703,11 @@ Internal invariants of the design:
 [P1] ∀ PR (slug, pr) ∈ suite, the trajectory of run_loop(slug, pr, …)
      inside ooda-prs is observationally indistinguishable from
      ooda-pr on the same (slug, pr) **on the per-PR audit channels**
-     (per-PR Recorder events, per-PR `runs/<run-id>/trace.md`, the
-     PR's own JSONL record). The shared stderr stream is NOT a
-     per-PR audit channel under `--concurrency > 1`: lines from
-     sibling PRs interleave there without slug prefixes. Per-PR
-     semantic preservation holds at the recorder boundary.
+     (per-PR Recorder events in `runs/<run-id>/events.jsonl`, the
+     PR's own JSONL record on stdout). The shared stderr stream is
+     NOT a per-PR audit channel under `--concurrency > 1`: lines
+     from sibling PRs interleave there without slug prefixes.
+     Per-PR semantic preservation holds at the recorder boundary.
 
 [P2] ∀ distinct PR_i, PR_j ∈ suite, the action stream of PR_i is
      causally independent of PR_j's. (No shared mutable state.)
@@ -837,13 +734,12 @@ Internal invariants of the design:
      Suite or UsageError(_).
 
 [P6] Recorder soundness: per-PR Recorder is single-writer per
-     `(slug, pr)` (only one worker ever holds it). Suite Recorder
-     manifest is written from the main thread at open; per-PR
-     pointer registrations (`register_pr`) come from worker threads,
-     serialized through `Arc<Mutex<_>>`; the final outcome.json and
-     trace.md summary are written from the main thread after
-     `thread::scope` joins. No write path admits concurrent writers
-     to the same file.
+     `(slug, pr)` (only one worker ever holds it) and writes to a
+     dedicated `runs/<run-id>/` directory disjoint from every
+     other worker's. The shared `<state-root>/runs/` and
+     `<state-root>/live/` parents are touched only via per-run
+     leaf paths, so no write path admits concurrent writers to the
+     same file.
 
 [P7] The harness pattern composes: `$?` partitions every
      invocation into one of `{converged: 0}`, `{actionable agent

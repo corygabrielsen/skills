@@ -15,7 +15,6 @@ mod outcome;
 mod recorder;
 mod runner;
 mod suite;
-mod suite_recorder;
 mod text;
 
 use dashboard::Dashboard;
@@ -29,7 +28,6 @@ use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};
 use runner::{LoopConfig, current_timestamp, run_loop};
-use suite_recorder::{SuiteRecorder, SuiteRecorderConfig};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
@@ -40,7 +38,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Suite grammar:\n  <suite>      ::= <group> ( ',' <group> )*\n  <group>      ::= <owner/repo>? <pr>+\n  <owner/repo>  — explicit slug for this group; if omitted, inherit from the prior\n                  group, else infer from cwd (`gh repo view --json nameWithOwner`).\n  <pr>          — positive integer.\n  Examples:\n    ooda-prs 42 45                              # cwd-slug, two PRs\n    ooda-prs acme/widget 42 43, acme/infra 100  # multi-slug; comma separates groups\n    ooda-prs acme/widget 42, 43                 # group 2 inherits acme/widget\n\
          \n\
-         Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  --trace PATH         also append the compact trace to PATH\n  -h, --help           show this help and exit\n\
+         Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  -h, --help           show this help and exit\n\
          \n\
          Exit codes — aggregate priority projection over per-PR Outcomes:\n   0 all DoneMerged/DoneClosed/Paused (no further action)\n   1 (unused at suite level — Paused folds into 0)\n   2 any WouldAdvance\n   3 any HandoffHuman\n   4 any HandoffAgent\n   5 (unused at suite level — DoneClosed folds into 0)\n   6 any StuckRepeated\n   7 any StuckCapReached\n  64 UsageError\n  70 any BinaryError\n  (130 SIGINT, 143 SIGTERM reserved)\n\
          Priority order (highest first): UsageError > BinaryError > HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated > WouldAdvance > terminal."
@@ -62,7 +60,6 @@ struct Args {
     max_iter: std::num::NonZeroU32,
     status_comment: bool,
     state_root: Option<PathBuf>,
-    trace: Option<PathBuf>,
     /// Optional cap on concurrent in-flight PRs. `None` resolves
     /// to `|suite|` at the spawn loop (no cap). Enforced by
     /// `suite::drive_suite` via an `AtomicUsize` work index.
@@ -97,14 +94,12 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
     let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
-    let mut trace: Option<PathBuf> = None;
     let mut concurrency: Option<u32> = None;
     let mut positional: Vec<String> = Vec::new();
     let mut saw_subcommand = false;
     let mut saw_max_iter = false;
     let mut saw_status_comment = false;
     let mut saw_state_root = false;
-    let mut saw_trace = false;
     let mut saw_concurrency = false;
 
     let mut iter = std::env::args().skip(1);
@@ -151,16 +146,6 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
                     return Err(usage("--max-iter must be ≥ 1; got 0"));
                 };
                 max_iter = n;
-            }
-            "--trace" => {
-                if saw_trace {
-                    return Err(usage("--trace repeated"));
-                }
-                saw_trace = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--trace requires a value"));
-                };
-                trace = Some(PathBuf::from(v));
             }
             "--state-root" => {
                 if saw_state_root {
@@ -212,7 +197,6 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
         max_iter,
         status_comment,
         state_root,
-        trace,
         concurrency,
     })
 }
@@ -349,31 +333,6 @@ fn usage(msg: &str) -> ooda_core::SingleLineString {
 fn main() -> ExitCode {
     let multi = match parse_args() {
         Ok(args) => {
-            // Suite-recorder lifecycle invariant: its manifest
-            // exists before any worker spawns and persists past any
-            // worker panic. Open-before-spawn is the cheapest
-            // schedule that satisfies both.
-            let suite_recorder = match SuiteRecorder::open(&SuiteRecorderConfig {
-                suite: args.suite.clone(),
-                mode: run_mode(args.mode),
-                max_iter: args.max_iter,
-                status_comment: args.status_comment,
-                state_root: args.state_root.clone(),
-                concurrency: args.concurrency,
-            }) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    // Degraded-but-correct: per-PR recorders are
-                    // independent of the suite-level one, so the
-                    // per-PR ledgers remain complete. The
-                    // suite-level summary surface is the only
-                    // casualty; the operator is notified so the
-                    // partial degradation is observable.
-                    eprintln!("warning: suite recorder open failed: {e}");
-                    None
-                }
-            };
-
             // Parallel per-PR dispatch under `thread::scope`. Each
             // worker drives one PR through the full pipeline; the
             // aggregate exit code is the typed priority projection
@@ -385,14 +344,13 @@ fn main() -> ExitCode {
             //   tool calls cannot land in worker j's ledger.
             // - **Per-PR recorder**: `Arc<Mutex<_>>` with a single
             //   owning thread; internal mutation is serialized
-            //   without contention.
-            // - **Suite recorder**: `Arc<Mutex<_>>`; workers
-            //   register their per-PR run-id after their own
-            //   recorder is open.
+            //   without contention. Each worker writes a distinct
+            //   `runs/<run-id>/` directory under the shared state
+            //   root; there is no cross-worker shared subtree.
             // - **Stall detection**: state lives on the worker
             //   stack frame; no shared cell.
             let process_outcomes = suite::drive_suite(&args.suite, args.concurrency, |slug, pr| {
-                drive_one_pull_request(slug, pr, &args, suite_recorder.as_ref())
+                drive_one_pull_request(slug, pr, &args)
             });
             let multi = MultiOutcome::Bundle(process_outcomes);
             // Output-channel partitioning: stdout carries the
@@ -401,11 +359,6 @@ fn main() -> ExitCode {
             // framing; `$?` carries the coarse dispatch signal.
             // Each channel is independently consumable.
             render_multi_jsonl(&mut std::io::stdout(), &multi);
-            // Finalize suite recorder: writes outcome.json + appends
-            // the per-PR summary table to trace.md.
-            if let Some(rec) = suite_recorder.as_ref() {
-                rec.record_outcome(&multi, multi.exit_code());
-            }
             multi
         }
         Err(usage_msg) => {
@@ -427,20 +380,18 @@ fn main() -> ExitCode {
 ///
 /// # Sequenced steps
 ///
-/// 1. Open a per-PR `Recorder` keyed on `(slug, pr)`.
+/// 1. Open a per-PR `Recorder` keyed on `(slug, pr)`. Each
+///    recorder writes a distinct `runs/<run-id>/` directory under
+///    the shared state root; no cross-worker subtree exists.
 /// 2. Install it as the thread-local tool-call sink (so observed
 ///    tool calls are attributed to this worker's ledger).
-/// 3. Register the PR's `run_id` with the suite-level recorder.
-/// 4. Run the mode-selected pipeline (`Loop` or `Inspect`).
-/// 5. Render the terminal `Outcome` to stderr and persist it.
+/// 3. Run the mode-selected pipeline (`Loop` or `Inspect`).
+/// 4. Render the terminal `Outcome` to stderr and persist it.
 ///
-/// Returns the `Outcome` for aggregation into `MultiOutcome`.
-fn drive_one_pull_request(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    args: &Args,
-    suite_recorder: Option<&SuiteRecorder>,
-) -> Outcome {
+/// Returns the per-PR [`ProcessOutcome`] carrying the worker's
+/// `run_id` so the suite-level JSONL projection can join back to
+/// the per-run audit trail.
+fn drive_one_pull_request(slug: &RepoSlug, pr: PullRequestNumber, args: &Args) -> ProcessOutcome {
     let recorder = match Recorder::open(RecorderConfig {
         slug: slug.clone(),
         pr,
@@ -448,7 +399,7 @@ fn drive_one_pull_request(
         max_iter: args.max_iter,
         status_comment: args.status_comment,
         state_root: args.state_root.clone(),
-        legacy_trace: args.trace.clone(),
+        legacy_trace: None,
     }) {
         Ok(r) => r,
         Err(e) => {
@@ -458,13 +409,16 @@ fn drive_one_pull_request(
             // channel available without a recorder.
             let outcome = Outcome::binary_error(format!("recorder: {e}"));
             render_outcome(&mut std::io::stderr(), &outcome, None);
-            return outcome;
+            return ProcessOutcome {
+                slug: slug.clone(),
+                pr,
+                run_id: String::new(),
+                outcome,
+            };
         }
     };
     recorder.install_process_recorder();
-    if let Some(sr) = suite_recorder {
-        sr.register_pull_request(slug, pr, &recorder.run_id());
-    }
+    let run_id = recorder.run_id();
     let outcome = match args.mode {
         Mode::Inspect => run_inspect(slug, pr, args, &recorder),
         Mode::Loop => run_full(slug, pr, args, &recorder),
@@ -487,7 +441,12 @@ fn drive_one_pull_request(
         }
     }
     recorder.record_outcome(&outcome, code, &headline, handoff_path.as_deref());
-    outcome
+    ProcessOutcome {
+        slug: slug.clone(),
+        pr,
+        run_id,
+        outcome,
+    }
 }
 
 fn run_mode(mode: Mode) -> RunMode {
@@ -940,6 +899,10 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
     // Deep link inclusion is invariant — consumers index `pr_url`
     // directly rather than reconstruct it per record.
     obj.insert("pr_url".into(), json!(pull_request_url(&po.slug, po.pr)));
+    // Run identifier (opaque, generated by `ooda-state`). Joins
+    // this per-PR JSONL record back to the on-disk
+    // `runs/<run-id>/` audit trail.
+    obj.insert("run_id".into(), json!(po.run_id));
     obj.insert("outcome".into(), json!(outcome_variant_name(&po.outcome)));
     obj.insert("exit".into(), json!(po.outcome.exit_code()));
     match &po.outcome {
@@ -1303,6 +1266,7 @@ mod tests {
         ProcessOutcome {
             slug: RepoSlug::parse(slug).unwrap(),
             pr: PullRequestNumber::new(pr_num).unwrap(),
+            run_id: "test-run-id".to_string(),
             outcome,
         }
     }
@@ -1337,6 +1301,7 @@ mod tests {
             "pr_url".into(),
             json!("https://github.com/acme/widget/pull/42"),
         );
+        o.insert("run_id".into(), json!("test-run-id"));
         match outcome {
             Outcome::DoneSucceeded => {
                 o.insert("outcome".into(), json!("DoneMerged"));

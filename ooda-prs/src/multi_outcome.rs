@@ -55,11 +55,15 @@ use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::outcome::Outcome;
 
 /// Single-PR result inside a suite. Field order mirrors the input
-/// `(slug, pr)` pair plus the per-PR `Outcome` of driving it.
+/// `(slug, pr)` pair plus the per-PR `run_id` (opaque
+/// [`ooda_state`] identifier joining this record back to the
+/// on-disk `runs/<run-id>/` audit trail) and the per-PR `Outcome`
+/// of driving it.
 #[derive(Debug, Serialize)]
 pub(crate) struct ProcessOutcome {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
+    pub run_id: String,
     pub outcome: Outcome,
 }
 
@@ -172,6 +176,7 @@ mod tests {
         ProcessOutcome {
             slug: slug(s),
             pr: pr(n),
+            run_id: String::new(),
             outcome: o,
         }
     }

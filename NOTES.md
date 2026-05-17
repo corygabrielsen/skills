@@ -1,110 +1,102 @@
-# Fifth-Generation Programming Notes
+# ooda-codex-review cut-over to ooda-state — design decisions
 
-## The Generational Shift
+## Run granularity: one invocation = one run
 
-| Generation | Artifact             | Abstraction                  |
-| ---------- | -------------------- | ---------------------------- |
-| 1GL        | Machine code         | Hardware instructions        |
-| 2GL        | Assembly             | Mnemonics                    |
-| 3GL        | C, Python            | Procedural/OO                |
-| 4GL        | SQL, MATLAB          | Declarative, domain-specific |
-| **5GL**    | **Natural language** | **Intent specification**     |
+Followed the kickoff default. Each `ooda-codex-review` invocation
+generates a fresh `RunId` (via `RunId::generate()`) and writes a
+self-contained run into `<state-root>/runs/<run-id>/`. The previous
+recorder's multi-invocation accumulator model (one run that persists
+across many invocations via a `latest` pointer and resume protocol)
+is gone.
 
-**Key insight**: The prompt becomes the source of truth. Generated code is an artifact — like protobuf bindings from a `.proto` file. You version-control the intent, not the output.
+Implication: ladder transitions become events WITHIN one run
+when they occur inside an OODA-loop iteration, AND can also be
+standalone single-event runs when the orchestrator invokes a
+side-effect flag like `--advance-level` directly. Both shapes use
+the same `EventBody::IterationDecided` / `EventBody::IterationHandoff`
+vocabulary; the difference is just how many events appear before
+`RunHalted`.
 
-## Fixed Point Theory
+## Domain and target shape on RunStarted
 
-The core loop pattern:
-
-```
-Reviewer → Addresser → Loop until fixed point
-```
-
-Works for any LLM-readable artifact:
-
-| Skill                    | Artifact   | Reviewer      | Fixed Point          |
-| ------------------------ | ---------- | ------------- | -------------------- |
-| loop-codex-review        | Code       | Codex CLI     | n clean at xhigh     |
-| loop-address-pr-feedback | Code       | Humans + bots | All threads resolved |
-| review-skill-parallel    | Skill docs | Claude agents | n clean reviews      |
-
-**Fixed point** = no reviewer can find anything to flag. Not because you argued them down, but because the artifact is both _correct_ AND _self-evident_.
-
-## The Linting Parallel
-
-| 3GL Linting                | 5GL Review                 |
-| -------------------------- | -------------------------- |
-| Deterministic              | Stochastic                 |
-| Converges to "no warnings" | Converges to "no findings" |
-| Fix issue → issue gone     | Fix issue → E[findings] ↓  |
-
-**Why stochastic convergence works**: Different reviewers catch different issues through execution diversity. If all n independent samples return clean, the probability of lurking issues is low.
-
-**Non-monotonic is fine**: Findings may fluctuate (68 → 55 → 62 → 40). Track the trend, not individual counts. The criterion is "expected findings approaches zero."
-
-## The Oscillation Trap
-
-Multiple reviewers can chase each other in circles:
-
-```
-Fix conciseness → remove text → create ambiguity
-Fix adversarial → add clarifying text → create verbosity
-Fix correctness → add edge case handling → more text
-→ Back to conciseness...
+```json
+{
+  "kind": "run_started",
+  "domain": "codex-review",
+  "target": {
+    "floor": "low",
+    "ceiling": "xhigh",
+    "mode": "uncommitted|base|commit|pr",
+    "value": "<branch|sha|pr-num>?"
+  }
+}
 ```
 
-**The escape**: Aggressive consolidation. Don't add clarifying text—rewrite to be both shorter AND clearer. Less surface area = fewer things to flag = stability.
+Per kickoff: `domain="codex-review"` (distinct from the three
+PR-side binaries), and `target` carries the floor/ceiling ladder
+bounds plus the review mode (no PR slug — that's a PR-domain
+concept). For PR-mode invocations the resolved base branch is
+captured under `target.value` after `gh pr view` resolution, but
+the `target` field never identifies "which PR in which repo" —
+that level of identity is the PR domain's, not codex-review's.
 
-## Convergence Data
+## What goes in events vs scratch
 
-`review-skill` fixed-point run (Jan 2026, 3 reviewers: adversarial/conciseness/correctness):
+`events.jsonl` captures the OODA event stream — observations,
+orient snapshots, decisions, handoff prompts, executed actions,
+and the terminal event. Per the v2 design, large payloads
+(observation snapshots, handoff prompt bodies) go through
+content-addressed `blobs/<sha>.<ext>` and are referenced by
+`BlobRef` inside events.
 
-| Iteration | Issues | Pattern     |
-| :-------: | :----: | :---------- |
-|    3-7    |  4-18  | Oscillating |
-|     8     |   29   | Peak        |
-|   9-13    |   0    | Stable      |
+In-flight codex review subprocess logs (`<level>-<slot>.log`,
+`<level>-<slot>.exit`) live in `runs/<run-id>/scratch/` — they
+are write targets for spawned children, not after-the-fact
+content-addressed snapshots. Observe scans them; if the
+invocation halts while subprocesses are still writing, those
+scratch artifacts stay on disk attached to the dead run and the
+next invocation gets its own fresh scratch dir.
 
-**Breakthrough at iteration 8→9**: Consolidated Core Philosophy from 7 lines to 1. The cycle broke because there was nothing left to cut or clarify.
+## What's deleted from the old recorder
 
-## The Nash Equilibrium
+- Resume protocol (`latest` pointer, `try_resume`, `OpenMode`,
+  `FreshReason`)
+- Cross-invocation state-dir lock (per-invocation runs are
+  isolated by `RunId`; no shared mutable state to protect)
+- `RunManifest` (replaced by `events.jsonl`)
+- `LevelOutcome` history vec (each outcome is now an event)
+- `target_root` / `compute_target_root` / per-target path keys
+  (run-id is opaque; domain identity lives in events)
+- `RecorderConfig`, `Recorder`, `RecorderError` (collapsed into
+  direct `ooda_state::RunWriter` usage)
+- Repo-id sha-prefixing for state-dir disambiguation (no longer
+  needed; each run is independently keyed)
 
-The fixed point is where three competing pressures balance:
+## What's preserved
 
-```
-           Correctness
-           (complete)
-              ▲
-             /|\
-            / | \
-           /  ●  \  ← Fixed point
-          /   |   \
-         ▼────┴────▼
-   Conciseness    Adversarial
-    (minimal)    (unambiguous)
-```
+- `CodexReasoningLevel::{higher,lower}` ladder primitives (move
+  to `main.rs` callers — they're pure math, not recorder state).
+- Side-effect CLI surface (`--advance-level`, `--mark-*`, etc.)
+  remains; each becomes a single-event-run invocation that
+  emits the corresponding `IterationDecided` / `IterationHandoff`
+  event and halts.
+- All `Outcome` mappings and exit codes (per
+  `Don't preserve old state` only refers to on-disk state).
 
-Movement in any direction makes something worse. The document can't be shorter without losing correctness, can't be longer without triggering conciseness, can't be reworded without creating ambiguity.
+## SKILL.md updates
 
-## The Noise Floor
+Per the locked design's handoff `see:` pointer contract update,
+SKILL.md is updated to:
 
-Simple reviewers converge; deep reviewers always find something.
+- describe the new `events.jsonl` + blob layout
+- document `domain="codex-review"` and the new target shape
+- drop references to `latest`/`manifest`/resume protocol
+- update `--state-root` description
+- describe how side-effect invocations become single-event runs
 
-| Reviewer Depth | Result at Fixed Point |
-| -------------- | --------------------- |
-| Simple/fast    | NO ISSUES             |
-| Deep/thorough  | ~13 borderline issues |
+## Skipped, out of scope
 
-The "borderline issues" are stable across runs—same findings, not oscillating. They represent the noise floor: real but diminishing-returns improvements.
-
-**Practical criterion**: Simple reviewers return clean. Deep analysis is for auditing, not iteration.
-
-## The Self-Evident Criterion
-
-Every finding demands improvement. No exceptions.
-
-- **Real bug** → fix
-- **False positive** → the artifact was unclear; clarify until intent is obvious
-- **Design tradeoff** → document the rationale explicitly
-
-There is no "dismiss." If a reviewer misunderstood, another will too.
+- Migrating the OLD on-disk state under `$TMPDIR/ooda-codex-review`
+  (kickoff: "Don't try to preserve old state").
+- Touching `cockpit/`, `ooda-state`, `ooda-core`, `ooda-pr`,
+  `ooda-prs`, `ooda-pr-codex-review`.

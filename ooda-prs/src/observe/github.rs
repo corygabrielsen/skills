@@ -167,6 +167,36 @@ pub(crate) fn fetch_all(
         };
     }
 
+    /// Reap a fan-out worker, converting a worker panic into a
+    /// structured `GhError::NonZero` so the surrounding `try_fetch!`
+    /// arm handles it on the error path rather than unwinding through
+    /// `thread::scope` and aborting every sibling fetcher.
+    ///
+    /// `label` identifies the fetch in the resulting stderr; it must
+    /// match the spawn site so an operator can map the message back
+    /// to a call site without grepping payloads.
+    fn join_fetch<T>(
+        handle: std::thread::ScopedJoinHandle<'_, Result<T, GhError>>,
+        label: &str,
+    ) -> Result<T, GhError> {
+        match handle.join() {
+            Ok(result) => result,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "non-string panic payload".to_string()
+                };
+                Err(GhError::NonZero {
+                    code: None,
+                    stderr: format!("{label} panicked: {msg}"),
+                })
+            }
+        }
+    }
+
     let pull_request_view = try_fetch!(fetch_pull_request_view(slug, pr));
     if matches!(pull_request_view.state, PullRequestState::Terminal(_)) {
         // Terminal PRs still snapshot the quota budget so the final
@@ -219,36 +249,22 @@ pub(crate) fn fetch_all(
             s.spawn(move || fetch_merge_base_delta(slug, &base_for_compare, &head_for_compare))
         };
 
-        let checks = try_fetch!(h_checks.join().expect("fetch_pull_request_checks panicked"));
-        let reviews_v = try_fetch!(
-            h_reviews
-                .join()
-                .expect("fetch_pull_request_reviews panicked")
-        );
-        let review_threads_page = try_fetch!(h_threads.join().expect("fetch_threads panicked"));
-        let issue_events = try_fetch!(h_events.join().expect("fetch_issue_events panicked"));
-        let issue_comments = try_fetch!(h_comments.join().expect("fetch_issue_comments panicked"));
-        let requested_reviewers = try_fetch!(h_reqrev.join().expect("fetch_reqrev panicked"));
-        let branch_rules = try_fetch!(h_rules.join().expect("fetch_branch_rules panicked"));
-        let branch_protection =
-            try_fetch!(h_prot.join().expect("fetch_branch_protection panicked"));
-        let copilot_config =
-            try_fetch!(h_copilot_cfg.join().expect("fetch_copilot_config panicked"));
-        let rate_limit_budget = try_fetch!(h_rate_limit.join().expect("fetch_rate_limit panicked"));
-        let workflow_runs = try_fetch!(
-            h_workflow_runs
-                .join()
-                .expect("fetch_workflow_runs panicked")
-        );
-        let cursor_status = try_fetch!(
-            h_cursor_status
-                .join()
-                .expect("fetch_cursor_status panicked")
-        );
+        let checks = try_fetch!(join_fetch(h_checks, "fetch_pull_request_checks"));
+        let reviews_v = try_fetch!(join_fetch(h_reviews, "fetch_pull_request_reviews"));
+        let review_threads_page = try_fetch!(join_fetch(h_threads, "fetch_threads"));
+        let issue_events = try_fetch!(join_fetch(h_events, "fetch_issue_events"));
+        let issue_comments = try_fetch!(join_fetch(h_comments, "fetch_issue_comments"));
+        let requested_reviewers = try_fetch!(join_fetch(h_reqrev, "fetch_reqrev"));
+        let branch_rules = try_fetch!(join_fetch(h_rules, "fetch_branch_rules"));
+        let branch_protection = try_fetch!(join_fetch(h_prot, "fetch_branch_protection"));
+        let copilot_config = try_fetch!(join_fetch(h_copilot_cfg, "fetch_copilot_config"));
+        let rate_limit_budget = try_fetch!(join_fetch(h_rate_limit, "fetch_rate_limit"));
+        let workflow_runs = try_fetch!(join_fetch(h_workflow_runs, "fetch_workflow_runs"));
+        let cursor_status = try_fetch!(join_fetch(h_cursor_status, "fetch_cursor_status"));
         // Tolerate post-merge base-deletion race the same way the
         // legacy-protection source does (absence, not error);
         // surface every other failure.
-        let merge_base_delta = match h_compare.join().expect("fetch_merge_base_delta panicked") {
+        let merge_base_delta = match join_fetch(h_compare, "fetch_merge_base_delta") {
             Ok(delta) => Some(delta),
             Err(GhError::NotFound) => None,
             Err(GhError::RateLimited(hit)) => {

@@ -11,6 +11,10 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+# Bash-only constructs in use: `mapfile`, `declare -A`, process
+# substitution `<(...)`.
+[ -n "${BASH_VERSION:-}" ] || { printf '%s: requires bash\n' "$0" >&2; exit 1; }
+
 usage() {
     echo "Usage: $0 <fmt|clippy|test> [file...]" >&2
     exit 2

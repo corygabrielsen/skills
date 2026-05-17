@@ -20,7 +20,11 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Bash-only constructs in use: process substitution `<(...)`, here-string
+# `<<<`, `declare -a`, `[[ ]]`. Guard against accidental `sh script.sh`.
+[ -n "${BASH_VERSION:-}" ] || { printf '%s: requires bash\n' "$0" >&2; exit 1; }
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 CANON="ooda-pr"
 MIRRORS=("ooda-prs" "ooda-pr-codex-review")
 
@@ -215,6 +219,11 @@ done
 # classified into exactly one of {STRICT, PARTIAL, PER_BINARY_DIVERGENT}.
 # Catches "new file added without tier assignment" — the failure mode
 # that silently lets cp-blasts clobber per-binary content.
+#
+# Bare `var=$(cmd)` propagates the subshell exit under `set -euo
+# pipefail`, so a missing $ROOT/$CANON or a `find` failure aborts
+# before the empty-set vacuously passes the comm/while below.
+[ -d "$ROOT/$CANON" ] || { printf '%s: canonical source missing: %s\n' "$0" "$ROOT/$CANON" >&2; exit 1; }
 canon_files=$(cd "$ROOT/$CANON" && find src -name '*.rs' -type f | sort)
 classified=$(printf '%s\n' \
     "${STRICT_FILES[@]}" \

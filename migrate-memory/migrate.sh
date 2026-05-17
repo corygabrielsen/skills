@@ -64,6 +64,13 @@ main() {
     exit 64
   }
 
+  # Canonicalize before slugify so trailing slashes, `..`, and symlink
+  # variants don't produce different slugs for the same project dir.
+  # `realpath -m` accepts non-existent paths (target may not yet exist
+  # in the target project layout, though source must).
+  target_cwd=$(realpath -m -- "$target_cwd")
+  source_cwd=$(realpath -m -- "$source_cwd")
+
   local source_slug target_slug source_dir target_dir
   source_slug=$(slugify "$source_cwd")
   target_slug=$(slugify "$target_cwd")
@@ -113,12 +120,14 @@ main() {
   rsync -a "$source_dir/" "$target_dir/"
 
   local breadcrumb="$target_dir/.migrated-from"
+  local breadcrumb_tmp="$breadcrumb.tmp.$$"
   {
     printf 'source_slug: %s\n' "$source_slug"
     printf 'source_cwd: %s\n' "$source_cwd"
     printf 'target_cwd: %s\n' "$target_cwd"
-    printf 'timestamp: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$breadcrumb"
+    printf 'timestamp: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  } > "$breadcrumb_tmp"
+  mv -f "$breadcrumb_tmp" "$breadcrumb"
 
   printf '\nmigrated %s files; breadcrumb: %s\n' "$source_files" "$breadcrumb"
 }

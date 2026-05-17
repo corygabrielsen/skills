@@ -3,7 +3,7 @@
 //! The recorder is the single persistence boundary for `ooda-pr`.
 //! Runtime code reports observations, decisions, tool calls, actions,
 //! comments, waits, and outcomes here; this module owns the on-disk
-//! layout, event ordering, artifact storage, and latest/ledger views.
+//! layout, event ordering, artifact storage, CURRENT.json pointer, and ledger views.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -933,9 +933,8 @@ fn outcome_has_action(outcome: &Outcome) -> bool {
     )
 }
 
-/// Per-iteration index.md body. Replaces the former mutable
-/// `latest/index.md`. No link section — CURRENT.json is the
-/// link catalog; this surface is for human readers who want a
+/// Per-iteration index.md body. No link section — CURRENT.json is
+/// the link catalog; this surface is for human readers who want a
 /// glance at "what is iteration N about."
 fn render_iteration_index_md(
     slug: &RepoSlug,
@@ -1103,12 +1102,11 @@ fn append_file(path: &Path) -> Result<File, io::Error> {
 }
 
 fn write_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
-    // Atomic + durable: stable read-surface files
-    // (latest/state.json, latest/index.md, blockers.md, next.md,
-    // event-range.json, manifest.json) must never be observed
-    // partially-written by a concurrent reader or survive a crash
-    // truncated. write_atomic does tmp+rename+fsync(tmp)+
-    // fsync(parent).
+    // Atomic + durable: stable read-surface files (CURRENT.json,
+    // per-iteration artifacts, event-range.json, manifest.json) must
+    // never be observed partially-written by a concurrent reader or
+    // survive a crash truncated. write_atomic does
+    // tmp+rename+fsync(tmp)+fsync(parent).
     ooda_core::atomic_io::write_atomic(path, bytes)
 }
 

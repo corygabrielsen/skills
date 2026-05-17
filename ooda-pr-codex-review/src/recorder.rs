@@ -909,9 +909,8 @@ fn outcome_has_action(outcome: &Outcome) -> bool {
     )
 }
 
-/// Per-iteration index.md body. Replaces the former mutable
-/// `latest/index.md`. No link section — CURRENT.json is the
-/// link catalog; this surface is for human readers who want a
+/// Per-iteration index.md body. No link section — CURRENT.json is
+/// the link catalog; this surface is for human readers who want a
 /// glance at "what is iteration N about."
 fn render_iteration_index_md(
     slug: &RepoSlug,

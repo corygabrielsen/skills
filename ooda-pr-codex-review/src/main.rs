@@ -1445,7 +1445,7 @@ mod tests {
         // headline (per-action body's first line) still leads —
         // sections render between headline and context.
         assert!(
-            rendered.contains("Recommended (blocking fix): Rebase:"),
+            rendered.contains("## Recommended (blocking fix)"),
             "preamble: {rendered}",
         );
         assert!(rendered.contains("[blocker: behind_base]"), "{rendered}");
@@ -1486,7 +1486,7 @@ mod tests {
         };
         let rendered = handoff.prompt.to_string();
         assert!(
-            rendered.contains("Recommended (blocking fix): Rebase:"),
+            rendered.contains("## Recommended (blocking fix)"),
             "preamble missing: {rendered}",
         );
         assert!(
@@ -1527,7 +1527,7 @@ mod tests {
         };
         let rendered = handoff.prompt.to_string();
         assert!(
-            rendered.contains("Recommended (blocking fix): Rebase:"),
+            rendered.contains("## Recommended (blocking fix)"),
             "preamble must apply to non-allowlisted: {rendered}",
         );
         // Per-action context still gated — no PR / Blocker lines.

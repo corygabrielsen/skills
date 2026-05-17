@@ -518,43 +518,49 @@ impl Dashboard {
             return sections;
         };
 
+        sections.push(PromptSection::Heading(
+            2,
+            SingleLineString::new(format!("Recommended ({})", urgency_label(winner.urgency))),
+        ));
         sections.push(PromptSection::Paragraph(format!(
-            "Recommended ({}): {}: {} [blocker: {}]",
-            urgency_label(winner.urgency),
-            winner.action_name,
-            winner.action_log,
-            winner.blocker,
+            "{}: {} [blocker: {}]",
+            winner.action_name, winner.action_log, winner.blocker,
         )));
 
         let mut by_tier = tiers(&self.candidates);
         if let Some(bucket) = by_tier.first_mut() {
             bucket.candidates.remove(0);
         }
-        // Header-and-list pairing keeps the candidate ordinals
-        // meaningful: header is a separate paragraph so the list
-        // numbering starts at one.
+        // Heading-and-list pairing keeps the candidate ordinals
+        // meaningful: heading is a separate section so the list
+        // numbering starts at one. "Also at this tier" stays a
+        // level deeper than "Recommended" — it's the same tier as
+        // the winner, just other candidates within it.
         if let Some(top) = by_tier.first()
             && !top.candidates.is_empty()
         {
-            sections.push(PromptSection::Paragraph(format!(
-                "Also at this tier ({}):",
-                urgency_label(top.urgency),
-            )));
+            sections.push(PromptSection::Heading(
+                3,
+                SingleLineString::new(format!(
+                    "Also at this tier ({})",
+                    urgency_label(top.urgency),
+                )),
+            ));
             push_candidate_list(&mut sections, &top.candidates);
         }
 
-        // One header-and-list pair per lower tier; only the tier
+        // One heading-and-list pair per lower tier; only the tier
         // label varies across buckets.
         for bucket in by_tier.iter().skip(1) {
-            sections.push(PromptSection::Paragraph(format!(
-                "Queued ({}):",
-                urgency_label(bucket.urgency),
-            )));
+            sections.push(PromptSection::Heading(
+                2,
+                SingleLineString::new(format!("Queued ({})", urgency_label(bucket.urgency))),
+            ));
             push_candidate_list(&mut sections, &bucket.candidates);
         }
 
         if !self.signals.is_empty() {
-            sections.push(PromptSection::Paragraph("Signals:".to_string()));
+            sections.push(PromptSection::Heading(2, SingleLineString::new("Signals")));
             let items: Vec<SingleLineString> = self
                 .signals
                 .iter()
@@ -573,7 +579,7 @@ impl Dashboard {
         }
 
         if !self.blockers.is_empty() {
-            sections.push(PromptSection::Paragraph("Blockers:".to_string()));
+            sections.push(PromptSection::Heading(2, SingleLineString::new("Blockers")));
             let items: Vec<SingleLineString> = self
                 .blockers
                 .iter()
@@ -1057,15 +1063,16 @@ mod tests {
     fn preamble_single_winner_alone() {
         let d = dashboard_from_candidates(&[rerequest_copilot()]);
         let text = preamble_text(&d);
+        assert!(text.contains("## Recommended (critical)"), "{text}");
         assert!(
-            text.contains("Recommended (critical): RerequestCopilot: rerequest copilot"),
+            text.contains("RerequestCopilot: rerequest copilot"),
             "{text}",
         );
         assert!(text.contains("[blocker: copilot:rerequest]"), "{text}");
         assert!(!text.contains("Also at this tier"), "{text}");
         assert!(!text.contains("Queued"), "{text}");
         assert!(!text.contains("Signals"), "{text}");
-        assert!(text.contains("Blockers"), "{text}");
+        assert!(text.contains("## Blockers"), "{text}");
         assert!(
             text.contains("copilot:rerequest: RerequestCopilot"),
             "{text}",
@@ -1082,8 +1089,8 @@ mod tests {
         );
         let d = dashboard_from_candidates(&[rerequest_copilot(), other]);
         let text = preamble_text(&d);
-        assert!(text.contains("Recommended (critical)"), "{text}");
-        assert!(text.contains("Also at this tier (critical)"), "{text}");
+        assert!(text.contains("## Recommended (critical)"), "{text}");
+        assert!(text.contains("### Also at this tier (critical)"), "{text}");
         assert!(text.contains("Rebase: rebase onto base"), "{text}");
         assert!(!text.contains("Queued"), "{text}");
     }
@@ -1092,9 +1099,9 @@ mod tests {
     fn preamble_winner_with_lower_tier_candidate() {
         let d = dashboard_from_candidates(&[rerequest_copilot(), wait_for_ci()]);
         let text = preamble_text(&d);
-        assert!(text.contains("Recommended (critical)"), "{text}");
+        assert!(text.contains("## Recommended (critical)"), "{text}");
         assert!(!text.contains("Also at this tier"), "{text}");
-        assert!(text.contains("Queued (blocking wait)"), "{text}");
+        assert!(text.contains("## Queued (blocking wait)"), "{text}");
         assert!(text.contains("WaitForCi: wait for ci/build"), "{text}");
     }
 
@@ -1135,7 +1142,7 @@ mod tests {
             p.sections.push(s);
         }
         eprintln!("---- preamble sample ----\n{p}\n---- end ----");
-        assert!(p.to_string().contains("Recommended (critical)"));
+        assert!(p.to_string().contains("## Recommended (critical)"));
     }
 
     #[test]
@@ -1169,8 +1176,8 @@ mod tests {
             blockers,
         };
         let text = preamble_text(&d);
-        assert!(text.contains("Recommended (critical)"), "{text}");
-        assert!(text.contains("Queued (blocking wait)"), "{text}");
+        assert!(text.contains("## Recommended (critical)"), "{text}");
+        assert!(text.contains("## Queued (blocking wait)"), "{text}");
         assert!(text.contains("Queued (blocking human)"), "{text}");
         assert!(text.contains("Signals"), "{text}");
         assert!(

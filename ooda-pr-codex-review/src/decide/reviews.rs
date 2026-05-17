@@ -12,7 +12,7 @@ use crate::orient::OrientedState;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
-use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, NonEmpty, TargetEffect, Urgency};
 use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
 /// Comma-join a slice of any `Display` for human-readable rendering.
@@ -44,7 +44,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
             },
             effect: ActionEffect::Agent { prompt },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             // Gate-stable: progress on cardinality must not mask
             // as stall. The witness travels on the action; the key
             // names the gate (one or more unresolved threads),
@@ -81,7 +81,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
                 log: format!("Wait for bot review from {names}"),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             // Gate identity: "≥1 pending bot review". Reviewer
             // identities travel on the payload.
             blocker: BlockerKey::from_static("pending_bot_review"),
@@ -98,7 +98,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
                 )),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             // Gate identity: "≥1 pending human review". Reviewer
             // identities travel on the payload.
             blocker: BlockerKey::from_static("pending_human_review"),
@@ -127,7 +127,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
                 prompt: request_approval_prompt(reviews),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("not_approved"),
         });
     }
@@ -153,7 +153,7 @@ pub(super) fn candidates(oriented: &OrientedState) -> Vec<Action> {
                 ),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("changes_requested_summary"),
         });
     }

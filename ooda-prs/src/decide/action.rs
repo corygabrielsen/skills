@@ -12,7 +12,9 @@ use crate::observe::github::workflow_runs::WorkflowRunId;
 use crate::orient::ci::Symptom as CiSymptom;
 use crate::orient::copilot::Symptom;
 use crate::orient::thread::ReviewThread;
-pub(crate) use ooda_core::{ActionEffect, ActionKindName, NonEmpty, TargetEffect, Urgency};
+pub(crate) use ooda_core::{
+    ActionEffect, ActionKindName, MidTier, NonEmpty, TargetEffect, Urgency,
+};
 use ooda_core::{RateLimitHit, RateLimitScope};
 use serde::Serialize;
 
@@ -57,7 +59,7 @@ pub(crate) fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
             log,
         },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Critical,
+        urgency: Urgency::Mid(MidTier::Critical),
         blocker: BlockerKey::from_static(hit.scope.name()),
     }
 }
@@ -257,6 +259,7 @@ impl ActionKindName for ActionKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ooda_core::MidTier;
     use ooda_core::PollingInterval;
 
     /// Hand-maintained sample list — one entry per scope variant.
@@ -287,7 +290,7 @@ mod tests {
             }
             assert!(matches!(action.kind, ActionKind::WaitForRateLimit { .. }));
             assert!(matches!(action.effect, ActionEffect::Wait { .. }));
-            assert_eq!(action.urgency, Urgency::Critical);
+            assert_eq!(action.urgency, Urgency::Mid(MidTier::Critical));
             assert_eq!(action.target_effect, TargetEffect::Blocks);
             // Blocker carries scope identity ⇒ distinct upstream
             // buckets project to distinct stall keys.

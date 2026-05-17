@@ -27,7 +27,7 @@ impl From<LoopError> for Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decide::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+    use crate::decide::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
     use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
     use crate::ids::BlockerKey;
 
@@ -36,7 +36,7 @@ mod tests {
             kind: ActionKind::Rebase,
             effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
@@ -46,7 +46,7 @@ mod tests {
             kind: ActionKind::RequestApproval,
             prompt: ooda_core::HandoffPrompt::new("h"),
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("not-approved"),
         }
     }

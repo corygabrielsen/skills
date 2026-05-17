@@ -14,8 +14,8 @@
 //! ambiguous and needs agent triage.
 
 use super::action::{
-    Action, ActionEffect, ActionKind, DegradedCheck, FailedCheckHandle, NonEmpty, TargetEffect,
-    Urgency,
+    Action, ActionEffect, ActionKind, DegradedCheck, FailedCheckHandle, MidTier, NonEmpty,
+    TargetEffect, Urgency,
 };
 use crate::ids::{BlockerKey, CheckName};
 use crate::orient::ci::{
@@ -61,7 +61,7 @@ pub(super) fn candidates(report: &CiReport) -> Vec<Action> {
                         prompt: fix_ci_prompt(f),
                     },
                     target_effect: TargetEffect::Blocks,
-                    urgency: Urgency::BlockingFix,
+                    urgency: Urgency::Mid(MidTier::BlockingFix),
                     blocker: BlockerKey::typed("ci_fail", &f.name),
                 });
             }
@@ -109,7 +109,7 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             kind: ActionKind::EscalateCiFailed { checks: failed_ne },
             effect: ActionEffect::Human { prompt },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             // Gate identity: "≥1 required check failed". Per-check
             // names travel on the payload — embedding them in the
             // key would violate gate stability across iterations.
@@ -148,7 +148,7 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             },
             effect: ActionEffect::Full { log },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             // Gate identity: the (rerun-loop, symptom-class) pair.
             // Cohort identities travel on the payload. Each branch
             // resolves to a `&'static str` so the key is type-
@@ -198,7 +198,7 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
                 ),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             // Gate identity: "≥1 required check pending". Cohort
             // travels on the payload.
             blocker: BlockerKey::from_static("ci_pending"),
@@ -217,7 +217,7 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
                 ),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             // Gate identity: "≥1 required check missing". Cohort
             // travels on the payload.
             blocker: BlockerKey::from_static("ci_missing"),
@@ -247,7 +247,7 @@ fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<
         },
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingFix,
+        urgency: Urgency::Mid(MidTier::BlockingFix),
         // Gate identity: the concurrent (required-blocked,
         // advisory-failed) condition. Agent effects participate
         // in stall detection, so the key must be cohort-stable.
@@ -370,6 +370,7 @@ mod tests {
         CheckBucket, CheckHealth, CiActivity, CiReport, CiSummary, FailedCheck, PendingCheck,
         ResolvedState, Symptom,
     };
+    use ooda_core::MidTier;
 
     fn empty_summary() -> CiSummary {
         CiSummary {
@@ -466,7 +467,7 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::ReRunWorkflow { .. }));
         assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
-        assert_eq!(cs[0].urgency, Urgency::BlockingFix);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
         assert!(
             cs[0]
                 .blocker
@@ -485,7 +486,7 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::EscalateCiFailed { .. }));
         assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
-        assert_eq!(cs[0].urgency, Urgency::BlockingHuman);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
         assert!(cs[0].blocker.as_str().starts_with("ci_failed"));
     }
 

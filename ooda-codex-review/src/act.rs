@@ -241,6 +241,7 @@ fn should_preflight_path(path: &std::path::Path) -> bool {
 mod tests {
     use super::*;
     use crate::ids::{BranchName, GitCommitSha};
+    use ooda_core::MidTier;
     use std::ffi::OsStr;
 
     fn args_of(cmd: &Command) -> Vec<&OsStr> {
@@ -335,7 +336,7 @@ mod tests {
                 prompt: ooda_core::HandoffPrompt::new("n/a"),
             },
             target_effect: crate::decide::action::TargetEffect::Advances,
-            urgency: crate::decide::action::Urgency::BlockingFix,
+            urgency: crate::decide::action::Urgency::Mid(MidTier::BlockingFix),
             blocker: crate::ids::BlockerKey::from_static("retro:low"),
         };
         let ctx = ActContext {
@@ -374,7 +375,7 @@ mod tests {
             },
             effect: ActionEffect::Full { log: "n/a".into() },
             target_effect: crate::decide::action::TargetEffect::Advances,
-            urgency: crate::decide::action::Urgency::Critical,
+            urgency: crate::decide::action::Urgency::Mid(MidTier::Critical),
             blocker: crate::ids::BlockerKey::from_static("runreviews:low"),
         };
 

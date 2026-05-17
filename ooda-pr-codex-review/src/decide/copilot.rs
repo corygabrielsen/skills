@@ -10,7 +10,7 @@ use crate::orient::copilot::{
     CopilotActivity, CopilotReport, CopilotTier, InFlightHealth, Symptom,
 };
 
-use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
 // Flat decision table over the activity variants of this axis. The
 // table's length is its specification: each arm carries action,
@@ -39,7 +39,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                     log: "Waiting for Copilot to start reviewing".into(),
                 },
                 target_effect: TargetEffect::Blocks,
-                urgency: Urgency::BlockingWait,
+                urgency: Urgency::Mid(MidTier::BlockingWait),
                 blocker: BlockerKey::from_static("copilot_not_acked"),
             });
         }
@@ -54,7 +54,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                     log: "Waiting for Copilot to finish reviewing".into(),
                 },
                 target_effect: TargetEffect::Blocks,
-                urgency: Urgency::BlockingWait,
+                urgency: Urgency::Mid(MidTier::BlockingWait),
                 blocker: BlockerKey::from_static("copilot_reviewing"),
             });
         }
@@ -125,7 +125,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                     kind: ActionKind::RerequestCopilot { symptom: None },
                     effect: ActionEffect::Full { log: desc },
                     target_effect: TargetEffect::Advances,
-                    urgency: Urgency::Critical,
+                    urgency: Urgency::Mid(MidTier::Critical),
                     blocker: BlockerKey::typed("copilot_tier", &report.tier),
                 });
             } else if report.tier == CopilotTier::Silver && suppressed > 0 {
@@ -139,7 +139,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
                         )),
                     },
                     target_effect: TargetEffect::Advances,
-                    urgency: Urgency::Advancing,
+                    urgency: Urgency::Mid(MidTier::Advancing),
                     blocker: BlockerKey::from_static("copilot_tier_silver"),
                 });
             }
@@ -169,7 +169,7 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
         },
         effect: ActionEffect::Full { log: log.into() },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingFix,
+        urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::for_test(tag),
     }
 }
@@ -223,7 +223,7 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
         kind: ActionKind::EscalateCopilotFailed { symptom },
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingHuman,
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::for_test(tag),
     }
 }

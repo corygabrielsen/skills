@@ -7,6 +7,7 @@
 //! halts terminally, otherwise the loop hands off to an outer
 //! orchestrator for address-batch or retrospective work.
 
+use ooda_core::MidTier;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -645,7 +646,7 @@ fn mk_handoff_human_test_failed(level: CodexReasoningLevel, details: &str) -> Ou
             details
         )),
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingHuman,
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("address-failed"),
     };
     Outcome::HandoffHuman(Box::new(handoff))

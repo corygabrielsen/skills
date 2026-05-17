@@ -11,7 +11,7 @@ use crate::ids::{BlockerKey, PullRequestNumber};
 use crate::orient::OrientedState;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
 
-use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
 #[must_use]
 pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
@@ -51,8 +51,10 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
     // (fires before anything else); drift maintenance is `Hygiene`
     // (deferred behind blockers, never starves the loop).
     let urgency = match oriented.pull_request_metadata {
-        PullRequestMetadata::NeverAttested => Urgency::Opening,
-        PullRequestMetadata::Drift { .. } | PullRequestMetadata::Synced => Urgency::Hygiene,
+        PullRequestMetadata::NeverAttested => Urgency::Pre,
+        PullRequestMetadata::Drift { .. } | PullRequestMetadata::Synced => {
+            Urgency::Mid(MidTier::Hygiene)
+        }
     };
     vec![Action {
         kind,
@@ -71,6 +73,7 @@ mod tests {
     use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestProjection;
+    use ooda_core::MidTier;
 
     fn pr() -> PullRequestNumber {
         PullRequestNumber::parse("753").unwrap()
@@ -172,7 +175,7 @@ mod tests {
             ActionKind::SyncPullRequestMetadata { .. }
         ));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
-        assert_eq!(cs[0].urgency, Urgency::Hygiene);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Hygiene));
         assert_eq!(cs[0].target_effect, TargetEffect::Neutral);
         assert_eq!(cs[0].blocker.as_str(), "pr_meta_drift");
     }
@@ -185,7 +188,7 @@ mod tests {
         // State-conditional urgency: first-attestation fires at the
         // top tier so the agent's initial sign-off preempts every
         // other axis (CI wait, mechanical setup).
-        assert_eq!(cs[0].urgency, Urgency::Opening);
+        assert_eq!(cs[0].urgency, Urgency::Pre);
     }
 
     #[test]
@@ -193,7 +196,7 @@ mod tests {
         // Mid-cycle drift is deferred behind blockers; only
         // first-attestation gets the Opening boost.
         let cs = candidates(&oriented(3, drift()), pr());
-        assert_eq!(cs[0].urgency, Urgency::Hygiene);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Hygiene));
     }
 
     #[test]

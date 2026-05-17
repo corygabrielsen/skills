@@ -100,6 +100,7 @@ mod tests {
     use super::*;
     use crate::ids::BlockerKey;
     use action::{ActionKind, TargetEffect};
+    use ooda_core::MidTier;
 
     fn act(name: &str, urgency: Urgency) -> Action {
         Action {
@@ -117,11 +118,11 @@ mod tests {
     fn urgency_total_order_matches_design_intent() {
         // The total order on `Urgency` IS the priority lattice.
         // New tiers slot in by definition; the sort never changes.
-        assert!(Urgency::Critical < Urgency::BlockingFix);
-        assert!(Urgency::BlockingFix < Urgency::BlockingWait);
-        assert!(Urgency::BlockingWait < Urgency::BlockingHuman);
-        assert!(Urgency::BlockingHuman < Urgency::Advancing);
-        assert!(Urgency::Advancing < Urgency::Hygiene);
+        assert!(Urgency::Mid(MidTier::Critical) < Urgency::Mid(MidTier::BlockingFix));
+        assert!(Urgency::Mid(MidTier::BlockingFix) < Urgency::Mid(MidTier::BlockingWait));
+        assert!(Urgency::Mid(MidTier::BlockingWait) < Urgency::Mid(MidTier::BlockingHuman));
+        assert!(Urgency::Mid(MidTier::BlockingHuman) < Urgency::Mid(MidTier::Advancing));
+        assert!(Urgency::Mid(MidTier::Advancing) < Urgency::Mid(MidTier::Hygiene));
     }
 
     #[test]
@@ -129,12 +130,12 @@ mod tests {
         // Equal-urgency actions keep their input (axis) order
         // after sorting — the stability witness for the rank step.
         let mut v = [
-            act("fix-a", Urgency::BlockingFix),
-            act("wait", Urgency::BlockingWait),
-            act("fix-b", Urgency::BlockingFix),
-            act("critical", Urgency::Critical),
-            act("human", Urgency::BlockingHuman),
-            act("hygiene", Urgency::Hygiene),
+            act("fix-a", Urgency::Mid(MidTier::BlockingFix)),
+            act("wait", Urgency::Mid(MidTier::BlockingWait)),
+            act("fix-b", Urgency::Mid(MidTier::BlockingFix)),
+            act("critical", Urgency::Mid(MidTier::Critical)),
+            act("human", Urgency::Mid(MidTier::BlockingHuman)),
+            act("hygiene", Urgency::Mid(MidTier::Hygiene)),
         ];
         v.sort_by_key(|a| a.urgency);
         let order: Vec<&str> = v.iter().map(|a| a.blocker.as_str()).collect();

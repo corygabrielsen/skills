@@ -12,7 +12,7 @@ use crate::ids::BlockerKey;
 
 use crate::orient::cursor::{CursorActivity, CursorReport, InFlightHealth, ReviewedState};
 
-use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
 pub(super) fn candidates(report: &CursorReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
@@ -36,7 +36,7 @@ pub(super) fn candidates(report: &CursorReport) -> Vec<Action> {
                     log: "Waiting for Cursor Bugbot to finish reviewing".into(),
                 },
                 target_effect: TargetEffect::Blocks,
-                urgency: Urgency::BlockingWait,
+                urgency: Urgency::Mid(MidTier::BlockingWait),
                 blocker: BlockerKey::from_static("cursor_reviewing"),
             });
         }
@@ -102,7 +102,7 @@ fn failed_escalation(report: &CursorReport) -> Action {
         kind: ActionKind::EscalateCursorStalled,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingHuman,
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("cursor_failed_stall"),
     }
 }
@@ -115,6 +115,7 @@ mod tests {
         CursorActivity, CursorReport, CursorSeverityBreakdown, CursorTier, InFlightHealth,
         ReviewedState, SkipReason,
     };
+    use ooda_core::MidTier;
 
     fn report(activity: CursorActivity, tier: CursorTier) -> CursorReport {
         CursorReport {
@@ -164,7 +165,7 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::EscalateCursorStalled));
         assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
-        assert_eq!(cs[0].urgency, Urgency::BlockingHuman);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
         assert_eq!(cs[0].blocker.as_str(), "cursor_failed_stall");
     }
 

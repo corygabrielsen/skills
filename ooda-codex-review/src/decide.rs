@@ -14,6 +14,8 @@
 //! not appear in this table; they reach decide via the recorder's
 //! mutation of `current_level` between iterations.
 
+use ooda_core::MidTier;
+
 pub(crate) mod action;
 pub(crate) mod decision;
 
@@ -94,7 +96,7 @@ fn mk_run_reviews(level: CodexReasoningLevel, n: u32) -> Action {
             ),
         },
         target_effect: TargetEffect::Advances,
-        urgency: Urgency::Critical,
+        urgency: Urgency::Mid(MidTier::Critical),
         blocker: BlockerKey::typed("runreviews", &level),
     }
 }
@@ -110,7 +112,7 @@ fn mk_await_reviews(level: CodexReasoningLevel, pending: u32) -> Action {
             ),
         },
         target_effect: TargetEffect::Neutral,
-        urgency: Urgency::BlockingWait,
+        urgency: Urgency::Mid(MidTier::BlockingWait),
         blocker: BlockerKey::typed("await", &level),
     }
 }
@@ -127,7 +129,7 @@ fn mk_address_batch(level: CodexReasoningLevel, issue_count: u32) -> Action {
             )),
         },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingFix,
+        urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::typed("address", &level),
     }
 }
@@ -145,7 +147,7 @@ fn mk_retrospective(level: CodexReasoningLevel) -> Action {
             )),
         },
         target_effect: TargetEffect::Advances,
-        urgency: Urgency::BlockingFix,
+        urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::typed("retro", &level),
     }
 }
@@ -154,6 +156,7 @@ fn mk_retrospective(level: CodexReasoningLevel) -> Action {
 mod tests {
     use super::*;
     use crate::observe::codex::VerdictClass;
+    use ooda_core::MidTier;
 
     fn oriented(
         batch_state: BatchState,
@@ -204,7 +207,7 @@ mod tests {
                     }
                 ));
                 assert!(matches!(action.effect, ActionEffect::Full { .. }));
-                assert_eq!(action.urgency, Urgency::Critical);
+                assert_eq!(action.urgency, Urgency::Mid(MidTier::Critical));
             }
             other @ Decision::Halt(_) => panic!("expected Execute(RunReviews), got {other:?}"),
         }

@@ -346,6 +346,7 @@ mod tests {
     };
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestProjection;
+    use ooda_core::MidTier;
 
     fn slug() -> RepoSlug {
         RepoSlug::parse("acme/widget").unwrap()
@@ -362,7 +363,7 @@ mod tests {
                 prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: crate::decide::action::Urgency::BlockingFix,
+            urgency: crate::decide::action::Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
@@ -574,7 +575,7 @@ mod tests {
             kind: ActionKind::Rebase,
             prompt: ooda_core::HandoffPrompt::new("Rebase onto the latest base branch"),
             target_effect: TargetEffect::Blocks,
-            urgency: crate::decide::action::Urgency::BlockingFix,
+            urgency: crate::decide::action::Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("rebase-needed"),
         }
     }

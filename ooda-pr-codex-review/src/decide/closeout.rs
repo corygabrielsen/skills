@@ -49,7 +49,7 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
         kind,
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Neutral,
-        urgency: Urgency::Closeout,
+        urgency: Urgency::Post,
         blocker,
     }]
 }
@@ -63,6 +63,7 @@ mod tests {
     use crate::orient::pull_request_metadata::PullRequestMetadata;
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestProjection;
+    use ooda_core::MidTier;
 
     fn pr() -> PullRequestNumber {
         PullRequestNumber::parse("753").unwrap()
@@ -161,7 +162,7 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::Closeout { .. }));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
-        assert_eq!(cs[0].urgency, Urgency::Closeout);
+        assert_eq!(cs[0].urgency, Urgency::Post);
         assert_eq!(cs[0].target_effect, TargetEffect::Neutral);
         assert_eq!(cs[0].blocker.as_str(), "closeout_drift");
     }
@@ -265,7 +266,7 @@ mod tests {
             .unwrap();
         // Structural witness for the global-quiescence gate: the
         // tier sits strictly below every other axis's tier.
-        assert!(Urgency::Hygiene < a.urgency);
-        assert!(Urgency::Critical < a.urgency);
+        assert!(Urgency::Mid(MidTier::Hygiene) < a.urgency);
+        assert!(Urgency::Mid(MidTier::Critical) < a.urgency);
     }
 }

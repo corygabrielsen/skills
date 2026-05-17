@@ -258,6 +258,7 @@ mod tests {
     use crate::decide::action::{ActionEffect, ActionKind, TargetEffect, Urgency};
     use crate::decide::decision::{DecisionHalt, Terminal};
     use crate::ids::BlockerKey;
+    use ooda_core::MidTier;
     use ooda_core::PollingInterval;
     use std::cell::RefCell;
 
@@ -272,7 +273,7 @@ mod tests {
             kind,
             effect: ActionEffect::Full { log: "stub".into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::for_test(blocker),
         }
     }
@@ -285,7 +286,7 @@ mod tests {
                 log: "stub".into(),
             },
             target_effect: TargetEffect::Neutral,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             blocker: BlockerKey::for_test(blocker),
         }
     }

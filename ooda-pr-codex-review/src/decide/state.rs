@@ -161,7 +161,7 @@ fn build_rebase_prompt(
                 .join("\n");
             Witness {
                 label,
-                body,
+                body: body.into(),
                 url: None,
             }
         });

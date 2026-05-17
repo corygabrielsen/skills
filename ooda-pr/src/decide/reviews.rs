@@ -198,7 +198,7 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
         prompt.push_paragraph("Latest CHANGES_REQUESTED review:".to_string());
         prompt.push_witnesses(NonEmpty::singleton(Witness {
             label,
-            body,
+            body: body.into(),
             url: None,
         }));
     } else {
@@ -336,7 +336,7 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
             .join("\n");
         Witness {
             label,
-            body,
+            body: body.into(),
             url: None,
         }
     });

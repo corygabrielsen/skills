@@ -112,7 +112,7 @@ fn mk_address(
         .iter()
         .map(|v| Witness {
             label: SingleLineString::new(format!("— slot {} —", v.slot)),
-            body: v.body.trim_end().to_string(),
+            body: v.body.trim_end().to_string().into(),
             url: None,
         })
         .collect();

@@ -16,6 +16,8 @@
 //! consumers can also walk `sections` directly.
 
 use crate::non_empty::NonEmpty;
+use crate::safe_body::SafeBody;
+use crate::safe_url::SafeUrl;
 use crate::single_line_string::SingleLineString;
 use serde::Serialize;
 use std::fmt;
@@ -68,13 +70,19 @@ pub enum PromptSection {
 
 /// One witness in a [`PromptSection::Witnesses`] section.
 ///
+/// `body` is length-capped at construction via [`SafeBody`] — a
+/// runaway witness body cannot blow `PIPE_BUF` on event-stream
+/// serialization or overwhelm a downstream markdown renderer.
+///
 /// `url: Some(_)` renders as a trailing `URL: <url>` line; `None`
-/// omits the line entirely. A bare `URL:` header is unrepresentable.
+/// omits the line entirely. The URL is scheme-restricted at
+/// construction via [`SafeUrl`] — `javascript:` and `data:`
+/// payloads are unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Witness {
     pub label: SingleLineString,
-    pub body: String,
-    pub url: Option<String>,
+    pub body: SafeBody,
+    pub url: Option<SafeUrl>,
 }
 
 /// One `<key>: <value>` line in a [`PromptSection::Context`]
@@ -373,7 +381,7 @@ mod tests {
         let witnesses = NonEmpty::singleton(Witness {
             label: "label".into(),
             body: "body line".into(),
-            url: Some("https://example/r/1".into()),
+            url: Some(SafeUrl::parse("https://example/r/1").unwrap()),
         });
         let mut p = HandoffPrompt::new("h");
         p.push_witnesses(witnesses);

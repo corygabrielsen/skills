@@ -47,11 +47,18 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
         PullRequestMetadata::NeverAttested => BlockerKey::from_static("pr_meta_never_attested"),
         PullRequestMetadata::Synced => BlockerKey::from_static("pr_meta_synced"),
     };
+    // State-conditional urgency: first-attestation is `Opening`
+    // (fires before anything else); drift maintenance is `Hygiene`
+    // (deferred behind blockers, never starves the loop).
+    let urgency = match oriented.pull_request_metadata {
+        PullRequestMetadata::NeverAttested => Urgency::Opening,
+        PullRequestMetadata::Drift { .. } | PullRequestMetadata::Synced => Urgency::Hygiene,
+    };
     vec![Action {
         kind,
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Neutral,
-        urgency: Urgency::Hygiene,
+        urgency,
         blocker,
     }]
 }
@@ -176,6 +183,18 @@ mod tests {
         let cs = candidates(&oriented(1, PullRequestMetadata::NeverAttested), pr());
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].blocker.as_str(), "pr_meta_never_attested");
+        // State-conditional urgency: first-attestation fires at the
+        // top tier so the agent's initial sign-off preempts every
+        // other axis (CI wait, mechanical setup).
+        assert_eq!(cs[0].urgency, Urgency::Opening);
+    }
+
+    #[test]
+    fn drift_keeps_hygiene_urgency() {
+        // Mid-cycle drift is deferred behind blockers; only
+        // first-attestation gets the Opening boost.
+        let cs = candidates(&oriented(3, drift()), pr());
+        assert_eq!(cs[0].urgency, Urgency::Hygiene);
     }
 
     #[test]

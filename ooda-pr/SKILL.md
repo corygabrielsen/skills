@@ -558,12 +558,12 @@ newlines in the description appear verbatim in `handoff.md`.
 agent's next user-visible response MUST expose the handoff content
 to the human. At minimum, surface: (1) the final variant block
 (stderr header + `  see:` pointer line), (2) the per-iteration
-stderr trail emitted during the run (or its trailing window if
-long), and (3) the `handoff.md` body in full. The body already
-carries the dashboard preamble (tier-grouped candidates, per-axis
-signals, blockers) and the per-action prompt — surfacing the file
-verbatim discharges items (2)-(3) for the blockers / signals
-portion.
+stderr trail emitted during the run (bounded by `--max-iter`;
+default cap yields ~50 `[iter N] ...` lines, surface in full), and
+(3) the `handoff.md` body in full. The body already carries the
+dashboard preamble (tier-grouped candidates, per-axis signals,
+blockers) and the per-action prompt — surfacing the file verbatim
+discharges items (2)-(3) for the blockers / signals portion.
 
 This requirement applies to **both** `HandoffHuman` (exit 3) and
 `HandoffAgent` (exit 4) — even when the caller dispatches a
@@ -590,7 +590,11 @@ loop's own reasoning to reach the human.
 legacy inline form — a `  prompt: <body>` line (10-byte sentinel
 `␣␣prompt:␣`) followed by the prompt content streamed to EOF on
 stderr. Callers SHOULD prefer the `see:` form when present; the
-fallback exists only so the prompt is never lost.
+fallback exists only so the prompt is never lost. The **Surface
+to the user** requirement above applies to the fallback path
+verbatim: when the inline form fires, the inline body (the bytes
+after the `␣␣prompt:␣` sentinel through EOF) substitutes for the
+`handoff.md` body in item (3); items (1)-(2) are unchanged.
 
 In `inspect` mode, the `Handoff*` prompt has the same
 **directive form** as in loop mode — the content tells the

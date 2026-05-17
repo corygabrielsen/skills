@@ -422,7 +422,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
             &args.slug,
             args.pr,
             Some(1),
-            &oriented,
+            &comment::render::RenderInputs::from(&oriented),
             &candidate_actions,
             &decision,
         );
@@ -513,7 +513,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
                 &args.slug,
                 args.pr,
                 Some(i),
-                oriented,
+                &comment::render::RenderInputs::from(oriented),
                 candidate_actions,
                 d,
             );

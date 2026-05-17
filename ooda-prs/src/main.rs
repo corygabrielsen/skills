@@ -552,7 +552,7 @@ fn run_inspect(
     recorder.record_iteration(1, &obs, &oriented, &candidate_actions, &decision);
     if args.status_comment {
         let rendered =
-            comment::render::render(slug, pr, Some(1), &oriented, &candidate_actions, &decision);
+            comment::render::render(slug, pr, Some(1), &comment::render::RenderInputs::from(&oriented), &candidate_actions, &decision);
         recorder.record_status_comment_rendered(Some(1), &rendered, "inspect comment rendered");
         let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(1));
         log_post_result("comment", true, r, Some(recorder));
@@ -619,7 +619,7 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
         recorder.write_trace_line(&line);
         if args.status_comment {
             let rendered =
-                comment::render::render(slug, pr, Some(i), oriented, candidate_actions, d);
+                comment::render::render(slug, pr, Some(i), &comment::render::RenderInputs::from(oriented), candidate_actions, d);
             recorder.record_status_comment_rendered(
                 Some(i),
                 &rendered,

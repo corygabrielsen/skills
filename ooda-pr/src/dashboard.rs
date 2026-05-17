@@ -17,10 +17,10 @@
 use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt};
 use crate::ids::BlockerKey;
-use crate::orient::ci::ci_signal;
+use crate::orient::ci::{CiReport, ci_signal};
 use crate::orient::claude_review::ClaudeReview;
-use crate::orient::copilot::copilot_signal;
-use crate::orient::cursor::cursor_signal;
+use crate::orient::copilot::{CopilotReport, copilot_signal};
+use crate::orient::cursor::{CursorReport, cursor_signal};
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
 use ooda_core::MidTier;
@@ -132,32 +132,45 @@ pub(crate) struct Blocker {
 
 // ── Construction ─────────────────────────────────────────────────────
 
+/// Per-consumer input slice for [`Dashboard::from_iteration`]. Each
+/// field declares a typed dep ref. The struct is the function
+/// signature reified; scope is exactly the six axes the dashboard
+/// projects.
+pub(crate) struct DashboardInputs<'a> {
+    pub ci: &'a CiReport,
+    pub cursor: Option<&'a CursorReport>,
+    pub copilot: Option<&'a CopilotReport>,
+    pub pull_request_metadata: &'a PullRequestMetadata,
+    pub doc_review: &'a DocReview,
+    pub claude_review: &'a ClaudeReview,
+}
+
+impl<'a> From<&'a crate::orient::OrientedState> for DashboardInputs<'a> {
+    fn from(o: &'a crate::orient::OrientedState) -> Self {
+        Self {
+            ci: &o.ci,
+            cursor: o.cursor.as_ref(),
+            copilot: o.copilot.as_ref(),
+            pull_request_metadata: &o.pull_request_metadata,
+            doc_review: &o.doc_review,
+            claude_review: &o.claude_review,
+        }
+    }
+}
+
 impl Dashboard {
     /// Assemble a [`Dashboard`] from the per-iteration triple.
     /// Pure projection — no additional observation source.
     ///
     /// Declared deps: the six axes' reports that feed the
     /// dashboard's signal stripe.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_iteration(
-        ci: &crate::orient::ci::CiReport,
-        cursor: Option<&crate::orient::cursor::CursorReport>,
-        copilot: Option<&crate::orient::copilot::CopilotReport>,
-        pull_request_metadata: &PullRequestMetadata,
-        doc_review: &crate::orient::doc_review::DocReview,
-        claude_review: &crate::orient::claude_review::ClaudeReview,
+        inputs: &DashboardInputs<'_>,
         candidates: &[Action],
         decision: &Decision,
     ) -> Self {
         let candidates = build_candidates(candidates, decision);
-        let signals = collect_signals(
-            ci,
-            cursor,
-            copilot,
-            pull_request_metadata,
-            doc_review,
-            claude_review,
-        );
+        let signals = collect_signals(inputs);
         let blockers = collect_blockers(&candidates);
         Self {
             candidates,
@@ -193,31 +206,24 @@ impl RankedCandidate {
     }
 }
 
-fn collect_signals(
-    ci: &crate::orient::ci::CiReport,
-    cursor: Option<&crate::orient::cursor::CursorReport>,
-    copilot: Option<&crate::orient::copilot::CopilotReport>,
-    pull_request_metadata: &PullRequestMetadata,
-    doc_review: &crate::orient::doc_review::DocReview,
-    claude_review: &crate::orient::claude_review::ClaudeReview,
-) -> Vec<AxisSignal> {
+fn collect_signals(inputs: &DashboardInputs<'_>) -> Vec<AxisSignal> {
     let mut out: Vec<AxisSignal> = Vec::new();
-    if let Some(c) = copilot
+    if let Some(c) = inputs.copilot
         && let Some(sig) = copilot_signal(&c.activity)
     {
         out.push(sig);
     }
-    if let Some(sig) = ci_signal(&ci.activity) {
+    if let Some(sig) = ci_signal(&inputs.ci.activity) {
         out.push(sig);
     }
-    if let Some(c) = cursor
+    if let Some(c) = inputs.cursor
         && let Some(sig) = cursor_signal(&c.activity)
     {
         out.push(sig);
     }
-    out.push(pull_request_metadata_signal(pull_request_metadata));
-    out.push(doc_review_signal(doc_review));
-    out.push(claude_review_signal(claude_review));
+    out.push(pull_request_metadata_signal(inputs.pull_request_metadata));
+    out.push(doc_review_signal(inputs.doc_review));
+    out.push(claude_review_signal(inputs.claude_review));
     out
 }
 

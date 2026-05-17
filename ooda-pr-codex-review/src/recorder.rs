@@ -376,12 +376,14 @@ impl Recorder {
         TObs: Serialize,
     {
         let dashboard = Dashboard::from_iteration(
-            inputs.ci,
-            inputs.cursor,
-            inputs.copilot,
-            inputs.pull_request_metadata,
-            inputs.doc_review,
-            inputs.claude_review,
+            &crate::dashboard::DashboardInputs {
+                ci: inputs.ci,
+                cursor: inputs.cursor,
+                copilot: inputs.copilot,
+                pull_request_metadata: inputs.pull_request_metadata,
+                doc_review: inputs.doc_review,
+                claude_review: inputs.claude_review,
+            },
             candidates,
             decision,
         );

@@ -230,12 +230,14 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
     if let Some(recorder) = recorder {
         let mut rendered = Vec::new();
         render_outcome(&mut rendered, outcome, handoff_path.as_deref());
+        let mut headline = String::new();
         if let Ok(text) = String::from_utf8(rendered) {
+            headline = text.lines().next().unwrap_or("").to_string();
             for line in text.lines() {
                 recorder.write_trace_line(line);
             }
         }
-        recorder.record_outcome(outcome, code);
+        recorder.record_outcome(outcome, code, &headline, handoff_path.as_deref());
     }
     ExitCode::from(code)
 }
@@ -598,8 +600,9 @@ fn push_handoff_context(
 /// contract: single-line header, optionally followed by a pointer
 /// block (`Handoff*` variants). No trailing content.
 ///
-/// `handoff_path` is the absolute path of the `latest/handoff.md`
-/// file the recorder wrote for this outcome. When `Some`, the
+/// `handoff_path` is the absolute path of the per-iteration
+/// `handoff.md` file the recorder wrote for this outcome
+/// (`runs/<run-id>/iterations/<NNNN>/handoff.md`). When `Some`, the
 /// emitted block is `  see: <path>` (a 7-byte sentinel + absolute
 /// path on one line); the agent reads the prompt body from the
 /// file. When `None` (recorder unavailable, or tests), the
@@ -662,7 +665,8 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
 /// - **Path form** (`handoff_path = Some`): one line beginning with
 ///   the literal 7-byte sequence `␣␣see:␣` (two spaces, "see",
 ///   colon, space) followed by the absolute path of the
-///   `latest/handoff.md` file holding the prompt body. The agent
+///   per-iteration `handoff.md` file holding the prompt body
+///   (`runs/<run-id>/iterations/<NNNN>/handoff.md`). The agent
 ///   reads that file to obtain the prompt; the file's size is
 ///   observable via `stat` before commit, so consumption has no
 ///   truncation pressure. This is the production path.
@@ -877,7 +881,8 @@ mod tests {
     #[test]
     fn render_handoff_agent_pointer_form() {
         let mut buf = Vec::new();
-        let path = Path::new("/state/github.com/acme/widget/prs/42/latest/handoff.md");
+        let path =
+            Path::new("/state/github.com/acme/widget/prs/42/runs/r1/iterations/0001/handoff.md");
         render_outcome(
             &mut buf,
             &make_handoff_outcome("Rebase onto base"),
@@ -886,7 +891,9 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("HandoffAgent: Rebase\n"));
         assert!(
-            s.contains("\n  see: /state/github.com/acme/widget/prs/42/latest/handoff.md\n"),
+            s.contains(
+                "\n  see: /state/github.com/acme/widget/prs/42/runs/r1/iterations/0001/handoff.md\n",
+            ),
             "rendered: {s}"
         );
         assert!(

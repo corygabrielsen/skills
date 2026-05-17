@@ -560,7 +560,7 @@ fn state_root_records_even_when_observe_fails() {
 
     let pr_root = state_root.join("github.com/owner/repo/prs/1");
     assert!(pr_root.join("events.jsonl").exists());
-    assert!(pr_root.join("latest/outcome.json").exists());
+    assert!(pr_root.join("CURRENT.json").exists());
     assert!(pr_root.join("ledger.jsonl").exists());
 
     let events = std::fs::read_to_string(pr_root.join("events.jsonl")).unwrap();

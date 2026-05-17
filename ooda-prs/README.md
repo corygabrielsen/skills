@@ -479,8 +479,9 @@ Outcome, no exception type).
 
 `render_outcome : &Outcome → write to stderr`. Each variant emits
 exactly one header line; `Handoff*` variants additionally emit a
-single `see:` pointer to `latest/handoff.md`. See `SKILL.md` for
-the per-variant header format.
+single `see:` pointer to the per-iteration `handoff.md` under
+`runs/<run-id>/iterations/<NNNN>/`. See `SKILL.md` for the
+per-variant header format.
 
 ```
 header(Outcome) ::=                      ← left: variant; right: emitted stderr text
@@ -495,8 +496,11 @@ header(Outcome) ::=                      ← left: variant; right: emitted stder
     DoneAborted                          "DoneClosed"
     UsageError(msg)                      "UsageError: {msg}" + usage text
 
-see-pointer ::= "  see: {abs-path-to-latest/handoff.md}"   ← 7-byte prefix is contract
-                                                            (prompt body is in the file)
+see-pointer ::= "  see: {abs-path}"                        ← 7-byte prefix is contract
+                                                            (path is the per-iteration
+                                                             runs/<run-id>/iterations/<NNNN>/handoff.md;
+                                                             also CURRENT.json's artifacts.handoff;
+                                                             prompt body is in the file)
 ```
 
 `ActionKind::name() : &'static str` returns the bare variant name
@@ -717,8 +721,11 @@ against overlapping PRs each get a distinct `<suite-id>`; per-PR
        (b) gh rate-limit cascade: --concurrency K bounds the request
            burst; default = |suite|.
        (c) two ooda-prs invocations on overlapping PRs: distinct
-           <suite-id> + <run-id> per process; latest/ledger collide
-           harmlessly (last-writer-wins, same as /ooda-pr).
+           <suite-id> + <run-id> per process; CURRENT.json /
+           ledger collide harmlessly (last-writer-wins on
+           CURRENT.json via atomic replace; appends on ledger,
+           same as /ooda-pr). Per-iteration immutables live under
+           disjoint runs/<run-id>/iterations/ paths and never collide.
        (d) |suite| = 1: degenerate but valid; one stdout record;
            $? = that PR's per-PR exit code (since no other PR
            contributes to the priority projection).

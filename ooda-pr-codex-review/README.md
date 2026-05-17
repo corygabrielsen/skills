@@ -22,8 +22,9 @@ ExitCode = Outcome.exit_code()       (1:1 variant → code; see Outcome)
 
 `recorder` is the always-on local memory harness. It is keyed by
 forge + repo + PR, writes under the configured state root, appends
-causality events, stores compressed full artifacts, and materializes
-latest-first agent entrypoints.
+causality events, stores compressed full artifacts, and publishes
+the mutable `CURRENT.json` pointer that names the current per-iteration
+immutable directory for agent entry.
 
 ### Shared boundary types (`ooda-core` crate)
 
@@ -546,8 +547,9 @@ Outcome, no exception type).
 
 `render_outcome : &Outcome → write to stderr`. Each variant emits
 exactly one header line; `Handoff*` variants additionally emit a
-single `see:` pointer to `latest/handoff.md`. See `SKILL.md` for
-the per-variant header format.
+single `see:` pointer to the per-iteration `handoff.md` under
+`runs/<run-id>/iterations/<NNNN>/`. See `SKILL.md` for the
+per-variant header format.
 
 ```
 header(Outcome) ::=                      ← left: variant; right: emitted stderr text
@@ -562,8 +564,11 @@ header(Outcome) ::=                      ← left: variant; right: emitted stder
     DoneAborted                          "DoneClosed"
     UsageError(msg)                      "UsageError: {msg}" + usage text
 
-see-pointer ::= "  see: {abs-path-to-latest/handoff.md}"   ← 7-byte prefix is contract
-                                                            (prompt body is in the file)
+see-pointer ::= "  see: {abs-path}"                        ← 7-byte prefix is contract
+                                                            (path is the per-iteration
+                                                             runs/<run-id>/iterations/<NNNN>/handoff.md;
+                                                             also CURRENT.json's artifacts.handoff;
+                                                             prompt body is in the file)
 ```
 
 `ActionKind::name() : &'static str` returns the bare variant name

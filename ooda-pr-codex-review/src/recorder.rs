@@ -3,8 +3,9 @@
 //! The recorder is the single persistence boundary for `ooda-pr`.
 //! Runtime code reports observations, decisions, tool calls, actions,
 //! comments, waits, and outcomes here; this module owns the on-disk
-//! layout, event ordering, artifact storage, and latest/ledger views.
+//! layout, event ordering, artifact storage, CURRENT.json pointer, and ledger views.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ use crate::decide::decision::Decision;
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::orient::OrientedState;
 use crate::outcome::Outcome;
-use ooda_core::ExitCode;
+use ooda_core::{CURRENT_MANIFEST_SCHEMA_VERSION, CurrentManifest, ExitCode};
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -183,7 +184,6 @@ impl Recorder {
         let run_root = pr_root.join("runs").join(&run_id);
 
         fs::create_dir_all(run_root.join("iterations"))?;
-        fs::create_dir_all(pr_root.join("latest"))?;
         fs::create_dir_all(pr_root.join("status-comment"))?;
         fs::create_dir_all(pr_root.join("blobs").join("sha256"))?;
 
@@ -243,19 +243,34 @@ impl Recorder {
             .unwrap_or_default()
     }
 
-    /// Write the `Handoff*` prompt body to `<pr_root>/latest/handoff.md`
-    /// and return its absolute path. Stderr emits a `see: <path>`
-    /// pointer to this file in place of the inline prompt block, so
-    /// callers consume the prompt via a file read with observable
-    /// size rather than tail-truncating an unbounded stream.
-    /// Returns `None` if the write fails — caller falls back to
-    /// inline emission so the prompt is never lost.
+    /// Write the `Handoff*` prompt body as the per-iteration
+    /// `handoff.md` inside `runs/<run-id>/iterations/<NNNN>/` and
+    /// return its absolute path. Pure: no shared-state mutation —
+    /// just writes the file (content-addressed into the blob store
+    /// like every other per-iteration artifact) and returns the path.
+    /// `publish_current` later derives the relative-path for the
+    /// CURRENT.json `artifacts.handoff` entry from the same
+    /// (`run_id`, iteration) tuple, so no plumbing is needed between
+    /// this call and `record_outcome`.
+    /// Stderr emits a `see: <path>` pointer to this file in place
+    /// of the inline prompt block; callers consume the prompt via a
+    /// file read with observable size rather than tail-truncating an
+    /// unbounded stream.
+    /// Returns `None` if the write fails or the recorder has no
+    /// current iteration — caller falls back to inline stderr
+    /// emission so the prompt is never lost.
     pub(crate) fn write_handoff_md(&self, prompt: &str) -> Option<PathBuf> {
-        self.with_inner(|inner| {
-            let path = inner.pr_root.join("latest/handoff.md");
-            write_bytes_at(&path, prompt.as_bytes()).ok().map(|()| path)
-        })
-        .flatten()
+        let mut inner = self.inner.lock().ok()?;
+        let iteration = inner.current_iteration?;
+        let artifact = inner
+            .write_artifact_bytes(
+                Some(iteration),
+                "handoff.md",
+                prompt.as_bytes(),
+                "text/markdown",
+            )
+            .ok()?;
+        Some(inner.pr_root.join(&artifact.path))
     }
 
     pub(crate) fn write_trace_line(&self, line: &str) {
@@ -281,6 +296,7 @@ impl Recorder {
         let dashboard = Dashboard::from_iteration(oriented, candidates, decision);
         self.best_effort(|inner| {
             inner.current_iteration = Some(iteration);
+
             let obs_ref = inner.write_json_artifact(
                 Some(iteration),
                 "normalized.json",
@@ -299,17 +315,17 @@ impl Recorder {
                 candidates,
                 "application/json",
             )?;
-            let decision_ref = inner.write_json_artifact(
+            // `decision_envelope.json` carries the Execute/Halt
+            // structure (the runner's typed dispatch input); paired
+            // with `dashboard.json` which carries the human-shaped
+            // tier-grouped projection. Distinct filenames keep the
+            // two schemas separable for any downstream consumer.
+            let decision_envelope_ref = inner.write_json_artifact(
                 Some(iteration),
-                "decision.json",
+                "decision_envelope.json",
                 decision,
                 "application/json",
             )?;
-            // Per spec: `latest/decision.json` carries the new
-            // tier-grouped dashboard projection, not the executor
-            // envelope. Keep per-iter `decision.json` (the
-            // Execute/Halt envelope) for internal cross-referencing;
-            // surface the human-shaped Dashboard at `latest/`.
             let dashboard_ref = inner.write_json_artifact(
                 Some(iteration),
                 "dashboard.json",
@@ -317,45 +333,70 @@ impl Recorder {
                 "application/json",
             )?;
 
-            inner.copy_latest("state.json", &oriented_ref)?;
-            inner.copy_latest("decision.json", &dashboard_ref)?;
+            // Per-iteration markdown surfaces — written inline; no
+            // cross-call state. `publish_current` derives the
+            // CURRENT.json artifacts map from `(run_id, iteration)`
+            // deterministically, so it doesn't need to know which
+            // markdowns landed here.
+            let index_md = render_iteration_index_md(
+                &inner.slug,
+                inner.pr,
+                &inner.run_id,
+                iteration,
+                decision,
+            );
+            inner.write_artifact_bytes(
+                Some(iteration),
+                "index.md",
+                index_md.as_bytes(),
+                "text/markdown",
+            )?;
+            inner.write_artifact_bytes(
+                Some(iteration),
+                "blockers.md",
+                dashboard.render_blockers_md().as_bytes(),
+                "text/markdown",
+            )?;
+            inner.write_artifact_bytes(
+                Some(iteration),
+                "next.md",
+                dashboard.render_next_md().as_bytes(),
+                "text/markdown",
+            )?;
+
             // Serialize whichever payload the decision carries
             // (Action for Execute / Stuck-equivalents; HandoffAction
             // for AgentNeeded/HumanNeeded). Both implement Serialize
             // with their own schema; downstream tooling discriminates
             // by the surrounding decision-projection record.
-            let action_ref = match decision {
-                Decision::Execute(action) => Some(inner.write_json_artifact(
-                    Some(iteration),
-                    "action.json",
-                    action,
-                    "application/json",
-                )?),
+            match decision {
+                Decision::Execute(action) => {
+                    inner.write_json_artifact(
+                        Some(iteration),
+                        "action.json",
+                        action,
+                        "application/json",
+                    )?;
+                }
                 Decision::Halt(
                     crate::decide::decision::DecisionHalt::AgentNeeded(handoff)
                     | crate::decide::decision::DecisionHalt::HumanNeeded(handoff),
-                ) => Some(inner.write_json_artifact(
-                    Some(iteration),
-                    "action.json",
-                    handoff,
-                    "application/json",
-                )?),
-                Decision::Halt(_) => None,
-            };
-            if let Some(action_ref) = &action_ref {
-                inner.copy_latest("action.json", action_ref)?;
-            } else {
-                inner.remove_latest("action.json")?;
+                ) => {
+                    inner.write_json_artifact(
+                        Some(iteration),
+                        "action.json",
+                        handoff,
+                        "application/json",
+                    )?;
+                }
+                Decision::Halt(_) => {}
             }
-            inner.write_latest_markdown(iteration, decision)?;
-            inner.write_blockers_markdown(&dashboard)?;
-            inner.write_next_markdown(&dashboard)?;
 
             let artifacts = vec![
                 obs_ref,
                 oriented_ref,
                 candidates_ref,
-                decision_ref,
+                decision_envelope_ref,
                 dashboard_ref,
             ];
             inner.append_event(
@@ -524,16 +565,21 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn record_outcome(&self, outcome: &Outcome, code: ExitCode) {
+    pub(crate) fn record_outcome(
+        &self,
+        outcome: &Outcome,
+        code: ExitCode,
+        headline: &str,
+        handoff_path: Option<&Path>,
+    ) {
         self.best_effort(|inner| {
-            let artifact =
+            let outcome_ref =
                 inner.write_json_artifact(None, "outcome.json", outcome, "application/json")?;
-            inner.copy_latest("outcome.json", &artifact)?;
             inner.append_event(
                 inner.current_iteration,
                 "outcome",
                 outcome_summary(outcome, code),
-                vec![artifact],
+                vec![outcome_ref],
                 json!({ "exit_code": code }),
             )?;
             inner.append_ledger("outcome", &outcome_summary(outcome, code))?;
@@ -541,6 +587,7 @@ impl Recorder {
             if let Some(file) = inner.legacy_trace.as_mut() {
                 writeln!(file, "exit={code}")?;
             }
+            inner.publish_current(outcome, code, headline, handoff_path)?;
             Ok(())
         });
     }
@@ -770,56 +817,113 @@ impl Inner {
         Ok(())
     }
 
-    fn copy_latest(&self, name: &str, artifact: &ArtifactRef) -> Result<(), RecorderError> {
-        // `latest/*` is a stable read-surface tree; readers expect
-        // each file to be either the prior valid state or the new
-        // valid state, never partially copied. Read source bytes,
-        // then write via the atomic helper. (fs::copy is
-        // truncate-then-write — would expose a zero-length window
-        // to concurrent readers.)
-        let source = self.pr_root.join(&artifact.path);
-        let target = self.pr_root.join("latest").join(name);
-        let bytes = fs::read(&source)?;
-        write_bytes_at(&target, &bytes)?;
-        Ok(())
-    }
-
-    fn remove_latest(&self, name: &str) -> Result<(), RecorderError> {
-        match fs::remove_file(self.pr_root.join("latest").join(name)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn write_latest_markdown(
+    /// Atomically write `<pr_root>/CURRENT.json` reflecting the
+    /// terminal outcome of the most-recent invocation. The manifest
+    /// names the run-id, iteration, exit-code, headline, and a
+    /// symbol → relative-path map of artifacts derived
+    /// deterministically from `(run_id, current_iteration)` plus the
+    /// terminal outcome shape. No cross-call shared state.
+    ///
+    /// Conditional inclusion:
+    /// - `action` present iff the terminal outcome carries an
+    ///   `Action` or `HandoffAction` payload (any of `WouldAdvance`,
+    ///   `HandoffAgent`, `HandoffHuman`, `StuckRepeated`,
+    ///   `StuckCapReached`).
+    /// - `handoff` present iff `handoff_path` is `Some` (caller
+    ///   guarantees the file was written; we just record the path).
+    ///
+    /// `keep_runs` is empty by default; future GC passes will
+    /// preserve any run-ids listed here in addition to `run_id`.
+    fn publish_current(
         &self,
-        iteration: u32,
-        decision: &Decision,
+        outcome: &Outcome,
+        code: ExitCode,
+        headline: &str,
+        handoff_path: Option<&Path>,
     ) -> Result<(), RecorderError> {
-        let body = format!(
-            "# ooda-pr latest\n\n- repo: `{}`\n- pr: `{}`\n- run: `{}`\n- iteration: `{}`\n- decision: `{}`\n\nLinks:\n- [state](state.json)\n- [decision](decision.json)\n- [action](action.json)\n- [outcome](outcome.json)\n- [ledger](../ledger.md)\n- [events](../events.jsonl)\n",
-            self.slug,
-            self.pr,
-            self.run_id,
-            iteration,
-            decision_summary(decision),
+        let iteration = self.current_iteration.unwrap_or(0);
+        let iter_dir = format!("runs/{}/iterations/{iteration:04}", self.run_id);
+        let run_dir = format!("runs/{}", self.run_id);
+
+        let mut artifacts: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for (sym, fname) in [
+            ("normalized", "normalized.json"),
+            ("state", "oriented.json"),
+            ("candidates", "candidates.json"),
+            ("decision_envelope", "decision_envelope.json"),
+            ("dashboard", "dashboard.json"),
+            ("index", "index.md"),
+            ("blockers", "blockers.md"),
+            ("next", "next.md"),
+        ] {
+            artifacts.insert(
+                sym.to_string(),
+                PathBuf::from(format!("{iter_dir}/{fname}")),
+            );
+        }
+        if outcome_has_action(outcome) {
+            artifacts.insert(
+                "action".to_string(),
+                PathBuf::from(format!("{iter_dir}/action.json")),
+            );
+        }
+        if let Some(path) = handoff_path {
+            artifacts.insert(
+                "handoff".to_string(),
+                path.strip_prefix(&self.pr_root)
+                    .map_or_else(|_| path.to_path_buf(), Path::to_path_buf),
+            );
+        }
+        artifacts.insert(
+            "outcome".to_string(),
+            PathBuf::from(format!("{run_dir}/outcome.json")),
         );
-        write_bytes_at(&self.pr_root.join("latest/index.md"), body.as_bytes())?;
-        Ok(())
-    }
 
-    fn write_blockers_markdown(&self, dashboard: &Dashboard) -> Result<(), RecorderError> {
-        let body = dashboard.render_blockers_md();
-        write_bytes_at(&self.pr_root.join("latest/blockers.md"), body.as_bytes())?;
+        let manifest = CurrentManifest {
+            schema_version: CURRENT_MANIFEST_SCHEMA_VERSION,
+            run_id: self.run_id.clone(),
+            iteration,
+            exit_code: code.as_u8(),
+            headline: headline.to_string(),
+            artifacts,
+            keep_runs: Vec::new(),
+        };
+        let body = serde_json::to_vec_pretty(&manifest)?;
+        write_bytes_at(&self.pr_root.join("CURRENT.json"), &body)?;
         Ok(())
     }
+}
 
-    fn write_next_markdown(&self, dashboard: &Dashboard) -> Result<(), RecorderError> {
-        let body = dashboard.render_next_md();
-        write_bytes_at(&self.pr_root.join("latest/next.md"), body.as_bytes())?;
-        Ok(())
-    }
+/// True when the terminal outcome carries an `Action` or
+/// `HandoffAction` payload (and therefore `record_iteration` wrote
+/// `action.json` at the terminal iteration). Mirrors the variants
+/// that `record_iteration` matches on for `action.json` writes.
+fn outcome_has_action(outcome: &Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::WouldAdvance(_)
+            | Outcome::HandoffAgent(_)
+            | Outcome::HandoffHuman(_)
+            | Outcome::StuckRepeated(_)
+            | Outcome::StuckCapReached(_)
+    )
+}
+
+/// Per-iteration index.md body. Replaces the former mutable
+/// `latest/index.md`. No link section — CURRENT.json is the
+/// link catalog; this surface is for human readers who want a
+/// glance at "what is iteration N about."
+fn render_iteration_index_md(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    run_id: &str,
+    iteration: u32,
+    decision: &Decision,
+) -> String {
+    format!(
+        "# ooda-pr iteration {iteration}\n\n- repo: `{slug}`\n- pr: `{pr}`\n- run: `{run_id}`\n- iteration: `{iteration}`\n- decision: `{summary}`\n",
+        summary = decision_summary(decision),
+    )
 }
 
 pub(crate) struct ToolCallGuard {
@@ -976,12 +1080,11 @@ fn append_file(path: &Path) -> Result<File, io::Error> {
 }
 
 fn write_bytes_at(path: &Path, bytes: &[u8]) -> Result<(), io::Error> {
-    // Atomic + durable: stable read-surface files
-    // (latest/state.json, latest/index.md, blockers.md, next.md,
-    // event-range.json, manifest.json) must never be observed
-    // partially-written by a concurrent reader or survive a crash
-    // truncated. write_atomic does tmp+rename+fsync(tmp)+
-    // fsync(parent).
+    // Atomic + durable: stable read-surface files (CURRENT.json,
+    // per-iteration artifacts, event-range.json, manifest.json) must
+    // never be observed partially-written by a concurrent reader or
+    // survive a crash truncated. write_atomic does
+    // tmp+rename+fsync(tmp)+fsync(parent).
     ooda_core::atomic_io::write_atomic(path, bytes)
 }
 
@@ -1232,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn outcome_artifact_is_linked_to_compressed_blob() {
+    fn outcome_artifact_is_linked_to_compressed_blob_and_published_in_current() {
         let root = temp_root("blob");
         let _ = fs::remove_dir_all(&root);
         let recorder = Recorder::open(RecorderConfig {
@@ -1246,10 +1349,18 @@ mod tests {
         })
         .unwrap();
 
-        recorder.record_outcome(&Outcome::Paused, ExitCode::Paused);
+        recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
 
         let pr_root = recorder.pull_request_root();
-        let outcome = fs::read(pr_root.join("latest/outcome.json")).unwrap();
+        // CURRENT.json names the outcome.json path; the blob lives
+        // content-addressed under blobs/sha256/<aa>/<bb>/<hash>.zst.
+        let current_bytes = fs::read(pr_root.join("CURRENT.json")).unwrap();
+        let current: ooda_core::CurrentManifest = serde_json::from_slice(&current_bytes).unwrap();
+        assert_eq!(current.headline, "Paused");
+        assert_eq!(current.exit_code, ExitCode::Paused.as_u8());
+
+        let outcome_path = pr_root.join(current.artifacts.get("outcome").unwrap());
+        let outcome = fs::read(&outcome_path).unwrap();
         let hash = sha256_hex(&outcome);
         let blob = pr_root
             .join("blobs")
@@ -1266,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn write_handoff_md_persists_body_at_latest_path() {
+    fn write_handoff_md_persists_body_at_per_iteration_path() {
         let root = temp_root("handoff_md");
         let _ = fs::remove_dir_all(&root);
         let recorder = Recorder::open(RecorderConfig {
@@ -1279,13 +1390,22 @@ mod tests {
             legacy_trace: None,
         })
         .unwrap();
+        // write_handoff_md requires a current iteration; the runner
+        // sets this via set_iteration before each iteration begins.
+        recorder.set_iteration(Some(1));
 
         let body = "Rebase onto base\n\nContinuation line.";
         let path = recorder
             .write_handoff_md(body)
             .expect("write should succeed under temp root");
 
-        assert_eq!(path, recorder.pull_request_root().join("latest/handoff.md"));
+        assert!(
+            path.to_string_lossy().contains("/runs/")
+                && path
+                    .to_string_lossy()
+                    .ends_with("/iterations/0001/handoff.md"),
+            "handoff.md lives per-iteration, got {path:?}",
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), body);
         let _ = fs::remove_dir_all(root);
     }
@@ -1425,7 +1545,7 @@ mod tests {
                 "normalized.json",
                 "oriented.json",
                 "candidates.json",
-                "decision.json",
+                "decision_envelope.json",
                 "dashboard.json",
             ],
         );

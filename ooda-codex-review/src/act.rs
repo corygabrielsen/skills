@@ -163,8 +163,17 @@ fn spawn_codex_reviews(
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .stdin(Stdio::null());
-        cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|source| ActError::Spawn { slot, source })?;
+        // Detached reaper thread per child. The observe layer reads
+        // `.exit` for completion signal; this thread's only job is
+        // to call `waitpid` so the OS reclaims the zombie when the
+        // child exits. Dropping `Child` without `wait()` leaves a
+        // zombie in the process table until the parent exits.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
     }
     Ok(())
 }

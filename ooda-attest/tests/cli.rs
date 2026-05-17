@@ -150,7 +150,7 @@ fn ooda_pr_state_home_env_var_supplies_default_state_root() {
 
     bin()
         .current_dir(repo.path())
-        .env("OODA_PR_STATE_HOME", state_root.path())
+        .env("OODA_STATE_HOME", state_root.path())
         .env_remove("XDG_STATE_HOME")
         .args(["pr-meta", "--pr-id", "753"])
         .assert()
@@ -174,7 +174,7 @@ fn home_fallback_supplies_default_state_root_when_no_env_overrides() {
 
     bin()
         .current_dir(repo.path())
-        .env_remove("OODA_PR_STATE_HOME")
+        .env_remove("OODA_STATE_HOME")
         .env_remove("XDG_STATE_HOME")
         .env("HOME", fake_home.path())
         .args(["pr-meta", "--pr-id", "753"])
@@ -187,7 +187,7 @@ fn home_fallback_supplies_default_state_root_when_no_env_overrides() {
         .unwrap()
         .join(".local")
         .join("state")
-        .join("ooda-pr")
+        .join("ooda")
         .join("753")
         .join("pr_meta_attest.json");
     assert!(
@@ -208,7 +208,7 @@ fn explicit_state_root_wins_over_env_var() {
 
     bin()
         .current_dir(repo.path())
-        .env("OODA_PR_STATE_HOME", env_root.path())
+        .env("OODA_STATE_HOME", env_root.path())
         .args(["pr-meta", "--pr-id", "42", "--state-root"])
         .arg(explicit.path())
         .assert()
@@ -293,7 +293,7 @@ fn doc_review_ooda_pr_state_home_env_var_supplies_default_state_root() {
 
     bin()
         .current_dir(repo.path())
-        .env("OODA_PR_STATE_HOME", state_root.path())
+        .env("OODA_STATE_HOME", state_root.path())
         .env_remove("XDG_STATE_HOME")
         .args(["doc-review", "--pr-id", "753"])
         .assert()
@@ -313,7 +313,7 @@ fn doc_review_home_fallback_supplies_default_state_root_when_no_env_overrides() 
 
     bin()
         .current_dir(repo.path())
-        .env_remove("OODA_PR_STATE_HOME")
+        .env_remove("OODA_STATE_HOME")
         .env_remove("XDG_STATE_HOME")
         .env("HOME", fake_home.path())
         .args(["doc-review", "--pr-id", "753"])
@@ -326,7 +326,7 @@ fn doc_review_home_fallback_supplies_default_state_root_when_no_env_overrides() 
         .unwrap()
         .join(".local")
         .join("state")
-        .join("ooda-pr")
+        .join("ooda")
         .join("753")
         .join("doc_review_attest.json");
     assert!(path.exists(), "attestation not at {}", path.display());
@@ -475,7 +475,7 @@ fn closeout_ooda_pr_state_home_env_var_supplies_default_state_root() {
 
     bin()
         .current_dir(repo.path())
-        .env("OODA_PR_STATE_HOME", state_root.path())
+        .env("OODA_STATE_HOME", state_root.path())
         .env_remove("XDG_STATE_HOME")
         .args(["closeout", "--pr-id", "753"])
         .assert()
@@ -495,7 +495,7 @@ fn closeout_home_fallback_supplies_default_state_root_when_no_env_overrides() {
 
     bin()
         .current_dir(repo.path())
-        .env_remove("OODA_PR_STATE_HOME")
+        .env_remove("OODA_STATE_HOME")
         .env_remove("XDG_STATE_HOME")
         .env("HOME", fake_home.path())
         .args(["closeout", "--pr-id", "753"])
@@ -508,7 +508,7 @@ fn closeout_home_fallback_supplies_default_state_root_when_no_env_overrides() {
         .unwrap()
         .join(".local")
         .join("state")
-        .join("ooda-pr")
+        .join("ooda")
         .join("753")
         .join("closeout_attest.json");
     assert!(path.exists(), "attestation not at {}", path.display());

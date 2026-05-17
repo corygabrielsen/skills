@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 ooda-core = { path = "../ooda-core" }
+ooda-state = { path = "../ooda-state" }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

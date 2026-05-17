@@ -8,18 +8,24 @@ use crate::ids::BlockerKey;
 
 use crate::observe::github::compare::MergeBaseDelta;
 use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable};
-use crate::orient::OrientedState;
 use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadState};
 
 use super::action::{Action, ActionEffect, ActionKind, MidTier, NonEmpty, TargetEffect, Urgency};
 
 /// Mechanical merge blockers — every candidate here must clear
-/// before the PR can merge at all. Composed over the whole
-/// oriented state so per-action prompts can pull witness data
-/// from any axis without further signature changes.
-pub(crate) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
-    let state = &oriented.state;
+/// before the PR can merge at all.
+///
+/// Declared deps: the merge-shape projection plus the two
+/// witness sources used by rebase-prompt enrichment (review
+/// threads for re-anchoring; merge-base delta for behind-base
+/// guidance). Each is a typed ref; the fn does not consume the
+/// whole oriented bundle.
+pub(crate) fn blocking_candidates(
+    state: &PullRequestProjection,
+    threads: &[ReviewThread],
+    merge_base_delta: Option<&crate::observe::github::compare::MergeBaseDelta>,
+) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
 
     // PR-shape blockers precede mergeability waits: an incomplete
@@ -88,8 +94,8 @@ pub(crate) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 prompt: build_rebase_prompt(
                     "Rebase to resolve merge conflicts",
                     state,
-                    &oriented.threads,
-                    oriented.merge_base_delta.as_ref(),
+                    threads,
+                    merge_base_delta,
                 ),
             },
             target_effect: TargetEffect::Blocks,
@@ -103,8 +109,8 @@ pub(crate) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 prompt: build_rebase_prompt(
                     "Rebase onto the latest base branch",
                     state,
-                    &oriented.threads,
-                    oriented.merge_base_delta.as_ref(),
+                    threads,
+                    merge_base_delta,
                 ),
             },
             target_effect: TargetEffect::Blocks,
@@ -340,8 +346,6 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
 mod tests {
     use super::*;
     use crate::ids::Timestamp;
-    use crate::orient::ci::{CheckBucket, CiActivity, CiReport, CiSummary, ResolvedState};
-    use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::thread::{BotName, FilePath, ThreadAuthor, ThreadId, ThreadLocation};
 
     fn clean() -> PullRequestProjection {
@@ -370,81 +374,6 @@ mod tests {
         }
     }
 
-    fn clean_ci() -> CiReport {
-        CiReport {
-            summary: CiSummary {
-                required: CheckBucket::default(),
-                missing_names: vec![],
-                completed_at: None,
-                advisory: CheckBucket::default(),
-            },
-            activity: CiActivity::Resolved(ResolvedState::AllGreen),
-        }
-    }
-
-    fn clean_reviews() -> ReviewSummary {
-        ReviewSummary {
-            decision: None,
-            threads_unresolved: 0,
-            threads_total: 0,
-            bot_comments: 0,
-            approvals_on_head: 0,
-            approvals_stale: 0,
-            pending_reviews: PendingReviews::default(),
-            bot_reviews: vec![],
-            requested_reviewers: crate::orient::reviews::RequestedReviewerSet::default(),
-            latest_human_changes_requested: None,
-        }
-    }
-
-    fn oriented(state: PullRequestProjection) -> OrientedState {
-        OrientedState {
-            ci: clean_ci(),
-            state,
-            reviews: clean_reviews(),
-            copilot: None,
-            cursor: None,
-            threads: vec![],
-            merge_base_delta: None,
-            pull_request_metadata:
-                crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
-            attest_path: None,
-            doc_review: crate::orient::doc_review::DocReview::NeverAttested,
-            doc_review_attest_path: None,
-            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
-            claude_review_attest_path: None,
-            codex_review: None,
-            closeout: crate::orient::closeout::Closeout::Synced,
-            closeout_attest_path: None,
-        }
-    }
-
-    fn oriented_with(
-        state: PullRequestProjection,
-        threads: Vec<ReviewThread>,
-        delta: Option<MergeBaseDelta>,
-    ) -> OrientedState {
-        OrientedState {
-            ci: clean_ci(),
-            state,
-            reviews: clean_reviews(),
-            copilot: None,
-            cursor: None,
-            threads,
-            merge_base_delta: delta,
-            pull_request_metadata:
-                crate::orient::pull_request_metadata::PullRequestMetadata::NeverAttested,
-            attest_path: None,
-            doc_review: crate::orient::doc_review::DocReview::NeverAttested,
-            doc_review_attest_path: None,
-            claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
-            claude_review_attest_path: None,
-            codex_review: None,
-            closeout: crate::orient::closeout::Closeout::Synced,
-            closeout_attest_path: None,
-        }
-    }
-
     fn live_thread_with_line(path: &str, line: u32, body: &str, id: &str) -> ReviewThread {
         ReviewThread {
             id: ThreadId::new(id.to_string()),
@@ -467,14 +396,14 @@ mod tests {
 
     #[test]
     fn clean_state_yields_no_candidates() {
-        assert!(blocking_candidates(&oriented(clean())).is_empty());
+        assert!(blocking_candidates(&clean(), &[], None).is_empty());
     }
 
     #[test]
     fn conflict_emits_rebase() {
         let mut s = clean();
         s.conflict = Mergeable::Conflicting;
-        let cs = blocking_candidates(&oriented(s));
+        let cs = blocking_candidates(&s, &[], None);
         assert!(matches!(cs[0].kind, ActionKind::Rebase));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
     }
@@ -484,7 +413,7 @@ mod tests {
         let mut s = clean();
         s.behind = true;
         s.merge_state_status = MergeStateStatus::Behind;
-        let cs = blocking_candidates(&oriented(s));
+        let cs = blocking_candidates(&s, &[], None);
         let rebase = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::Rebase))
@@ -496,7 +425,7 @@ mod tests {
     fn draft_emits_mark_ready_full_automation() {
         let mut s = clean();
         s.draft = true;
-        let cs = blocking_candidates(&oriented(s));
+        let cs = blocking_candidates(&s, &[], None);
         let mark = cs.iter().find(|a| matches!(a.kind, ActionKind::MarkReady));
         assert!(mark.is_some());
         assert!(matches!(mark.unwrap().effect, ActionEffect::Full { .. }));
@@ -508,13 +437,17 @@ mod tests {
         s.content_label = false;
         s.assignees = 0;
         s.body = false;
-        assert!(blocking_candidates(&oriented(s)).is_empty());
+        assert!(blocking_candidates(&s, &[], None).is_empty());
     }
 
     // ─── Rebase prompt enrichment tests ─────────────────────────────
 
-    fn rebase_prompt_for(oriented: &OrientedState) -> String {
-        let cs = blocking_candidates(oriented);
+    fn rebase_prompt_for(
+        state: &PullRequestProjection,
+        threads: &[ReviewThread],
+        delta: Option<&MergeBaseDelta>,
+    ) -> String {
+        let cs = blocking_candidates(state, threads, delta);
         let rebase = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::Rebase))
@@ -530,7 +463,7 @@ mod tests {
             live_thread_with_line("src/foo.rs", 42, "use ? not unwrap", "T1"),
             live_thread_with_line("src/bar.rs", 108, "off-by-one", "T2"),
         ];
-        let rendered = rebase_prompt_for(&oriented_with(s, threads, None));
+        let rendered = rebase_prompt_for(&s, &threads, None);
         assert!(
             rendered.contains("Open review threads"),
             "headline paragraph missing: {rendered}"
@@ -552,7 +485,7 @@ mod tests {
             "already addressed",
             "T_r",
         )];
-        let rendered = rebase_prompt_for(&oriented_with(s, threads, None));
+        let rendered = rebase_prompt_for(&s, &threads, None);
         assert!(
             !rendered.contains("Open review threads"),
             "must not emit the witnesses preamble when none are live: {rendered}"
@@ -573,7 +506,7 @@ mod tests {
             conflict_surface: vec!["src/b.rs".into()],
             oldest_master_commit_at: Some(Timestamp::parse("2026-05-10T09:00:00Z").unwrap()),
         };
-        let rendered = rebase_prompt_for(&oriented_with(s, vec![], Some(delta)));
+        let rendered = rebase_prompt_for(&s, &[], Some(&delta));
         assert!(
             rendered.contains("Behind base by 5 commits"),
             "commits-behind headline missing: {rendered}"
@@ -598,7 +531,7 @@ mod tests {
             conflict_surface: vec![],
             oldest_master_commit_at: Some(Timestamp::parse("2026-05-12T11:00:00Z").unwrap()),
         };
-        let rendered = rebase_prompt_for(&oriented_with(s, vec![], Some(delta)));
+        let rendered = rebase_prompt_for(&s, &[], Some(&delta));
         assert!(
             rendered.contains("clean rebase, just go"),
             "missing clean-rebase recommendation: {rendered}"

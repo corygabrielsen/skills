@@ -303,17 +303,15 @@ memory.
 
 ```text
 <root>/github.com/<owner>/<repo>/prs/<pr>/
-  latest/        index.md, state.json (copy of latest oriented.json),
-                 decision.json, blockers.md, next.md, action.json
-                 (conditional), outcome.json (conditional),
-                 handoff.md (written only on Handoff* outcomes — exit 3 / 4)
-                 (action.json is present when the latest decision
-                  carries an Action; absent on Success / Terminal
-                  halts which call remove_latest. outcome.json is
-                  written only by
-                  record_outcome at the very end of an invocation, so
-                  it can be stale or missing if a run aborted before
-                  that point.)
+  CURRENT.json   mutable pointer to the current run + iteration.
+                 Fields: schema_version, run_id, iteration, exit_code,
+                 headline, artifacts (BTreeMap<symbol, relative-path>),
+                 keep_runs. Atomic replace; the per-iteration immutables
+                 it names never move once written. Agents read this file
+                 first, then follow `artifacts.*` paths into the
+                 per-iteration directory below. Conditional artifacts
+                 (`handoff`, `action`) are simply absent from the map
+                 when the iteration didn't produce them.
   ledger.md      cross-run; one bullet line per event:
                    - <rfc3339-ts> `<run-id>` <summary>
                  (the run-id is wrapped in literal backticks; the
@@ -339,9 +337,8 @@ memory.
   runs/<run-id>/
     manifest.json                                          # one per run
     outcome.json  the final per-PR Outcome serialized as JSON,
-                  written by record_outcome at run end (the same
-                  blob is also copied to ../../latest/outcome.json
-                  for the always-on entrypoint)
+                  written by record_outcome at run end. Also addressable
+                  as `artifacts.outcome` in CURRENT.json.
     trace.md      human-readable run header + per-iter lines
                   (header line is `===== ooda-pr <ts> repo=…` —
                    the literal `ooda-pr` is the per-PR Recorder's
@@ -357,10 +354,18 @@ memory.
                           # this iteration (cross-references
                           # events.jsonl entries)
       normalized.json     # raw observe bundle for this iteration
-      oriented.json       # OrientedState
+      oriented.json       # OrientedState (CURRENT.json artifacts.state)
       candidates.json     # ranked candidate Vec<Action>
-      decision.json       # the chosen Decision
-      action.json         # present iff Decision carries an Action
+      decision_envelope.json  # Execute/Halt envelope (runner's typed input)
+      dashboard.json      # tier-grouped human-shaped projection
+      action.json         # present iff Decision carries an Action / HandoffAction
+      index.md            # per-iteration human surface
+      blockers.md
+      next.md
+      handoff.md          # present only when this iteration's outcome
+                          # is Handoff* (exit 3 / 4); pointed to by the
+                          # stderr `  see:` line and by
+                          # CURRENT.json's `artifacts.handoff` entry
       act-result.json     # present after act() returns
       status-comment/
         rendered.json     # present per iteration when --status-comment
@@ -458,10 +463,14 @@ collision profiles:
   record carries `run_id` so the streams stay disambiguable on
   read. Per-write atomicity for typical line-sized records is
   preserved by the OS, so records do not splice.
-- `latest/*.{md,json}` and `status-comment/dedup.json` are written
-  via `fs::write` / `fs::copy` (truncate-and-overwrite). These are
-  genuinely **last-writer-wins** under simultaneity; readers may
-  briefly observe a partial file mid-write.
+- `CURRENT.json` and `status-comment/dedup.json` are written via
+  atomic replace (`tmp + rename + fsync`) or truncate-overwrite
+  respectively. `CURRENT.json` itself never tears (readers see either
+  the prior manifest or the new one), but it is **last-writer-wins**
+  under simultaneity: two concurrent runs each publish their own
+  manifest and the survivor is whichever wrote last. The per-iteration
+  artifacts that `CURRENT.json` points at live under disjoint
+  `runs/<run-id>/iterations/<NNNN>/` paths, so they never collide.
 
 Same risk profile as `/ooda-pr`; see README invariant `[P8](c)`
 for the enumerated sweep.
@@ -630,9 +639,12 @@ because the post step there sets `verbose_skip = true`.)
 
 After the per-iteration lines, each PR emits its final variant
 block (the `Outcome` rendered the same way `/ooda-pr` renders it on
-exit — header line plus, for `Handoff*`, a single `  see: <abs-path-to-latest/handoff.md>`
-pointer line. The prompt body lives in the file, not on stderr —
-read the file in full rather than tail-truncating stderr).
+exit — header line plus, for `Handoff*`, a single
+`  see: <abs-path-to-handoff.md>` pointer line. The path points at
+the per-iteration `runs/<run-id>/iterations/<NNNN>/handoff.md` and
+is also exposed as `artifacts.handoff` in that PR's `CURRENT.json`.
+The prompt body lives in the file, not on stderr — read the file in
+full rather than tail-truncating stderr).
 
 **Inspect mode** runs no iteration loop, so it emits no `[iter N]`
 lines at all. What can reach stderr in inspect mode:
@@ -644,8 +656,9 @@ lines at all. What can reach stderr in inspect mode:
   `comment: skipped (unchanged)`, or `comment: <PostError>` line
   emitted by the post step.
 - The final variant block (header + optional `  see: <path>`
-  pointer line for `Handoff*` — prompt body lives in
-  `latest/handoff.md`, not on stderr).
+  pointer line for `Handoff*` — prompt body lives in the
+  per-iteration `runs/<run-id>/iterations/<NNNN>/handoff.md`,
+  not on stderr).
 
 **Concurrent interleaving.** Lines from different PRs are NOT
 slug-prefixed. Rust's stderr lock serializes individual `eprintln!`

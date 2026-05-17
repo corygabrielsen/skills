@@ -34,6 +34,7 @@ pub mod action;
 pub mod atomic_io;
 pub mod attest;
 pub mod blocker;
+pub mod current_manifest;
 pub mod decision;
 pub mod exit_code;
 pub mod handoff_prompt;
@@ -48,6 +49,7 @@ pub mod state_root;
 
 pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};
+pub use current_manifest::{CurrentManifest, SCHEMA_VERSION as CURRENT_MANIFEST_SCHEMA_VERSION};
 pub use decision::{
     Decision, DecisionHalt, HaltReason, Terminal, classify, decide_from_candidates,
 };

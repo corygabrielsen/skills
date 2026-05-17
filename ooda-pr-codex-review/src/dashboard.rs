@@ -1,9 +1,9 @@
 //! Tier-grouped dashboard projection.
 //!
-//! Mission 1 / Phase A — assembles the on-disk surfaces (`next.md`,
-//! `blockers.md`, `latest/decision.json`) that human callers consume
-//! between OODA iterations. Phases B (`HandoffPrompt` preamble) and C
-//! (PR status comment) reuse the same types.
+//! Mission 1 / Phase A — assembles the on-disk surfaces (per-iteration
+//! `next.md`, `blockers.md`, `dashboard.json`) that human callers
+//! consume between OODA iterations. Phases B (`HandoffPrompt`
+//! preamble) and C (PR status comment) reuse the same types.
 //!
 //! Name dance: the spec calls this struct `Decision`, but
 //! [`ooda_core::Decision`] already owns that name (`Execute | Halt`,

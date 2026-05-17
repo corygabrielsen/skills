@@ -319,8 +319,10 @@ on batch dirs / `head_sha.txt`. The lock is FD-tied and releases
 on process exit (including SIGKILL — the kernel closes the FD).
 Stale `.lock` files from crashed processes never block subsequent
 runs. The PR-side ledger is already append-safe (`events.jsonl`
-under `O_APPEND`) and last-writer-wins for `latest/*` — no lock
-needed there.
+under `O_APPEND`) and last-writer-wins for `CURRENT.json` — no
+lock needed there. Per-iteration immutables under
+`runs/<run-id>/iterations/<NNNN>/` live in disjoint paths per run,
+so concurrent runs never collide on them.
 
 ### Resolving codex spawn errors
 
@@ -348,19 +350,17 @@ PR memory harness before observation begins. The default root is:
 5. the platform temp directory
 
 State is keyed by forge + repo + PR, so the same PR driven from
-multiple checkouts shares one host-local memory:
+multiple checkouts shares one host-local memory. (The codex axis
+adds a separate `codex/` subtree under the same PR root — see
+"Recorder layout (codex sub-tree)" above.)
 
 ```text
 <root>/github.com/<owner>/<repo>/prs/<pr>/
-  latest/
-    index.md
-    state.json
-    decision.json
-    action.json
-    outcome.json
-    blockers.md
-    next.md
-    handoff.md            (written only on Handoff* outcomes — exit 3 / 4)
+  CURRENT.json                  # mutable pointer to the current run/iteration
+                                # schema_version, run_id, iteration, exit_code,
+                                # headline, artifacts (symbol → relative path),
+                                # keep_runs. Atomic replace; per-iteration
+                                # immutables under runs/.../iterations/... never move.
   ledger.md
   ledger.jsonl
   events.jsonl
@@ -370,6 +370,7 @@ multiple checkouts shares one host-local memory:
     sha256/<aa>/<bb>/<hash>.zst
   runs/<run-id>/
     manifest.json
+    outcome.json                # final per-PR Outcome, written by record_outcome
     trace.md
     trace.jsonl
     iterations/0001/
@@ -377,17 +378,28 @@ multiple checkouts shares one host-local memory:
       normalized.json
       oriented.json
       candidates.json
-      decision.json
-      action.json
+      decision_envelope.json    # the Execute/Halt envelope (runner's typed input)
+      dashboard.json            # tier-grouped human-shaped projection
+      action.json               # present iff the decision carries an Action / HandoffAction
+      index.md                  # per-iteration human surface
+      blockers.md
+      next.md
+      handoff.md                # present only when this iteration's outcome is Handoff* (exit 3 / 4)
       tool-calls/
       act-result.json
 ```
 
-Agent entrypoint: read `latest/index.md` first, then follow links
-to `latest/state.json`, `latest/decision.json`, `ledger.md`, or
-`events.jsonl`. Full command stdout/stderr and repeated artifacts
-are retained as compressed content-addressed blobs and linked from
-events/artifact refs.
+Agent entrypoint: read `CURRENT.json` first; it names the current
+`run_id`, `iteration`, `exit_code`, and a `headline`, plus an
+`artifacts` map of symbolic names (`state`, `dashboard`,
+`decision_envelope`, `index`, `blockers`, `next`, `handoff`,
+`action`, `outcome`, …) to relative paths inside the per-iteration
+immutable directory. Follow `artifacts.index` for the per-iteration
+markdown, `artifacts.state` for the oriented JSON, `artifacts.outcome`
+for the run-level outcome, or `ledger.md` / `events.jsonl` for the
+cross-run audit stream. Full command stdout/stderr and repeated
+artifacts are retained as compressed content-addressed blobs under
+`blobs/sha256/` and linked from events/artifact refs.
 
 ## Outcomes
 
@@ -431,8 +443,10 @@ Outcome's emission). Listed by emission site:
     `DoneClosed`), `AgentNeeded` → `HandoffAgent` (exit 4),
     `HumanNeeded` → `HandoffHuman` (exit 3). Payloads are not
     expanded in the iter-log line; the boundary emission carries
-    them — `Handoff*` in `latest/handoff.md` (pointed to by the
-    stderr `  see:` line), `Stuck*` in the `:<BlockerKey>`
+    them — `Handoff*` in the per-iteration
+    `runs/<run-id>/iterations/<NNNN>/handoff.md` (pointed to by the
+    stderr `  see:` line and named in `CURRENT.json` as
+    `artifacts.handoff`), `Stuck*` in the `:<BlockerKey>`
     projection, terminal/Paused with no payload.
   - When `--status-comment` is set: `[iter N] comment: posted`,
     `[iter N] comment: <PostError>`, or silently skipped on the
@@ -449,9 +463,12 @@ Outcome's emission). Listed by emission site:
     `comment: skipped (unchanged)`, or `comment: <PostError>`.
 - **Final variant block** (last emission, both modes): the
   Outcome header, optionally followed by a single pointer line
-  `  see: <abs-path-to-latest/handoff.md>` (`Handoff*`) or the
-  usage block (`UsageError`). The prompt body lives in
-  `handoff.md`, not on stderr — see `Handoff*` prompt format below.
+  `  see: <abs-path-to-handoff.md>` (`Handoff*`) or the
+  usage block (`UsageError`). The path points at the per-iteration
+  `runs/<run-id>/iterations/<NNNN>/handoff.md`; the same path is
+  also exposed as `artifacts.handoff` in `CURRENT.json`. The prompt
+  body lives in `handoff.md`, not on stderr — see `Handoff*` prompt
+  format below.
 
 The always-on `runs/<run-id>/trace.md` receives an appended run
 header before observation begins, then the same stack / iteration /
@@ -519,8 +536,8 @@ always carries an `Action` and always emits the
 |  0   | `DoneSucceeded`           | `DoneMerged`                                                       | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
 |  1   | `Paused`                  | `Paused`                                                           | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
 |  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`                          | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
-|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to `latest/handoff.md` file and surface it verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                                                |
-|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to `latest/handoff.md` file and dispatch an agent with it as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                         |
+|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`) and surface it verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                   |
+|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to per-iteration `handoff.md` (`runs/<run-id>/iterations/<NNNN>/handoff.md`; also `artifacts.handoff` in `CURRENT.json`) and dispatch an agent with it as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                            |
 |  5   | `DoneAborted`             | `DoneClosed`                                                       | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
 |  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`                         | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
 |  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                       | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
@@ -596,10 +613,11 @@ require source repair.
 ### `Handoff*` prompt format
 
 For `HandoffAgent(action)` and `HandoffHuman(action)`, the prompt
-body is **written to disk** at
-`<state-root>/github.com/<owner>/<repo>/prs/<pr>/latest/handoff.md`
-and the **only** stderr emission after the header is a single
-pointer line of the form:
+body is **written to disk** at the per-iteration path
+`<state-root>/github.com/<owner>/<repo>/prs/<pr>/runs/<run-id>/iterations/<NNNN>/handoff.md`
+(also surfaced as `artifacts.handoff` in `CURRENT.json`), and the
+**only** stderr emission after the header is a single pointer line
+of the form:
 
 ```
   see: <absolute-path-to-handoff.md>
@@ -639,7 +657,7 @@ Single-line prompt example:
 
 ```
 HandoffAgent: Rebase
-  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/latest/handoff.md
+  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/runs/20260516T120000Z-000000000-p1234/iterations/0003/handoff.md
 ```
 
 `handoff.md` contents:
@@ -653,7 +671,7 @@ preamble + per-action body verbatim:
 
 ```
 HandoffAgent: AddressThreads
-  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/latest/handoff.md
+  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/runs/20260516T120000Z-000000000-p1234/iterations/0003/handoff.md
 ```
 
 `handoff.md` contents:

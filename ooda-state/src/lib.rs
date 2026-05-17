@@ -1,4 +1,4 @@
-//! OODA state-tree v2 — domain-agnostic on-disk model.
+//! OODA state-tree — domain-agnostic on-disk model.
 //!
 //! # Layout
 //!

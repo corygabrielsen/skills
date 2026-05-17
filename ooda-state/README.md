@@ -1,10 +1,9 @@
 # ooda-state
 
-OODA state-tree v2 — domain-agnostic on-disk model. Writer + reader
-for the new state layout that Cockpit and (eventually) the existing
-OODA binaries will adopt.
+Domain-agnostic on-disk model for OODA agents. Writer + reader
+crate that every OODA binary writes to, and Cockpit reads from.
 
-See `~/.claude/projects/-home-cory-code-skills/memory/project-ooda-state-v2.md`
+See `~/.claude/projects/-home-cory-code-skills/memory/project-ooda-state.md`
 for the locked design and the /socratic rationale.
 
 ## Layout
@@ -76,10 +75,3 @@ for id in root.live_runs()? {
 - Live markers use `OpenOptions::create_new` (atomic
   `O_CREAT|O_EXCL`) and `fs::remove_file` (atomic).
 - **No locks; no shared mutable state between concurrent runs.**
-
-## Status
-
-V2 design landed; this crate is the writer/reader. Not yet wired
-into any ooda binary — that's the next step (each binary gains
-opt-in via flag/env, defaulting to v1 until v2 has live miles).
-Cockpit V1.1 will read v2 exclusively for its live feed.

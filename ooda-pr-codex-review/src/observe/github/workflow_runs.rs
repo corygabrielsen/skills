@@ -267,7 +267,7 @@ mod tests {
     // ── reserved CancelledDisposition variants ──
     //
     // `Superseded` and `Terminal` are reserved for the upcoming
-    // Resolved-cancelled disambiguation path. No v1 code path
+    // Resolved-cancelled disambiguation path. No current code path
     // constructs them. Lock the wire names so the JSONL contract
     // stays stable as consumers come online.
 

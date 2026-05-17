@@ -35,7 +35,7 @@
 //!   upstream axes' projected state alike. Cross-axis dependencies
 //!   are visible in the type.
 //!
-//! # Out of scope for v1
+//! # Out of scope
 //!
 //! - Persistent per-axis state across driver runs (handled by the
 //!   driver's recorder; the trait itself is stateless across

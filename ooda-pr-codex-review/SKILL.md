@@ -370,7 +370,7 @@ Each run is fully opaque (timestamp + entropy + pid). `events.jsonl`
 holds typed records — `run_started`, `iteration_observed`,
 `iteration_oriented`, `iteration_decided`, `iteration_executed`,
 `iteration_waited`, `iteration_handoff`, plus `domain_specific` for
-domain-vocabulary events the v1 schema does not model directly.
+domain-vocabulary events the typed schema does not model directly.
 Terminal events are `run_halted` / `run_stalled` / `run_cap_reached`;
 the `live/<run-id>` marker is deleted when one fires.
 

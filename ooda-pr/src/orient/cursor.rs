@@ -1278,9 +1278,9 @@ mod tests {
     // ── reserved SkipReason variants ──
     //
     // `RepoConfig` and `Unknown` are part of the public contract but
-    // v1's classifier never emits them. Construct each variant and
-    // assert its serialized wire name to lock the JSONL shape against
-    // silent rename drift.
+    // the current classifier never emits them. Construct each variant
+    // and assert its serialized wire name to lock the JSONL shape
+    // against silent rename drift.
 
     #[test]
     fn skip_reason_repo_config_serializes_to_pascal_case() {

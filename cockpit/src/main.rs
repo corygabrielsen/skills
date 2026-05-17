@@ -50,7 +50,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use ooda_core::ExitCode;
 use ooda_state::{Event as OodaEvent, RunId, StateRoot};
 use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
@@ -339,6 +339,13 @@ async fn stop_tail(tails: &Arc<Mutex<HashMap<RunId, oneshot::Sender<()>>>>, id: 
 /// Tail `events_path` from offset 0, forwarding each parsed line as
 /// a `StreamedEvent` to `tx`. Returns when `cancel_rx` fires or the
 /// broadcast channel is dropped.
+///
+/// The poll carries a byte-level partial buffer (not a `String`)
+/// so a UTF-8 codepoint or PIPE_BUF-sized event split across two
+/// poll windows survives reassembly. A complete byte-line that
+/// fails UTF-8 decoding is logged and skipped; a trailing run of
+/// bytes without a terminating `\n` is held in `partial` for the
+/// next pass.
 async fn tail_events(
     events_path: PathBuf,
     run_id: RunId,
@@ -346,7 +353,7 @@ async fn tail_events(
     mut cancel_rx: oneshot::Receiver<()>,
 ) -> io::Result<()> {
     let mut offset: u64 = 0;
-    let mut partial = String::new();
+    let mut partial: Vec<u8> = Vec::new();
     loop {
         tokio::select! {
             biased;
@@ -367,22 +374,67 @@ async fn tail_events(
             continue;
         }
         file.seek(SeekFrom::Start(offset)).await?;
-        let mut reader = BufReader::new(file);
-        let mut buf = String::new();
-        let read = reader.read_to_string(&mut buf).await?;
+        let mut buf: Vec<u8> = Vec::new();
+        let read = file.read_to_end(&mut buf).await?;
         offset += read as u64;
-        partial.push_str(&buf);
+        partial.extend_from_slice(&buf);
+        cap_partial(&mut partial, &run_id);
         emit_complete_lines(&mut partial, &run_id, &tx);
     }
 }
 
-/// Pop complete (newline-terminated) lines from `buffer`, parse,
-/// and forward. The trailing partial line — if any — is left in
-/// `buffer` for the next read.
-fn emit_complete_lines(buffer: &mut String, run_id: &RunId, tx: &broadcast::Sender<StreamedEvent>) {
-    while let Some(nl) = buffer.find('\n') {
-        let line = buffer[..nl].to_string();
-        buffer.drain(..=nl);
+/// Cap on the unparsed partial-line buffer. A single event line
+/// is bounded by [`ooda_state::MAX_EVENT_BYTES`] (`PIPE_BUF` =
+/// 4 KiB); a 1 MiB ceiling absorbs many polls of split events
+/// without unbounded growth if the writer somehow stalls mid-line
+/// forever.
+const PARTIAL_CAP_BYTES: usize = 1024 * 1024;
+
+/// Drop everything up to (and including) the most recent `\n` if
+/// the partial buffer breaches [`PARTIAL_CAP_BYTES`]. If no
+/// newline is present at all, the entire buffer is discarded — a
+/// pathological writer that emits more than 1 MiB without a
+/// terminator is lying about the append-only contract.
+fn cap_partial(partial: &mut Vec<u8>, run_id: &RunId) {
+    if partial.len() <= PARTIAL_CAP_BYTES {
+        return;
+    }
+    if let Some(idx) = partial.iter().rposition(|b| *b == b'\n') {
+        let dropped = idx + 1;
+        partial.drain(..dropped);
+        tracing::warn!(
+            run_id = %run_id,
+            dropped,
+            "tail partial buffer exceeded cap; dropping to last newline",
+        );
+    } else {
+        let dropped = partial.len();
+        partial.clear();
+        tracing::warn!(
+            run_id = %run_id,
+            dropped,
+            "tail partial buffer exceeded cap with no newline; discarding",
+        );
+    }
+}
+
+/// Pop complete (newline-terminated) byte-lines from `buffer`,
+/// decode UTF-8, parse JSON, and forward. The trailing partial
+/// byte-run — if any — is left in `buffer` for the next read.
+fn emit_complete_lines(
+    buffer: &mut Vec<u8>,
+    run_id: &RunId,
+    tx: &broadcast::Sender<StreamedEvent>,
+) {
+    while let Some(nl) = buffer.iter().position(|b| *b == b'\n') {
+        let raw: Vec<u8> = buffer.drain(..=nl).take(nl).collect();
+        let line = match std::str::from_utf8(&raw) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(run_id = %run_id, %err, "skipping non-utf8 event line");
+                continue;
+            }
+        };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -573,10 +625,10 @@ mod tests {
             iteration: 1,
             decision_kind: "Execute".into(),
         });
-        let mut buf = String::new();
-        buf.push_str(&serde_json::to_string(&ev).unwrap());
-        buf.push('\n');
-        buf.push_str("{\"ts\":\"2026-05-17T00:00:00Z\",\"kind\":\"iteration_decided\",\"iteration\":2,\"decision_kind\":\"H");
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(serde_json::to_string(&ev).unwrap().as_bytes());
+        buf.push(b'\n');
+        buf.extend_from_slice(b"{\"ts\":\"2026-05-17T00:00:00Z\",\"kind\":\"iteration_decided\",\"iteration\":2,\"decision_kind\":\"H");
 
         emit_complete_lines(&mut buf, &run_id, &tx);
 
@@ -584,7 +636,7 @@ mod tests {
         let got = rx.try_recv().unwrap();
         assert_eq!(got.run_id, "test-run");
         // Partial second line is left in the buffer.
-        assert!(buf.starts_with("{\"ts\""));
+        assert!(buf.starts_with(b"{\"ts\""));
         assert!(rx.try_recv().is_err());
     }
 
@@ -592,10 +644,53 @@ mod tests {
     fn emit_complete_lines_skips_malformed_line() {
         let (tx, mut rx) = broadcast::channel::<StreamedEvent>(8);
         let run_id = RunId::new("test-run").unwrap();
-        let mut buf = String::from("not json\n");
+        let mut buf: Vec<u8> = b"not json\n".to_vec();
         emit_complete_lines(&mut buf, &run_id, &tx);
         assert!(buf.is_empty());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn emit_complete_lines_holds_split_utf8_across_polls() {
+        let (tx, mut rx) = broadcast::channel::<StreamedEvent>(8);
+        let run_id = RunId::new("test-run").unwrap();
+        // Event body contains a non-ASCII codepoint ("é" = c3 a9).
+        // First poll delivers everything up to and including the
+        // c3 byte; second poll delivers a9 + newline. With the
+        // String-based reader, the first read would fail with
+        // InvalidData; with the byte-buffer reader, it holds the
+        // partial bytes and the second pass completes the event.
+        let ev = OodaEvent::now(EventBody::IterationDecided {
+            iteration: 1,
+            decision_kind: "Exécute".into(),
+        });
+        let line = serde_json::to_string(&ev).unwrap();
+        let bytes = line.as_bytes();
+        let split = bytes.iter().position(|b| *b == 0xc3).unwrap() + 1;
+        let mut buf: Vec<u8> = bytes[..split].to_vec();
+        emit_complete_lines(&mut buf, &run_id, &tx);
+        assert!(rx.try_recv().is_err(), "no complete line yet (no newline)");
+        buf.extend_from_slice(&bytes[split..]);
+        buf.push(b'\n');
+        emit_complete_lines(&mut buf, &run_id, &tx);
+        assert!(rx.try_recv().is_ok());
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn cap_partial_drops_to_last_newline_when_over_cap() {
+        let run_id = RunId::new("test-run").unwrap();
+        let mut buf: Vec<u8> = Vec::with_capacity(PARTIAL_CAP_BYTES + 16);
+        buf.resize(PARTIAL_CAP_BYTES / 2, b'x');
+        buf.push(b'\n');
+        buf.resize(PARTIAL_CAP_BYTES + 8, b'y');
+        cap_partial(&mut buf, &run_id);
+        // Everything before the newline + the newline itself is dropped.
+        assert_eq!(
+            buf.len(),
+            PARTIAL_CAP_BYTES + 8 - (PARTIAL_CAP_BYTES / 2 + 1)
+        );
+        assert!(buf.iter().all(|b| *b == b'y'));
     }
 
     #[test]

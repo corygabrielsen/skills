@@ -45,6 +45,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+// ── Atomicity constants ──────────────────────────────────────────────
+
+/// Cap for a single serialized event line (including the trailing
+/// newline). POSIX `PIPE_BUF` is the kernel's guaranteed-atomic
+/// `write(2)` size for `O_APPEND`; staying at or below it keeps
+/// concurrent appenders from tearing each other's lines. On Linux
+/// the documented value is 4096; the same bound is the working
+/// floor on all supported platforms.
+pub const MAX_EVENT_BYTES: usize = 4096;
+
 // ── Errors ───────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -73,6 +83,17 @@ pub enum StateError {
         expected: String,
         actual: String,
     },
+    /// A serialized event line exceeded `MAX_EVENT_BYTES`
+    /// (`PIPE_BUF`) even after the writer attempted blob
+    /// substitution for the overflowing payload. Indicates a
+    /// caller embedded oversized non-payload data (e.g. an
+    /// unbounded `kind_suffix`); fix by trimming the offending
+    /// field or routing it through `write_blob` explicitly.
+    EventTooLarge {
+        kind: &'static str,
+        size: usize,
+        cap: usize,
+    },
 }
 
 impl std::fmt::Display for StateError {
@@ -97,6 +118,10 @@ impl std::fmt::Display for StateError {
                 f,
                 "blob hash mismatch in run {}: expected {expected}, got {actual}",
                 run_id.as_str()
+            ),
+            Self::EventTooLarge { kind, size, cap } => write!(
+                f,
+                "event line too large after overflow attempt: kind={kind} size={size} cap={cap}"
             ),
         }
     }
@@ -543,7 +568,7 @@ impl RunWriter {
             Err(e) => return Err(StateError::Io(e)),
         }
         self.started = true;
-        self.append_event(&Event::now(body))
+        self.append_event(Event::now(body))
     }
 
     /// Append one event to `events.jsonl`. Must be preceded by
@@ -551,17 +576,38 @@ impl RunWriter {
     /// not enforce ordering here (the consuming domain owns the
     /// semantic invariants).
     ///
+    /// Each serialized line is capped at [`MAX_EVENT_BYTES`]
+    /// (POSIX `PIPE_BUF`). Over-budget events trigger automatic
+    /// blob substitution for the variants that carry an
+    /// unbounded JSON field (`DomainSpecific.payload`,
+    /// `RunStarted.target`); if substitution still leaves the
+    /// line over budget, the call returns
+    /// [`StateError::EventTooLarge`].
+    ///
     /// # Errors
     ///
-    /// Returns [`StateError::Io`] for filesystem failures or
-    /// [`StateError::Json`] if the event fails to serialize.
+    /// Returns [`StateError::Io`] for filesystem failures,
+    /// [`StateError::Json`] if the event fails to serialize, or
+    /// [`StateError::EventTooLarge`] if the post-substitution
+    /// line still exceeds the cap.
     pub fn append(&mut self, body: EventBody) -> Result<()> {
-        self.append_event(&Event::now(body))
+        self.append_event(Event::now(body))
     }
 
-    fn append_event(&mut self, event: &Event) -> Result<()> {
+    fn append_event(&mut self, mut event: Event) -> Result<()> {
         let mut line = serde_json::to_vec(&event)?;
+        if line.len() + 1 > MAX_EVENT_BYTES {
+            substitute_overflow_field(self, &mut event)?;
+            line = serde_json::to_vec(&event)?;
+        }
         line.push(b'\n');
+        if line.len() > MAX_EVENT_BYTES {
+            return Err(StateError::EventTooLarge {
+                kind: event_kind(&event.body),
+                size: line.len(),
+                cap: MAX_EVENT_BYTES,
+            });
+        }
         let path = self.root.run_dir(&self.id).join("events.jsonl");
         let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
         f.write_all(&line)?;
@@ -609,12 +655,19 @@ impl RunWriter {
     /// Append a terminal event and remove the live marker. After
     /// this returns, the run is no longer in the live index.
     ///
+    /// Marker removal runs unconditionally: even if the terminal
+    /// append fails (disk full, oversize event, EIO) the live
+    /// marker is still cleared so cockpit / `live_runs()` do not
+    /// report a corpse run forever. The append error, if any, is
+    /// returned after the cleanup.
+    ///
     /// # Errors
     ///
     /// Returns [`StateError::Io`] for filesystem failures other
     /// than a missing marker (which is silently tolerated for
     /// idempotency). Returns [`StateError::Json`] if the event
-    /// fails to serialize.
+    /// fails to serialize, or [`StateError::EventTooLarge`] if
+    /// the terminal event exceeds the per-line cap.
     pub fn halt(&mut self, body: EventBody) -> Result<()> {
         debug_assert!(
             matches!(
@@ -625,15 +678,68 @@ impl RunWriter {
             ),
             "RunWriter::halt expects a terminal event variant"
         );
-        self.append_event(&Event::now(body))?;
-        // Best-effort: missing marker is fine (idempotent halt).
+        let append_res = self.append_event(Event::now(body));
         let marker = self.root.live_marker(&self.id);
-        match fs::remove_file(&marker) {
+        let remove_res = match fs::remove_file(&marker) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(StateError::Io(e)),
-        }
+        };
+        // Surface the append error first; marker-cleanup error is
+        // secondary (the marker may still be reaped by the next
+        // halt or by manual `fs::remove_file`).
+        append_res.and(remove_res)
     }
+}
+
+// ── Event overflow helpers ───────────────────────────────────────────
+
+/// Stable token for the event variant; used in error reporting and
+/// in the overflow-payload sidecar so the reader can pivot from a
+/// shrunk event back to its original kind.
+fn event_kind(body: &EventBody) -> &'static str {
+    match body {
+        EventBody::RunStarted { .. } => "run_started",
+        EventBody::IterationObserved { .. } => "iteration_observed",
+        EventBody::IterationOriented { .. } => "iteration_oriented",
+        EventBody::IterationDecided { .. } => "iteration_decided",
+        EventBody::IterationHandoff { .. } => "iteration_handoff",
+        EventBody::IterationExecuted { .. } => "iteration_executed",
+        EventBody::IterationWaited { .. } => "iteration_waited",
+        EventBody::RunHalted { .. } => "run_halted",
+        EventBody::RunStalled { .. } => "run_stalled",
+        EventBody::RunCapReached { .. } => "run_cap_reached",
+        EventBody::DomainSpecific { .. } => "domain_specific",
+    }
+}
+
+/// Try to fit an oversized event under [`MAX_EVENT_BYTES`] by
+/// spilling the unbounded JSON field (`DomainSpecific.payload`,
+/// `RunStarted.target`) into a content-addressed blob and
+/// replacing the inline value with a small overflow stub
+/// `{ "blob": <BlobRef>, "overflow": true }`.
+///
+/// Variants without an unbounded JSON field are left untouched;
+/// the caller's subsequent size check will surface
+/// [`StateError::EventTooLarge`] for those.
+fn substitute_overflow_field(writer: &RunWriter, event: &mut Event) -> Result<()> {
+    match &mut event.body {
+        EventBody::DomainSpecific { payload, .. } => {
+            let blob = spill_value_to_blob(writer, payload)?;
+            *payload = serde_json::json!({ "blob": blob, "overflow": true });
+        }
+        EventBody::RunStarted { target, .. } => {
+            let blob = spill_value_to_blob(writer, target)?;
+            *target = serde_json::json!({ "blob": blob, "overflow": true });
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn spill_value_to_blob(writer: &RunWriter, value: &serde_json::Value) -> Result<BlobRef> {
+    let bytes = serde_json::to_vec(value)?;
+    writer.write_blob(&bytes, "json")
 }
 
 // ── RunReader ────────────────────────────────────────────────────────
@@ -656,29 +762,37 @@ impl RunReader {
     /// callers wanting a streaming reader should use
     /// [`Self::events_stream`].
     ///
+    /// A trailing line not terminated by `\n` is treated as
+    /// "writer mid-flight" and skipped — the writer is racing the
+    /// reader and the next call will see the completed line.
+    /// Corruption is `complete-line-but-bad-JSON` only.
+    ///
     /// # Errors
     ///
     /// Returns [`StateError::Io`] if the file exists but cannot
-    /// be read, or [`StateError::Json`] if any line fails to
-    /// parse.
+    /// be read, or [`StateError::Json`] if any **complete** line
+    /// fails to parse.
     pub fn events(&self) -> Result<Vec<Event>> {
         let path = self.root.run_dir(&self.id).join("events.jsonl");
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let body = fs::read_to_string(&path)?;
+        let bytes = fs::read(&path)?;
         let mut out = Vec::new();
-        for line in body.lines() {
-            if line.trim().is_empty() {
+        for line in complete_lines(&bytes) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            out.push(serde_json::from_str(line)?);
+            out.push(serde_json::from_str(trimmed)?);
         }
         Ok(out)
     }
 
-    /// Iterator over events as they're parsed. Stops at the first
-    /// malformed line, returning the parse error.
+    /// Iterator over events as they're parsed. A trailing line
+    /// not terminated by `\n` is treated as "writer mid-flight"
+    /// and skipped silently. Stops at the first malformed
+    /// **complete** line, returning the parse error.
     ///
     /// # Errors
     ///
@@ -698,12 +812,40 @@ impl RunReader {
             }
             Err(e) => return Err(StateError::Io(e)),
         };
-        let reader = io::BufReader::new(file);
-        let inner = reader.lines().filter_map(|l| match l {
-            Ok(s) if s.trim().is_empty() => None,
-            Ok(s) => Some(serde_json::from_str::<Event>(&s).map_err(StateError::from)),
-            Err(e) => Some(Err(StateError::Io(e))),
-        });
+        let mut reader = io::BufReader::new(file);
+        // Consume the file via `read_until(b'\n', ..)` so the
+        // trailing partial line (no final `\n`) can be detected
+        // and dropped rather than mis-parsed.
+        let mut completed: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let mut buf = Vec::new();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if buf.last() == Some(&b'\n') {
+                        buf.pop();
+                        completed.push(buf);
+                    } else {
+                        // Writer mid-flight: tail bytes without a
+                        // terminating newline are dropped on this
+                        // pass; the next reader will see them
+                        // completed.
+                        break;
+                    }
+                }
+                Err(e) => return Err(StateError::Io(e)),
+            }
+        }
+        let inner = completed
+            .into_iter()
+            .filter_map(|raw| match std::str::from_utf8(&raw) {
+                Ok(s) if s.trim().is_empty() => None,
+                Ok(s) => Some(serde_json::from_str::<Event>(s).map_err(StateError::from)),
+                Err(e) => Some(Err(StateError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    e,
+                )))),
+            });
         Ok(EventsIter {
             inner: Box::new(inner),
         })
@@ -744,6 +886,26 @@ impl RunReader {
         }
         Ok(buf)
     }
+}
+
+/// Split a byte buffer into the slices preceding each `\n`. A
+/// trailing run of bytes without a terminator is dropped (the
+/// writer is mid-flight; the next read will see the completed
+/// line). Empty lines are kept as zero-length slices and filtered
+/// at the parse step.
+fn complete_lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
+    // Trim the trailing partial line (no final `\n`) so every
+    // yielded slice corresponds to a kernel-atomic complete write.
+    let terminated = match bytes.iter().rposition(|b| *b == b'\n') {
+        Some(idx) => &bytes[..=idx],
+        None => &[],
+    };
+    terminated
+        .split(|b| *b == b'\n')
+        // The final element of `split` on a terminated buffer is
+        // an empty slice after the last `\n`; skip it.
+        .filter(|s| !s.is_empty())
+        .filter_map(|slice| std::str::from_utf8(slice).ok())
 }
 
 /// Boxed iterator wrapper so the concrete inner type doesn't leak
@@ -918,6 +1080,151 @@ mod tests {
         assert!(RunId::new(".hidden").is_err());
         assert!(RunId::new("").is_err());
         assert!(RunId::new("normal-id").is_ok());
+    }
+
+    #[test]
+    fn oversize_domain_specific_payload_is_spilled_to_blob() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        // 8 KiB inline string blows past PIPE_BUF (4 KiB cap).
+        let big = "x".repeat(8 * 1024);
+        writer
+            .append(EventBody::DomainSpecific {
+                kind_suffix: "stress".into(),
+                payload: serde_json::json!({ "data": big }),
+            })
+            .unwrap();
+        let reader = root.open_run(id).unwrap();
+        let events = reader.events().unwrap();
+        assert_eq!(events.len(), 2);
+        let EventBody::DomainSpecific { payload, .. } = &events[1].body else {
+            panic!("expected DomainSpecific, got {:?}", events[1].body);
+        };
+        assert_eq!(payload.get("overflow"), Some(&serde_json::json!(true)));
+        let blob_ref: BlobRef =
+            serde_json::from_value(payload.get("blob").cloned().unwrap()).unwrap();
+        let bytes = reader.read_blob(&blob_ref).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            original.get("data").and_then(|v| v.as_str()),
+            Some(big.as_str())
+        );
+    }
+
+    #[test]
+    fn oversize_run_started_target_is_spilled_to_blob() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        let big = "y".repeat(8 * 1024);
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::json!({ "blob_of_text": big }),
+            })
+            .unwrap();
+        let reader = root.open_run(id).unwrap();
+        let events = reader.events().unwrap();
+        assert_eq!(events.len(), 1);
+        let EventBody::RunStarted { target, .. } = &events[0].body else {
+            panic!("expected RunStarted");
+        };
+        assert_eq!(target.get("overflow"), Some(&serde_json::json!(true)));
+        assert!(target.get("blob").is_some());
+    }
+
+    #[test]
+    fn oversize_event_without_spillable_field_returns_event_too_large() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        // IterationDecided.decision_kind is structurally bounded
+        // by domain vocabulary; stuffing an oversize value here is
+        // a caller bug. The writer surfaces it as EventTooLarge.
+        let big = "Z".repeat(8 * 1024);
+        let err = writer
+            .append(EventBody::IterationDecided {
+                iteration: 1,
+                decision_kind: big,
+            })
+            .unwrap_err();
+        assert!(matches!(err, StateError::EventTooLarge { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn events_tolerates_trailing_partial_line() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        // Append a partial fragment by hand to simulate a
+        // mid-flight writer (one event terminated, one not).
+        let events_path = root
+            .path()
+            .join("runs")
+            .join(id.as_str())
+            .join("events.jsonl");
+        let mut f = OpenOptions::new().append(true).open(&events_path).unwrap();
+        f.write_all(b"{\"ts\":\"2026-05-17T00:00:00Z\",\"kind\":\"iteration_decided\",\"iteration\":2,\"decision_kind\":\"Exe").unwrap();
+        let reader = root.open_run(id).unwrap();
+        let events = reader.events().unwrap();
+        assert_eq!(events.len(), 1, "partial trailing line must be dropped");
+        let streamed: Vec<Event> = reader
+            .events_stream()
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(
+            streamed.len(),
+            1,
+            "events_stream must drop trailing partial too",
+        );
+    }
+
+    #[test]
+    fn halt_clears_live_marker_even_when_append_fails() {
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert!(root.live_runs().unwrap().contains(&id));
+        // Force an oversized terminal event so the append step
+        // fails. Marker removal must still run.
+        let big_outcome = "B".repeat(8 * 1024);
+        let err = writer
+            .halt(EventBody::RunHalted {
+                outcome: big_outcome,
+                exit_code: 1,
+            })
+            .unwrap_err();
+        assert!(matches!(err, StateError::EventTooLarge { .. }), "{err:?}");
+        assert!(
+            !root.live_runs().unwrap().contains(&id),
+            "marker must be cleared even when append fails",
+        );
     }
 
     #[test]

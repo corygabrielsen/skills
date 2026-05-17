@@ -63,14 +63,28 @@ pub(crate) fn post_if_changed(
 /// closure's return without spawning anything. The public entry
 /// is a thin shim over this so the caller surface stays narrow.
 ///
-/// The whole read → POST → write window holds an advisory
-/// [`ooda_core::FileLock`] on the dedup file path. Two parallel
-/// invocations (same binary, different binaries, or different
-/// working copies sharing a state root) thus serialise: the loser
-/// reads the winner's freshly-written hash on its next iteration
-/// and suppresses its own POST. Without this lock both invocations
-/// would read `None`, both POST, and both write — yielding two
-/// GitHub comments that the dedup memory could not retract.
+/// Concurrency (class C10): the whole read → POST → write window
+/// holds an advisory [`ooda_core::FileLock`] on the dedup file
+/// path. Two parallel invocations (same binary, different binaries,
+/// or different working copies sharing a state root) serialise: the
+/// loser reads the winner's freshly-written hash on its next
+/// iteration and suppresses its own POST.
+///
+/// Atomicity (class C9): transactional bookkeeping inside the lock
+/// window:
+///
+///   1. **Pre-POST** write `{hash, dedup_key, updated_at,
+///      posted: false}` so a crash between POST and the success
+///      record does not strand a live comment with no local
+///      trace.
+///   2. **POST** the upstream call.
+///   3. **Post-POST** promote `posted: true` on success.
+///
+/// On the next start, a `posted: false` record is treated as
+/// "delivery not confirmed" — `prior_hash` resolves to `None` and
+/// the comment is re-POSTed. The duplicate post is the safe side
+/// vs. silently dropping the comment forever after a crash
+/// mid-delivery.
 fn post_if_changed_with<F>(
     rendered: &Rendered,
     recorder: &Recorder,
@@ -99,6 +113,22 @@ where
         return Ok(false);
     }
 
+    // Step 1: pre-POST in-flight marker. A crash between this
+    // write and the success promotion leaves `posted: false` on
+    // disk; the next run treats that as "delivery unconfirmed"
+    // and re-POSTs.
+    write_dedup_record(
+        &key_path,
+        &DedupState {
+            hash: key.clone(),
+            dedup_key: rendered.dedup_key.clone(),
+            updated_at: Utc::now().to_rfc3339(),
+            posted: false,
+        },
+    )
+    .map_err(PostError::Hash)?;
+
+    // Step 2: upstream POST.
     if let Err(e) = post() {
         let result = PostResult {
             prior_hash: prior,
@@ -110,19 +140,17 @@ where
         return Err(PostError::Gh(e));
     }
 
-    let dedup = DedupState {
-        hash: key.clone(),
-        dedup_key: rendered.dedup_key.clone(),
-        updated_at: Utc::now().to_rfc3339(),
-    };
-    let dedup_json = serde_json::to_vec_pretty(&dedup)
-        .map_err(io::Error::other)
-        .map_err(PostError::Hash)?;
-    // Atomic + durable write. The dedup file is a stable read
-    // surface: a torn write would corrupt the parse fallback into
-    // a non-matching prior hash on the next start and the
-    // suppression invariant would silently break.
-    ooda_core::atomic_io::write_atomic(&key_path, &dedup_json).map_err(PostError::Hash)?;
+    // Step 3: promote to `posted: true`.
+    write_dedup_record(
+        &key_path,
+        &DedupState {
+            hash: key.clone(),
+            dedup_key: rendered.dedup_key.clone(),
+            updated_at: Utc::now().to_rfc3339(),
+            posted: true,
+        },
+    )
+    .map_err(PostError::Hash)?;
     let result = PostResult {
         prior_hash: prior,
         new_hash: key,
@@ -133,11 +161,34 @@ where
     Ok(true)
 }
 
+fn write_dedup_record(path: &std::path::Path, state: &DedupState) -> Result<(), io::Error> {
+    let bytes = serde_json::to_vec_pretty(state).map_err(io::Error::other)?;
+    // Atomic + durable write. The dedup file is a stable read
+    // surface: a torn write would corrupt the parse fallback into
+    // a non-matching prior hash on the next start and the
+    // suppression invariant would silently break.
+    ooda_core::atomic_io::write_atomic(path, &bytes)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DedupState {
     hash: String,
     dedup_key: String,
     updated_at: String,
+    /// `false` between Step 1 (pre-POST marker) and Step 3
+    /// (post-POST promotion). A `false` record is invisible to
+    /// the suppression check: the next run re-POSTs rather than
+    /// trusting a possibly-failed delivery.
+    #[serde(default = "default_posted")]
+    posted: bool,
+}
+
+/// Legacy dedup records (written before the transactional fix)
+/// have no `posted` field; serde defaults them to `true` so an
+/// existing on-disk record continues to suppress on the first
+/// run after the upgrade.
+fn default_posted() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,18 +207,20 @@ fn read_prior_hash(path: &std::path::Path) -> Result<Option<String>, io::Error> 
     }
 }
 
+/// Returns the prior dedup hash IFF a confirmed-posted record is
+/// on disk. An in-flight record (`posted: false`) returns `None`
+/// so the next run re-POSTs and recovers from a crash between
+/// POST and promotion.
 fn parse_prior_hash(body: &str) -> Option<String> {
-    serde_json::from_str::<DedupState>(body)
-        .map(|d| d.hash)
-        .ok()
-        .or_else(|| {
-            let trimmed = body.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
+    if let Ok(state) = serde_json::from_str::<DedupState>(body) {
+        return if state.posted { Some(state.hash) } else { None };
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Toolchain-stable 64-bit FNV-1a, rendered as 16 hex chars.
@@ -210,6 +263,8 @@ mod tests {
 
     #[test]
     fn parse_prior_hash_accepts_json_state() {
+        // Legacy on-disk record: no `posted` field, defaults to
+        // `true` (confirmed post).
         let hash = parse_prior_hash(r#"{"hash":"abc","dedup_key":"x","updated_at":"now"}"#);
         assert_eq!(hash.as_deref(), Some("abc"));
     }
@@ -218,6 +273,15 @@ mod tests {
     fn parse_prior_hash_accepts_legacy_plain_hash() {
         let hash = parse_prior_hash("abc\n");
         assert_eq!(hash.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn parse_prior_hash_skips_in_flight_record() {
+        // `posted: false` is an in-flight marker from a crashed
+        // run; suppression must not honor it.
+        let hash =
+            parse_prior_hash(r#"{"hash":"abc","dedup_key":"x","updated_at":"now","posted":false}"#);
+        assert_eq!(hash, None);
     }
 
     // ── post_if_changed_with branch coverage ──
@@ -270,6 +334,7 @@ mod tests {
             hash: key.clone(),
             dedup_key: rendered.dedup_key.clone(),
             updated_at: "prior".to_string(),
+            posted: true,
         };
         let dedup_path = recorder.dedup_path();
         if let Some(parent) = dedup_path.parent() {
@@ -321,7 +386,50 @@ mod tests {
     }
 
     #[test]
-    fn post_if_changed_with_propagates_post_error_and_skips_state_write() {
+    fn post_if_changed_with_recovers_after_crash_mid_flight() {
+        // Simulate a crash mid-delivery by pre-seeding the dedup
+        // file with `posted: false`. The next call must treat
+        // the in-flight record as "delivery unconfirmed" and
+        // re-POST rather than silently dropping the comment.
+        let root = temp_root("midflight");
+        let recorder = open_recorder(&root);
+        let rendered = sample_rendered();
+        let key = hash_str(&rendered.dedup_key);
+        let dedup_path = recorder.dedup_path();
+        if let Some(parent) = dedup_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let in_flight = DedupState {
+            hash: key.clone(),
+            dedup_key: rendered.dedup_key.clone(),
+            updated_at: "in-flight".to_string(),
+            posted: false,
+        };
+        fs::write(&dedup_path, serde_json::to_vec(&in_flight).unwrap()).unwrap();
+
+        let invoked = std::cell::Cell::new(false);
+        let posted = post_if_changed_with(&rendered, &recorder, Some(1), || {
+            invoked.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(posted, "in-flight record must trigger re-POST");
+        assert!(
+            invoked.get(),
+            "poster must be invoked when prior was unconfirmed"
+        );
+        let final_record: DedupState =
+            serde_json::from_str(&fs::read_to_string(&dedup_path).unwrap()).unwrap();
+        assert!(
+            final_record.posted,
+            "post-success must promote to posted: true"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn post_if_changed_with_propagates_post_error_and_leaves_in_flight_marker() {
         let root = temp_root("err");
         let recorder = open_recorder(&root);
         let rendered = sample_rendered();
@@ -339,10 +447,13 @@ mod tests {
             PostError::Gh(GhError::NonZero { code, .. }) => assert_eq!(code, Some(1)),
             other => panic!("expected Gh(NonZero), got {other:?}"),
         }
-        assert!(
-            !dedup_path.exists(),
-            "dedup state must not be written when post errors",
-        );
+        // Pre-POST in-flight marker is on disk; `posted: false`
+        // so the next start re-POSTs rather than treating as a
+        // confirmed delivery.
+        assert!(dedup_path.exists());
+        let stored: DedupState =
+            serde_json::from_str(&fs::read_to_string(&dedup_path).unwrap()).unwrap();
+        assert!(!stored.posted);
         let _ = fs::remove_dir_all(root);
     }
 }

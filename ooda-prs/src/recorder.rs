@@ -454,6 +454,11 @@ impl Recorder {
     ) {
         self.best_effort(|inner| {
             let success = result.is_ok();
+            // Atomicity-class C9: `action_finished` (carries
+            // success+error) precedes `IterationExecuted`. A
+            // crash between leaves the truthful failure event on
+            // disk rather than a bare success marker that would
+            // mislead the audit chain.
             inner.append_domain(
                 DomainKind::ActionFinished,
                 json!({

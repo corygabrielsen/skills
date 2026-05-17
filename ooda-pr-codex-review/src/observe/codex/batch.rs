@@ -102,6 +102,13 @@ pub(crate) fn scan_batch(
         Err(e) => return Err(e),
     };
 
+    // Per-batch-dir advisory lock. Acquired cooperatively against
+    // the same sidecar the spawn path holds while writing
+    // head_sha.txt and (re)truncating per-slot logs. Blocking is
+    // bounded: the spawn path holds only across a handful of
+    // small writes, not across the codex subprocess lifetime.
+    let _batch_lock = ooda_core::FileLock::acquire(&batch_dir.join(".batch.lock"))?;
+
     // Identity gate — see module invariant.
     match fs::read_to_string(batch_dir.join("head_sha.txt")) {
         Ok(stored) => {

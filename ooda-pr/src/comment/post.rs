@@ -62,6 +62,15 @@ pub(crate) fn post_if_changed(
 /// delivery + state-write, delivery error) are driven by the
 /// closure's return without spawning anything. The public entry
 /// is a thin shim over this so the caller surface stays narrow.
+///
+/// The whole read → POST → write window holds an advisory
+/// [`ooda_core::FileLock`] on the dedup file path. Two parallel
+/// invocations (same binary, different binaries, or different
+/// working copies sharing a state root) thus serialise: the loser
+/// reads the winner's freshly-written hash on its next iteration
+/// and suppresses its own POST. Without this lock both invocations
+/// would read `None`, both POST, and both write — yielding two
+/// GitHub comments that the dedup memory could not retract.
 fn post_if_changed_with<F>(
     rendered: &Rendered,
     recorder: &Recorder,
@@ -72,6 +81,10 @@ where
     F: FnOnce() -> Result<(), GhError>,
 {
     let key_path = recorder.dedup_path();
+    if let Some(parent) = key_path.parent() {
+        fs::create_dir_all(parent).map_err(PostError::Hash)?;
+    }
+    let _lock = ooda_core::FileLock::acquire(&key_path).map_err(PostError::Hash)?;
     let prior = read_prior_hash(&key_path).map_err(PostError::Hash)?;
     let key = hash_str(&rendered.dedup_key);
 

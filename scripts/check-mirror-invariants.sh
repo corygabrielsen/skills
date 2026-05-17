@@ -236,6 +236,78 @@ if [ -n "$unclassified" ]; then
     done <<< "$unclassified"
 fi
 
+# Wire-token coverage: PER_BINARY_DIVERGENT permits the recorder code
+# to differ across the 3 PR-side binaries, but every wire symbol
+# (`DomainKind::` variant, `EventBody::` variant) emitted by one
+# recorder must appear in the other two so the on-disk event stream
+# carries the same vocabulary regardless of which binary produced it.
+# Multiset equality is the test — duplicate count matters because a
+# recorder that emits `IterationExecuted` twice and another that
+# emits it once is a wire-shape divergence the script catches.
+#
+# `ooda-codex-review` is excluded (it lives in a sibling crate with a
+# legitimately divergent event set; its recorder lives inline in
+# `main.rs`, not in `recorder.rs`).
+wire_tokens() {
+    local file="$1"
+    local pattern="$2"
+    grep -oE "$pattern" "$file" | sort
+}
+diff_wire_tokens() {
+    local label="$1"
+    local pattern="$2"
+    local canon_path="$ROOT/$CANON/src/recorder.rs"
+    local canon_tokens
+    canon_tokens=$(wire_tokens "$canon_path" "$pattern")
+    local mirror
+    for mirror in "${MIRRORS[@]}"; do
+        local mirror_path="$ROOT/$mirror/src/recorder.rs"
+        local mirror_tokens
+        mirror_tokens=$(wire_tokens "$mirror_path" "$pattern")
+        if [ "$canon_tokens" != "$mirror_tokens" ]; then
+            report_fail "$mirror/src/recorder.rs $label multiset diverges from $CANON/src/recorder.rs"
+            diff <(printf '%s\n' "$canon_tokens") <(printf '%s\n' "$mirror_tokens") >&2 || true
+        fi
+    done
+}
+# `DomainKind::Foo` token table — every PR-side recorder must emit
+# the same `kind_suffix` discriminator vocabulary. Pattern matches
+# real consumer sites (`DomainKind::Foo,` argument position) so
+# docstrings carrying the same identifier do not skew the multiset.
+diff_wire_tokens "DomainKind" "DomainKind::[A-Za-z][A-Za-z0-9_]*,"
+# `EventBody::Foo {` typed-event coverage — same set of typed events
+# constructed across recorders. Pattern matches the constructor form
+# only, so `[\`EventBody::Foo\`]` doc-link references in comments do
+# not skew the multiset.
+#
+# `EventBody::DomainSpecific {` is excluded from the check: it is a
+# legitimate per-binary escape hatch for `kind_suffix` literals
+# outside the shared `DomainKind` vocabulary (e.g.
+# `codex_review_config` in `ooda-pr-codex-review`). Anything routed
+# through the `DomainKind` enum is already covered by the
+# `DomainKind` check above; a raw `DomainSpecific` constructor
+# announces an intentional per-binary extra.
+diff_wire_tokens_excluding_domain_specific() {
+    local label="$1"
+    local pattern="$2"
+    local canon_path="$ROOT/$CANON/src/recorder.rs"
+    local canon_tokens
+    canon_tokens=$(wire_tokens "$canon_path" "$pattern" | grep -v 'EventBody::DomainSpecific' || true)
+    local mirror
+    for mirror in "${MIRRORS[@]}"; do
+        local mirror_path="$ROOT/$mirror/src/recorder.rs"
+        local mirror_tokens
+        mirror_tokens=$(
+            wire_tokens "$mirror_path" "$pattern" | grep -v 'EventBody::DomainSpecific' || true
+        )
+        if [ "$canon_tokens" != "$mirror_tokens" ]; then
+            report_fail "$mirror/src/recorder.rs $label multiset diverges from $CANON/src/recorder.rs"
+            diff <(printf '%s\n' "$canon_tokens") <(printf '%s\n' "$mirror_tokens") >&2 || true
+        fi
+    done
+}
+diff_wire_tokens_excluding_domain_specific "EventBody" "EventBody::[A-Za-z][A-Za-z0-9_]* \{"
+
 if [ "$fail" -ne 0 ]; then
     printf '\nMirror invariant violated. Re-sync the canonical and re-run.\n' >&2
     exit 1

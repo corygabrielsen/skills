@@ -25,6 +25,7 @@ use decide::decision::{Decision, DecisionHalt};
 use ids::{PullRequestNumber, RepoSlug};
 use observe::github::{FetchOutcome, fetch_all};
 use ooda_core::decide_from_candidates;
+use ooda_state::ObserveOutcome;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};
@@ -240,9 +241,16 @@ fn run_mode(mode: Mode) -> RunMode {
 fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     let code = outcome.exit_code();
     let handoff_path = match (outcome, recorder.as_ref()) {
-        (Outcome::HandoffAgent(h) | Outcome::HandoffHuman(h), Some(r)) => {
-            r.write_handoff_md(&h.prompt.to_string())
-        }
+        (Outcome::HandoffAgent(h), Some(r)) => r.write_handoff_md(
+            &h.prompt.to_string(),
+            ooda_state::OutcomeKind::HandoffAgent,
+            ooda_core::ActionKindName::name(&h.kind),
+        ),
+        (Outcome::HandoffHuman(h), Some(r)) => r.write_handoff_md(
+            &h.prompt.to_string(),
+            ooda_state::OutcomeKind::HandoffHuman,
+            ooda_core::ActionKindName::name(&h.kind),
+        ),
         _ => None,
     };
     render_outcome(&mut std::io::stderr(), outcome, handoff_path.as_deref());
@@ -266,7 +274,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     recorder.record_observe_start(1);
     let obs = match fetch_all(&args.slug, args.pr, args.state_root.as_deref()) {
         Ok(FetchOutcome::Observations(o)) => {
-            recorder.record_observe_end(1, Ok(()));
+            recorder.record_observe_end(1, ObserveOutcome::Ok);
             *o
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
@@ -283,12 +291,18 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
             );
             eprintln!("{line}");
             recorder.write_trace_line(&line);
-            recorder.record_observe_end(1, Ok(()));
+            recorder.record_observe_end(
+                1,
+                ObserveOutcome::RateLimited {
+                    scope: hit.scope.name().to_string(),
+                    retry_after_secs: hit.retry_after.as_duration().as_secs(),
+                },
+            );
             let action = rate_limit_wait_action(hit);
             return Outcome::from(Decision::Execute(action));
         }
         Err(e) => {
-            recorder.record_observe_end(1, Err(e.to_string()));
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
             return Outcome::binary_error(format!("observe: {e}"));
         }
     };

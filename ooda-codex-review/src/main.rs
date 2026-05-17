@@ -38,7 +38,9 @@ use act::ActContext;
 use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
-use ooda_state::{EventBody, RunId, RunWriter, StateRoot};
+use ooda_state::{
+    CodexReviewDomain, EventBody, OutcomeKind, RunId, RunWriter, StateRoot, terminal_event,
+};
 use outcome::Outcome;
 use runner::{EventSink, LoopConfig, run_loop};
 use sha2::{Digest, Sha256};
@@ -545,33 +547,38 @@ fn run_session(args: &Args) -> Outcome {
 /// computed and the caller needs it back regardless of whether
 /// the audit-trail close succeeded.
 fn finalize(writer: &mut RunWriter, outcome: &Outcome) {
-    let body = match outcome {
-        Outcome::StuckRepeated(action) => EventBody::RunStalled {
-            last_action: action.kind.name().to_string(),
-        },
-        Outcome::StuckCapReached(action) => EventBody::RunCapReached {
-            last_action: action.kind.name().to_string(),
-        },
-        other => EventBody::RunHalted {
-            outcome: outcome_name(other).to_string(),
-            exit_code: i32::from(other.exit_code().as_u8()),
-        },
+    let kind = outcome_kind(outcome);
+    let last_action = match outcome {
+        Outcome::StuckRepeated(action) | Outcome::StuckCapReached(action) => {
+            Some(action.kind.name().to_string())
+        }
+        _ => None,
     };
+    let body = terminal_event(
+        &CodexReviewDomain,
+        kind,
+        i32::from(outcome.exit_code().as_u8()),
+        last_action.as_deref(),
+    );
     let _ = writer.halt(body);
 }
 
-fn outcome_name(outcome: &Outcome) -> &'static str {
+/// Project an [`Outcome`] onto its [`OutcomeKind`] discriminant —
+/// see the analogous helper in each PR-side recorder. Strips the
+/// payload so `ooda-state` can pick the wire token without
+/// depending on `ooda-core`.
+fn outcome_kind(outcome: &Outcome) -> OutcomeKind {
     match outcome {
-        Outcome::DoneSucceeded => "DoneFixedPoint",
-        Outcome::Paused => "Idle",
-        Outcome::DoneAborted => "DoneAborted",
-        Outcome::WouldAdvance(_) => "WouldAdvance",
-        Outcome::HandoffHuman(_) => "HandoffHuman",
-        Outcome::HandoffAgent(_) => "HandoffAgent",
-        Outcome::StuckRepeated(_) => "StuckRepeated",
-        Outcome::StuckCapReached(_) => "StuckCapReached",
-        Outcome::UsageError(_) => "UsageError",
-        Outcome::BinaryError(_) => "BinaryError",
+        Outcome::DoneSucceeded => OutcomeKind::DoneSucceeded,
+        Outcome::DoneAborted => OutcomeKind::DoneAborted,
+        Outcome::Paused => OutcomeKind::Paused,
+        Outcome::WouldAdvance(_) => OutcomeKind::WouldAdvance,
+        Outcome::HandoffHuman(_) => OutcomeKind::HandoffHuman,
+        Outcome::HandoffAgent(_) => OutcomeKind::HandoffAgent,
+        Outcome::StuckRepeated(_) => OutcomeKind::StuckRepeated,
+        Outcome::StuckCapReached(_) => OutcomeKind::StuckCapReached,
+        Outcome::UsageError(_) => OutcomeKind::UsageError,
+        Outcome::BinaryError(_) => OutcomeKind::BinaryError,
     }
 }
 
@@ -738,7 +745,7 @@ fn apply_mark_address_failed(
         Ok(blob) => {
             if let Err(e) = writer.append(EventBody::IterationHandoff {
                 iteration: 1,
-                variant: "HandoffHuman".into(),
+                variant: OutcomeKind::HandoffHuman.variant_name().to_string(),
                 action_kind: handoff.kind.name().to_string(),
                 blob,
             }) {

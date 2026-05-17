@@ -31,6 +31,12 @@
 
 #![doc(html_root_url = "https://docs.rs/ooda-state/0.1.0")]
 
+pub mod tokens;
+pub use tokens::{
+    CodexReviewDomain, Domain, DomainKind, OutcomeKind, PrDomain, blob_path, domain_specific,
+    terminal_event,
+};
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -198,6 +204,65 @@ impl BlobRef {
     }
 }
 
+// ── Observe outcomes ────────────────────────────────────────────────
+
+/// Typed result of one observe cycle. The recorder projects this into
+/// the `observe_finished` event payload's `kind` discriminant.
+///
+/// Variant set is closed: every observe end-state must map to one of
+/// `Ok`, `Error`, or `RateLimited`. A throttled observe is a
+/// structural non-success — projecting it as `Ok` collapses two
+/// distinct iteration shapes ("healthy observe, intentional wait" vs
+/// "throttled observe, all axes starved of input") into one
+/// on-disk record, defeating downstream triage.
+///
+/// `RateLimited::scope` is the upstream-stable bucket token (e.g.
+/// `"github/graphql/primary"`); `retry_after_secs` is the requested
+/// back-off interval at the moment of detection. Domain-neutral: the
+/// strings carry the wire identity, this crate does not parse them.
+#[derive(Debug, Clone)]
+pub enum ObserveOutcome {
+    Ok,
+    Error(String),
+    RateLimited {
+        scope: String,
+        retry_after_secs: u64,
+    },
+}
+
+impl ObserveOutcome {
+    /// Single-token rendering for the `observe_finished` payload's
+    /// `kind` field. Stable across Rust-side renames.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error(_) => "error",
+            Self::RateLimited { .. } => "rate_limited",
+        }
+    }
+
+    /// Boolean projection: only `Ok` is success. A rate-limit hit
+    /// is a structural non-success even though it did not error.
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok)
+    }
+
+    /// Error-message projection. `RateLimited` materializes as
+    /// `"rate_limited:<scope>"` so existing string-keyed consumers
+    /// (postmortem, stuck-PR triage) keep matching without growing
+    /// a new code path. `Ok` yields `None`.
+    #[must_use]
+    pub fn error_message(&self) -> Option<String> {
+        match self {
+            Self::Ok => None,
+            Self::Error(e) => Some(e.clone()),
+            Self::RateLimited { scope, .. } => Some(format!("rate_limited:{scope}")),
+        }
+    }
+}
+
 // ── Events ───────────────────────────────────────────────────────────
 
 /// One typed event in a run's `events.jsonl`. Variant discriminator
@@ -241,8 +306,15 @@ pub enum EventBody {
     },
     /// A non-handoff action was executed. Effect details live in
     /// the domain's action vocabulary; this event is the
-    /// audit-trail marker.
-    IterationExecuted { iteration: u32, action_kind: String },
+    /// audit-trail marker. `success` reflects whether the action's
+    /// effect completed without error — a failed Full action emits
+    /// `success: false` so projection consumers can distinguish
+    /// completed iterations from attempted-but-failed ones.
+    IterationExecuted {
+        iteration: u32,
+        action_kind: String,
+        success: bool,
+    },
     /// A wait was performed. `interval_ms` is the elapsed wall
     /// time of the wait (not the requested duration).
     IterationWaited {

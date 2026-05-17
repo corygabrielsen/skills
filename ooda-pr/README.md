@@ -19,11 +19,18 @@ main : Argv → Outcome → ExitCode
 ExitCode = Outcome.exit_code()       (1:1 variant → code; see Outcome)
 ```
 
-`recorder` is the always-on local memory harness. It is keyed by
-forge + repo + PR, writes under the configured state root, appends
-causality events, stores compressed full artifacts, and publishes
-the mutable `CURRENT.json` pointer that names the current per-iteration
-immutable directory for agent entry.
+`recorder` is the always-on local memory harness. Keyed by
+forge + repo + PR; writes under the configured state root.
+Invariants it establishes:
+
+- **Append-only causality**: events are written monotonically;
+  readers truncate at the last good record.
+- **Content-addressed write-once**: large artifacts are stored
+  by hash, so a torn write is detectable and regeneratable.
+- **Mutable pointer over immutable history**: a single
+  atomically-replaced pointer file names the current
+  per-iteration immutable directory; per-iteration artifacts
+  never move once written. Agents enter via the pointer.
 
 ### Shared boundary types (`ooda-core` crate)
 
@@ -152,10 +159,10 @@ GhError =
   ⊕ ...
 ```
 
-**Concurrency:** nine fetchers fan out under `thread::scope`;
-first-error fail-fast. Terminal short-circuit:
-`state ∈ {Merged, Closed} → terminal_observations(pull_request_view)` skips
-auxiliary endpoints whose base may have been deleted post-merge.
+**Concurrency:** fetchers fan out in parallel, joined before
+return; first-error fail-fast. Terminal short-circuit:
+`state ∈ {Merged, Closed}` skips auxiliary endpoints whose base
+may have been deleted post-merge.
 
 ---
 

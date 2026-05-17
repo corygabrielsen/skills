@@ -1,7 +1,11 @@
-//! Orient stage: project raw observations into typed axes that
-//! decide consumes. One module per axis, building bottom-up.
-//! The shared shape (Facts / Findings / Opportunities, etc.) emerges
-//! once a second axis lands and forces the abstraction.
+//! Orient stage: project raw observations into per-axis typed
+//! reports.
+//!
+//! Boundary: input is the observation bundle from upstream; output
+//! is one report per axis. Axes are independent — each owns its
+//! own classifier — and the surface is deliberately heterogeneous
+//! (a `None` axis is structurally distinct from an axis whose state
+//! reads "idle"). Decision logic does not live here.
 
 pub(crate) mod bot_threads;
 pub(crate) mod ci;
@@ -36,108 +40,84 @@ use reviews::ReviewSummary;
 use state::PullRequestProjection;
 use thread::ReviewThread;
 
-/// All five orient axes assembled from a single observation bundle.
+/// The full per-axis projection of one observation bundle.
 ///
-/// No combined "score" or "tier" — those are derived display values
-/// that decide computes on demand. The struct is per-axis so adding
-/// a sixth (e.g. codex) is purely additive.
+/// Composition is purely additive: each axis owns its own field, no
+/// cross-axis aggregate (score, tier) lives here. Downstream views
+/// derive aggregates on demand.
 ///
-/// **Asymmetric optionality is intentional.** `ci`, `state`, and
-/// `reviews` are always-present (every PR has CI buckets, lifecycle
-/// state, and a review summary — possibly empty). `copilot` and
-/// `cursor` are `Option` because absence of bot signal is
-/// *structurally distinct* from low signal — a repo without
-/// Copilot configured (`None`) must not be treated the same as a
-/// repo with Copilot configured but dormant on this PR
-/// (`Some(report)` with `activity = Idle`). The old combined-score
-/// approach conflated these and produced false halts; the
-/// per-axis `Option` makes the distinction unrepresentable.
+/// Optionality is asymmetric by intent. An always-present axis
+/// (`ci`, `state`, `reviews`) admits a normal empty/idle state in
+/// its own variant. An `Option` axis (`copilot`, `cursor`,
+/// `codex_review`) reserves `None` to encode *no axis applicable
+/// here* — distinct from *axis applies but is currently quiet*.
+/// Collapsing those two onto a single quiet-state would readmit
+/// the false-halt bug the optionality is here to forbid.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct OrientedState {
     pub ci: CiReport,
     pub state: PullRequestProjection,
     pub reviews: ReviewSummary,
-    /// `None` when Copilot is not configured for the repo (no
-    /// active `copilot_code_review` ruleset rule). Distinct from
-    /// `Some(report)` with `activity = Idle` (configured but not
-    /// engaged on this PR).
+    /// `None` when no configuration surface enables this axis on
+    /// the repo. `Some(report)` with an idle activity is the
+    /// distinct "enabled but quiet on this PR" state.
     pub copilot: Option<CopilotReport>,
-    /// `None` when no Cursor activity exists for this PR (no rounds
-    /// and no Bugbot check). Activity-gated, not config-gated —
-    /// Cursor has no equivalent of a ruleset config endpoint, so
-    /// "configured" is observable only via activity.
+    /// `None` when no activity surface evidences this axis on the
+    /// PR. The axis exposes no separate configuration surface, so
+    /// applicability is detectable only through activity.
     pub cursor: Option<CursorReport>,
-    /// All review threads on the PR, projected from the wire model
-    /// into the typed domain. Always-present (empty vec ≡ no
-    /// threads); each carries author, location, body, and lifecycle
-    /// state. The witness for `AddressThreads` actions and the
-    /// canonical source for any per-author thread query.
+    /// Review threads projected from wire model to typed domain.
+    /// Empty vec encodes "no threads"; each entry carries author,
+    /// location, body, and lifecycle state.
     pub threads: Vec<ReviewThread>,
-    /// Codex review axis. `None` when `--codex-review-ceiling off`
-    /// (or unset) — produces ooda-pr-equivalent behavior. `Some`
-    /// when the axis is enabled, carrying the ladder slice's current
-    /// status (Spawn / Await / Address / `LadderSatisfied`) plus the
-    /// directory + head SHA the spawn/scan layers need.
+    /// `None` when the axis is not configured at this invocation.
+    /// `Some(report)` carries the ladder slice's current status
+    /// plus the side-effect surface (directory, head SHA) the
+    /// spawn and scan layers need.
     pub codex_review: Option<CodexReviewReport>,
-    /// Merge-base delta surfaced as-is from observe — pure
-    /// pass-through with no axis-specific projection. `None` when
-    /// the compare endpoint was unavailable (terminal PR, base ref
-    /// race). Consumed by decide's Rebase emission to surface the
-    /// concrete file overlap rather than a generic "rebase now."
+    /// Merge-base delta surfaced as-is. `None` when the upstream
+    /// compare endpoint was unavailable. Consumed where the
+    /// concrete file overlap improves a generic rebase prompt.
     pub merge_base_delta: Option<MergeBaseDelta>,
-    /// PR-meta sync state. Projects the observe-side attestation
-    /// file + HEAD-SHA comparison into `Synced` / `Drift` /
-    /// `NeverAttested`. Drives the `SyncPullRequestMetadata` decide candidate.
+    /// SHA-keyed attestation: PR metadata is `Synced` /
+    /// `Drift` / `NeverAttested` relative to HEAD.
     pub pull_request_metadata: PullRequestMetadata,
-    /// Absolute path of the attestation file the agent must rewrite
-    /// after refreshing PR metadata. Carried from observe so decide
-    /// can compose the `SyncPullRequestMetadata` action payload without re-deriving
-    /// the path. `None` when no `--state-root` was supplied to the
-    /// binary.
+    /// Attestation-file path co-carried with the corresponding
+    /// axis state so a downstream action payload need not re-derive
+    /// it. `None` when no state root was configured.
     pub attest_path: Option<std::path::PathBuf>,
-    /// Doc-review sync state. Same shape as `pull_request_metadata`
-    /// but tracks an independent claim: an agent has reviewed the
-    /// full PR diff for doc and comment hygiene at this SHA. Drives
-    /// the `ReviewDocs` decide candidate.
+    /// SHA-keyed attestation: an independent claim that an agent
+    /// has reviewed the PR diff for doc and comment hygiene.
     pub doc_review: DocReview,
-    /// Absolute path of the doc-review attestation file the agent
-    /// must rewrite. Mirrors `attest_path` for the doc-review axis.
+    /// Attestation-file path for the doc-review axis.
     pub doc_review_attest_path: Option<std::path::PathBuf>,
-    /// Claude-review state. Diverges from the SHA-based attestation
-    /// axes — projects to `NoActivity` / `Addressed` / `Fresh` based
-    /// on Claude content drift past the attestation timestamp, not
-    /// HEAD SHA drift. Drives the `AddressClaudeReview` decide
-    /// candidate.
+    /// Content-keyed attestation. Unlike the SHA-keyed axes, drift
+    /// is computed against content timestamps rather than HEAD —
+    /// the underlying surface changes without a new commit.
     pub claude_review: ClaudeReview,
-    /// Absolute path of the Claude-review attestation file the agent
-    /// must rewrite. Mirrors `attest_path` for the Claude-review axis.
+    /// Attestation-file path for the claude-review axis.
     pub claude_review_attest_path: Option<std::path::PathBuf>,
-    /// Closeout sign-off state. Same `Synced` / `Drift` /
-    /// `NeverAttested` shape as the other SHA-keyed attestation axes
-    /// but without `commits_behind` — HEAD-equality is the only
-    /// signal. Drives the `Closeout` decide candidate at
-    /// `Urgency::Closeout` (strictly the least-urgent tier), making
-    /// `HandoffHuman` conditional on an agent sign-off at current HEAD.
+    /// Convergence-gate attestation. Same SHA-keyed shape as the
+    /// other attestation axes; sits at the least-urgent tier so it
+    /// fires only after every other axis is quiet, making the
+    /// terminal handoff conditional on an agent's pre-handoff
+    /// sign-off at HEAD.
     pub closeout: Closeout,
-    /// Absolute path of the closeout attestation file the agent must
-    /// rewrite. Mirrors `attest_path` for the closeout axis.
+    /// Attestation-file path for the closeout axis.
     pub closeout_attest_path: Option<std::path::PathBuf>,
 }
 
-/// Compose all axes from a single GitHub observation bundle plus
-/// optional codex review observations.
+/// Compose all axes from one observation bundle plus optional
+/// codex-review observations.
 ///
-/// `last_commit_at` comes from outside the GitHub fetch bundle
-/// (typically `git log` on HEAD); pass `None` if unavailable.
-/// `now` is the wall-clock at the start of this orient pass — read
-/// once by the runner per iteration and threaded through axes that
-/// need a clock (currently: copilot health). Tests pass fixed
-/// values to keep behavior deterministic.
-///
-/// `codex_obs` is `Some` only when the codex review axis is enabled
-/// (i.e. `--codex-review-ceiling != off`). When `None`, the
-/// `codex_review` field of `OrientedState` is `None` and decide
-/// emits no codex candidates — behavior is ooda-pr-equivalent.
+/// `now` is the wall-clock for the iteration — read once upstream
+/// and threaded through axes that need a clock, so every axis sees
+/// the same instant and tests can pin determinism. `last_commit_at`
+/// is sourced outside the upstream fetch bundle; `None` is the
+/// well-defined unavailable case. `codex_obs` is `Some` exactly
+/// when the codex-review axis is enabled at this invocation; `None`
+/// makes the axis structurally absent and is observationally
+/// equivalent to the non-codex configuration.
 pub(crate) fn orient(
     obs: &GitHubObservations,
     codex_obs: Option<&CodexObservations>,
@@ -153,10 +133,10 @@ pub(crate) fn orient(
         &obs.branch_rules,
         &obs.checks,
     );
-    // The Graphite mergeability check pends indefinitely on a PR
-    // stacked under an open parent; treat it as advisory rather than
-    // a required wait for those PRs so the loop halts `Paused` once
-    // other work clears instead of cycling `WaitForCi` to the cap.
+    // When a PR is stacked under an unmerged parent, a mergeability
+    // check pends indefinitely by design. Demoting it to advisory
+    // for those PRs prevents the loop from cycling Wait to the cap
+    // on a gate that cannot resolve at this layer.
     let ci = ci::orient_ci(
         &obs.checks,
         &required,

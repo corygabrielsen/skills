@@ -1,9 +1,9 @@
-//! Post a rendered comment to a PR via `gh`, deduping by content
-//! hash so identical state doesn't re-spam.
+//! Deliver a rendered comment, deduping by content hash so
+//! identical structural state does not re-post.
 //!
-//! The dedup state lives under the recorder-owned PR state root so
-//! repeated invocations across different checkouts share the same
-//! host-local memory for a given repo+PR.
+//! Dedup memory is per-PR and host-local, kept under the
+//! recorder's state tree so repeated invocations from different
+//! working copies share the same suppression record.
 
 use std::fs;
 use std::io;
@@ -40,9 +40,8 @@ impl From<GhError> for PostError {
     }
 }
 
-/// Post the comment iff its dedup key differs from the last post.
-/// Returns `Ok(true)` when a comment was actually posted, `Ok(false)`
-/// when suppressed by dedup.
+/// Deliver the comment unless its dedup key matches the prior
+/// post's. `Ok(true)` ⇒ delivered; `Ok(false)` ⇒ suppressed.
 pub(crate) fn post_if_changed(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -58,11 +57,11 @@ pub(crate) fn post_if_changed(
     })
 }
 
-/// Test-friendly inner form. Takes a `post` closure that performs
-/// the actual delivery (production wires it to `gh_run`); the
-/// dedup-skip, post-then-write-state, and post-error branches are
-/// driven by the closure's return value. Keeping the production
-/// entry point as a thin shim preserves the caller surface.
+/// Inner form parameterised on delivery. The closure performs the
+/// upstream call so the three control branches (dedup-skip,
+/// delivery + state-write, delivery error) are driven by the
+/// closure's return without spawning anything. The public entry
+/// is a thin shim over this so the caller surface stays narrow.
 fn post_if_changed_with<F>(
     rendered: &Rendered,
     recorder: &Recorder,
@@ -106,10 +105,10 @@ where
     let dedup_json = serde_json::to_vec_pretty(&dedup)
         .map_err(io::Error::other)
         .map_err(PostError::Hash)?;
-    // Atomic + durable: a crash mid-write would leave a truncated
-    // dedup.json, and the next process start's parse-fail fallback
-    // would treat the garbage as a non-matching prior hash, re-
-    // posting the same status comment.
+    // Atomic + durable write. The dedup file is a stable read
+    // surface: a torn write would corrupt the parse fallback into
+    // a non-matching prior hash on the next start and the
+    // suppression invariant would silently break.
     ooda_core::atomic_io::write_atomic(&key_path, &dedup_json).map_err(PostError::Hash)?;
     let result = PostResult {
         prior_hash: prior,
@@ -158,10 +157,10 @@ fn parse_prior_hash(body: &str) -> Option<String> {
         })
 }
 
-/// 16-hex-char FNV-1a 64. Stable across Rust toolchain versions
-/// (unlike `std::hash::DefaultHasher`), so a binary upgrade
-/// doesn't silently invalidate every saved dedup hash file.
-/// Not crypto — collisions just produce a redundant re-post.
+/// Toolchain-stable 64-bit FNV-1a, rendered as 16 hex chars.
+/// Stability is the invariant: a hashing change would silently
+/// invalidate every existing dedup record. Not cryptographic; a
+/// collision only produces a redundant re-post.
 fn hash_str(s: &str) -> String {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x100_0000_01b3;
@@ -210,14 +209,14 @@ mod tests {
 
     // ── post_if_changed_with branch coverage ──
     //
-    // The dedup-skip, post-then-write-state, and post-error branches
-    // are driven via the injected `post` closure so behavior is
-    // deterministic without spawning `gh`.
+    // The three control branches (dedup-skip, deliver + write,
+    // delivery error) are exercised via the injected closure so
+    // behaviour is deterministic without spawning a subprocess.
 
     fn temp_root(label: &str) -> std::path::PathBuf {
-        // Per-test unique dir (process id + per-test monotonic counter)
-        // — concurrent test runs must not race on the same recorder
-        // tree.
+        // Per-test unique directory (process id + monotonic
+        // counter) prevents concurrent test runs from racing on
+        // the same recorder tree.
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
         std::env::temp_dir().join(format!(
@@ -265,8 +264,7 @@ mod tests {
         }
         fs::write(&dedup_path, serde_json::to_vec(&dedup).unwrap()).unwrap();
 
-        // Track whether the post closure was invoked. Skip branch
-        // must never call it.
+        // Invocation flag: the skip branch must not call delivery.
         let invoked = std::cell::Cell::new(false);
         let posted = post_if_changed_with(&rendered, &recorder, Some(1), || {
             invoked.set(true);

@@ -1,19 +1,18 @@
-//! OODA PR-side state-root resolution.
+//! PR-side state-root resolution.
 //!
-//! Single source of truth for the chain used by every PR-side
-//! binary (`ooda-pr`, `ooda-prs`, `ooda-pr-codex-review`) and the
-//! `ooda-attest` CLI:
+//! Total precedence chain for callers in the PR-domain family:
 //!
-//! 1. `explicit` (the `--state-root PATH` flag), if `Some`.
+//! 1. `explicit` (CLI `--state-root PATH`), if `Some`.
 //! 2. `$OODA_PR_STATE_HOME`, if set and non-empty.
 //! 3. `$XDG_STATE_HOME/ooda-pr`, if `XDG_STATE_HOME` is set and
 //!    non-empty.
 //! 4. `$HOME/.local/state/ooda-pr`, if `HOME` is set and non-empty.
-//! 5. `$TMPDIR/ooda-pr` (via [`std::env::temp_dir`]) as a final
-//!    fallback so the function is total.
+//! 5. `$TMPDIR/ooda-pr` (via [`std::env::temp_dir`]) — the
+//!    totality fallback.
 //!
-//! `ooda-codex-review` uses its own (separate) state root and does
-//! not call this function.
+//! The chain is the canonical XDG order with one project-specific
+//! override (`$OODA_PR_STATE_HOME`) at the top so PR-domain runs
+//! can be relocated without disturbing user-wide `$XDG_STATE_HOME`.
 
 use std::path::{Path, PathBuf};
 

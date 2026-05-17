@@ -1,21 +1,22 @@
-//! PR-meta sync state. Pure projection of `PullRequestMetadataObservation`.
+//! PR-metadata attestation axis. Pure projection of an attestation
+//! observation.
 //!
-//! Three states:
-//! * `Synced` — an attestation exists AND its SHA equals HEAD.
-//! * `Drift { attested_sha, head_sha, commits_behind }` — an
-//!   attestation exists but its SHA differs from HEAD. The
-//!   `commits_behind` count comes from `gh api compare`;
-//!   `Some(n)` means n commits behind, `None` means the compare
-//!   failed (attested SHA pruned post-rebase, transport error,
-//!   etc.). Drift is the classification either way — the SHA
-//!   mismatch is the trigger, not the count.
-//! * `NeverAttested` — no attestation file was read (file absent,
-//!   malformed, or schema-version-mismatched all collapse here).
+//! # Invariants
 //!
-//! Distinct shape from the bot health axes (Healthy/Degraded/
-//! Failed). The PR-meta axis is a sync state, not a fitness
-//! tier — Drift is mechanically resolvable by re-running the
-//! `ooda-attest pr-meta` CLI after updating the PR.
+//! - **Sync iff SHA-equal**: a Synced witness is an attestation
+//!   recorded against the current HEAD. Every other case is drift or
+//!   absence.
+//! - **Distance is hint, not gate**: drift carries an optional commit
+//!   count for prompt enrichment, but the classification is driven by
+//!   SHA inequality — an unknown count (compare failure, pruned SHA)
+//!   still classifies as Drift.
+//! - **Absence is structural, not exceptional**: malformed file,
+//!   schema-version skew, missing file all collapse to a single
+//!   `NeverAttested` variant. Decide handles "first time" identically
+//!   to "schema rotated"; this axis does not differentiate.
+//! - **Sync axis, not fitness axis**: drift is mechanically
+//!   resolvable by re-recording at the current HEAD — there is no
+//!   degraded/failed lattice and no remediation budget.
 
 use serde::Serialize;
 

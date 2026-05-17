@@ -1,8 +1,18 @@
-//! Doc-review sync state. Pure projection of `DocReviewObservation`.
+//! Doc-hygiene attestation axis. Pure projection of an attestation
+//! observation.
 //!
-//! Mirrors `pull_request_metadata` shape — `Synced` / `Drift` /
-//! `NeverAttested` — but tracks a separate claim: an agent has read
-//! the full PR diff for doc/comment hygiene at this SHA.
+//! # Invariants
+//!
+//! - **Sync iff SHA-equal**: an attestation paired with a HEAD that
+//!   matches its recorded SHA is the only Synced witness; every other
+//!   case is drift or absence.
+//! - **Distance is hint, not gate**: drift carries an optional commit
+//!   count for prompt enrichment, but the classification is driven by
+//!   SHA inequality — an unknown count still classifies as Drift.
+//! - **Distinct namespace from sibling sync axes**: this axis tracks
+//!   a separate claim (doc/comment hygiene at a SHA) with its own
+//!   schema version, so an unrelated axis's attestation never
+//!   satisfies this gate.
 
 use serde::Serialize;
 

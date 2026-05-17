@@ -1,17 +1,15 @@
-//! Render an `OrientedState` + Decision into a PR comment.
+//! Project orient + decision into the PR comment surface.
 //!
-//! Returns both the full markdown body and a stable dedup key
-//! (axis lines + decision-kind tag, no prose) so that count-only
-//! changes within the same structural state don't suppress posts.
+//! Two outputs: the markdown body and a stable dedup key.
 //!
-//! Phase C of the tier-grouped dashboard work routes the body
-//! through [`crate::dashboard::Dashboard::render_status_comment`]
-//! so the PR comment surfaces the same tier-grouped projection the
-//! on-disk `next.md` and the handoff preamble already use. The
-//! header is rendered here (it depends on slug/pr/iteration, which
-//! the dashboard doesn't carry); the dedup key stays per-axis +
-//! decision-kind so structural state — not iteration count or
-//! action prose — gates re-posts.
+//! Composition: the body is the dashboard projection's status-
+//! comment render with a header prepended (the header carries
+//! identifiers the projection itself does not hold). The dedup
+//! key is keyed on structural state only — per-axis lines plus
+//! decision-kind plus decision-blocker — so identical structure
+//! across iterations collapses to one re-post-suppressing key,
+//! while structural changes (axis transitions, blocker switches,
+//! payload count flips) reliably break it.
 
 use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
@@ -24,8 +22,8 @@ use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
 use serde::Serialize;
 
-/// Lookup by tier slug (`bronze`/`silver`/`gold`/`platinum`).
-/// Both `CopilotTier` and `CursorTier` produce the same slugs.
+/// Glyph for a tier slug. The set of slugs is shared across the
+/// bot-review axes; an unknown slug renders as a question mark.
 fn tier_emoji(slug: &str) -> &'static str {
     match slug {
         "bronze" => "🥉",
@@ -39,27 +37,24 @@ fn tier_emoji(slug: &str) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct Rendered {
     pub body: String,
-    /// Stable key for dedup. Identical decisions on identical state
-    /// produce identical keys, regardless of when the snapshot is
-    /// taken.
+    /// Structural dedup key. Identical structural state projects
+    /// to the same key on every iteration, independent of when
+    /// the projection was taken.
     pub dedup_key: String,
 }
 
-/// Render the PR status comment from the per-iteration triple
-/// `(oriented, candidates, decision)` plus the slug / pr / iteration
-/// the header needs.
+/// Project the per-iteration triple plus header identifiers into
+/// a body + dedup key pair.
 ///
-/// Body shape:
-/// * `## OODA · {repo}#{pr} — iteration N` header
-/// * Dashboard render (winner + queued + signals + blockers) —
-///   tier-grouped, same projection as `next.md`. For terminal halts
-///   (`Halt::Success` / `Halt::Terminal`) the dashboard yields no
-///   candidates and this function substitutes a concise halt line.
+/// Body composition: header (depends on caller-supplied
+/// identifiers) followed by the dashboard's status-comment
+/// projection. Terminal halts produce an empty dashboard body;
+/// the caller substitutes a concise halt summary instead.
 ///
-/// Dedup key shape (unchanged): per-axis lines plus decision-kind
-/// tag plus decision-blocker tag. Iteration is intentionally
-/// absent — every iteration would otherwise force a re-post even
-/// when nothing structural changed.
+/// Dedup key composition: per-axis lines, decision discriminant,
+/// decision blocker. Iteration is deliberately excluded — its
+/// inclusion would defeat the dedup invariant by breaking the key
+/// on every iteration.
 pub(crate) fn render(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -72,9 +67,8 @@ pub(crate) fn render(
     let header = header_line(slug, pr, iteration);
     let dashboard_body = dashboard.render_status_comment();
     let body = if dashboard_body.is_empty() {
-        // Terminal halt or empty-candidate path — no recommended
-        // action to render. Surface the halt summary so the comment
-        // is still meaningful in the PR timeline.
+        // Empty dashboard body ⇒ terminal halt path; substitute
+        // a halt summary so the comment surface stays meaningful.
         format!("{header}\n\n{}\n", halt_summary(decision))
     } else {
         format!("{header}\n\n{dashboard_body}")
@@ -87,11 +81,12 @@ pub(crate) fn render(
     let pr_meta = pull_request_metadata_line(oriented);
     let doc_review = doc_review_line(oriented);
     let claude_review = claude_review_line(oriented);
-    // Dedup key omits the action description's prose so that count
-    // changes ("3 unresolved" → "2 unresolved") within the same
-    // structural state don't suppress posting. Includes the action's
-    // blocker slug so two different agent-handoff actions on the
-    // same axis state don't collapse to the same key.
+    // Dedup key composition: per-axis lines (structural state) +
+    // decision discriminant (which arm fired) + decision blocker
+    // tagged with payload (which gate, with cardinality-bearing
+    // payload). The action's human prose is intentionally absent
+    // so wording-only changes do not break dedup; cardinality
+    // changes travel through the payload tag instead.
     let dedup_key = format!(
         "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{doc_review}\n{claude_review}\n{}\n{}",
         decision_kind_tag(decision),
@@ -108,10 +103,10 @@ fn header_line(slug: &RepoSlug, pr: PullRequestNumber, iteration: Option<u32>) -
     }
 }
 
-/// Concise halt-line for the empty-candidate case (terminal halts
-/// only; agent/human handoffs populate candidates and never hit this
-/// branch). Mirrors the `decision_block` strings used pre-Phase-C so
-/// the PR timeline still gets the same halt message.
+/// One-line halt summary for the empty-candidate path. Reached
+/// only by terminal halts in practice; handoff arms always
+/// populate candidates. The trailing fallback covers a future
+/// halt variant that elects to emit nothing.
 fn halt_summary(d: &Decision) -> String {
     match d {
         Decision::Halt(DecisionHalt::Success) => {
@@ -121,19 +116,18 @@ fn halt_summary(d: &Decision) -> String {
             "**Halt:** PR merged.".into()
         }
         Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => "**Halt:** PR closed.".into(),
-        // Every other arm carries candidates so render_status_comment
-        // produces a non-empty body — this fallback would only trip
-        // on a future variant that opts out of candidate emission.
+        // Handoff arms populate candidates by construction; this
+        // arm is reachable only via a future halt variant that
+        // opts out of candidate emission.
         _ => "**Halt:** no candidates.".into(),
     }
 }
 
 fn decision_blocker_tag(d: &Decision) -> String {
-    // Mechanical (Execute) and handoff variants carry different
-    // payload types — `Action<K>` vs `HandoffAction<K>` — but both
-    // expose `kind: K` and `blocker: BlockerKey`. The tag depends
-    // only on those two fields, so we project them inline rather
-    // than threading a unification trait.
+    // Execute and handoff arms carry different payload carriers
+    // but expose the same two fields the tag depends on. The
+    // projection is inline rather than threading a unification
+    // trait through a single-call-site abstraction.
     let (kind, blocker) = match d {
         Decision::Execute(a) => (&a.kind, &a.blocker),
         Decision::Halt(DecisionHalt::AgentNeeded(h) | DecisionHalt::HumanNeeded(h)) => {
@@ -144,26 +138,23 @@ fn decision_blocker_tag(d: &Decision) -> String {
     format!("{}|{}", blocker, action_payload_tag(kind))
 }
 
-/// Comma-join any `Display` slice. Used for dedup tags, where the
-/// stringified payload distinguishes otherwise-identical actions.
+/// Comma-join a displayable slice. The stringified payload is what
+/// distinguishes otherwise-identical actions in dedup tags.
 fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
     items.iter().map(T::to_string).collect::<Vec<_>>().join(",")
 }
 
-/// Stringify any in-action counts that materially change the
-/// rendered body so dedup doesn't collapse e.g. 3 unresolved
-/// threads → 2 unresolved threads to the same key.
-///
-/// Takes `&ActionKind` rather than `&Action` so it works
-/// uniformly over `Action<K>` and `HandoffAction<K>` — both
-/// expose `kind: K`.
+/// Stringify the payload bits that materially change the rendered
+/// body. Inclusion here is the contract for "this change must
+/// break dedup"; absence is the contract for "this change must
+/// not break dedup". Operates on the discriminant carrier (shared
+/// by Execute and handoff carriers) so the projection is uniform.
 fn action_payload_tag(kind: &crate::decide::action::ActionKind) -> String {
     use crate::decide::action::ActionKind;
     match kind {
-        // Use len() so 3→2 progress flips the dedup key (re-post),
-        // matching the prior count-based behavior. Using thread IDs
-        // here would be more precise but unnecessary churn — the
-        // count is what materially changes the rendered comment.
+        // Cardinality projection: count change breaks the key. A
+        // per-entry projection would be more precise but is not
+        // what the rendered body distinguishes on.
         ActionKind::AddressThreads { threads } => threads.len().to_string(),
         ActionKind::AddressCopilotSuppressed { count } => count.to_string(),
         ActionKind::FixCi { check_name } => check_name.to_string(),
@@ -172,11 +163,10 @@ fn action_payload_tag(kind: &crate::decide::action::ActionKind) -> String {
         ActionKind::WaitForBotReview { reviewers } => join_display(reviewers),
         ActionKind::WaitForHumanReview { reviewers } => join_display(reviewers),
         ActionKind::ShortenTitle { current_len } => current_len.to_string(),
-        // Scope is in the dedup key so a Wait for graphql-primary
-        // doesn't re-post the same comment when the next iteration
-        // hits secondary instead.
+        // Distinct scope ⇒ distinct dedup key, so a re-throttle
+        // against a different upstream bucket forces a re-post.
         ActionKind::WaitForRateLimit { scope } => scope.name().into(),
-        // No payload that affects the rendered comment.
+        // Variants whose payload does not affect the rendered body.
         _ => String::new(),
     }
 }
@@ -222,9 +212,9 @@ fn copilot_line(o: &OrientedState) -> String {
     let Some(c) = &o.copilot else {
         return "— Copilot · not configured".into();
     };
-    // Configured-but-dormant doesn't get a tier emoji — the tier
-    // would be Bronze by default and that misleads the reader into
-    // thinking Copilot judged the PR poorly.
+    // An idle axis does not render a tier glyph: the default
+    // tier would otherwise read as a judgment the bot has not
+    // actually made.
     if matches!(c.activity, CopilotActivity::Idle) {
         return "— Copilot · idle (not requested for this PR)".into();
     }
@@ -309,10 +299,10 @@ fn doc_review_line(o: &OrientedState) -> String {
     }
 }
 
-/// Render a Drift `commits_behind` field. `None` means the
-/// `gh api compare` call failed (attested SHA pruned post-rebase,
-/// transport error, etc.) — drift still exists but the count is
-/// not available. Distinct rendering from `Some(0)`.
+/// Render a drift commit-count. `None` encodes "drift exists but
+/// the count is unobservable" — distinct from `Some(0)`, which
+/// would denote "drift exists, but zero commits separate the
+/// states", a state the upstream cannot actually produce.
 fn drift_count(commits_behind: Option<usize>) -> String {
     match commits_behind {
         Some(n) => crate::text::count(n, "commit"),
@@ -427,7 +417,6 @@ mod tests {
             copilot: None,
             cursor: None,
             threads: vec![],
-            codex_review: None,
             merge_base_delta: None,
             pull_request_metadata: PullRequestMetadata::NeverAttested,
             attest_path: None,
@@ -435,6 +424,7 @@ mod tests {
             doc_review_attest_path: None,
             claude_review: crate::orient::claude_review::ClaudeReview::NoActivity,
             claude_review_attest_path: None,
+            codex_review: None,
             closeout: crate::orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
         }
@@ -520,9 +510,8 @@ mod tests {
             std::slice::from_ref(&action),
             &Decision::Execute(action.clone()),
         );
-        // Body now goes through the dashboard's status-comment
-        // render — confirm the tier-grouped headline is present
-        // instead of the legacy `Top action:` block.
+        // Witness that the body is the dashboard projection's
+        // tier-grouped output, not a flat top-action line.
         assert!(r.body.contains("## OODA · acme/widget#753 — iteration 2"));
         assert!(
             r.body.contains("**Recommended (blocking fix):** Rebase:"),
@@ -550,10 +539,10 @@ mod tests {
     #[test]
     fn dedup_key_stable_across_volatile_render_calls() {
         let o = empty_oriented();
-        // Iteration is part of the header but intentionally absent
-        // from the dedup key — re-iterating without structural state
-        // changes must collapse to the same key so the dedup post
-        // path skips the comment.
+        // Iteration appears in the header but not the dedup key:
+        // identical structural state across iterations must
+        // produce identical keys so the dedup path suppresses
+        // the re-post.
         let r1 = render(
             &slug(),
             pr(),
@@ -573,14 +562,13 @@ mod tests {
         assert_eq!(r1.dedup_key, r2.dedup_key);
     }
 
-    // ── halt_summary fallback arms ──
+    // ── halt_summary fallback coverage ──
     //
-    // Direct render coverage for the Terminal::Aborted arm and the
-    // catch-all `_` arm. The `_` arm fires when AgentNeeded or
-    // HumanNeeded reach the empty-candidate path; in practice candidates
-    // are populated by the handoff path, but the fallback exists so a
-    // future halt variant that opts out of candidate emission still
-    // produces a non-empty body in the PR timeline.
+    // Direct render coverage for the terminal-aborted arm and the
+    // catch-all. The catch-all is unreachable in practice because
+    // handoff arms always populate candidates; the coverage here
+    // pins its behaviour for a future variant that elects to emit
+    // nothing.
 
     fn handoff_action() -> ooda_core::HandoffAction<crate::decide::action::ActionKind> {
         ooda_core::HandoffAction {
@@ -609,9 +597,10 @@ mod tests {
 
     #[test]
     fn render_agent_needed_with_empty_candidates_uses_fallback_summary() {
-        // Synthetic: empty candidates with an AgentNeeded halt
-        // (production-side AgentNeeded paths always populate
-        // candidates, but the fallback arm exists for resilience).
+        // Synthetic: production never reaches this combination —
+        // handoff arms always populate candidates — but the
+        // fallback arm exists for resilience and must produce
+        // a meaningful summary.
         let o = empty_oriented();
         let r = render(
             &slug(),

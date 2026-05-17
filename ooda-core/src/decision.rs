@@ -1,32 +1,31 @@
-//! Three-layered halt taxonomy.
+//! Layered halt taxonomy.
 //!
-//! `decide()` returns [`Decision<K>`]; `run_loop` returns
-//! [`HaltReason<K>`]. Splitting them gives the compiler proof that
-//! render code observing only decide-level halts need not handle
-//! `Stalled` or `CapReached`. Unifying would force dead match arms.
+//! A pure decide pass returns [`Decision<K>`] (Execute or a narrow
+//! halt). A full loop returns [`HaltReason<K>`], which strictly
+//! widens `Decision`'s halt set with the two loop-only halts (stall
+//! detection, iteration cap). The layering makes "cap and stall are
+//! loop-only" a compile-time fact: render code over the narrow type
+//! cannot have dead match arms for them.
 //!
-//! Exit-code mapping is documented per-type ([`Decision::exit_code`],
-//! [`HaltReason::exit_code`]) so the taxonomy and its IPC encoding
-//! share one source of truth.
+//! Exit-code mapping is documented per-type
+//! ([`Decision::exit_code`], [`HaltReason::exit_code`]) so the
+//! taxonomy and its IPC encoding share one source of truth.
 
 use crate::action::{Action, ActionEffect, HandoffAction};
 use crate::exit_code::ExitCode;
 use crate::pull_request_state::{PullRequestState, TerminalState};
 use serde::Serialize;
 
-/// Reduce a ranked candidate set and a PR lifecycle state to a
-/// [`Decision<K>`]. The terminal-lifecycle arms map to
-/// [`DecisionHalt::Terminal`] regardless of the candidate set —
-/// merged/closed PRs have no advancement available. An empty
-/// candidate set on an open PR is success. Otherwise the top
-/// candidate is projected via [`classify`].
+/// Reduce a ranked candidate set under a PR-lifecycle state to a
+/// [`Decision<K>`]. Lifecycle dominates: a terminal lifecycle maps
+/// to the terminal halt regardless of candidates (there is nothing
+/// to advance). On open lifecycle, an empty candidate set is
+/// success; otherwise the top candidate is projected via
+/// [`classify`].
 pub fn decide_from_candidates<K>(
     candidates: Vec<Action<K>>,
     lifecycle: PullRequestState,
 ) -> Decision<K> {
-    // PullRequestState::Terminal(_) is the single arm that catches both
-    // merged-and-done and closed-without-merge — the inner
-    // TerminalState picks the boundary halt's Succeeded/Aborted.
     match lifecycle {
         PullRequestState::Terminal(TerminalState::Merged) => {
             return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
@@ -44,13 +43,11 @@ pub fn decide_from_candidates<K>(
     classify(top)
 }
 
-/// Project an [`Action<K>`] onto a [`Decision<K>`] using its
-/// `effect` field. The four `ActionEffect` variants partition the
-/// action space into "loop drives it" (`Full`/`Wait` → `Execute`)
-/// and "external resolver needed" (`Agent`/`Human` → `Halt` with a
-/// [`HandoffAction`] projection). The handoff projection lifts the
-/// prompt to a top-level field so decorator sites can reach it
-/// without pattern-matching past an impossible-by-construction arm.
+/// Project an [`Action<K>`] onto a [`Decision<K>`] by partitioning
+/// `effect` into "loop drives it" (Execute) and "external resolver
+/// needed" (Halt with a [`HandoffAction`] projection). The
+/// projection lifts `prompt` to a top-level field so decorators
+/// reach it without pattern-matching past an uninhabitable arm.
 pub fn classify<K>(action: Action<K>) -> Decision<K> {
     let Action {
         kind,
@@ -95,24 +92,21 @@ pub fn classify<K>(action: Action<K>) -> Decision<K> {
     }
 }
 
-/// What the loop should do next. Returned by `decide()`.
+/// What the loop should do next. The pure-decide-pass result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Decision<K> {
-    /// Dispatch this action and re-iterate. Decide picked it from
-    /// the candidate set; runtime semantics depend on `automation`.
+    /// Dispatch this action and re-iterate. The action's
+    /// `effect` discriminates how it is dispatched.
     Execute(Action<K>),
     /// Stop iterating. Surface the reason to the caller.
     Halt(DecisionHalt<K>),
 }
 
 impl<K> Decision<K> {
-    /// Documented exit-code mapping. `Execute` maps to
-    /// [`ExitCode::WouldAdvance`]: the full loop would auto-run
-    /// the action, but a single-pass probe (`inspect`) does not —
-    /// wrappers gating on success must see a non-zero exit so a
-    /// still-advancing target doesn't look green. An inspect pass
-    /// that would have executed produces the same `$?` as a
-    /// `WouldAdvance` halt.
+    /// Exit-code mapping. `Execute` maps to [`ExitCode::WouldAdvance`]
+    /// so a single-pass inspect mode (which halts before acting)
+    /// produces a nonzero `$?` — wrappers that gate on success
+    /// must not see a still-advancing target as green.
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Execute(_) => ExitCode::WouldAdvance,
@@ -121,22 +115,18 @@ impl<K> Decision<K> {
     }
 }
 
-/// Why `decide()` returned a halt. Pure function of orient output;
+/// Why a decide pass returned a halt. Pure function of its inputs;
 /// no loop-level state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum DecisionHalt<K> {
-    /// No actions to dispatch, no blockers — target reached.
+    /// No candidates and no blockers — target reached.
     Success,
     /// Target is in a terminal lifecycle state.
     Terminal(Terminal),
-    /// Top candidate requires an agent to execute. Outer driver
-    /// runs the agent and re-invokes. Carries a [`HandoffAction`]
-    /// — the prompt is a top-level field, not nested in an
-    /// `ActionEffect` enum, so decorators can access it without
-    /// pattern-matching past an impossible-by-construction arm.
+    /// Top candidate requires an agent. Carries a [`HandoffAction`]
+    /// whose `prompt` is a top-level field (see [`classify`]).
     AgentNeeded(HandoffAction<K>),
-    /// Top candidate requires a human. Outer driver surfaces and
-    /// waits. Same [`HandoffAction`] shape as
+    /// Top candidate requires a human. Shape parallels
     /// [`Self::AgentNeeded`].
     HumanNeeded(HandoffAction<K>),
 }
@@ -158,9 +148,9 @@ impl<K> DecisionHalt<K> {
         }
     }
 
-    /// Stable, finite, single-token rendering for the per-iteration
-    /// halt log line. Distinct from `Debug` (which would dump full
-    /// Action payloads and break the one-line invariant).
+    /// Payload-free single-token rendering for log lines. Distinct
+    /// from `Debug`, which would dump full payloads and break the
+    /// one-line-per-iteration invariant.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Success => "Success",
@@ -172,28 +162,26 @@ impl<K> DecisionHalt<K> {
     }
 }
 
-/// Why `run_loop` stopped. Superset of [`DecisionHalt`] with the
-/// two loop-level halt classes.
+/// Why the loop stopped. Strictly widens [`DecisionHalt`] with the
+/// two loop-only halt classes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum HaltReason<K> {
-    /// `decide()` produced a halt this iteration. Carries the
-    /// underlying decide-level reason.
+    /// A decide pass produced a halt this iteration. Carries the
+    /// underlying narrow halt.
     Decision(DecisionHalt<K>),
-    /// Same `(kind, blocker)` action fired twice in a row without
-    /// observable state change. Carries the repeated action so
+    /// Stall: same `(kind_name, blocker)` fired on two consecutive
+    /// non-`Wait` iterations. Carries the repeated action so
     /// callers can triage without re-deriving from logs.
     Stalled(Action<K>),
-    /// Iteration cap hit without halting. Carries the last
-    /// attempted action (Wait or non-Wait).
+    /// Iteration cap reached without halting. Carries the last
+    /// attempted action as the triage anchor.
     CapReached(Action<K>),
 }
 
 impl<K> HaltReason<K> {
-    /// Exit-code mapping. [`ExitCode::UsageError`] and
-    /// [`ExitCode::BinaryError`] live outside this enum: they
-    /// describe CLI *parse* failure and caught *external* failure
-    /// (subprocess, IO, etc.), neither of which is a halt. Both
-    /// are encoded on [`crate::Outcome`] directly.
+    /// Exit-code mapping. CLI-parse failure and caught external
+    /// failure are not halts — they live on [`crate::Outcome`]
+    /// directly ([`ExitCode::UsageError`] / [`ExitCode::BinaryError`]).
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Decision(halt) => halt.exit_code(),
@@ -203,10 +191,10 @@ impl<K> HaltReason<K> {
     }
 }
 
-/// Terminal lifecycle states. Domain-specific instances:
-/// `Succeeded` covers PR-merged and codex-ladder-fixed-point;
-/// `Aborted` covers PR-closed-without-merge and ladder-abandoned.
-/// Stable, neutral verbs so the same enum serves every binary.
+/// Domain-neutral terminal verdict. Each domain maps its own
+/// success-shape onto `Succeeded` and its own abort-shape onto
+/// `Aborted`; the enum carries no domain-specific vocabulary so a
+/// single shape serves every binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Terminal {
     Succeeded,

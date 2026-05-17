@@ -1,16 +1,17 @@
-//! Closeout sign-off state. Pure projection of `CloseoutObservation`.
+//! Final sign-off axis. Pure projection of an attestation observation.
 //!
-//! Three states:
-//! * `Synced` — an attestation exists AND its SHA equals HEAD.
-//! * `Drift { attested_sha, head_sha }` — an attestation exists but
-//!   its SHA differs from HEAD. No `commits_behind` field: HEAD
-//!   equality is the only signal Closeout cares about, by design.
-//! * `NeverAttested` — no attestation file was read.
+//! # Invariants
 //!
-//! Distinct shape from `pull_request_metadata` and `doc_review`:
-//! Closeout's Drift carries only the SHA pair, not a commit count.
-//! The handoff prompt is final-state review, not "review the diff
-//! that advanced past your last attestation."
+//! - **Binary drift**: drift is the SHA-inequality bit alone — no
+//!   distance metric. A one-commit gap and a hundred-commit gap are
+//!   the same state, because the handoff is a fresh full read of the
+//!   PR, not an incremental review of what changed since the last
+//!   attestation.
+//! - **Absence ≠ drift**: a never-recorded attestation is its own
+//!   variant. Collapsing it into drift would lose the "no human has
+//!   ever signed off" signal the prompt depends on.
+//! - **Pure projection**: orient does not consult the clock, the
+//!   network, or any other observation. Same input → same output.
 
 use serde::Serialize;
 

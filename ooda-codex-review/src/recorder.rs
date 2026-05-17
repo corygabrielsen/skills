@@ -1,6 +1,6 @@
-//! recorder — always-on local memory harness for codex-review runs.
+//! Always-on local recorder for review-loop runs.
 //!
-//! Layout:
+//! # Layout
 //!
 //! ```text
 //! <state-root>/
@@ -11,20 +11,22 @@
 //!           manifest.json
 //!           levels/
 //!             level-<L>/
-//!               batch-<n>/             batch_dir() — observe + act share this
-//!                 low-1.log
-//!                 low-2.log
-//!                 ...
+//!               batch-<n>/             batch_dir()
+//!                 <L>-<slot>.log
+//!                 <L>-<slot>.exit
 //!       latest                         pointer file → <run-id>
 //! ```
 //!
-//! `run-id` is `<utc-timestamp>-<nanos>-p<pid>` — sortable and
-//! collision-resistant across parallel invocations on the same target.
+//! `<run-id>` is a sortable, collision-resistant timestamp+pid
+//! triple. Parallel invocations against the same target collide
+//! on the state-dir lock, not on run-ids.
 //!
-//! `Recorder::open` resumes the run named by `latest` when its
-//! manifest matches the invocation's `(target, start_level)`; on
-//! mismatch, missing pointer, dangling pointer, unreadable
-//! manifest, or `cfg.fresh = true`, a new run is created. The
+//! # Resume invariant
+//!
+//! [`Recorder::open`] resumes the run named by `latest` iff its
+//! manifest's `start_level` matches the current invocation's. Any
+//! other condition (missing/dangling pointer, unreadable manifest,
+//! level mismatch, `cfg.fresh = true`) creates a fresh run. The
 //! returned [`OpenMode`] reports which path was taken.
 
 use std::fs::{self, File};
@@ -78,31 +80,28 @@ pub(crate) struct RecorderConfig {
     pub state_root: PathBuf,
     pub repo_id: RepoId,
     pub target: ReviewTarget,
-    /// Reasoning level the loop starts at this invocation. Recorded
-    /// in the manifest. On resume, the existing manifest's level
-    /// must match — mismatches force a fresh run.
+    /// Floor level for this invocation. Recorded as the manifest's
+    /// `start_level`; mismatch on resume forces a fresh run.
     pub start_level: CodexReasoningLevel,
-    /// Configured `n` for the spawn batch — recorded in the manifest
-    /// so the next invocation knows what to expect when polling.
+    /// Configured batch fan-out. Recorded in the manifest so the
+    /// next invocation polls against the same expected width.
     pub batch_size: u32,
-    /// When `true`, ignore any `latest` pointer and always create
-    /// a new run. CLI: `--fresh`.
+    /// When true, skip the resume probe and create a fresh run
+    /// unconditionally.
     pub fresh: bool,
-    /// Optional override of the current time. Tests pin this to a
-    /// known instant so run-ids are deterministic.
+    /// Optional clock override for deterministic run-ids in tests.
     pub now: Option<DateTime<Utc>>,
 }
 
 /// Per-run metadata persisted as `<run_dir>/manifest.json`.
 ///
-/// The level fields encode the ladder position:
+/// Level fields encode position on the reasoning ladder:
 ///
-/// * `start_level` — the original starting rung; the resume key
-///   that must match across invocations to reuse this run. Acts as
-///   the floor for `restart_from_floor`.
-/// * `current_level` — where the loop is right now. Mutates via
-///   `advance_level`, `drop_level`, `restart_from_floor`.
-/// * `level_history` — append-only record of per-level outcomes.
+/// * `start_level` — the floor; also the resume key that must
+///   match across invocations to reuse this run.
+/// * `current_level` — live ladder rung; mutated by the
+///   advance / drop / restart transitions.
+/// * `level_history` — append-only audit log of per-level outcomes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct RunManifest {
     pub run_id: String,
@@ -113,21 +112,20 @@ pub(crate) struct RunManifest {
     pub current_level: CodexReasoningLevel,
     pub batch_size: u32,
     /// Batch counter at `current_level`. Level transitions select
-    /// the next unused batch number for the destination level, so
+    /// the next unused batch number for the destination, so
     /// revisiting a level never rereads stale logs.
     pub batch_number: u32,
-    /// Append-only ladder history: every per-level outcome the
-    /// recorder has been told about, in chronological order.
+    /// Per-level outcome history, append-only, in chronological
+    /// order.
     #[serde(default)]
     pub level_history: Vec<LevelOutcome>,
     pub created_at: String,
 }
 
-/// One entry in `level_history`. Recorded as the outer agent
-/// finishes each per-level handoff. `Clean` means the per-level
-/// fixed point was reached (all `n` reviews returned clean) AND
-/// the post-Retrospective check passed; `Addressed` means the
-/// batch had issues which were verified-and-fixed.
+/// One entry in `level_history`. Recorded by the orchestrator at
+/// each per-level handoff completion. `Clean` denotes a verified
+/// per-level fixed point; `Addressed` denotes a batch whose
+/// issues were resolved.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum LevelOutcome {
@@ -138,8 +136,9 @@ pub(crate) enum LevelOutcome {
         level: CodexReasoningLevel,
         issue_count: u32,
     },
-    /// Retrospective synthesis flagged architectural patterns;
-    /// the loop will restart from the floor next.
+    /// Retrospective surfaced architectural patterns invalidating
+    /// the prior per-level fixed points; the loop will restart
+    /// from floor next.
     RetrospectiveChanges {
         level: CodexReasoningLevel,
         reason: String,
@@ -151,56 +150,53 @@ pub(crate) struct Recorder {
     target_root: PathBuf,
     current_run_dir: PathBuf,
     manifest: RunManifest,
-    /// Advisory exclusive lock on `<target_root>/.lock` held for the
-    /// lifetime of this recorder. Released automatically on drop
-    /// (including SIGKILL — kernel releases on FD close), so stale
-    /// lock files from crashed processes never block subsequent runs.
+    /// Advisory exclusive lock at `<target_root>/.lock`, held for
+    /// the lifetime of the recorder. Released on drop and on FD
+    /// close (including SIGKILL), so a crashed process never leaves
+    /// a poisoned lock for subsequent runs.
     _lock: File,
 }
 
-/// Outcome of `Recorder::open`'s resume probe. Surfaces *why* a
-/// fresh run was created so callers can log it.
+/// Result of the open-time resume probe. Surfaces *why* a fresh
+/// run was created so callers can log it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenMode {
-    /// A new run directory was created (no prior `latest`, --fresh
-    /// was set, or resume was rejected).
+    /// A new run directory was created. The wrapped reason
+    /// classifies which path of the resume probe failed.
     Fresh(FreshReason),
     /// An existing run was resumed; its manifest matched the
-    /// invocation's target + level.
+    /// resume invariant.
     Resumed,
 }
 
-/// Why `Recorder::open` chose Fresh over Resumed.
+/// Discriminator for why open chose Fresh over Resumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FreshReason {
-    /// `cfg.fresh == true` — caller forced it.
+    /// Caller forced a fresh run.
     Forced,
-    /// No `latest` pointer existed (first invocation for this
-    /// target).
+    /// No `latest` pointer (first invocation for this target).
     NoLatestPointer,
     /// `latest` pointed at a run dir that no longer exists.
     LatestDangling,
-    /// The manifest at the pointed-to run was missing or unparseable.
+    /// Manifest at the pointed-to run was missing or unparseable.
     ManifestUnreadable,
-    /// The manifest's `start_level` differed from the current
-    /// invocation's. Per-target latest tracks one ladder at a time;
-    /// switching levels starts a new run.
+    /// Manifest's `start_level` differed from the current
+    /// invocation's; per-target `latest` tracks one ladder at a
+    /// time.
     LevelMismatch,
 }
 
 impl Recorder {
-    /// Open a recorder for this invocation. Tries to resume the
-    /// run referenced by `<target_root>/latest` when `cfg.fresh` is
-    /// false; falls back to a fresh run otherwise.
+    /// Open a recorder for this invocation. Probes the resume
+    /// pointer when `cfg.fresh` is false; falls back to a fresh
+    /// run otherwise.
     pub(crate) fn open(cfg: &RecorderConfig) -> Result<(Self, OpenMode), RecorderError> {
         let target_root = compute_target_root(&cfg.state_root, &cfg.repo_id, &cfg.target);
         fs::create_dir_all(&target_root)?;
 
-        // Acquire an advisory exclusive lock on the target dir so a
-        // second concurrent invocation against the same (repo,
-        // target) fails loudly instead of corrupting the manifest.
-        // The lock file lives under target_root and is held for the
-        // lifetime of the Recorder.
+        // Advisory exclusive lock on the target dir: a concurrent
+        // open against the same (repo, target) fails loudly rather
+        // than corrupting the shared manifest.
         let lock_path = target_root.join(".lock");
         let lock = File::options()
             .create(true)
@@ -265,9 +261,9 @@ impl Recorder {
         Ok((recorder, OpenMode::Fresh(fresh_reason)))
     }
 
-    /// Filesystem layout:
-    /// `<target_root>/runs/<run-id>/levels/level-<L>/batch-<n>/`
-    /// where `<L>` is `current_level` (the live ladder rung).
+    /// Directory holding the current level's current batch's
+    /// per-slot log and exit files. See the module docs for the
+    /// full layout.
     pub(crate) fn batch_dir(&self) -> PathBuf {
         self.level_dir(self.manifest.current_level)
             .join(format!("batch-{}", self.manifest.batch_number))
@@ -279,9 +275,9 @@ impl Recorder {
         self.write_manifest()
     }
 
-    /// Climb one rung. No-op + returns `None` at ceiling. Selects
-    /// the next unused batch number at the destination level and
-    /// persists.
+    /// Climb one rung; idempotent at ceiling (returns `None`).
+    /// Selects the next unused batch number at the destination
+    /// and persists.
     pub(crate) fn advance_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.higher() else {
             return Ok(None);
@@ -292,9 +288,9 @@ impl Recorder {
         Ok(Some(next))
     }
 
-    /// Drop one rung, clamped at `start_level` (the floor). No-op +
-    /// returns `None` when already at floor. Selects the next unused
-    /// batch number at the destination level and persists.
+    /// Drop one rung, clamped at floor (`start_level`); idempotent
+    /// at floor (returns `None`). Selects the next unused batch
+    /// number at the destination and persists.
     pub(crate) fn drop_level(&mut self) -> Result<Option<CodexReasoningLevel>, RecorderError> {
         let Some(next) = self.manifest.current_level.lower() else {
             return Ok(None);
@@ -309,9 +305,9 @@ impl Recorder {
         Ok(Some(next))
     }
 
-    /// Reset `current_level` to the floor (`start_level`) and
-    /// persist. Used after a Retrospective surfaces architectural
-    /// changes that invalidate prior per-level fixed points.
+    /// Reset `current_level` to floor (`start_level`) and persist.
+    /// Used when a retrospective invalidates prior per-level
+    /// fixed points.
     pub(crate) fn restart_from_floor(&mut self) -> Result<CodexReasoningLevel, RecorderError> {
         self.manifest.current_level = self.manifest.start_level;
         self.manifest.batch_number = self.next_batch_number_for(self.manifest.start_level)?;
@@ -319,10 +315,9 @@ impl Recorder {
         Ok(self.manifest.start_level)
     }
 
-    /// Keep the current level but move the cursor to a fresh batch.
-    /// Used after a floor-clamped address pass: there is no lower
-    /// level to drop to, but the just-addressed batch must not be
-    /// observed again.
+    /// Hold the current level but advance to a fresh batch. Used
+    /// when there is no lower level to drop to but the
+    /// just-addressed batch must not be re-observed.
     pub(crate) fn start_next_batch_at_current_level(&mut self) -> Result<u32, RecorderError> {
         let next = self.next_batch_number_for(self.manifest.current_level)?;
         self.manifest.batch_number = next;
@@ -345,9 +340,8 @@ impl Recorder {
     }
 
     fn write_manifest(&self) -> Result<(), RecorderError> {
-        // Atomic + durable: manifest.json is read by try_resume on
-        // every subsequent process start; a torn write silently
-        // collapses resume → Fresh and the level_history is lost.
+        // Atomic + durable: a torn write would silently collapse
+        // the next resume probe to Fresh and lose level_history.
         let path = self.current_run_dir.join("manifest.json");
         let bytes = serde_json::to_vec_pretty(&self.manifest)?;
         ooda_core::atomic_io::write_atomic(&path, &bytes)?;
@@ -355,11 +349,10 @@ impl Recorder {
     }
 
     fn write_latest_pointer(&self) -> Result<(), RecorderError> {
-        // Plain text file containing just the current run-id.
-        // A symlink would be tighter but textfiles are portable
-        // across Windows/WSL and easy to inspect with `cat`.
-        // Atomic + durable: read by try_resume + classify_resume_
-        // failure; a truncated pointer breaks resume entirely.
+        // Plain text run-id, not a symlink: portable across
+        // filesystems that don't support symlinks and trivially
+        // inspectable. Atomic + durable: a truncated pointer
+        // breaks resume entirely.
         let path = self.target_root.join("latest");
         ooda_core::atomic_io::write_atomic(&path, self.manifest.run_id.as_bytes())?;
         Ok(())
@@ -401,10 +394,9 @@ fn compute_target_root(state_root: &Path, repo_id: &RepoId, target: &ReviewTarge
     state_root.join(repo_id.as_str()).join(target.path_key())
 }
 
-/// Try to load the latest run for resume. Returns `None` when
-/// resume is not possible for any reason (no pointer, dangling,
-/// unreadable manifest, level mismatch). The caller falls back to
-/// a fresh run.
+/// Probe the resume pointer. Returns `None` for any condition
+/// that fails the resume invariant; the caller then falls back to
+/// a fresh run and disambiguates via [`classify_resume_failure`].
 fn try_resume(
     target_root: &Path,
     cfg: &RecorderConfig,
@@ -436,9 +428,9 @@ fn try_resume(
     Ok(Some((run_dir, manifest, OpenMode::Resumed)))
 }
 
-/// After `try_resume` returned `None`, re-walk the same checks to
-/// pick the most-specific `FreshReason`. Cheap — bounded I/O on a
-/// few small files.
+/// After [`try_resume`] returned `None`, re-walk the same checks
+/// to pick the most-specific `FreshReason`. Bounded I/O on a few
+/// small files.
 fn classify_resume_failure(target_root: &Path) -> FreshReason {
     let latest = target_root.join("latest");
     let id = match fs::read_to_string(&latest) {
@@ -459,8 +451,8 @@ fn classify_resume_failure(target_root: &Path) -> FreshReason {
     if serde_json::from_slice::<RunManifest>(&bytes).is_err() {
         return FreshReason::ManifestUnreadable;
     }
-    // Manifest parsed but rejected → must be level mismatch. (No
-    // other rejection rule today; revisit if more land.)
+    // Manifest parsed but rejected: level mismatch is the only
+    // current rejection rule, so any remaining failure is that.
     FreshReason::LevelMismatch
 }
 
@@ -478,18 +470,16 @@ mod tests {
     use super::*;
     use crate::ids::BranchName;
 
-    // ─── RunManifest JSONL schema goldens ───────────────────────────
+    // ─── RunManifest schema goldens ────────────────────────────────
     //
-    // The recorder's on-disk contract for ooda-codex-review is the
-    // `RunManifest` struct serialized as JSON (not per-iteration
-    // records — this binary writes one manifest per run). Resume
-    // logic and external tooling depend on the field names and the
-    // shape of `level_history` entries, so a rename here must
-    // surface as a test failure.
+    // The on-disk contract is `RunManifest` serialized as JSON.
+    // Field names and the shape of `level_history` entries are
+    // part of the resume invariant: a rename must surface as a
+    // test failure.
     //
     // The match in `level_outcome_golden` is exhaustive over
-    // `LevelOutcome`, so adding a new variant fails to compile
-    // until a golden arm is added.
+    // `LevelOutcome`; adding a new variant fails to compile until
+    // a golden arm is added.
 
     fn sample_manifest_with_history(history: Vec<LevelOutcome>) -> RunManifest {
         RunManifest {

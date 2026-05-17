@@ -1,25 +1,23 @@
 //! Binary boundary type — what each invocation produces.
 //!
-//! Re-exported from [`ooda_core`] specialised to this binary's
-//! [`ActionKind`]. The generic shape, exit-code mapping, and
-//! `HaltReason → Outcome` / `Decision → Outcome` conversions live
-//! in the shared crate. This module adds the per-binary
-//! `LoopError → Outcome` conversion, which can't be a blanket impl
-//! in `ooda-core` because each binary's `LoopError` enum carries
-//! different variants.
+//! The generic [`Outcome`] shape and its exit-code projection live in
+//! the shared crate. This module fixes the type parameter to the
+//! PR-domain action and supplies the per-binary error-to-outcome
+//! conversion — necessarily local because each binary's error sum
+//! has its own variant set.
 
 use crate::decide::action::ActionKind;
 use crate::runner::LoopError;
 
-/// PR-domain `Outcome`. 1:1 variant → exit-code via
+/// PR-domain `Outcome`. Variant → exit-code is bijective via
 /// [`ooda_core::Outcome::exit_code`].
 pub(crate) type Outcome = ooda_core::Outcome<ActionKind>;
 
-/// `LoopError` → `BinaryError(String)`. The caller sees a
-/// single-line human-triage string; the typed error is flattened
-/// via [`ooda_core::Outcome::binary_error`] so the stderr-header
-/// invariant ("first line is the header, nothing else follows
-/// except the `  see:` pointer line for handoff variants") holds.
+/// Project a `LoopError` into the binary-error outcome variant.
+///
+/// Invariant: the stderr header surface is single-line. Typed
+/// errors are flattened to one human-triage string at this boundary
+/// so the header invariant holds for every binary-error path.
 impl From<LoopError> for Outcome {
     fn from(err: LoopError) -> Self {
         Self::binary_error(err.to_string())

@@ -1,22 +1,25 @@
-//! OODA loop driver — observe → orient → decide → act → repeat
-//! until a halt condition fires.
+//! OODA loop driver: iterate observe → orient → decide → act until
+//! a halt fires.
 //!
-//! Stall detection: if the same (kind, blocker) pair fires twice
-//! in a row, the loop halts Stalled. Coarse — only catches the
-//! one-action-spinning case. The iteration cap is the second line
-//! of defense and surfaces as `HaltReason::CapReached`.
+//! # Invariants
 //!
-//! The loop returns `HaltReason` directly — there is no separate
-//! "outcome" type. Cap, stall, success, terminal, and handoff are
-//! all variants of the same partition. Exit-code mapping lives on
-//! `HaltReason::exit_code()`.
+//! - **Iteration ≥ 1**: at least one full cycle runs on every
+//!   invocation. Established by carrying the cap as `NonZeroU32`
+//!   and unrolling the first iteration before the loop body.
+//! - **Last-attempted is typed**: the cap-reached path returns the
+//!   most recent action as `Action`, not `Option<Action>`. The
+//!   unrolled first iteration is the proof that an action exists.
+//! - **Stall detection on a stable key**: two consecutive Execute
+//!   iterations with the same `(action discriminant, blocker)`
+//!   halt as stalled. Wait actions are exempt — they are the
+//!   designed shape for "no progress, by intent".
+//! - **One halt taxonomy**: `HaltReason` partitions every exit
+//!   path (success, terminal, handoff, stall, cap). There is no
+//!   parallel "outcome" type at the loop boundary; exit-code
+//!   projection lives on `HaltReason`.
 //!
-//! `LoopConfig::max_iterations` is `NonZeroU32` so iter 1 is
-//! structurally guaranteed to run; the driver splits iter 1 from
-//! the subsequent iterations so `last_attempted` flows as a typed
-//! `Action` (not `Option<Action>`) into the eventual
-//! `HaltReason::CapReached` — eliminating the runtime expect that
-//! previously documented this invariant.
+//! Stall detection is coarse — it catches single-action spinning,
+//! not multi-step cycles. The iteration cap bounds the worst case.
 
 use std::num::NonZeroU32;
 
@@ -32,13 +35,14 @@ use crate::orient::orient;
 use crate::recorder::Recorder;
 use ooda_core::decide_from_candidates;
 
-/// Read the wall-clock once per iteration. Axes that need a clock
-/// (copilot health, future CI queue-stall) take this as a parameter
-/// so behavior under test is deterministic.
+/// Wall-clock for one iteration's worth of orient work.
+///
+/// Read once per iteration so every axis sees the same instant.
+/// Axes that need the clock take it as a parameter — tests pass a
+/// fixed value to keep behaviour deterministic.
 pub(crate) fn current_timestamp() -> Timestamp {
     let now = chrono::Utc::now().to_rfc3339();
-    // `to_rfc3339` always produces a parseable RFC-3339 string;
-    // this round-trip cannot fail.
+    // System clock's RFC-3339 rendering round-trips by construction.
     Timestamp::parse(&now).expect("chrono::Utc::now() round-trips through RFC-3339")
 }
 
@@ -61,10 +65,10 @@ impl std::error::Error for LoopError {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct LoopConfig {
-    /// Iteration cap. `NonZeroU32` so the driver's "iter 1
-    /// always runs" guarantee is structural: the CLI parser
-    /// rejects `--max-iter 0` at the boundary, and the type
-    /// carries that validation through to the loop body.
+    /// Iteration cap. Carrying it as `NonZeroU32` makes the
+    /// "iteration ≥ 1" invariant structural — input validation
+    /// happens once at the boundary, and the loop body relies on
+    /// the type rather than re-checking.
     pub max_iterations: NonZeroU32,
 }
 
@@ -76,24 +80,25 @@ impl Default for LoopConfig {
     }
 }
 
-/// One iteration's typed outcome. The loop body produces either
-/// an early-halt (`Decision::Halt` or stall-detected) or a completed
-/// Execute that we keep as the running "last attempted" anchor.
+/// One iteration's terminal step. Partitions an iteration's outcome
+/// into the two arms the driver dispatches on: an early-halt that
+/// short-circuits the loop, or a completed Execute that the driver
+/// records as the running last-attempted action.
 pub(crate) enum IterStep {
-    /// Loop must return this halt reason immediately.
+    /// Halt immediately with this reason.
     Halt(HaltReason),
-    /// Iteration ran an action successfully; the action is the
-    /// new `last_attempted` and (if non-Wait) the new stall key.
+    /// Executed; this action becomes last-attempted and (if not a
+    /// Wait) updates the stall comparator.
     Executed(Action),
 }
 
 /// Drive a PR until a halt fires or the iteration cap trips.
 ///
-/// `on_state` is called once per iteration after decide and before
-/// act, with the iteration index, raw observation bundle, oriented
-/// state, full candidate set, and chosen decision. Halt decisions
-/// also fire it before returning. Use it to render iteration logs,
-/// post comments, and record the run bundle.
+/// `on_state` runs once per iteration between decide and act, and
+/// once again on a halt decision before returning. It is the only
+/// observer of per-iteration intermediate state — rendering, comment
+/// posting, and run-bundle recording hang off it without further
+/// coupling to the driver.
 pub(crate) fn run_loop(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -115,15 +120,14 @@ pub(crate) fn run_loop(
     })
 }
 
-/// Pure loop driver core. The per-iteration `run_iter` callback is
-/// parameterized so tests can script decisions without spawning
-/// `gh`. Production callers go through [`run_loop`], which threads
-/// the gh-bound `run_iter` implementation.
+/// Pure loop driver. Owns the four module-level invariants —
+/// iteration ≥ 1, stall comparator over non-Wait actions, Wait
+/// stall-exemption, cap enforcement — independently of how an
+/// iteration is realised.
 ///
-/// Owns the iter-1-always-runs guarantee, the stall key tracking
-/// across non-Wait actions, the Wait stall-exemption, and the cap
-/// enforcement. The split exists so each invariant can be locked
-/// with a scripted-decision test.
+/// The per-iteration callback is a parameter so scripted-decision
+/// tests can pin each invariant in isolation; production wiring
+/// supplies the observation-bound implementation.
 pub(crate) fn run_loop_with<F>(
     config: LoopConfig,
     mut run_iter_fn: F,
@@ -132,24 +136,20 @@ where
     F: FnMut(u32, Option<&ooda_core::StallKey>) -> Result<IterStep, LoopError>,
 {
     let max_iter = config.max_iterations.get();
-    // Iter 1 is guaranteed to run by `max_iterations: NonZeroU32`.
-    // Stall detection is structurally impossible on iter 1 (no prior
-    // key), so we pass `None` for the stall comparator.
+    // First iteration is unrolled: the NonZeroU32 cap guarantees it
+    // runs, and a stall comparator does not exist yet.
     let mut last_attempted: Action = match run_iter_fn(1, None)? {
         IterStep::Halt(reason) => return Ok(reason),
         IterStep::Executed(action) => action,
     };
-    // Wait is stall-exempt; any axis adding health detection MUST
-    // emit a non-Wait action when degraded (see
-    // CopilotActivity::Requested(InFlightHealth::Degraded) →
-    // Full(RerequestCopilot)). Changing only the Wait's blocker tag
-    // is invisible here.
+    // Wait does not seed the stall comparator. An axis that detects
+    // degradation must surface it as a non-Wait action; varying only
+    // the blocker on a Wait is invisible to this comparator.
     let mut last_non_wait_key = if last_attempted.effect.is_wait() {
         None
     } else {
         Some(last_attempted.stall_key())
     };
-    // Subsequent iterations (if any). Stall check on every Execute.
     for iter in 2..=max_iter {
         let step = run_iter_fn(iter, last_non_wait_key.as_ref())?;
         match step {
@@ -162,15 +162,15 @@ where
             }
         }
     }
-    // `last_attempted: Action` here is structurally guaranteed —
-    // iter 1 ran (NonZeroU32 max_iter) and either returned via the
-    // `IterStep::Halt` arm above or assigned `last_attempted`.
+    // `last_attempted: Action` is the witness for the cap-reached
+    // path: the unrolled first iteration either returned a Halt or
+    // populated it.
     Ok(HaltReason::CapReached(last_attempted))
 }
 
-/// Run one full observe → orient → decide → act cycle. Returns
-/// either a halt reason (`Decision::Halt` or stall-detected) or the
-/// action just executed. Observation failures bubble as `LoopError`.
+/// One observe → orient → decide → act cycle. Returns an early-halt
+/// reason or the action that just executed; observation failures
+/// bubble as `LoopError`.
 fn run_iter(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -188,11 +188,11 @@ fn run_iter(
             *obs
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
-            // Rate-limited mid-observe. Synthesize the
-            // WaitForRateLimit action and sleep its retry window;
-            // the next iteration re-observes from fresh state.
-            // No orient/decide call this iteration — every axis
-            // would be operating on stale or absent data.
+            // Observe was throttled before all axes could be seen.
+            // The only valid response is to wait the upstream's
+            // retry window and re-observe from a clean slate;
+            // running orient/decide on a partial bundle would
+            // surface false halts.
             recorder.record_observe_end(iter, Ok(()));
             let action = rate_limit_wait_action(hit);
             recorder.record_action_start(iter, &action);
@@ -223,12 +223,11 @@ fn run_iter(
     match decision {
         Decision::Halt(halt) => Ok(IterStep::Halt(HaltReason::Decision(halt))),
         Decision::Execute(action) => {
-            // Stall check BEFORE act so a side-effecting Full
-            // action (e.g. RerequestCopilot) doesn't fire twice
-            // when GitHub's eventual consistency hasn't surfaced
-            // the previous call yet. Comparison is on the typed
-            // StallKey<K> — equality of (kind, blocker) alone IS
-            // the stall test.
+            // Stall comparison runs *before* the side effect: a
+            // Full action whose upstream is eventually consistent
+            // must not fire twice while the prior call is still
+            // propagating. Equality on `StallKey<K>` — the
+            // `(discriminant, blocker)` pair — is the test.
             let current_key = action.stall_key();
             if last_non_wait_key == Some(&current_key) {
                 return Ok(IterStep::Halt(HaltReason::Stalled(action)));
@@ -295,16 +294,12 @@ mod tests {
         full_action(ActionKind::Rebase, "rebase-needed")
     }
 
-    /// Scripted `run_iter` callback. Returns the i-th `IterStep`
-    /// from a fixed sequence, panicking if the loop reads past the
-    /// end — the test's expectation about iteration count IS what
-    /// fails. Mirrors the production `run_iter`'s pre-act stall
-    /// check: if the next-up `IterStep::Executed`'s stall key
-    /// matches the supplied `last_non_wait_key`, the wrapper
-    /// synthesizes a `Halt(Stalled)` instead. This keeps the test
-    /// fixture authoring shape ("emit these decisions in order")
-    /// natural while still exercising the loop's stall-detection
-    /// invariant.
+    /// Scripted iteration callback. Yields the next `IterStep`
+    /// from a fixed sequence and applies the same pre-act stall
+    /// rule the production driver uses: a scripted Execute whose
+    /// key matches the supplied comparator is rewritten to a
+    /// `Halt(Stalled)`. Test authors specify decisions in order;
+    /// the stall invariant is still exercised end-to-end.
     fn scripted(
         seq: Vec<IterStep>,
     ) -> impl FnMut(u32, Option<&ooda_core::StallKey>) -> Result<IterStep, LoopError> {
@@ -330,8 +325,7 @@ mod tests {
 
     #[test]
     fn iter_1_always_runs_at_max_one() {
-        // max_iter=1 + iter-1 halts → returns the halt directly.
-        // Validates the structural iter-1 guarantee.
+        // Locks the "iteration ≥ 1" invariant at its tightest cap.
         let halt = run_loop_with(
             cfg(1),
             scripted(vec![IterStep::Halt(HaltReason::Decision(
@@ -344,8 +338,9 @@ mod tests {
 
     #[test]
     fn cap_reached_carries_typed_last_action() {
-        // Iter 1 executes Rebase; iter 2 executes a DIFFERENT
-        // action so stall doesn't fire; loop hits cap=2.
+        // Two distinct Execute actions across cap=2: stall does not
+        // fire and the cap-reached path returns the latest typed
+        // action as its witness.
         let halt = run_loop_with(
             cfg(2),
             scripted(vec![
@@ -383,8 +378,8 @@ mod tests {
 
     #[test]
     fn wait_actions_are_stall_exempt() {
-        // Three identical Wait actions; without exemption iter 2
-        // would stall. Loop runs to cap=3 instead.
+        // Repeated Waits must run to cap, not stall: the comparator
+        // intentionally ignores Wait keys.
         let wait = || {
             wait_action(
                 ActionKind::WaitForRateLimit {
@@ -412,10 +407,9 @@ mod tests {
 
     #[test]
     fn wait_does_not_seed_stall_key_for_subsequent_non_wait() {
-        // Iter 1 Wait → stall key None.
-        // Iter 2 Rebase → stall comparator None ⇒ does NOT stall;
-        // stall key now set to Rebase's.
-        // Iter 3 Rebase again → stall fires.
+        // Composition: Wait does not populate the comparator, so a
+        // following Execute starts with no prior key; stall only
+        // fires on the second Execute that repeats it.
         let halt = run_loop_with(
             cfg(5),
             scripted(vec![
@@ -440,9 +434,8 @@ mod tests {
 
     #[test]
     fn halt_on_iter_n_returns_immediately() {
-        // Iter 1 executes; iter 2 halts terminal-aborted. Cap is 10
-        // — loop must return the halt without consuming further
-        // scripted steps.
+        // A mid-loop halt is the loop's exit, regardless of
+        // remaining cap budget.
         let halt = run_loop_with(
             cfg(10),
             scripted(vec![

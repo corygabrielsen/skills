@@ -1,9 +1,9 @@
-//! Typed view of `GET /repos/{o}/{r}/pulls/{n}/reviews` (REST).
+//! Typed projection of the host's review-submission stream.
 //!
-//! Each review is a single submission event — approval, change request,
-//! comment, dismissal, or pending. We model only the fields later
-//! stages consume; REST returns far more (avatar URLs, `_links`, etc.)
-//! which serde silently ignores.
+//! Each row is one submission event in the lifecycle (approval,
+//! change request, comment, dismissal, pending). The model carries
+//! only the fields downstream stages consume; unmodeled fields are
+//! ignored by the decoder.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +11,7 @@ use crate::ids::{GitCommitSha, GitHubLogin, PullRequestNumber, RepoSlug, Timesta
 
 use super::gh::{GhError, gh_json_paginate};
 
-/// Fetch all reviews on a PR. `gh api --paginate` emits one JSON
-/// array per page; `gh_json_paginate` concatenates them.
+/// Fetch every review on a PR.
 pub(crate) fn fetch_pull_request_reviews(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -23,24 +22,19 @@ pub(crate) fn fetch_pull_request_reviews(
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct PullRequestReview {
-    /// Null when the review's author has been deleted. Optional
-    /// so observe doesn't abort on historical reviews — same
-    /// pattern as `ThreadComment.author` and the comment-fetcher
-    /// jq fallback.
+    /// Absent when the author identity has been deleted. Optional so
+    /// historical reviews do not abort the observe pass.
     #[serde(default)]
     pub user: Option<ReviewUser>,
     pub state: ReviewState,
     pub commit_id: GitCommitSha,
-    /// Null for `PENDING` reviews that have not yet been submitted.
+    /// Absent for un-submitted (pending) reviews.
     #[serde(default)]
     pub submitted_at: Option<Timestamp>,
     #[serde(default)]
     pub body: String,
-    /// Permalink to the review on GitHub. Optional / `#[serde(default)]`
-    /// so existing test fixtures (which omit it) deserialize without
-    /// breakage; production REST responses always populate it.
-    /// Surfaced by the Claude-review axis when the latest Claude
-    /// review submission is selected as the witness body.
+    /// Permalink to the review. Optional so test fixtures without
+    /// it decode; production responses always populate it.
     #[serde(default)]
     pub html_url: String,
 }

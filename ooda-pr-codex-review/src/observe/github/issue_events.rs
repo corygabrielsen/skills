@@ -1,12 +1,8 @@
-//! Typed view of `GET /repos/{o}/{r}/issues/{n}/events` — the PR
-//! timeline.
+//! Typed projection of the PR timeline.
 //!
-//! Modeled as a flat struct: `event` is kept as a raw string so
-//! downstream stages can classify it. `requested_reviewer` and
-//! `requested_team` are only populated on
-//! `review_requested` / `review_request_removed` events; other
-//! events leave them null. Extra REST fields (id, `node_id`, url, …)
-//! are ignored.
+//! Event names are kept as raw strings so downstream stages classify
+//! them; reviewer/team payloads populate only on the relevant event
+//! kinds. Unmodeled fields are ignored by the decoder.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +10,7 @@ use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json_paginate};
 
-/// Fetch PR timeline events. `gh api --paginate` emits one JSON
-/// array per page; `gh_json_paginate` concatenates them.
+/// Fetch every PR timeline event.
 pub(crate) fn fetch_issue_events(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -28,18 +23,16 @@ pub(crate) fn fetch_issue_events(
 pub(crate) struct IssueEvent {
     pub event: String,
     pub actor: Option<Actor>,
-    /// Null for some system-originated events; REST will return `null`.
+    /// Absent on system-originated events.
     pub created_at: Option<Timestamp>,
     #[serde(default)]
     pub requested_reviewer: Option<UserRef>,
     #[serde(default)]
     pub requested_team: Option<TeamRef>,
-    /// App that performed the event (when applicable). The `slug` is
-    /// the axis-boundary discriminator: two distinct GitHub Apps share
-    /// the "Copilot" identity — `copilot-pull-request-reviewer` (the
-    /// review path) and `copilot-swe-agent` (the coding-agent path) —
-    /// and emit the same event names. The copilot reviewer axis
-    /// filters by slug at its input boundary.
+    /// Originating app, when applicable. Axis-boundary
+    /// disambiguator: distinct apps may share a display identity but
+    /// emit identical event names; axes that consume this surface
+    /// filter by slug at their input boundary to classify correctly.
     #[serde(default)]
     pub performed_via_github_app: Option<GitHubAppRef>,
 }
@@ -59,9 +52,7 @@ pub(crate) struct TeamRef {
     pub slug: String,
 }
 
-/// Subset of REST's `performed_via_github_app` we consume. Only the
-/// slug matters at the axis boundary; the rest of the app payload
-/// (id, `client_id`, owner, permissions) is ignored.
+/// Narrow projection — only the slug is used at the axis boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct GitHubAppRef {
     pub slug: String,

@@ -1,35 +1,33 @@
 //! First-class rate-limit observations.
 //!
-//! Loops drive long-running interactions with external APIs (GitHub,
-//! Anthropic, `OpenAI`, …). Each API has its own quota bucket, its
-//! own reset semantics, and its own error format. Rather than
-//! collapse them into a single opaque "rate limited" error, the
-//! observe layer surfaces a typed [`RateLimitHit`] identifying the
-//! exact [`RateLimitScope`] and the minimum back-off duration.
-//! Decide then emits a top-priority `WaitForRateLimit` action;
-//! the recorder, JSONL emission, and status-comment renderer all
-//! see the scope explicitly.
+//! External APIs have distinct quota buckets, reset semantics, and
+//! error formats. Rather than collapse them into a single opaque
+//! "rate limited" signal, this module models a typed
+//! [`RateLimitHit`] carrying the exact [`RateLimitScope`] and the
+//! minimum back-off. Downstream layers route per-scope rather than
+//! per-symptom.
 //!
-//! When a new API is added to the family, extend [`RateLimitScope`]
-//! with a new variant — every exhaustive match in the family fails
-//! to compile until the new arm is handled, which is the contract.
+//! Adding a new bucket is a single [`RateLimitScope`] variant.
+//! Exhaustive matches across consumers fail to compile until the
+//! new arm is handled — that compile-time contract is the only
+//! mechanism that keeps the taxonomy honest.
 
 use crate::polling_interval::PollingInterval;
 use serde::{Deserialize, Serialize};
 
 /// Which external rate-limit bucket fired. Variants are
-/// API-and-bucket pairs; secondary limits get their own variants
-/// when they're meaningfully distinct from primary.
+/// API-and-bucket pairs; secondary / short-window limits get
+/// their own variants when meaningfully distinct from primary
+/// (different counter, different reset semantics, different
+/// back-off interpretation).
 ///
 /// **GitHub:**
-/// * `GitHubGraphqlPrimary` — the 5000 points/hour GraphQL quota.
-/// * `GitHubRestPrimary` — the 5000 requests/hour authenticated REST
-///   quota. Distinct bucket from GraphQL.
-/// * `GitHubSecondary` — short-window throttling (concurrent requests,
-///   content creation, search). Fires with `Retry-After`; not the
-///   5000/hr quota.
-///
-/// Adding Anthropic / `OpenAI` / etc. is a single-variant extension.
+/// * `GitHubGraphqlPrimary` — the hourly GraphQL points quota.
+/// * `GitHubRestPrimary` — the hourly authenticated REST quota.
+///   Distinct counter from GraphQL.
+/// * `GitHubSecondary` — short-window throttling (concurrent
+///   requests, content creation, search). Carries `Retry-After`
+///   rather than counting against the primary quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RateLimitScope {
     GitHubGraphqlPrimary,
@@ -38,10 +36,9 @@ pub enum RateLimitScope {
 }
 
 impl RateLimitScope {
-    /// Stable, finite, single-token rendering. Used by recorder
-    /// schemas, JSONL records, and status comments. Distinct from
-    /// `Debug` so renaming a variant doesn't silently change the
-    /// wire format.
+    /// Stable single-token rendering. Distinct from `Debug` so a
+    /// Rust-side rename does not silently change the wire format
+    /// (recorder schemas, on-the-wire records, status renderings).
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -55,24 +52,22 @@ impl RateLimitScope {
 /// A rate-limit observation. Carries which bucket fired and the
 /// minimum back-off before the next request is permitted.
 ///
-/// `retry_after` is a [`PollingInterval`] (strictly positive) so the
-/// Wait action it drives can't degenerate into a busy-loop. The
-/// observe layer is responsible for converting absolute reset
-/// timestamps (e.g. GitHub's `X-RateLimit-Reset` epoch seconds, or
-/// secondary-limit `Retry-After` deltas) into this relative form
-/// at the moment of detection.
+/// `retry_after` is a [`PollingInterval`] (strictly positive) so
+/// any wait it drives cannot degenerate into a busy-loop. Absolute
+/// reset timestamps are converted to this relative form at the
+/// moment of detection — the observe layer owns the clock-domain
+/// translation, downstream consumers see only a duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateLimitHit {
     pub scope: RateLimitScope,
     pub retry_after: PollingInterval,
 }
 
-/// Per-bucket counters from a rate-limit snapshot. Matches the shape
-/// GitHub returns under each entry of `GET /rate_limit`'s `resources`
-/// object: `{ "limit": …, "remaining": …, "reset": <unix-epoch-sec> }`.
-/// `reset_at_epoch` is unix epoch seconds, matching the wire form, so
-/// deserialization is direct and no clock-domain conversion happens
-/// at the boundary.
+/// Per-bucket counters from a rate-limit snapshot. Mirrors the
+/// shape GitHub returns per bucket from `GET /rate_limit`:
+/// `{ "limit": …, "remaining": …, "reset": <unix-epoch-sec> }`.
+/// `reset_at_epoch` stays in unix epoch seconds at this layer so
+/// no clock-domain translation happens at the wire boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BucketState {
     pub remaining: u32,
@@ -80,38 +75,27 @@ pub struct BucketState {
     pub reset_at_epoch: u64,
 }
 
-/// Snapshot of remaining GitHub quota across the buckets we use.
-/// Fetched via `GET /rate_limit` — that endpoint does **not** count
-/// against quota and returns every bucket counter in one response.
-/// Surfacing the snapshot into observations gives the loop visibility
-/// into how close it is to throttling; today nothing acts on it beyond
-/// recorder logging.
+/// Snapshot of remaining GitHub quota across both primary buckets.
+/// Fetched via the no-cost rate-limit endpoint, which returns every
+/// bucket counter in one response. Surfacing the snapshot gives
+/// the loop visibility into throttling proximity; consumption
+/// policy is the caller's choice.
 ///
 /// # Future concepts (named, not implemented)
 ///
-/// **`BucketBias`** would name per-iteration routing advice
-/// (e.g. `PreferRest` / `PreferGraphql` / `Throttled`) computed
-/// from this snapshot, used to route fetches between REST and
-/// GraphQL whenever a fetcher exists in both forms.
+/// **Bucket biasing** — per-iteration routing advice computed
+/// from this snapshot for any fetcher that exists in both REST and
+/// GraphQL forms.
 ///
-/// **Iterations-of-headroom** is the comparison unit the routing
-/// algorithm should use, not raw remaining points: `remaining /
-/// estimated_calls_per_iteration`. Raw points understate urgency
-/// for high-volume buckets and overstate it for low-volume ones —
-/// 500 REST remaining at 9 calls/iter is ~55 iters of headroom,
-/// while 500 GraphQL remaining at 1 call/iter is ~500 iters.
+/// **Iterations-of-headroom** — the right comparison unit is
+/// `remaining / estimated_calls_per_iteration`, not raw remaining
+/// points. Raw points understate urgency for high-volume buckets
+/// and overstate it for low-volume ones.
 ///
-/// **Cost-model caveat:** GraphQL is not cheaper per-point than
-/// REST — it bills proportional to nodes returned, often more
-/// than the REST calls it would replace. The only structural win
-/// of "bias to GraphQL when REST is hot" is that the two buckets
-/// are *separate 5000/hr quotas*; it is not a free lunch in
-/// aggregate consumption.
-///
-/// Today neither concept is wired: the defensive `WaitForRateLimit`
-/// axis (driven by [`RateLimitHit`]) catches actual throttling, and
-/// recorder logs of this struct will tell us whether preemptive
-/// routing is ever actually warranted.
+/// **Cost-model caveat** — GraphQL is not cheaper per point than
+/// REST; it bills proportional to returned nodes. The only
+/// structural win of bucket biasing is bucket separation (two
+/// independent quotas), not aggregate cost reduction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateLimitBudget {
     pub graphql: BucketState,

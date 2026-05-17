@@ -1,19 +1,17 @@
-//! CI candidate generation.
+//! CI-axis candidate generation.
 //!
-//! Top-level match on `CiActivity`:
-//!   - Idle / `Resolved::AllGreen` → no candidate (delegate to next axis)
-//!   - `InFlight` → worst-of aggregation over per-check health:
-//!     Failed > Degraded > Healthy.
-//!     Failed → `EscalateCiFailed` (Human, exit 3).
-//!     Degraded → `ReRunWorkflow` (Full, blocking).
-//!     Healthy → `WaitForCi` (Wait).
-//!   - `Resolved::HasFailures` → existing FixCi-per-failure path.
-//!   - `Resolved::MissingRequired` → `WaitForCi` (missing).
+//! Two top-level shapes feed the candidate set: a `Resolved` state
+//! (every required check has settled at HEAD) and an `InFlight`
+//! state (one or more required checks still running). The `InFlight`
+//! arm aggregates per-check health by *worst-of* — Failed dominates
+//! Degraded dominates Healthy — and emits exactly one candidate at
+//! the dominant tier.
 //!
-//! `TriageWait` fires only on advisory failures concurrent with a
-//! blocked-required set — kept as a sibling branch to `InFlight` that
-//! suppresses the Healthy Wait when an advisory genuinely needs an
-//! agent to look.
+//! Advisory failures concurrent with a blocked required set
+//! trigger a triage candidate that suppresses the otherwise-fired
+//! Healthy Wait: an advisory failure on its own is not a blocker,
+//! but co-occurring with a blocked required set it is genuinely
+//! ambiguous and needs agent triage.
 
 use super::action::{
     Action, ActionEffect, ActionKind, DegradedCheck, FailedCheckHandle, NonEmpty, TargetEffect,
@@ -38,23 +36,19 @@ pub(super) fn candidates(report: &CiReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     let summary = &report.summary;
 
-    // Intentional exhaustive match per axis pattern; the Idle and
-    // AllGreen arms are kept distinct for spec clarity even though
-    // both emit no candidate.
+    // Exhaustive over CI activity; Idle and AllGreen are kept as
+    // distinct arms for spec clarity even though both are empty.
     #[allow(clippy::match_same_arms)]
     match &report.activity {
         CiActivity::Idle => {
-            // No required checks observed; nothing to emit. The
-            // Resolved::AllGreen arm covers the "all required
-            // checks passed" case; Idle is the strictly-zero case.
+            // No required checks configured.
         }
         CiActivity::Resolved(ResolvedState::AllGreen) => {
-            // Every required check passed; nothing to emit.
+            // All required checks passed.
         }
         CiActivity::Resolved(ResolvedState::HasFailures(names)) => {
-            // Pre-health behavior preserved: one FixCi per failing
-            // required check. Drives the existing
-            // "ci_fail: <check>" blocker tags.
+            // One per-check fix candidate per failing required
+            // check, keyed by check identity for stall stability.
             for f in &summary.required.failed {
                 if !names.contains(&f.name) {
                     continue;
@@ -71,15 +65,14 @@ pub(super) fn candidates(report: &CiReport) -> Vec<Action> {
                     blocker: BlockerKey::typed("ci_fail", &f.name),
                 });
             }
-            // TriageWait does NOT fire in HasFailures — a required
-            // failure already routes to FixCi; the agent will see the
-            // advisory state in the snapshot.
+            // Triage does not fire in HasFailures — the per-check
+            // fix candidates already cover the work, and the
+            // agent sees advisory state in the same snapshot.
         }
         CiActivity::Resolved(ResolvedState::MissingRequired(names)) => {
-            // Required checks configured but absent. Same shape as
-            // the pre-health "ci_missing" path; TriageWait may
-            // shadow this when concurrent advisory failures exist
-            // (delegated to triage_branch below).
+            // Required checks configured but absent at HEAD.
+            // Triage may shadow this when an advisory failure
+            // co-occurs; the helper routes either way.
             triage_or_missing(summary, names, &mut out);
         }
         CiActivity::InFlight(checks) => {
@@ -90,9 +83,10 @@ pub(super) fn candidates(report: &CiReport) -> Vec<Action> {
     out
 }
 
-/// Aggregate per-check health into one action. Failed dominates
-/// Degraded dominates Healthy. Within each tier, every check at
-/// that tier travels in the action payload.
+/// Aggregate per-check health into one candidate at the dominant
+/// tier (Failed > Degraded > Healthy). Every check at the chosen
+/// tier travels in the action payload; lower-tier checks are
+/// implicitly covered by the chosen action's gate.
 fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut Vec<Action>) {
     let failed: Vec<FailedCheckHandle> = checks
         .iter()
@@ -116,11 +110,9 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             effect: ActionEffect::Human { prompt },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingHuman,
-            // Stable across iterations: the gate is "at least one
-            // required check failed". Per-check details live on
-            // the action payload + handoff prompt. Stall-exempt by
-            // Human automation but invariant-violating to embed
-            // mutating names in the key.
+            // Gate identity: "≥1 required check failed". Per-check
+            // names travel on the payload — embedding them in the
+            // key would violate gate stability across iterations.
             blocker: BlockerKey::from_static("ci_failed"),
         });
         return;
@@ -157,14 +149,10 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             effect: ActionEffect::Full { log },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingFix,
-            // Stable across iterations: the gate is the
-            // (re-run-loop, symptom_class) tuple. Affected check
-            // names live on the action payload; the blocker key
-            // names the gate, not the current cohort.
-            // symptom_tag is one of the two static literals matched
-            // above. from_static composes the prefix + variant
-            // suffix at the call site (rather than format!) so the
-            // produced key is type-witnessed `&'static str`.
+            // Gate identity: the (rerun-loop, symptom-class) pair.
+            // Cohort identities travel on the payload. Each branch
+            // resolves to a `&'static str` so the key is type-
+            // witnessed at the call site.
             blocker: match symptom_tag {
                 "run_timeout" => BlockerKey::from_static("ci_degraded_run_timeout"),
                 "queue_timeout" => BlockerKey::from_static("ci_degraded_queue_timeout"),
@@ -174,15 +162,17 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
         return;
     }
 
-    // All checks Healthy: fall through to the pre-health
-    // Wait/Triage paths. Pending+missing names together feed the
-    // triage trigger; TriageWait suppresses Wait when it fires.
+    // Healthy fall-through: pending and missing names jointly
+    // feed the triage / wait decision; triage suppresses the wait
+    // when it fires.
     let pending_names: Vec<CheckName> = checks.iter().map(|c| c.name.clone()).collect();
     triage_or_wait(summary, &pending_names, out);
 }
 
-/// Emit either `TriageWait` (advisory failure concurrent with blocked
-/// required) or one or two `WaitForCi` candidates (pending + missing).
+/// Emit either a triage candidate (advisory failure concurrent
+/// with a blocked required set) or up to two wait candidates
+/// (pending, missing). The two paths are mutually exclusive by
+/// construction.
 fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Vec<Action>) {
     let blocked: Vec<CheckName> = pending_names
         .iter()
@@ -209,8 +199,8 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            // Stable across iterations: gate is "≥1 required check
-            // pending". Cohort is on the action payload.
+            // Gate identity: "≥1 required check pending". Cohort
+            // travels on the payload.
             blocker: BlockerKey::from_static("ci_pending"),
         });
     }
@@ -228,19 +218,18 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::BlockingWait,
-            // Stable across iterations: gate is "≥1 required check
-            // missing". Cohort is on the action payload.
+            // Gate identity: "≥1 required check missing". Cohort
+            // travels on the payload.
             blocker: BlockerKey::from_static("ci_missing"),
         });
     }
 }
 
-/// `MissingRequired` branch: no pending; emit Triage or Missing-Wait.
+/// Missing-required branch: no pending names, so the shared helper
+/// runs with an empty pending list and the same gate identities
+/// fall out.
 fn triage_or_missing(summary: &CiSummary, names: &[CheckName], out: &mut Vec<Action>) {
-    // Reuse the shared helper with an empty pending list — the
-    // missing-only path emits exactly the same blocker tags as
-    // before (`ci_missing: ...`).
-    let _ = names; // names mirror summary.missing_names by construction.
+    let _ = names; // Identical to `summary.missing_names` by construction.
     triage_or_wait(summary, &[], out);
 }
 
@@ -259,19 +248,17 @@ fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingFix,
-        // Stable across iterations: gate is "required blocked +
-        // advisory failed concurrent". Cohort is on the action
-        // payload. Agent automation reaches stall comparator, so
-        // a volatile key here would defeat the second-fire stall
-        // trip.
+        // Gate identity: the concurrent (required-blocked,
+        // advisory-failed) condition. Agent effects participate
+        // in stall detection, so the key must be cohort-stable.
         blocker: BlockerKey::from_static("ci_triage"),
     });
 }
 
-/// One Witness per failed check, body inlining description + link
-/// when present. Re-used by `FixCi`, `EscalateCiFailed`, and
-/// `TriageWait` so the rendered shape stays uniform across CI
-/// remediation prompts.
+/// One witness per failed check. Description and link inline as
+/// body lines when present; a placeholder preserves the witness
+/// shape when neither is available. Reused across the CI prompts
+/// so their rendered shape stays uniform.
 fn failed_check_witness(f: &FailedCheck) -> Witness {
     let label = SingleLineString::new(f.name.as_str().to_string());
     let mut body_lines: Vec<String> = Vec::new();
@@ -282,9 +269,8 @@ fn failed_check_witness(f: &FailedCheck) -> Witness {
         body_lines.push(format!("  Run: {}", f.link.trim()));
     }
     if body_lines.is_empty() {
-        // Preserve the witness shape even when the upstream
-        // observation has no description/link — the label alone
-        // still names the check.
+        // The label still names the check; the placeholder
+        // preserves the per-check witness shape.
         body_lines.push("  (no run details available)".to_string());
     }
     let url = if f.link.trim().is_empty() {
@@ -324,12 +310,11 @@ fn escalate_ci_failed_prompt(
     );
     let mut prompt = HandoffPrompt::new(headline);
 
-    // Build one Witness per Failed handle, labelled `name [symptom]`
-    // with body description+link from the matching `summary.required.
-    // failed` entry. When a Failed handle has no description/link
-    // counterpart (eventual-consistency window between the
-    // workflow_runs feed and `gh pr checks`), still emit a Witness
-    // with just the symptom so the per-check structure is preserved.
+    // One witness per failed handle. The matched summary entry
+    // supplies description and link; when the upstream feeds are
+    // mid-propagation and no match exists, the witness still
+    // names the check and symptom so per-check structure is
+    // preserved.
     let witnesses_vec: Vec<Witness> = failed_ne
         .iter()
         .map(|handle| {
@@ -414,8 +399,8 @@ mod tests {
     fn pc(name: &str, health: CheckHealth) -> PendingCheck {
         PendingCheck {
             name: cn(name),
-            // Deterministic id-from-name so the test names stay
-            // self-documenting; the hash is reproducible across runs.
+            // Deterministic id-from-name keeps test fixtures
+            // self-documenting; the hash is reproducible.
             run_id: WorkflowRunId(stable_id(name)),
             health,
         }
@@ -506,7 +491,8 @@ mod tests {
 
     #[test]
     fn failed_dominates_degraded_in_worst_of_aggregation() {
-        // Mix of Failed and Degraded: only EscalateCiFailed fires.
+        // Worst-of: Failed dominates a co-occurring Degraded; only
+        // the escalation candidate fires.
         let mut s = empty_summary();
         s.required.pending_names = vec![cn("A"), cn("B")];
         let activity = CiActivity::InFlight(vec![
@@ -597,13 +583,12 @@ mod tests {
         assert!(matches!(cs[0].kind, ActionKind::FixCi { .. }));
     }
 
-    // ─── property test for the class invariant ──────────────────────
+    // ─── per-variant baseline property ────────────────────────────
     //
-    // Mirrors the copilot axis pattern: exhaustive coverage over the
-    // (CiActivity-variant × CheckHealth-variant) cross product on the
-    // InFlight variant. The match in `expected_ci_baseline_behavior`
-    // is structurally exhaustive — adding a new CheckHealth variant
-    // (or extending CiActivity) fails to compile here first.
+    // Pins the class invariant: every (Activity × CheckHealth)
+    // baseline maps to a determined emission. The exhaustive
+    // match below is the contract; a new variant in either enum
+    // fails to compile until handled.
 
     #[derive(Debug, PartialEq, Eq)]
     enum CiBaselineBehavior {
@@ -615,16 +600,11 @@ mod tests {
         EmitMissingWait,
     }
 
-    /// What the CI axis emits for each `CiActivity` baseline.
-    ///
-    /// For `InFlight(checks)` the contract is parametric in
-    /// `CheckHealth`: a single-check `InFlight` with a particular
-    /// health value drives a specific action. The match below is
-    /// exhaustive over both `CheckHealth` and `CiActivity` — adding a
-    /// new variant requires a new arm here.
+    /// Baseline projection over CI activity. The `InFlight` arm
+    /// parameterises further on the first check's health, so the
+    /// contract is exhaustive over both enums simultaneously.
     fn expected_ci_baseline_behavior(activity: &CiActivity) -> CiBaselineBehavior {
-        // Intentional exhaustive match per axis pattern; arms are
-        // duplicated for spec clarity.
+        // Arms duplicated for spec clarity.
         #[allow(clippy::match_same_arms)]
         match activity {
             CiActivity::Idle => CiBaselineBehavior::NoCandidate,
@@ -642,11 +622,10 @@ mod tests {
         }
     }
 
-    /// Enumerates every (`CiActivity` × `CheckHealth`) baseline case on
-    /// the `InFlight` variant, plus one representative per Resolved
-    /// variant and Idle. New variants (or new Symptom variants) fail
-    /// to compile against the exhaustive match in
-    /// `expected_ci_baseline_behavior`.
+    /// Sample enumeration: every (`Activity` × `CheckHealth`) baseline
+    /// on the `InFlight` arm, plus one representative for each
+    /// `Resolved` arm and Idle. New variants fall through to the
+    /// exhaustive match above and fail to compile until handled.
     fn all_ci_activities() -> Vec<(CiSummary, CiActivity)> {
         let mut out = Vec::new();
         out.push((empty_summary(), CiActivity::Idle));
@@ -711,10 +690,9 @@ mod tests {
             [] => CiBaselineBehavior::NoCandidate,
             [a] => match (&a.kind, &a.effect) {
                 (ActionKind::WaitForCi { .. }, ActionEffect::Wait { .. }) => {
-                    // The MissingRequired baseline shape emits the
-                    // missing-Wait variant; the Healthy InFlight
-                    // emits the pending-Wait variant. Distinguish by
-                    // blocker tag (stable identity).
+                    // Two distinct gates share the WaitForCi
+                    // action kind; gate identity (blocker key)
+                    // is what separates them.
                     if a.blocker.as_str().starts_with("ci_missing") {
                         CiBaselineBehavior::EmitMissingWait
                     } else {
@@ -744,19 +722,13 @@ mod tests {
     #[test]
     fn ci_axis_property_holds_for_every_activity_baseline() {
         let baselines = all_ci_activities();
-        // Idle (1) + Resolved×3 (AllGreen, HasFailures, MissingRequired)
-        // + InFlight×Healthy (1) + InFlight×Degraded×2 + InFlight×Failed×2
-        // = 9.
+        // Length sentinel: 1 + 3 + (1 + 2 + 2) = 9 across the
+        // activity / health cross-product.
         assert_eq!(
             baselines.len(),
             9,
-            "`all_ci_activities` must enumerate every \
-             (CiActivity × CheckHealth) baseline case: Idle (1) + \
-             Resolved×3 + InFlight×{{Healthy + Degraded×|Symptom| + \
-             Failed×|Symptom|}} = 1 + 3 + 1 + 2 + 2 = 9. Adding a \
-             new variant requires updating this sample list, the \
-             exhaustive match in `expected_ci_baseline_behavior`, \
-             AND this length sentinel.",
+            "Sample enumeration must cover Idle + every Resolved \
+             variant + every (InFlight × CheckHealth) case.",
         );
         for (summary, activity) in baselines {
             let r = report(summary, activity.clone());
@@ -806,9 +778,8 @@ mod tests {
 
     #[test]
     fn fix_ci_prompt_omits_paragraphs_when_observation_lacks_them() {
-        // When observe surfaces a Failed check with no description or
-        // link (rare wire-source race), the prompt still has its
-        // headline — no empty Description: / Run: paragraphs.
+        // Headline survives a missing description/link; no empty
+        // detail paragraphs are emitted.
         let mut s = empty_summary();
         s.required.failed = vec![failed("Lint")];
         let cs = candidates(&report(
@@ -854,10 +825,9 @@ mod tests {
 
     #[test]
     fn escalate_ci_failed_emits_witness_with_fallback_when_summary_lacks_match() {
-        // Eventual-consistency window: the Failed handle is in
-        // flight but the summary's required.failed entry has not
-        // populated yet. The Witness still names the check + symptom
-        // and notes the gap.
+        // Mid-propagation between upstream feeds: handle exists,
+        // matching summary entry does not. Witness still names
+        // the check and symptom and notes the gap.
         let mut s = empty_summary();
         s.required.pending_names = vec![cn("Build")];
         // summary.required.failed intentionally empty.

@@ -1,10 +1,20 @@
-//! Reviews orient: join `reviews × HEAD`, count unresolved threads,
-//! split pending reviewers into bots vs humans, and surface the
-//! decision.
+//! Project review submissions, threads, and reviewer requests into a
+//! single decision-bearing summary.
 //!
-//! First axis to perform real joins across observation sources
-//! (PR head SHA × per-review commit SHA; thread/request data from
-//! GraphQL).
+//! # Invariants
+//!
+//! - **Approval freshness keyed on HEAD-SHA**: an approval counts as
+//!   on-head iff its review-commit equals the current HEAD; otherwise
+//!   it counts as stale. The partition is total over all approvals.
+//! - **Actor class drives the split**: pending reviewers and bot
+//!   reviews partition by actor class (bot vs human) at the boundary,
+//!   so downstream prompts never need to re-classify identities.
+//! - **Decision is host-supplied, not re-derived**: the host's review
+//!   decision is forwarded as-is. Absence is a distinct value from a
+//!   negative decision (no policy vs unmet policy).
+//! - **Outdated threads are not actionable**: outdated threads are
+//!   excluded from the unresolved count for the same reason given in
+//!   the bot-threads axis — the anchor has moved.
 
 use crate::ids::{GitCommitSha, GitHubLogin, Reviewer, TeamName, Timestamp};
 use crate::observe::github::comments::IssueComment;
@@ -16,31 +26,26 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ReviewSummary {
-    /// `None` means "no review policy on this branch" — distinct from
-    /// `Some(ReviewRequired)` which means policy exists and is unmet.
+    /// Host's review-policy decision. Absence means "no policy on
+    /// this branch," distinct from a present-but-unmet policy.
     pub decision: Option<ReviewDecision>,
     pub threads_unresolved: usize,
     pub threads_total: usize,
-    /// Issue-level comments authored by bots (`login` ends with `[bot]`).
+    /// Issue-level comments authored by bot identities.
     pub bot_comments: usize,
     pub approvals_on_head: usize,
     pub approvals_stale: usize,
     pub pending_reviews: PendingReviews,
     pub bot_reviews: Vec<BotReview>,
-    /// Currently-required reviewers from the REST
-    /// `pulls/{n}/requested_reviewers` endpoint, split into bots and
-    /// humans (users + teams). Decide's `RequestApproval` prompt
-    /// surfaces these so the human knows who must approve. Distinct
-    /// from `pending_reviews`, which is the GraphQL-projected slice
-    /// of `review_requests` and may include reviewers GitHub has not
-    /// yet promoted into the REST view (eventual consistency window).
+    /// Currently-required reviewers split by actor class. Distinct
+    /// from `pending_reviews`: the two project different host
+    /// surfaces (REST vs GraphQL) that disagree during eventual-
+    /// consistency windows. Decide surfaces this set so the prompt
+    /// names who must approve.
     pub requested_reviewers: RequestedReviewerSet,
-    /// Latest `CHANGES_REQUESTED` review authored by a human (not a
-    /// `[bot]`-suffixed login). `None` when there is no human-authored
-    /// change request on this PR — bot change requests fall to
-    /// `bot_reviews` instead. Drives the `AddressChangeRequest`
-    /// prompt's inline witness so the agent does not need a
-    /// `gh pr view --json reviews` round-trip to see what was asked.
+    /// Latest human-authored change request, or absence. Bot change
+    /// requests route through `bot_reviews`; this field carries only
+    /// human ones so the prompt witness names a human author.
     pub latest_human_changes_requested: Option<HumanReview>,
 }
 
@@ -96,11 +101,9 @@ pub(crate) fn orient_reviews(
     let pull = &threads.data.repository.pull_request;
 
     let threads_total = pull.review_threads.nodes.len();
-    // Outdated threads (anchor line shifted away by rebase/amend) are
-    // excluded from the actionable count: GitHub auto-collapses them
-    // and the actor cannot meaningfully address them in code. They
-    // remain `is_resolved=false` until someone clicks "Resolve" — that
-    // hygiene is a separate concern from "should the actor act?"
+    // Outdated threads (anchor moved) are excluded from the
+    // actionable count — the actor cannot address them in code.
+    // Resolution hygiene is a separate concern.
     let threads_unresolved = pull
         .review_threads
         .nodes
@@ -132,11 +135,9 @@ pub(crate) fn orient_reviews(
         })
         .collect();
 
-    // Latest human-authored CHANGES_REQUESTED. Walk reviews newest-
-    // first (by submitted_at; reviews without a timestamp lose) and
-    // pick the first non-bot ChangesRequested entry. Bots travel
-    // through `bot_reviews` and are gated by the AddressThreads /
-    // suppressed-finding paths instead.
+    // Bot-authored change requests route through `bot_reviews`;
+    // this selector restricts to human authorship so the witness
+    // names a human, never an unhandled bot row.
     let latest_human_changes_requested = latest_human_change_request(reviews);
 
     let requested_reviewers = split_requested_reviewers(requested);
@@ -173,13 +174,14 @@ fn latest_human_change_request(reviews: &[PullRequestReview]) -> Option<HumanRev
         .max_by_key(|h| h.submitted_at)
 }
 
-/// Split the REST `requested_reviewers` payload into bots and humans.
-/// `UserType::Bot` and `[bot]`-suffixed `User` logins both classify
-/// as bots (matches `pending_split`'s legacy User-with-suffix path).
-/// `UserType::Organization` is treated as a human team — GitHub
-/// occasionally serves org identities here when a team request was
-/// converted; surface as a `Reviewer::User` so the reviewer name
-/// still renders.
+/// Partition the requested-reviewer payload by actor class.
+///
+/// Class invariant: a User-typed entry whose login carries the
+/// canonical bot suffix is classified as a bot — the host emits both
+/// shapes for legacy bot reviewers and downstream code must not
+/// re-classify. Organization-typed entries are surfaced as humans so
+/// the reviewer name still renders when a team-request was server-
+/// converted to an org identity.
 fn split_requested_reviewers(requested: &RequestedReviewers) -> RequestedReviewerSet {
     let mut out = RequestedReviewerSet::default();
     for u in &requested.users {
@@ -195,10 +197,9 @@ fn split_requested_reviewers(requested: &RequestedReviewers) -> RequestedReviewe
         }
     }
     for t in &requested.teams {
-        // Team slugs from the REST endpoint may include characters
-        // (uppercase, dashes) that `TeamName::parse` accepts as-is;
-        // when parsing fails the slug is surfaced as a raw user
-        // login so the reviewer is still named in the prompt.
+        // Team slug → team identity when the slug parses; otherwise
+        // fall back to a user identity so the reviewer is still
+        // named in the prompt rather than silently dropped.
         match TeamName::parse(&t.slug) {
             Ok(name) => out.humans.push(Reviewer::Team(name)),
             Err(_) => {
@@ -227,15 +228,12 @@ fn partition_approvals(reviews: &[PullRequestReview], head: &GitCommitSha) -> (u
     (on_head, stale)
 }
 
-/// Split requested reviewers into bots and humans by typename:
-///   - `Bot`: bot
-///   - `User` / `Mannequin`: human (matches pr-fitness — Mannequin
-///     is a placeholder identity for migrated humans)
-///   - `Team`: human (team name carries a slug)
+/// Partition the GraphQL-typed reviewer set by actor class.
 ///
-/// A `[bot]`-suffixed `User` login also counts as a bot so that
-/// reviewers added before GraphQL knew about the Bot type still
-/// classify correctly.
+/// Mannequin (placeholder identity for migrated humans) and Team
+/// classify as humans; Bot classifies as bot. A User-typed entry
+/// whose login carries the canonical bot suffix also classifies as
+/// bot — preserves the legacy reviewer-added-before-typed-Bot path.
 fn pending_split<'a>(reviewers: impl Iterator<Item = &'a RequestedReviewer>) -> PendingReviews {
     let mut out = PendingReviews::default();
     for r in reviewers {

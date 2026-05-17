@@ -1,21 +1,15 @@
-//! Observe the PR-meta attestation file plus its drift against
-//! the current PR head.
+//! Observation for the PR-metadata attestation axis.
 //!
-//! Read flow:
-//!   1. Read `<state-root>/<pr-id>/pr_meta_attest.json` (may be
-//!      absent — a never-attested PR is a valid steady state).
-//!   2. If attested SHA differs from HEAD, query `gh api compare`
-//!      for the count of commits between the two. A failed compare
-//!      (e.g. attested SHA pruned post-rebase) preserves
-//!      `commits_behind = None`; the orient layer projects Drift
-//!      regardless (the SHA mismatch is the trigger, not the
-//!      count) but distinguishes "drift exists, count unknown"
-//!      from "drift exists, N commits behind."
+//! # Invariants
 //!
-//! The attestation read NEVER fails the observe pass. Malformed
-//! files, version mismatches, and bad SHAs all collapse to
-//! `attestation = None`; the orient layer then projects
-//! `NeverAttested` and decide hands off to the agent to re-attest.
+//! - **Attestation read never fails the pass**: malformed file,
+//!   schema-version skew, parse failure all collapse to absence;
+//!   orient classifies as never-attested and decide hands off to
+//!   the agent. Absence is a valid steady state.
+//! - **Distance is hint, not gate**: drift classification is
+//!   driven by SHA inequality. The compare-distance query is best-
+//!   effort — when it fails, distance is absent but the Drift
+//!   classification still fires.
 
 use std::path::PathBuf;
 
@@ -28,13 +22,11 @@ use super::gh::{GhError, encode_path_segment, gh_json};
 
 const PULL_REQUEST_METADATA_FILE: &str = "pr_meta_attest.json";
 
-/// Observation triple consumed by the orient layer.
+/// Observation consumed by the orient layer.
 ///
-/// `attest_path` is the absolute path the agent must pass to
-/// `ooda-attest pr-meta --state-root <root>` after refreshing PR
-/// metadata. `None` when no `--state-root` was supplied — the act
-/// layer falls back to a path-free prompt that asks the agent to
-/// supply the state-root themselves.
+/// `attest_path` is the absolute path the agent must record
+/// against. Absent when the caller supplied no state-root; the
+/// prompt layer then asks the agent to supply one.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PullRequestMetadataObservation {
     pub attestation: Option<PullRequestMetadataAttestation>,
@@ -43,9 +35,9 @@ pub(crate) struct PullRequestMetadataObservation {
     pub attest_path: Option<PathBuf>,
 }
 
-/// Compose the attestation file path the CLI (`ooda-attest pr-meta`)
-/// writes to. Pulled out so the act-layer prompt composer can
-/// surface the same absolute path the agent must pass to the CLI.
+/// Compose the attestation file path. Shared with the prompt-
+/// composition layer so the agent receives the same absolute path
+/// it must record against.
 #[must_use]
 pub(crate) fn attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -> PathBuf {
     state_root
@@ -53,12 +45,9 @@ pub(crate) fn attest_path(state_root: &std::path::Path, pr: PullRequestNumber) -
         .join(PULL_REQUEST_METADATA_FILE)
 }
 
-/// Observe the PR-meta attestation + drift against `head_sha`.
-///
-/// `state_root` is `None` when the caller omitted `--state-root`;
-/// the observation degrades to "no attestation file possible" —
-/// orient classifies as `NeverAttested` and the dashboard surfaces
-/// the gap. No filesystem touch in that case.
+/// Read the attestation plus the optional drift distance against
+/// the current HEAD. Absent state-root degrades to "no attestation
+/// possible" without touching the filesystem.
 pub(crate) fn observe_pull_request_metadata(
     state_root: Option<&std::path::Path>,
     slug: &RepoSlug,
@@ -83,15 +72,9 @@ pub(crate) fn observe_pull_request_metadata(
     }
 }
 
-/// Query `gh api compare` for the `ahead_by` count between
-/// `attested_sha` and `head`. The compare endpoint returns
-/// `behind_by` (commits on base since merge base) and `ahead_by`
-/// (commits on head since merge base); we report `ahead_by` —
-/// commits the PR has added since the attestation was recorded.
-///
-/// `None` when the compare fetch fails for any reason (e.g.
-/// attested SHA pruned post-rebase, HTTP 404, transport error).
-/// The caller treats `None` as "drift exists but count unknown."
+/// Best-effort distance query: commits added since the attestation.
+/// Absent on any failure (pruned SHA, transport error). The caller
+/// treats absence as "drift exists, distance unknown."
 fn compare_ahead_by(slug: &RepoSlug, attested_sha: &str, head: &GitCommitSha) -> Option<usize> {
     let envelope = fetch_compare_envelope(slug, attested_sha, head).ok()?;
     Some(envelope.ahead_by as usize)

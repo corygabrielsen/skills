@@ -1,17 +1,18 @@
 //! Decide stage: pure state machine over [`OrientedState`].
 //!
-//! In-batch decisions:
+//! In-batch transition table:
 //!
 //! ```text
-//! BatchState::NotStarted                  → Execute(RunReviews)
-//! BatchState::Running { c < expected }    → Execute(AwaitReviews)
-//! BatchState::Complete { all_clean }      → Halt(AgentNeeded(Retrospective))
-//! BatchState::Complete { has_issues }     → Halt(AgentNeeded(AddressBatch))
+//! NotStarted                            → Execute(RunReviews)
+//! Running { completed < expected }      → Execute(AwaitReviews)
+//! Complete { all_clean, at_ceiling }    → Halt(Terminal(Succeeded))
+//! Complete { all_clean, below_ceiling } → Halt(AgentNeeded(Retrospective))
+//! Complete { has_issues }               → Halt(AgentNeeded(AddressBatch))
 //! ```
 //!
-//! Cross-iteration transitions — `AdvanceLevel`, `DropLevel`,
-//! `RestartFromFloor`, `RunTests` — fire from recorder-derived
-//! state.
+//! Cross-iteration ladder transitions are recorder-driven and do
+//! not appear in this table; they reach decide via the recorder's
+//! mutation of `current_level` between iterations.
 
 pub(crate) mod action;
 pub(crate) mod decision;
@@ -24,16 +25,12 @@ use crate::orient::OrientedState;
 use action::{Action, ActionEffect, ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use decision::{Decision, DecisionHalt, Terminal};
 
-/// Default polling cadence for `AwaitReviews`. The runner sleeps
-/// this long between observations while a batch is in flight.
-/// Matches the `S=30` reference in loop-codex-review's polling
-/// one-liner.
+/// Default polling cadence for in-flight review batches.
 ///
-/// Tests and unusual deployments override via the
-/// `OODA_AWAIT_SECS` env var. Must be ≥ 1; a value of 0 (or any
-/// unparseable string) falls back to [`DEFAULT_AWAIT_SECS`] —
-/// [`ooda_core::PollingInterval`] enforces the no-busy-loop
-/// invariant structurally.
+/// Override via the `OODA_AWAIT_SECS` env var; values that fail to
+/// parse to a positive integer fall back to this default. The
+/// no-busy-loop invariant is established structurally by
+/// [`ooda_core::PollingInterval`] regardless of the source.
 const DEFAULT_AWAIT_SECS: u64 = 30;
 
 fn await_interval() -> ooda_core::PollingInterval {
@@ -53,20 +50,16 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
             mk_await_reviews(oriented.current_level, pending)
         }
         BatchState::Complete { verdicts } if all_clean(verdicts) => {
-            // At ceiling + all clean: terminal fixed point. The
-            // orchestrator may still want to dispatch a final
-            // retrospective, but the binary's job is done; signal
-            // it via the Terminal halt rather than a Retrospective
-            // handoff. Below ceiling: hand off to retrospective
-            // synthesis as before.
+            // All-clean at ceiling is the terminal fixed point.
+            // All-clean below ceiling defers to retrospective
+            // synthesis which decides whether to advance.
             if oriented.current_level == oriented.ceiling {
                 return Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded));
             }
             mk_retrospective(oriented.current_level)
         }
         BatchState::Complete { verdicts } => {
-            // Verdict count per batch is bounded by reviewer fan-out;
-            // fits in u32.
+            // Bounded by per-batch reviewer fan-out; fits in u32.
             let has_issues_count = u32::try_from(
                 verdicts
                     .iter()
@@ -375,17 +368,15 @@ mod tests {
 
     // ─── property test for the class invariant ──────────────────────
     //
-    // Class invariant for `decide`: every `BatchState` variant has a
-    // deterministic outcome in the baseline state (below ceiling,
-    // all-clean verdicts in Complete). The exhaustive match in
-    // `expected_decide_behavior` is the contract. Adding a new
-    // `BatchState` variant fails to compile here until the new arm
-    // is added — which forces a decision about which Action the new
-    // state maps to.
+    // Class invariant: every `BatchState` variant maps to a
+    // deterministic baseline behaviour (below ceiling, all-clean
+    // for Complete). The exhaustive match in
+    // `expected_decide_behavior` is the contract — adding a new
+    // variant fails to compile here until the new arm is added,
+    // forcing a decision about which Action the new state maps to.
     //
-    // Sub-cases for Complete (at-ceiling → Terminal::Succeeded,
-    // has-issues → AddressBatch) are exercised by the scenario
-    // tests above; this property test pins the per-variant baseline.
+    // Complete sub-cases (at-ceiling Terminal, has-issues
+    // AddressBatch) are covered by the scenario tests above.
 
     #[derive(Debug, PartialEq, Eq)]
     enum DecideBaselineBehavior {

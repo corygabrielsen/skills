@@ -1,8 +1,10 @@
-//! Act stage: execute Full actions directly, sleep on Wait actions.
+//! Act stage: realise an action's side effect.
 //!
-//! Decide has already routed Agent and Human actions to Halt — they
-//! never reach act. Anything Action that arrives here is either
-//! Full (we run it) or Wait (we sleep `next_poll_seconds` and return).
+//! Domain invariant: only the two driver-side action effects reach
+//! this stage. Decide is responsible for halting on the external-
+//! resolver arms (Agent / Human) before they get here; an
+//! external-resolver action arriving at this boundary is a
+//! programmer error and surfaces as `UnsupportedAutomation`.
 
 pub(crate) mod address_claude_review;
 mod ci;
@@ -20,10 +22,11 @@ use crate::orient::state::WIP_LABEL;
 
 #[derive(Debug)]
 pub enum ActError {
-    /// Decide guarantees `act()` only sees Full or Wait actions; an
-    /// Agent or Human action here is a programmer error.
+    /// An external-resolver action reached the driver. Decide is
+    /// contractually obliged to halt on those; reaching here is a
+    /// programmer error rather than a runtime condition.
     UnsupportedAutomation,
-    /// `gh` subprocess failed for a Full action.
+    /// Subprocess invocation for a driver-side action failed.
     Gh(GhError),
 }
 
@@ -49,8 +52,7 @@ impl From<GhError> for ActError {
     }
 }
 
-/// Execute (or wait for) one action. Returns Ok on success;
-/// caller's loop re-iterates after this returns.
+/// Realise one action's side effect; the caller re-iterates on Ok.
 pub(crate) fn act(action: &Action, slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => run_full(&action.kind, slug, pr),
@@ -65,8 +67,8 @@ pub(crate) fn act(action: &Action, slug: &RepoSlug, pr: PullRequestNumber) -> Re
 }
 
 fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), ActError> {
-    // gh_run takes &[&str], so the formatted strings need backing
-    // storage on the stack for the duration of the call.
+    // Borrow targets for the subprocess's borrowed argv must
+    // outlive the call.
     let pr_s = pr.to_string();
     let slug_s = slug.to_string();
     match kind {
@@ -82,9 +84,8 @@ fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result
         ])?,
         ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(slug, pr)?,
         ActionKind::ReRunWorkflow { checks } => {
-            // Iterate every degraded check; each carries its own
-            // workflow run handle. Fail-fast on the first GH error —
-            // the next iteration re-observes from scratch.
+            // Fail-fast on the first per-check error; the next
+            // iteration re-observes from a fresh upstream state.
             for c in checks {
                 ci::rerun_workflow(slug, &c.run_id)?;
             }

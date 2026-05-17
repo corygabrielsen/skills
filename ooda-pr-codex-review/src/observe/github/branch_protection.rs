@@ -1,9 +1,9 @@
-//! Typed view of
-//! `GET /repos/{o}/{r}/branches/{branch}/protection/required_status_checks`.
+//! Legacy-source projection for branch-level required checks.
 //!
-//! Legacy branch-protection source for required checks (distinct
-//! from rulesets). Returns `404` when no classic protection is
-//! configured; callers handle that at the observer layer.
+//! Distinct from the rule-source projection; either source alone
+//! understates the required-check set on repos that use both. A
+//! not-found response means "unconfigured" rather than "absent
+//! resource" — the wrapper lifts it to typed absence.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +11,9 @@ use crate::ids::{CheckName, RepoSlug};
 
 use super::gh::{GhError, encode_path_segment, gh_json};
 
-/// Fetch legacy branch-protection required status checks. Returns
-/// `Ok(None)` when the endpoint returns 404 (no classic protection
-/// configured — a normal, non-error state). `branch` is URL-encoded
-/// so names with `/` resolve to one path segment.
+/// Fetch the legacy-source required-check list for a branch.
+/// Absence (unconfigured) lifts to `Ok(None)`; transport errors
+/// propagate. `branch` is path-segment-encoded.
 pub(crate) fn fetch_branch_protection_required_checks(
     slug: &RepoSlug,
     branch: &str,
@@ -39,8 +38,8 @@ pub(crate) struct BranchProtectionRequiredStatusChecks {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct BranchProtectionCheck {
     pub context: CheckName,
-    /// Null when the check has no registered GitHub App (e.g. status
-    /// posted without app integration).
+    /// Absent when the check is not pinned to a registered host app
+    /// (status posted without app integration).
     pub app_id: Option<u64>,
 }
 

@@ -1,23 +1,21 @@
-//! `ooda-attest` — CLI wrapper around `ooda_core::attest`.
+//! `ooda-attest` — write per-axis attestations at current HEAD.
 //!
-//! Subcommands: `pr-meta`, `doc-review`, `claude-review`, `closeout`.
-//! Each looks up HEAD via `git rev-parse` in the current working
-//! directory, then writes the corresponding attestation file at
-//! `<state-root>/<pr-id>/<file>.json`.
+//! Each subcommand corresponds to one attestation axis. Operation:
+//! resolve HEAD via `git rev-parse` in the working directory, then
+//! write the per-axis attestation file under
+//! `<state-root>/<pr-id>/`. State-root resolution defers to
+//! [`ooda_core::state_root::resolve_ooda_pr_state_root`].
 //!
-//! `--state-root` is optional. When omitted, the state root is
-//! resolved via `ooda_core::state_root::resolve_ooda_pr_state_root`:
-//! `$OODA_PR_STATE_HOME`, then `$XDG_STATE_HOME/ooda-pr`, then
-//! `$HOME/.local/state/ooda-pr`, then `$TMPDIR/ooda-pr`. The
-//! resolved directory is created on demand.
+//! # Exit codes
 //!
-//! Exit codes:
-//!   0  success
-//!   2  clap argument parse failure (clap default; preserved)
-//!   64 invalid `--pr-id` / `--state-root` format or existence
-//!   65 `git rev-parse HEAD` failure or malformed SHA
-//!   70 write failure (IO / serialization)
-//!   1  fallback
+//! | Code | Meaning |
+//! |-----:|---------|
+//! |    0 | success |
+//! |    2 | argument parse failure (clap default) |
+//! |   64 | invalid `--pr-id` / `--state-root` (format or existence) |
+//! |   65 | `git rev-parse HEAD` failure or malformed SHA |
+//! |   70 | write failure (IO / serialization) |
+//! |    1 | fallback |
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,8 +47,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum SubCmd {
-    /// Attest that PR title, description, and labels are correct
-    /// for the current HEAD.
+    /// Attest the PR-metadata axis at current HEAD.
     #[command(name = "pr-meta")]
     PullRequestMetadata {
         /// PR number (digits only).
@@ -58,51 +55,45 @@ enum SubCmd {
         pr_id: String,
 
         /// State-root directory; the per-PR subdir is created on
-        /// demand by the underlying writer. When omitted, resolved
-        /// from `$OODA_PR_STATE_HOME`, `$XDG_STATE_HOME/ooda-pr`,
-        /// `$HOME/.local/state/ooda-pr`, or `$TMPDIR/ooda-pr` (in
-        /// that order). The resolved directory is created if missing.
+        /// demand. When omitted, resolved per
+        /// [`ooda_core::state_root::resolve_ooda_pr_state_root`].
         #[arg(long)]
         state_root: Option<PathBuf>,
     },
 
-    /// Attest that doc and comment hygiene have been reviewed for
-    /// the current HEAD's full PR diff.
+    /// Attest the doc / comment hygiene axis at current HEAD.
     #[command(name = "doc-review")]
     DocReview {
         /// PR number (digits only).
         #[arg(long)]
         pr_id: String,
 
-        /// State-root directory; see `pr-meta` for resolution rules.
+        /// State-root directory; see `pr-meta`.
         #[arg(long)]
         state_root: Option<PathBuf>,
     },
 
-    /// Attest that Claude's review content has been addressed at
-    /// the current HEAD.
+    /// Attest the Claude-review axis at current HEAD.
     #[command(name = "claude-review")]
     ClaudeReview {
         /// PR number (digits only).
         #[arg(long)]
         pr_id: String,
 
-        /// State-root directory; see `pr-meta` for resolution rules.
+        /// State-root directory; see `pr-meta`.
         #[arg(long)]
         state_root: Option<PathBuf>,
     },
 
-    /// Attest that the PR has been swept end-to-end at current HEAD
-    /// and is ready for human handoff. Only meaningful when every
-    /// other axis is silent — the OODA loop fires the closeout
-    /// handoff after convergence.
+    /// Attest the closeout (final sign-off) axis at current HEAD.
+    /// Strictly conditional on every other axis being silent.
     #[command(name = "closeout")]
     Closeout {
         /// PR number (digits only).
         #[arg(long)]
         pr_id: String,
 
-        /// State-root directory; see `pr-meta` for resolution rules.
+        /// State-root directory; see `pr-meta`.
         #[arg(long)]
         state_root: Option<PathBuf>,
     },

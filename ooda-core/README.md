@@ -36,27 +36,26 @@ Each binary defines its own `ActionKind` enum and creates
 **concrete type aliases** over the generics:
 
 ```rust
-// In ooda-pr/src/decide/action.rs:
+// In the consuming binary:
 pub use ooda_core::{ActionKindName, Automation, TargetEffect, Urgency};
 
-pub type Action = ooda_core::Action<ActionKind>;
+pub type Action  = ooda_core::Action<ActionKind>;
+pub type Outcome = ooda_core::Outcome<ActionKind>;
 
 pub enum ActionKind {
+    // domain-specific funnel basins, e.g. for a PR-merge domain:
     FixCi { check_name: CheckName },
     WaitForCi { pending: Vec<CheckName> },
     AddressThreads { threads: Vec<ReviewThread> },
-    // … 19 more PR-domain variants
+    // …
 }
 
 impl ActionKindName for ActionKind {
     fn name(&self) -> &'static str { /* … */ }
 }
-
-// In ooda-pr/src/outcome.rs:
-pub type Outcome = ooda_core::Outcome<ActionKind>;
 ```
 
-Existing call sites continue to write `Outcome::DoneSucceeded`,
+Call sites continue to write `Outcome::DoneSucceeded`,
 `Action { kind, … }`, `Decision::Halt(DecisionHalt::Success)`
 without seeing the generic parameter — type aliases are
 transparent.
@@ -143,32 +142,37 @@ domain-flavoured documentation.
 
 ## What stays per-binary
 
-This crate intentionally **does not** lift:
+This crate intentionally **does not** lift code whose shape
+diverges across binaries:
 
-- **`run_loop`** — each binary's iteration loop diverges on flock
-  acquisition, head-SHA refresh, side-effect-mode dispatch, etc.
-- **Recorder** — `ooda-pr` / `ooda-prs` / `ooda-pr-codex-review`
-  share the PR-side state-root tree; `ooda-codex-review` uses a
-  different one.
+- **Iteration loop** — each binary's loop diverges on
+  side-channel acquisition (e.g. advisory locks), upstream
+  state refresh between iterations, and side-effect-mode
+  dispatch. Lifting prematurely would force a union shape over
+  divergent concerns.
+- **Recorder** — the on-disk state-root tree is per-domain.
+  PR-domain binaries share one tree (so the same PR driven from
+  any of them walks the same ledger); the codex-review-domain
+  binary uses its own.
 - **`From<LoopError> for Outcome`** — each binary's `LoopError`
-  enum carries a different variant set; the PR-side enums hold
-  `Observe` and `Act` variants, while the codex-side adds a
-  `CodexObserve` variant.
-- **`ActionKind` and `ActionKindName` impl** — these are the
-  per-binary extension point. The trait is the witness that
-  every domain enum provides a stable variant-name renderer.
+  enum carries the union of error sources its loop can witness;
+  the conversion to `Outcome::BinaryError` is per-binary because
+  the union differs.
+- **`ActionKind` and its `ActionKindName` impl** — the per-binary
+  extension point. The trait is the witness that every domain
+  enum provides a stable variant-name renderer; the enum itself
+  encodes the domain's funnel basins.
 
-The anti-DRY policy (see `feedback-anti-dry-mirror` in the user's
-memory) still applies for everything outside the boundary types:
-duplicated runner logic and recorder code are intentional until
-the rule of three forces consolidation.
+The anti-DRY policy still applies for everything outside the
+boundary types: duplicated runner and recorder code are
+intentional until the rule of three forces consolidation.
 
 ## Versioning and stability
 
-The crate is unpublished and shared via path dependency
-(`ooda-core = { path = "../ooda-core" }`). The 1:1 variant →
-exit-code mapping is the contract; adding a new variant requires
-allocating a new exit code (the unassigned range is 9–63).
-Renaming an existing variant is allowed only if every binary's
-stderr-emit table is checked for caller-contract impact — the
-`Done*` rename in commit `dddaced` is the worked example.
+The crate is unpublished and shared via path dependency. The
+1:1 variant → exit-code mapping is the contract; adding a new
+variant requires allocating a new exit code from the unassigned
+range (9–63). Renaming an existing variant is permitted only
+after auditing every binary's stderr-emit table for
+caller-contract impact, because callers may grep the stderr
+header even though dispatch is by `$?` alone.

@@ -1,10 +1,14 @@
-//! Typed view of the GraphQL `reviewThreads` + `reviewRequests` query
-//! for a pull request.
+//! Typed projection for the review-thread + reviewer-request
+//! GraphQL query.
 //!
-//! GraphQL shape is deeply nested (`data.repository.pullRequest.…`);
-//! each level is its own small struct. Pagination cursors live on the
-//! `reviewThreads` page; merging pages is the observer's job, not the
-//! type layer's.
+//! # Invariants
+//!
+//! - **Nested-list pagination is fetcher-side**: every nested list
+//!   that carries a page cursor must be drained by the fetcher
+//!   before the bundle leaves the boundary; downstream consumers
+//!   assume the bundle holds every node, not just a first page.
+//! - **Wire/domain separation**: this module is pure shape — the
+//!   typed domain projection lives in the orient layer.
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -13,28 +17,17 @@ use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, TeamName, Timestamp};
 
 use super::gh::{GhError, gh_json};
 
-/// Run a GraphQL query body via `gh api graphql`. `body` is the
-/// raw GraphQL string (no `query=` prefix); this helper builds the
-/// `-f query=<body>` argument so the `gh` `-f key=value` contract
-/// is explicit at the call site rather than buried inside a
-/// `format!("query={{ ... }}")` template. The earlier inlined form
-/// was correct but easy to misread as a bare body — this wrapper
-/// removes the ambiguity for any reader (and reviewer).
+/// Submit a GraphQL query body to the host CLI. `body` is the raw
+/// query; the wrapper builds the argv form so callers do not embed
+/// the host CLI's argv-key contract inside their own format strings.
 fn gh_graphql<T: DeserializeOwned>(body: &str) -> Result<T, GhError> {
     let arg = format!("query={body}");
     gh_json(&["api", "graphql", "-f", &arg])
 }
 
-/// Fetch one page of review threads + the list of pending review
-/// requests. Pagination (via `page_info.end_cursor`) is the
-/// observer's job — this function performs a single GraphQL call.
-///
-/// Per-thread `comments` are also paginated (`first:100` with a
-/// pageInfo). Threads with >100 comments are followed up by
-/// `fetch_thread_comments_page` so stale-reply detection sees the
-/// full comment history. Class invariant: every nested `first:N`
-/// GraphQL list with a pageInfo must be followed up if
-/// `hasNextPage`, or downstream consumers see a truncated view.
+/// Fetch one page of review threads plus the (page-invariant)
+/// reviewer-request list. Pagination at any level is the caller's
+/// responsibility — see the module-level nested-list invariant.
 pub(crate) fn fetch_review_threads_page(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -81,10 +74,9 @@ pub(crate) fn fetch_review_threads_page(
     gh_graphql(&body)
 }
 
-/// Fetch one additional page of comments for a single review
-/// thread, addressed by its GraphQL global node id. Used by
-/// `fetch_all_review_threads` to drain `comments.pageInfo` past the
-/// initial 100.
+/// Fetch one additional page of comments for a single thread,
+/// addressed by node id. Used to drain the per-thread comment
+/// pageInfo past the first page.
 fn fetch_thread_comments_page(
     thread_id: &str,
     cursor: &str,
@@ -156,30 +148,20 @@ pub(crate) struct ReviewThreadsPage {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewThread {
-    /// GraphQL global node id. Used by
-    /// `fetch_thread_comments_page` to fetch additional comment
-    /// pages on threads with >100 comments. `#[serde(default)]`
-    /// keeps the existing test fixtures (which omit `id`)
-    /// deserializable.
+    /// Node id for cross-iteration identity and follow-up
+    /// pagination. Default-empty for legacy fixtures.
     #[serde(default)]
     pub id: String,
     pub is_resolved: bool,
-    /// `true` when GitHub has marked the thread outdated because the
-    /// commit it was anchored to is no longer reachable from HEAD
-    /// (rebase or amend shifted the line). The thread stays
-    /// `is_resolved = false` until someone clicks "Resolve" — but
-    /// it is no longer actionable from the actor's perspective, so
-    /// orient excludes it from "unresolved" counts. `#[serde(default)]`
-    /// keeps pre-existing JSON fixtures (which omit the field)
-    /// deserializable.
+    /// Anchor moved off a live line (rebase/amend shifted lines).
+    /// Excluded from the actionable count by the orient layer.
+    /// Default-false for legacy fixtures.
     #[serde(default)]
     pub is_outdated: bool,
     /// Repo-relative file path the thread is anchored to.
-    /// `#[serde(default)]` because pre-witness JSON fixtures omit it.
     #[serde(default)]
     pub path: String,
-    /// Anchored line number in the *current* file at HEAD. `None` when
-    /// the thread is outdated (anchor line shifted away).
+    /// Anchored line at HEAD; absent on outdated threads.
     #[serde(default)]
     pub line: Option<u32>,
     pub comments: ThreadComments,
@@ -188,8 +170,8 @@ pub struct ReviewThread {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComments {
-    /// `#[serde(default)]` so test fixtures and inline JSON without
-    /// pageInfo deserialize as "no further pages".
+    /// Default-empty pageInfo so fixtures decode as "no further
+    /// pages."
     #[serde(default)]
     pub page_info: PageInfo,
     pub nodes: Vec<ThreadComment>,
@@ -198,7 +180,8 @@ pub struct ThreadComments {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComment {
-    /// Null if the commenter's account has been deleted.
+    /// Absent when the comment's authoring identity has been
+    /// deleted.
     pub author: Option<CommentAuthor>,
     pub created_at: Timestamp,
     pub body: String,
@@ -219,13 +202,13 @@ pub(crate) struct ReviewRequestsPage {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReviewRequestNode {
-    /// Null when the requested reviewer has been removed or the actor
-    /// is otherwise unknown.
+    /// Absent when the requested reviewer has been removed or the
+    /// actor is otherwise unknown.
     pub requested_reviewer: Option<RequestedReviewer>,
 }
 
-/// Tagged by GraphQL `__typename`. Users/Bots/Mannequins carry a
-/// login; Teams carry a name.
+/// Reviewer-request union tagged by host typename. Identity-bearing
+/// variants carry a login; team variants carry a name.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "__typename")]
 pub(crate) enum RequestedReviewer {
@@ -244,16 +227,9 @@ pub struct PageInfo {
     pub end_cursor: Option<String>,
 }
 
-/// Fetch every page of review threads, merging them into one
-/// `ReviewThreadsResponse`. `reviewRequests` is page-invariant —
-/// taken from the first page only. Per-thread `comments` are also
-/// drained beyond the initial 100 via
-/// `fetch_thread_comments_page` so stale-reply detection sees the
-/// full comment history.
-///
-/// Callers that don't expect >100 unresolved threads can call
-/// `fetch_review_threads_page` directly; `fetch_all` uses this
-/// loop for correctness on big PRs.
+/// Drain every page of review threads plus every per-thread comment
+/// page into a single bundled response. The reviewer-request list
+/// is page-invariant and taken from the first page only.
 pub(crate) fn fetch_all_review_threads(
     slug: &crate::ids::RepoSlug,
     pr: crate::ids::PullRequestNumber,
@@ -293,18 +269,15 @@ pub(crate) fn fetch_all_review_threads(
     })
 }
 
-/// If `thread.comments` reports `hasNextPage`, paginate via
-/// `fetch_thread_comments_page` and append every subsequent page's
-/// nodes onto the in-place `comments.nodes`. The thread's own id is
-/// the GraphQL node id used to address it. No-op when the first
-/// page already covered the thread.
+/// Drain remaining comment pages onto a thread in place. No-op
+/// when the first page already covered the thread.
 fn drain_comment_pages(thread: &mut ReviewThread) -> Result<(), GhError> {
     if !thread.comments.page_info.has_next_page {
         return Ok(());
     }
     if thread.id.is_empty() {
-        // Defensive: a fixture or inline JSON without an id can't
-        // be paginated. Treat as end-of-stream rather than fail.
+        // Defensive: a fixture without an id cannot be paginated;
+        // treat as end-of-stream rather than fail.
         return Ok(());
     }
     let mut cursor = next_cursor(thread.comments.page_info.clone());
@@ -325,9 +298,9 @@ fn next_cursor(info: PageInfo) -> Option<String> {
     }
 }
 
-/// Empty `ReviewThreadsResponse` for callers that need a stub when
-/// no actual fetch is required (e.g. terminal-PR short-circuit in
-/// `fetch_all`). Has no threads and no review requests.
+/// Empty bundle for callers that need a stub when no fetch is
+/// performed (e.g., terminal-PR short-circuit). No threads, no
+/// reviewer requests.
 pub(crate) fn empty_review_threads_response() -> ReviewThreadsResponse {
     ReviewThreadsResponse {
         data: ReviewThreadsData {

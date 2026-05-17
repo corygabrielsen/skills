@@ -1,12 +1,29 @@
-//! Local `codex review` observations — filesystem scan of the
-//! per-level batch directories. No subprocess spawn, no network.
+//! Observe surface for the local-reviewer axis.
 //!
-//! The unified binary owns the codex review axis as an additional
-//! orient surface on top of `/ooda-pr`. Per-PR codex state lives
-//! under the recorder's `pr_root/codex/` subtree, with one batch
-//! directory per `(reasoning_level, head_sha)` pair. Stale batches
-//! (mismatched `head_sha.txt`) are reported as `NotStarted` so the
-//! runner re-spawns at the current PR head.
+//! # Model
+//!
+//! A *reviewer axis* climbs a totally-ordered *rigor ladder*
+//! `[floor, ceiling]`. At each ladder level the axis owns a *batch*
+//! — a fan-out of `expected` independent reviewer runs over a
+//! single *target identity* (here: the PR head SHA). The axis
+//! advances one level at a time; a level is *cleared* when its
+//! batch terminates with no flagged issues.
+//!
+//! # Invariants
+//!
+//! - **Pure observation**: this module performs filesystem reads
+//!   only — no subprocess spawn, no network, no mutation. The
+//!   reported state is a function of the on-disk batch artifacts
+//!   and the supplied target identity.
+//! - **Identity gating**: a batch is bound to the target identity
+//!   it was spawned against. A batch whose recorded identity does
+//!   not match the supplied identity is reported as not-started,
+//!   forcing re-spawn. This is the entire mechanism by which a
+//!   change to the target invalidates prior batches.
+//! - **Slice non-emptiness**: `floor ≤ ceiling` (a CLI-level
+//!   invariant) implies the ladder slice is non-empty; carried
+//!   structurally as `NonEmpty<...>` so downstream code never
+//!   `.expect`s on cardinality.
 
 pub(crate) mod batch;
 pub(crate) mod verdict;
@@ -21,9 +38,8 @@ use crate::ids::CodexReasoningLevel;
 pub(crate) use batch::{BatchState, VerdictRecord};
 pub(crate) use verdict::VerdictClass;
 
-/// Per-level observation. The codex review axis observes one level
-/// per iteration — the current level — and reports its batch state.
-/// The ladder-climb logic lives in orient.
+/// Batch state at a single ladder level, paired with the directory
+/// it was scanned from. The ladder-climb decision is downstream.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CodexLevelObservation {
     pub level: CodexReasoningLevel,
@@ -31,15 +47,12 @@ pub(crate) struct CodexLevelObservation {
     pub batch_dir: PathBuf,
 }
 
-/// Observation of the entire ladder slice `[floor, ceiling]`, one
-/// entry per level. Orient walks this to find the current level and
-/// emits the corresponding action.
+/// Snapshot of every level in the slice `[floor, ceiling]` against
+/// a single target identity.
 ///
-/// `levels` is typed `NonEmpty<...>` because the ladder slice is
-/// always non-empty when `floor ≤ ceiling` (the validated CLI
-/// invariant). Carrying the non-emptiness as a structural type
-/// eliminates the orient layer's `.last().expect(...)` runtime
-/// panic.
+/// `levels` is `NonEmpty<...>`: `floor ≤ ceiling` implies the slice
+/// is non-empty, and that fact is carried in the type so downstream
+/// code is total on `.last()` etc.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct CodexObservations {
     pub levels: ooda_core::NonEmpty<CodexLevelObservation>,
@@ -49,10 +62,13 @@ pub(crate) struct CodexObservations {
     pub ceiling: CodexReasoningLevel,
 }
 
-/// Per-level batch directory: `<pr_codex_root>/levels/<level>/<head_sha_short>`.
-/// `head_sha_short` is the first 12 chars of the head SHA so the
-/// path stays bounded and prior heads' batches survive on disk as
-/// cache (orient ignores them once head changes).
+/// Path of the batch directory keyed by `(level, target_identity)`.
+///
+/// Layout: `<root>/levels/<level>/<identity_prefix>`. The identity
+/// is truncated to a bounded prefix so the path stays length-stable;
+/// the gate against stale batches lives in the on-disk `head_sha.txt`
+/// stamp, not in the path. Prior-identity directories accumulate as
+/// a local cache and are ignored by the gate.
 pub(crate) fn batch_dir(
     pr_codex_root: &Path,
     level: CodexReasoningLevel,
@@ -65,10 +81,8 @@ pub(crate) fn batch_dir(
         .join(short)
 }
 
-/// Scan the ladder slice `[floor, ceiling]` against the current
-/// head SHA. Each level reports its own batch state; orient picks
-/// the highest already-clean prefix and emits an action for the
-/// next.
+/// Snapshot every level in `[floor, ceiling]` against `head_sha`.
+/// Per-level scans are independent; failures short-circuit.
 pub(crate) fn fetch_all(
     pr_codex_root: &Path,
     floor: CodexReasoningLevel,
@@ -76,10 +90,8 @@ pub(crate) fn fetch_all(
     expected: u32,
     head_sha: &str,
 ) -> io::Result<CodexObservations> {
-    // `ladder_slice` returns `NonEmpty<CodexReasoningLevel>`; `try_map`
-    // preserves that non-emptiness through the fallible per-level
-    // scan, so `levels` is `NonEmpty<CodexLevelObservation>` with
-    // no runtime check.
+    // `try_map` preserves `NonEmpty` through fallible per-level
+    // mapping — non-emptiness is structural, not asserted.
     let levels = ladder_slice(floor, ceiling).try_map(|level| {
         let dir = batch_dir(pr_codex_root, level, head_sha);
         let batch_state = batch::scan_batch(&dir, level, expected, head_sha)?;
@@ -98,9 +110,9 @@ pub(crate) fn fetch_all(
     })
 }
 
-/// The inclusive level slice `[floor, ceiling]`. Always non-empty
-/// — the loop pushes `floor` unconditionally before any break, so
-/// even `floor == ceiling` yields a singleton.
+/// The inclusive ladder slice `[floor, ceiling]`. Non-empty by
+/// construction: `floor` is seeded before any termination check, so
+/// `floor == ceiling` yields a singleton.
 pub(crate) fn ladder_slice(
     floor: CodexReasoningLevel,
     ceiling: CodexReasoningLevel,

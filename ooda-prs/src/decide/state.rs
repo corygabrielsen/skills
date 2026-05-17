@@ -1,6 +1,8 @@
-//! State candidates split into blocking (must clear to merge) and
-//! hygiene (non-blocking metadata). decide.rs emits hygiene last so
-//! it doesn't shadow review/bot work.
+//! Mechanical merge-shape and merge-policy candidates.
+//!
+//! Split into two surfaces: a blocking set that must clear before
+//! the PR can merge at all, and a fallback for upstream-reported
+//! merge-blocked states that no modeled axis explains.
 
 use crate::ids::BlockerKey;
 
@@ -12,21 +14,18 @@ use crate::orient::thread::{ReviewThread, ThreadState};
 
 use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
 
-// Widened from `&PullRequestProjection` to `&OrientedState` so the Rebase
-// emission can reach `oriented.threads` (orphan-risk witnesses) and
-// any future compare-endpoint facts. Other action prompts can now
-// enrich themselves from the same wider input without further
-// signature churn.
-/// Mechanical merge blockers — must clear for the PR to be
-/// mergeable at all. Emitted by decide before review/bot axes.
+/// Mechanical merge blockers — every candidate here must clear
+/// before the PR can merge at all. Composed over the whole
+/// oriented state so per-action prompts can pull witness data
+/// from any axis without further signature changes.
 pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
     let state = &oriented.state;
     let mut out: Vec<Action> = Vec::new();
 
-    // PR-shape blockers (draft / wip / title) come BEFORE
-    // mergeability waits — drafts commonly report mergeable=UNKNOWN
-    // and would otherwise spin on WaitForMergeability instead of
-    // emitting MarkReady (the action that lets GitHub compute it).
+    // PR-shape blockers precede mergeability waits: an incomplete
+    // PR shape commonly leaves the upstream mergeability signal
+    // undetermined, and the shape-fixing actions are what unblock
+    // the upstream computation.
     if state.draft {
         out.push(Action {
             kind: ActionKind::MarkReady,
@@ -52,8 +51,8 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
     if !state.title_ok {
         out.push(Action {
             kind: ActionKind::ShortenTitle {
-                // PR title byte-length fits in u32: GitHub caps titles
-                // at 256 chars; usize → u32 is structurally safe.
+                // Upstream caps PR title length well below u32::MAX;
+                // the conversion is structurally safe.
                 current_len: u32::try_from(state.title_len)
                     .expect("PR title byte-length fits in u32"),
             },
@@ -69,8 +68,8 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
         });
     }
 
-    // Mergeability-derived blockers come after PR-shape, since
-    // mergeability requires the PR to be ready first.
+    // Mergeability-derived blockers depend on the shape being
+    // resolved first; they come after.
     if state.conflict == Mergeable::Unknown {
         out.push(Action {
             kind: ActionKind::WaitForMergeability,
@@ -117,20 +116,14 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
     out
 }
 
-/// Build the structured Rebase prompt. Combines:
-///
-/// * Headline with the stack-aware addendum when this PR is stacked
-///   under an open parent.
-/// * `Witnesses` listing open review threads with line anchors —
-///   each will need re-anchoring once the rebase moves the hunks.
-///   Omitted entirely when no live, line-anchored threads exist.
-/// * `Paragraph` with the merge-base delta (commits behind, oldest
-///   master commit) and a `NumberedList` of files master touched
-///   since the merge base — when known.
-/// * `Paragraph` + optional `NumberedList` reporting the file
-///   intersection between master and the branch. An empty
-///   intersection is itself a recommendation: no overlap, no
-///   conflict surface, just rebase.
+/// Build the structured rebase prompt. Composed of an
+/// optionally-stack-aware headline, a witnesses section listing
+/// open line-anchored review threads (each will need re-anchoring
+/// after the rebase moves the hunks), and — when the upstream
+/// compare endpoint is available — a merge-base delta section
+/// listing files the base touched and any overlap with the branch.
+/// An empty overlap is itself a recommendation rather than an
+/// omission.
 fn build_rebase_prompt(
     base: &str,
     state: &PullRequestProjection,
@@ -176,9 +169,10 @@ fn build_rebase_prompt(
     prompt
 }
 
-/// Stack-aware rebase headline. A naive `git rebase <trunk>` would
-/// orphan stacked branches; `gt restack` walks the chain and rebases
-/// every branch.
+/// Headline that surfaces stack-aware rebase guidance when the PR
+/// sits under an unmerged parent. A naive base-trunk rebase would
+/// orphan stacked branches; the addendum points at the stack tool
+/// that walks the chain.
 fn rebase_headline(base: &str, state: &PullRequestProjection) -> String {
     if state.has_open_parent_pr {
         format!(
@@ -192,11 +186,10 @@ fn rebase_headline(base: &str, state: &PullRequestProjection) -> String {
     }
 }
 
-/// Append the compare-endpoint sections (commits behind, files
-/// touched, conflict surface) to a Rebase prompt. An empty
-/// `conflict_surface` is itself the recommendation — the prompt
-/// surfaces "clean rebase, just go" so the human doesn't second-
-/// guess and dig through the diff.
+/// Append the merge-base delta sections to a rebase prompt.
+/// Empty file overlap is rendered as a positive "clean rebase"
+/// recommendation rather than an omission, so the reader is not
+/// invited to look for hidden conflicts.
 fn push_merge_base_delta_sections(prompt: &mut ooda_core::HandoffPrompt, delta: &MergeBaseDelta) {
     use ooda_core::SingleLineString;
 
@@ -241,21 +234,19 @@ fn push_merge_base_delta_sections(prompt: &mut ooda_core::HandoffPrompt, delta: 
         ));
         prompt.push_numbered_list(conflict_surface);
     } else if !delta.master_files.is_empty() && !delta.branch_files.is_empty() {
-        // Empty intersection on a non-empty cross-product is a real
-        // signal, not "we didn't observe" — surface it as a positive
-        // recommendation so the human doesn't second-guess.
+        // Empty intersection on a non-empty cross-product is a
+        // positive observation (no overlap exists), not a missing
+        // measurement.
         prompt.push_paragraph(
             "No file overlap with base since merge-base — clean rebase, just go.".to_string(),
         );
     }
 }
 
-/// Compose the human-facing prompt for `merge_blocked_unmodeled`.
-/// Headline is the generic "GitHub reports BLOCKED" prose; the three
-/// optional sections (active ruleset rules, required check names,
-/// missing-on-HEAD) are appended only when their backing projection
-/// field is non-empty. When all three are empty the prompt is the
-/// generic headline alone.
+/// Compose the human prompt for the unmodeled-merge-gate case.
+/// Headline names the upstream BLOCKED state; three optional
+/// enrichment sections append only when their backing projection
+/// is non-empty.
 fn merge_blocked_unmodeled_prompt(state: &PullRequestProjection) -> ooda_core::HandoffPrompt {
     use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString};
 
@@ -294,22 +285,19 @@ fn merge_blocked_unmodeled_prompt(state: &PullRequestProjection) -> ooda_core::H
     prompt
 }
 
-/// Fallback merge-state blocker for when GitHub reports a non-clean
-/// `mergeStateStatus` and *no other axis has emitted a blocker*.
+/// Fallback emitter for upstream-reported merge-blocked states the
+/// modeled axes do not explain.
 ///
-/// Class invariant: every non-Clean `mergeStateStatus` must be
-/// represented. The modeled axes (CI, reviews, draft/wip,
-/// conflict/behind) cover the common reasons GitHub blocks merge.
-/// What's left — `Blocked` for unmodeled policy (deployment
-/// protection, signed commits, custom rulesets), `HasHooks` for
-/// commit hooks pending, `Unknown` not already caught by
-/// `Mergeable::Unknown` — would otherwise let `decide()` halt
-/// `Success` on a still-unmergeable PR.
+/// Class invariant — *every non-Clean upstream merge state must be
+/// represented*. Modeled axes cover the common cases (CI, reviews,
+/// shape, conflict / behind). The remainder — unmodeled policy
+/// blocks, pending commit-hook computation, and indeterminate
+/// states — must reach a candidate here or the loop would halt
+/// Success on a still-unmergeable PR.
 ///
-/// Caller (decide.rs) only invokes this when no other blocker has
-/// fired. Otherwise the modeled axis already explains the BLOCKED
-/// state and a duplicate emission would shadow the more actionable
-/// candidate.
+/// The caller invokes this only when no other axis has produced a
+/// candidate, so it is the gate's last resort, not a parallel
+/// shadow of the modeled axes.
 pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
     match state.merge_state_status {
         MergeStateStatus::Blocked => vec![Action {
@@ -341,11 +329,9 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
             urgency: Urgency::BlockingWait,
             blocker: BlockerKey::from_static("merge_state_unknown"),
         }],
-        // Clean / Behind / Dirty / Draft / Unstable / HasHooks
-        // handled by other axes or non-blocking by definition.
-        // (Behind → Rebase via state.behind; Dirty → Rebase via
-        // Mergeable::Conflicting; Draft → MarkReady via state.draft;
-        // Unstable → advisory CI failure surface, not a hard block.)
+        // The remaining upstream states are either modeled by
+        // another axis or advisory-only by definition; no
+        // fallback candidate is appropriate.
         _ => vec![],
     }
 }
@@ -619,57 +605,45 @@ mod tests {
         assert!(!rendered.contains("potential conflict surface"));
     }
 
-    // ─── property tests for the class invariant ─────────────────────
+    // ─── fallback-coverage property ───────────────────────────────
     //
-    // Class invariant from `fallback_merge_state_blocker`'s docs:
-    // "Every non-Clean `mergeStateStatus` must be represented" —
-    // either by another axis (Behind/Dirty/Draft/Unstable) or by the
-    // fallback itself (Blocked/HasHooks/Unknown). Clean is the only
-    // status that produces no candidate.
-    //
-    // The exhaustive match in `expected_fallback_behavior` is the
-    // contract. Adding a new `MergeStateStatus` variant fails to
-    // compile here until the new arm is added, which forces an
-    // explicit decision about which axis handles it. The sample
-    // list is length-sentineled so a forgotten sample also fails
-    // loudly.
+    // Pins the class invariant: every upstream merge-state variant
+    // is either handled by a modeled axis or by this fallback.
+    // The exhaustive match below is the contract; a new variant
+    // fails to compile until an explicit axis assignment is added.
+    // The sample list is length-sentineled so a missing sample
+    // fails loudly.
 
-    /// What `fallback_merge_state_blocker` is contracted to emit for
-    /// a given `MergeStateStatus`. The two `Empty` cases are
-    /// distinguished only by intent (commented inline) — both must
-    /// produce zero candidates.
+    /// Contracted projection of `fallback_merge_state_blocker`'s
+    /// emission for one upstream merge state.
     #[derive(Debug, PartialEq, Eq)]
     enum FallbackBehavior {
-        /// Either Clean (mergeable, no blocker) or handled by another
-        /// axis (state.behind → Rebase; state.conflict → Rebase;
-        /// state.draft → `MarkReady`; Unstable → advisory CI surface).
+        /// Either mergeable or owned by a modeled axis; the
+        /// fallback emits nothing.
         Empty,
-        /// `Blocked` — unmodeled merge policy (deployment protection,
-        /// signed commits, custom ruleset). Hand off to a human.
+        /// Unmodeled policy gate → human handoff.
         EmitHumanResolveMergePolicy,
-        /// Transient — wait and re-observe.
+        /// Transient state → wait and re-observe.
         EmitWaitForMergeability,
     }
 
-    /// Exhaustive over `MergeStateStatus`. The compiler enforces
-    /// that every variant has an explicit axis assignment.
+    /// Exhaustive contract. The compiler enforces that every
+    /// upstream variant has an explicit axis assignment.
     fn expected_fallback_behavior(status: MergeStateStatus) -> FallbackBehavior {
-        // Intentional exhaustive match per axis pattern; arms are
-        // duplicated for spec clarity.
+        // Arms duplicated for spec clarity.
         #[allow(clippy::match_same_arms)]
         match status {
-            // Clean: mergeable, no candidate needed.
+            // Mergeable: no candidate.
             MergeStateStatus::Clean => FallbackBehavior::Empty,
-            // Behind / Dirty / Draft: another axis fires
-            // (state.behind, Mergeable::Conflicting, state.draft).
+            // Owned by a modeled axis (shape or conflict).
             MergeStateStatus::Behind => FallbackBehavior::Empty,
             MergeStateStatus::Dirty => FallbackBehavior::Empty,
             MergeStateStatus::Draft => FallbackBehavior::Empty,
-            // Unstable: advisory CI surface, not a hard block.
+            // Advisory CI surface, not a hard block.
             MergeStateStatus::Unstable => FallbackBehavior::Empty,
-            // Blocked: unmodeled merge requirement → human triage.
+            // Unmodeled gate.
             MergeStateStatus::Blocked => FallbackBehavior::EmitHumanResolveMergePolicy,
-            // Transient states: wait for GitHub to finish computing.
+            // Transient upstream state.
             MergeStateStatus::HasHooks => FallbackBehavior::EmitWaitForMergeability,
             MergeStateStatus::Unknown => FallbackBehavior::EmitWaitForMergeability,
         }
@@ -716,16 +690,15 @@ mod tests {
         assert_eq!(
             statuses.len(),
             8,
-            "`all_merge_state_statuses` must include one sample per \
-             `MergeStateStatus` variant; adding a new variant requires \
-             adding both an arm in `expected_fallback_behavior` AND a \
-             sample here.",
+            "Sample enumeration must cover every upstream merge \
+             state. A new variant requires both a sample here and \
+             an arm in the exhaustive contract above.",
         );
         for status in statuses {
             let mut s = clean();
             s.merge_state_status = status;
-            // Enrichment fields populated; behavior contract must
-            // hold regardless of their content.
+            // Enrichment fields populated to confirm behaviour is
+            // determined by upstream state alone, not enrichment.
             s.active_branch_rule_types = vec!["required_status_checks".into()];
             s.required_check_names_per_ruleset = vec!["Mergeability Check".into()];
             s.missing_required_check_names_on_head = vec!["Mergeability Check".into()];

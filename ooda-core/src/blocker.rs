@@ -1,33 +1,29 @@
 //! Stall comparator key.
 //!
-//! `BlockerKey` is the second half of the `(kind, blocker)` tuple
-//! `run_loop` uses to detect stalls. Newtype prevents accidental
-//! confusion with `Action::description` (also `String`-shaped) and
-//! documents the invariant that the value MUST NOT embed varying
-//! counts or other progress markers — two iterations addressing
-//! "5 threads" and "4 threads" share the blocker key
-//! `threads:address`, not separate keys.
+//! The stall detector compares `(kind_name, blocker)` across
+//! iterations; `BlockerKey` is the second component. The newtype
+//! enforces one invariant:
 //!
-//! ## Construction discipline
+//! **Gate-stability**: two iterations gated by the same underlying
+//! condition produce equal `BlockerKey` values; varying counts or
+//! progress markers are forbidden in the key (they belong on the
+//! action payload).
 //!
-//! The type pushes back on accidental volatility via two narrow
-//! constructors:
+//! Construction discipline establishes the invariant structurally:
 //!
-//! * [`BlockerKey::from_static`] takes `&'static str`. The static
-//!   lifetime is the stability witness: only string literals (or
-//!   `&'static str` values selected at runtime from a fixed set,
-//!   e.g. an enum's `name()` returning `&'static str`) can flow in.
-//! * [`BlockerKey::typed`] takes a `&'static str` category plus a
-//!   typed identifier implementing [`GateIdentity`]. The trait is a
-//!   marker: implementors assert "same gate → same `Display`
-//!   output across iterations." `String`, `usize`, and `Vec<_>`
-//!   deliberately do NOT implement it; if you find yourself wanting
-//!   to format a count or a comma-list into a blocker key, the type
-//!   system is correctly pushing back. Move the cohort onto the
-//!   action payload; let the renderer extract it from there.
-//!
-//! [`BlockerKey::parse`] remains for external/deserialized input
-//! where the producer's stability is inherited.
+//! * [`BlockerKey::from_static`] requires `&'static str`. The static
+//!   lifetime is the stability witness — only compile-time-known
+//!   tokens (literals or per-variant `&'static str` identifiers)
+//!   satisfy the type.
+//! * [`BlockerKey::typed`] requires a `&'static str` category plus
+//!   a typed identifier implementing [`GateIdentity`], whose
+//!   contract is "same gate → same `Display` output across
+//!   iterations." Types whose value typically varies independently
+//!   of gate identity (counts, dynamic strings, collections) MUST
+//!   NOT implement the marker; the type system then pushes back on
+//!   any attempt to format such a value into a key.
+//! * [`BlockerKey::parse`] accepts dynamic input for deserialization
+//!   only; gate-stability is inherited from the producer.
 
 use crate::single_line_string::SingleLineString;
 use serde::Serialize;
@@ -44,24 +40,24 @@ impl fmt::Display for BlockerKeyError {
 
 impl std::error::Error for BlockerKeyError {}
 
-/// Marker trait: implementor asserts that [`fmt::Display`] produces
-/// the same output for the same underlying gate across iterations,
-/// and different output for distinct gates.
+/// Gate-stability marker. Implementors assert: [`fmt::Display`]
+/// is a function of gate identity alone — same gate ⇒ same output
+/// across iterations; distinct gates ⇒ distinct output.
 ///
-/// **Implement only for typed wrappers whose value is bound to gate
-/// identity** — for example a `CheckName` for "blocked on this
-/// specific check," or an enum's variant whose `Display` returns a
-/// `&'static str` per variant. Do NOT implement for `String`,
-/// primitive numbers, or collection types — those typically vary
-/// independently of gate identity and would defeat the stall
-/// comparator.
+/// Sound implementors are typed wrappers whose value is bound to
+/// gate identity (e.g. a name-of-the-blocking-thing newtype, or a
+/// closed enum whose `Display` returns a per-variant `&'static
+/// str`). Implementing the marker for types whose value varies
+/// independently of gate identity (free-form strings, counts,
+/// collections) defeats the stall comparator and is forbidden.
 pub trait GateIdentity: fmt::Display {}
 
-/// Stable iteration key. Non-empty by construction.
+/// Stable iteration key. Non-empty by construction; gate-stable
+/// by the construction-discipline invariants above.
 ///
-/// No `Deserialize` — `BlockerKey` is constructed and consumed
-/// entirely inside the decide / runner layers; nothing parses it
-/// from external input.
+/// No `Deserialize` impl: the key is produced and consumed within
+/// the decide-and-loop pipeline; nothing parses it from external
+/// wire input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct BlockerKey(String);
 
@@ -119,11 +115,9 @@ impl BlockerKey {
         Ok(Self(s))
     }
 
-    /// Test-only escape hatch — accepts arbitrary content for
-    /// fixture construction where the strong-typed constructors
-    /// would require boilerplate. Marked `#[doc(hidden)]`;
-    /// production callers should use [`Self::from_static`] or
-    /// [`Self::typed`] instead.
+    /// Test-only escape hatch for fixture construction. Bypasses
+    /// the gate-stability discipline of [`Self::from_static`] /
+    /// [`Self::typed`]; production call sites MUST use those.
     #[doc(hidden)]
     #[must_use]
     pub fn for_test(s: impl Into<String>) -> Self {
@@ -142,12 +136,8 @@ impl fmt::Display for BlockerKey {
     }
 }
 
-// ── GateIdentity impls for ooda-core types ──────────────────────────
-//
-// Add impls here as call sites in PR-side / codex-side decide layers
-// adopt `BlockerKey::typed(prefix, &id)` with these types. The
-// impls are intentionally minimal — implement only when an actual
-// caller needs the type as a blocker identifier.
+// GateIdentity impls for types defined in this crate. Domain
+// crates add their own impls for domain-specific identifiers.
 
 impl GateIdentity for SingleLineString {}
 

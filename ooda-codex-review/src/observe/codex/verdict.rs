@@ -1,24 +1,16 @@
-//! Pure verdict extraction and classification over `codex review`
-//! log text. No I/O.
+//! Pure verdict extraction and classification over review log
+//! text. No I/O.
 //!
-//! `codex review` streams interleaved `thinking`/`exec`/`codex`
-//! blocks. The actual review result is the LAST block whose first
-//! line is `codex` (exact match — not a substring). The polling
-//! protocol uses the presence of that marker line to detect
-//! completion (loop-codex-review/SKILL.md → "Reading Review
-//! Results").
+//! The review CLI streams interleaved blocks; the verdict body is
+//! everything after the LAST marker line (exact string `codex` on
+//! its own line — substring match is incorrect). The marker line's
+//! presence is also the completion signal for the polling protocol.
 
 use serde::Serialize;
 
-/// Extract the verdict block — everything after the LAST line that
-/// is exactly `codex` (no surrounding whitespace, no suffix).
-/// Returns `None` when the marker is absent (review still streaming
-/// thinking/exec output).
-///
-/// Mirrors the reference `awk` from loop-codex-review SKILL.md:
-/// `awk '/^codex$/{found=1; block=""; next} found{block=block $0
-/// "\n"} END{printf "%s", block}'` — last marker wins, body is
-/// everything after it.
+/// Extract the verdict body — everything after the LAST marker
+/// line (exact string `codex` on its own line). Returns `None`
+/// when the marker is absent.
 pub(crate) fn extract_verdict(log: &str) -> Option<String> {
     let mut after_last_marker: Option<usize> = None;
     let mut offset = 0usize;
@@ -32,33 +24,31 @@ pub(crate) fn extract_verdict(log: &str) -> Option<String> {
     after_last_marker.map(|i| log[i..].to_string())
 }
 
-/// Did the reviewer find anything to flag?
+/// Verdict classification (ternary algebra).
 ///
-/// Ternary algebra: structural `HasIssues` signals (codex's own
-/// schema — priority bullets, review-comment headers) are
-/// authoritative. Clean is recognized via an empirically-tuned
-/// phrasing list. Anything else is Indeterminate — the classifier
-/// abstains rather than guessing.
+/// - Structural issue markers (the CLI's own grammar — priority
+///   bullets, review-comment headers) are authoritative.
+/// - Clean is recognized via a phrasing list calibrated against
+///   the CLI's observed clean verdicts.
+/// - Anything else is `Indeterminate`: the classifier abstains
+///   rather than guessing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum VerdictClass {
-    /// Empty body or recognized "clean" phrasing — the review is clean.
+    /// Empty body or recognized clean phrasing.
     Clean,
-    /// Body contains codex's structural issue markers
-    /// (`[P1]`/`[P2]`/`[P3]` bullets, `Review comment:` headers);
-    /// needs an `AddressBatch` halt to verify and fix.
+    /// Structural issue markers present.
     HasIssues,
-    /// Prose with neither structural markers nor recognized clean
-    /// phrasing. Decide-layer policy: route like `HasIssues`
-    /// (operationally identical), but recorder JSONL surfaces it
-    /// distinctly for post-hoc observability.
+    /// No structural markers, no recognized clean phrasing.
+    /// Operationally routed like `HasIssues`; surfaced
+    /// distinctly so post-hoc tooling can see the abstention.
     Indeterminate,
 }
 
 /// Classify an extracted verdict body.
 ///
-/// Evaluation order — structural markers (codex's own grammar)
-/// before prose phrase-matching, so a `[P*]` bullet in an otherwise
+/// Evaluation order: structural markers before prose
+/// phrase-matching. A priority bullet in an otherwise
 /// clean-leaning summary still classifies as `HasIssues`.
 pub(crate) fn classify(verdict: &str) -> VerdictClass {
     let body = verdict.trim();
@@ -79,10 +69,9 @@ pub(crate) fn classify(verdict: &str) -> VerdictClass {
 
 fn has_issue_signal(s: &str) -> bool {
     // Line-anchored to avoid mid-sentence false positives
-    // ("the prior review comment was helpful" must not match).
-    // Priority bullets and review-comment headers are codex's
-    // ground-truth schema — present in 100% of real HasIssues
-    // verdicts across a 410-sample empirical study.
+    // (a prose mention of "review comment" must not match).
+    // Priority bullets and the review-comment header are the
+    // CLI's ground-truth schema for issue markers.
     s.lines().any(|l| {
         let t = l.trim_start();
         t.starts_with("- [p1]")
@@ -97,13 +86,14 @@ fn has_issue_signal(s: &str) -> bool {
 }
 
 fn matches_clean_phrasing(normalized: &str) -> bool {
-    // Empirically-tuned codex clean phrasings. Conjunction markers
-    // (` but `, ` however `) were removed in commit 6cedd08 — they
-    // over-triggered on hedging language in clean verdicts.
+    // Phrasing list calibrated against the CLI's observed clean
+    // verdicts. Hedging conjunctions (` but `, ` however `) are
+    // intentionally absent: they over-trigger on hedged clean
+    // phrasings ("...is clean however ...").
     //
-    // "no issues" stays exact-match only — two words is insufficient
-    // signal to contains-match without false-positives on prose like
-    // "previously had no issues here, but now broken".
+    // "no issues" stays exact-match-only — two words is too short
+    // to contains-match safely (mid-sentence "previously had no
+    // issues, but now broken" would false-positive).
     matches!(
         normalized,
         "no issues found" | "no issues" | "looks good" | "no actionable findings"

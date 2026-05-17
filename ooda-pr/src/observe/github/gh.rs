@@ -1,8 +1,17 @@
-//! Thin wrapper around the `gh` CLI for the observe stage.
+//! Subprocess + JSON wrapper around the host CLI.
 //!
-//! Runs `gh` as a subprocess, captures stdout, and deserializes it
-//! into a caller-supplied type. Auth, pagination, and transport
-//! concerns live with `gh`; this module is purely process + JSON.
+//! # Invariants
+//!
+//! - **Auth/transport off-loaded**: the host CLI owns auth,
+//!   pagination, and transport. This module is purely
+//!   process-spawn + JSON-decode.
+//! - **Rate-limit is data, not error**: rate-limit responses are
+//!   typed and surfaced as a distinct error variant so the observe
+//!   layer can lift them to outcome-data; transport, parse, and
+//!   non-2xx failures remain errors.
+//! - **Page-stream tolerance**: paginated fetchers parse a stream
+//!   of top-level JSON values rather than a single document, so any
+//!   list fetcher works correctly across page boundaries.
 
 use std::fmt::Write as _;
 use std::process::Command;
@@ -14,21 +23,19 @@ use crate::recorder;
 
 #[derive(Debug)]
 pub enum GhError {
-    /// Could not spawn `gh` (missing binary, permission denied, …).
+    /// Subprocess could not be spawned.
     Spawn(std::io::Error),
-    /// The endpoint returned HTTP 404. Some endpoints (e.g. legacy
-    /// branch protection) use 404 to signal "not configured", so this
-    /// is its own variant rather than a generic non-zero exit.
+    /// Endpoint returned a not-found response. Some endpoints
+    /// overload not-found to mean "unconfigured"; the dedicated
+    /// variant lets callers branch on that without parsing stderr.
     NotFound,
-    /// A rate-limit response from GitHub. The scope identifies which
-    /// quota fired (GraphQL primary, REST primary, secondary); the
-    /// observe layer surfaces this as a typed observation so decide
-    /// can emit a `WaitForRateLimit` action instead of crashing the
-    /// loop. See [`classify_rate_limit`] for the detection rules.
+    /// Quota-exceeded response, typed by scope. Surfaced as
+    /// observe-layer data so decide can emit a wait action instead
+    /// of crashing the loop.
     RateLimited(RateLimitHit),
-    /// `gh` exited with a non-zero status for any other reason.
+    /// Any other non-zero exit.
     NonZero { code: Option<i32>, stderr: String },
-    /// `gh` output was not valid JSON matching the expected shape.
+    /// Output did not parse as the expected shape.
     Parse(serde_json::Error),
 }
 
@@ -62,29 +69,19 @@ impl std::error::Error for GhError {
     }
 }
 
-/// Detect a rate-limit response in `gh` stderr. Returns `Some(hit)`
-/// when the message matches one of GitHub's documented rate-limit
-/// signals; `None` otherwise (caller falls back to `NonZero`).
+/// Classify a non-2xx response as a typed rate-limit hit, or absent.
 ///
-/// Scope is determined by inspecting `args`:
-///   - `gh api graphql …` → [`RateLimitScope::GitHubGraphqlPrimary`]
-///   - any other `gh api …` → [`RateLimitScope::GitHubRestPrimary`]
-///   - secondary-limit messages override to
-///     [`RateLimitScope::GitHubSecondary`] regardless of bucket.
-///
-/// `retry_after` is a conservative default — without parsing
-/// `X-RateLimit-Reset` from response headers we don't know the exact
-/// reset time. Primary defaults to 15 minutes (worst case is ~60 min
-/// if we hit at the start of a fresh window); secondary defaults to
-/// 60 seconds (GitHub's documented recommendation in their rate-limit
-/// docs). Both are floors — the runner sleeps at least this long,
-/// re-observes, and re-classifies if still throttled.
+/// Scope is inferred from the argv shape (the bucket the call
+/// consumed); secondary-limit wording overrides scope regardless of
+/// bucket. `retry_after` is a conservative floor — the runner waits
+/// at least the floor, re-observes, and re-classifies if still
+/// throttled.
 pub(crate) fn classify_rate_limit(args: &[&str], stderr: &str) -> Option<RateLimitHit> {
     let lower = stderr.to_lowercase();
 
-    // Secondary rate limits get specific language and a shorter
-    // back-off window. Match before primary so a stderr that happens
-    // to contain both phrases routes to secondary (lower wait).
+    // Secondary-before-primary: if both phrases appear, the
+    // secondary route wins (shorter back-off) — the conservative
+    // path under ambiguity.
     if lower.contains("secondary rate limit") {
         return Some(RateLimitHit {
             scope: RateLimitScope::GitHubSecondary,
@@ -92,11 +89,9 @@ pub(crate) fn classify_rate_limit(args: &[&str], stderr: &str) -> Option<RateLim
         });
     }
 
-    // Primary rate limits: GitHub's response body contains
-    // "API rate limit exceeded" verbatim; `gh` passes this through
-    // to stderr. Match the broader "rate limit exceeded" as a
-    // fall-through for forward compatibility with minor wording
-    // changes.
+    // Primary detection accepts both the canonical phrase and the
+    // shortened form as forward-compatibility for minor wording
+    // shifts.
     let primary = lower.contains("api rate limit exceeded")
         || (lower.contains("rate limit exceeded") && !lower.contains("secondary"));
     if primary {
@@ -121,11 +116,10 @@ pub(crate) fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Result<T, GhError> 
     serde_json::from_slice(&output.stdout).map_err(GhError::Parse)
 }
 
-/// Percent-encode a single REST path segment so that branch names
-/// containing `/` (e.g. `release/1.2`) are treated as one segment
-/// rather than parsed as additional path components by `gh api`.
-/// Encodes the characters that have URL-syntax meaning; passes
-/// alphanumerics and the unreserved punctuation through.
+/// Percent-encode a string for use as one URL path segment.
+/// Preserves alphanumerics and unreserved punctuation; encodes
+/// every URL-syntax-significant byte. Required for any identifier
+/// that may legally contain `/`.
 pub(crate) fn encode_path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -139,17 +133,9 @@ pub(crate) fn encode_path_segment(s: &str) -> String {
     out
 }
 
-/// Run a paginated `gh` call and concatenate the per-page arrays
-/// into one `Vec<T>`. With `--paginate`, `gh` emits each page as a
-/// separate top-level JSON value (multiple `[...]` arrays back to
-/// back); `--slurp` would wrap them into one outer array, but
-/// `gh` rejects `--slurp` combined with `--jq`. We parse the
-/// multi-document stream ourselves instead.
-///
-/// **Always use this for any new `--paginate` fetcher** —
-/// `gh_json` would only see the first page's JSON value and either
-/// truncate silently or fail with a trailing-data parse error on
-/// PRs busy enough to span pages.
+/// Decode a paginated call as a concatenated stream of per-page
+/// arrays. Required for every paginated fetcher: single-document
+/// decoders would silently truncate at page boundaries on busy PRs.
 pub(crate) fn gh_json_paginate<T: DeserializeOwned>(args: &[&str]) -> Result<Vec<T>, GhError> {
     let output = run_raw(args)?;
     let mut out: Vec<T> = Vec::new();
@@ -160,20 +146,13 @@ pub(crate) fn gh_json_paginate<T: DeserializeOwned>(args: &[&str]) -> Result<Vec
     Ok(out)
 }
 
-/// Like `gh_json`, but ignores non-zero exit when stdout parses
-/// successfully. Some `gh` subcommands behave this way:
-///   - `gh pr checks` exits status 8 when checks are still pending
-///     (with valid JSON stdout) and exits status 1 with empty
-///     stdout + "no checks reported" stderr when there are none.
-///
-/// `empty_default` is returned when:
-///   1. stdout is empty (only whitespace), AND
-///   2. exit is non-zero, AND
-///   3. stderr contains `empty_marker` (e.g. `"no checks reported"`).
-///
-/// All three conditions narrow the default to the documented case
-/// — a transient permission/API error with empty stdout still
-/// surfaces as `NonZero` rather than masking as empty data.
+/// JSON decoder that tolerates host subcommands which signal status
+/// via exit code. Non-zero exit is ignored when stdout parses;
+/// otherwise, an optional empty-marker triple (whitespace-only
+/// stdout AND non-zero exit AND marker substring in stderr) maps to
+/// a caller-supplied default. The triple narrows the default to a
+/// documented empty case — transient errors with empty stdout still
+/// surface as errors.
 pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
     args: &[&str],
     empty_default: Option<(T, &str)>,
@@ -223,9 +202,8 @@ pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
     }
 }
 
-/// Run `gh <args>` for side effects only — discard stdout.
-/// Used by act-stage Full actions (e.g. `gh pr ready`) where the
-/// outcome is the exit code, not the response body.
+/// Run for side effects, discarding stdout. Outcome is the exit
+/// code; response body is not consumed.
 pub(crate) fn gh_run(args: &[&str]) -> Result<(), GhError> {
     run_raw(args).map(|_| ())
 }

@@ -1,13 +1,15 @@
-//! Typed view of the GitHub rulesets endpoints:
+//! Typed projection of the rule-source endpoints (summary list +
+//! per-id detail).
 //!
-//!   - `GET /repos/{o}/{r}/rulesets?per_page=100` — list of summaries
-//!   - `GET /repos/{o}/{r}/rulesets/{id}`         — full ruleset
+//! # Invariants
 //!
-//! Rule shapes vary by `type` and new types may appear over time.
-//! `RulesetRule.parameters` is kept as `serde_json::Value` so unknown
-//! rule types do not break deserialization; typed parameter structs
-//! (`CopilotCodeReviewParams`, `RequiredStatusChecksParams`) deserialize
-//! opt-in from the `parameters` field when callers need them.
+//! - **Polymorphic-parameter tolerance**: rule shapes vary by type
+//!   and new types may appear over time. Parameter payloads are
+//!   carried as opaque JSON; typed projections deserialize on
+//!   demand so unknown rule types never break decoding.
+//! - **Branch-scoping is a separate predicate**: a rule is "active
+//!   for this branch" only when both its enforcement state and its
+//!   scoping conditions admit the branch.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,29 +17,25 @@ use crate::ids::{CheckName, RepoSlug};
 
 use super::gh::{GhError, gh_json, gh_json_paginate};
 
-/// Fetch every ruleset summary for a repo. Uses `--paginate` with
-/// `per_page=100`. Repos with >100 rulesets would otherwise drop
-/// the active Copilot ruleset on a later page, leaving
-/// `fetch_copilot_config` returning `None` and PRs misreported as
-/// Copilot-unconfigured. Class invariant: every list endpoint that
-/// may exceed one page uses `gh_json_paginate`.
+/// Fetch every rule-source summary for a repo. Pagination is
+/// fetcher-side: dropping later pages would silently remove rule
+/// sources from the decision model.
 pub(crate) fn fetch_ruleset_list(slug: &RepoSlug) -> Result<Vec<RulesetSummary>, GhError> {
     let path = format!("repos/{slug}/rulesets?per_page=100");
     gh_json_paginate(&["api", "--paginate", &path])
 }
 
-/// Fetch a single ruleset by id.
-///
-/// Callers that iterate the ruleset list may see a ruleset vanish
-/// between list and fetch; this surfaces as `GhError::NotFound` and
-/// should be treated as a non-fatal skip.
+/// Fetch a single rule-source detail by id. Disappearance between
+/// list and detail (rule-source removed mid-iteration) surfaces as
+/// the dedicated not-found variant; callers treat it as a non-
+/// fatal skip.
 pub(crate) fn fetch_ruleset(slug: &RepoSlug, id: u64) -> Result<Ruleset, GhError> {
     let path = format!("repos/{slug}/rulesets/{id}");
     gh_json(&["api", &path])
 }
 
-/// Entry from the list endpoint. The list response is trimmed; the
-/// full shape is fetched per-id via `Ruleset`.
+/// Summary row from the list endpoint. The full shape is fetched
+/// per-id on demand.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RulesetSummary {
     pub id: u64,
@@ -49,16 +47,16 @@ pub(crate) struct Ruleset {
     pub name: String,
     pub enforcement: RulesetEnforcement,
     pub rules: Vec<RulesetRule>,
-    /// Branch-scoping conditions. `None` (or missing in JSON)
-    /// means the ruleset applies to all refs.
+    /// Branch-scoping conditions. Absence means unconditionally
+    /// applicable across all refs.
     #[serde(default)]
     pub conditions: Option<RulesetConditions>,
 }
 
-/// Branch-scoping conditions on a ruleset. Currently only
-/// `ref_name` is modeled; other condition kinds (repository
-/// property, etc.) are silently ignored — repos that depend on
-/// them appear unconditionally matched.
+/// Branch-scoping conditions. Only the ref-name conditions are
+/// modeled; other condition kinds present in the host vocabulary
+/// would route to unconditional match — accept the over-report
+/// rather than silently drop the rule source.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct RulesetConditions {
@@ -68,33 +66,28 @@ pub(crate) struct RulesetConditions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub(crate) struct RefNameCondition {
-    /// Patterns: `~ALL` (every branch), `~DEFAULT_BRANCH`
-    /// (repo default), exact `refs/heads/<name>`, or
-    /// fnmatch-style globs like `refs/heads/release/*`.
+    /// Inclusion patterns; see the pattern grammar in the matcher.
     #[serde(default)]
     pub include: Vec<String>,
-    /// Same pattern grammar; matches here override `include`.
+    /// Exclusion patterns; matches override inclusion.
     #[serde(default)]
     pub exclude: Vec<String>,
 }
 
-/// True iff the ruleset's branch-scope conditions cover `branch`.
+/// Predicate: do the conditions admit `branch`?
 ///
 /// Resolution rules (first match wins):
-///   1. No conditions or no `ref_name` → covers all branches.
-///   2. Any `exclude` pattern matches `branch` → false.
-///   3. Empty `include` (only excludes) → true.
-///   4. Any `include` pattern matches `branch` → true.
-///   5. Otherwise → false.
+///   1. Conditions absent → unconditionally admits.
+///   2. Any exclusion matches → reject.
+///   3. Inclusions empty → unconditionally admits (excludes only).
+///   4. Any inclusion matches → admit.
+///   5. Otherwise → reject.
 ///
-/// Pattern grammar (best-effort):
-///   - `~ALL` matches every branch.
-///   - `~DEFAULT_BRANCH` conservatively matches (we don't fetch
-///     the repo's default branch separately; better to over-
-///     report Copilot as configured than to silently drop it).
-///   - `refs/heads/<exact>` exact match.
-///   - `refs/heads/<glob>` with `*` wildcards (fnmatch-style,
-///     no character classes).
+/// Pattern grammar:
+///   - Wildcard literals match everything; default-branch literal
+///     admits conservatively (no separate default-branch fetch).
+///   - Exact fully-qualified ref matches by equality.
+///   - Glob-bearing patterns match by anchored splat segments.
 pub(crate) fn ruleset_matches_branch(conditions: Option<&RulesetConditions>, branch: &str) -> bool {
     let Some(c) = conditions else { return true };
     let Some(rn) = &c.ref_name else { return true };
@@ -113,21 +106,20 @@ pub(crate) fn ruleset_matches_branch(conditions: Option<&RulesetConditions>, bra
 }
 
 fn ref_pattern_matches(pat: &str, qualified_ref: &str) -> bool {
-    // Intentional exhaustive match per GitHub's wildcard pattern
-    // vocabulary; arms are kept distinct for spec clarity.
+    // Arms kept distinct per the wildcard-pattern vocabulary even
+    // when they collapse — preserves spec clarity at the boundary.
     #[allow(clippy::match_same_arms)]
     match pat {
         "~ALL" => true,
-        "~DEFAULT_BRANCH" => true, // conservative: we don't know the default
+        "~DEFAULT_BRANCH" => true, // conservative: default unknown
         _ if pat.contains('*') => glob_matches(pat, qualified_ref),
         _ => pat == qualified_ref,
     }
 }
 
-/// Minimal `*`-only glob matcher. Splits on `*` and walks the
-/// segments left-to-right against the input. Empty leading/
-/// trailing segments anchor each end (so `refs/heads/release/*`
-/// matches `refs/heads/release/1.2` but not `release/1.2`).
+/// Splat-only glob matcher. Splits on the splat character and walks
+/// segments left-to-right; empty leading/trailing segments anchor
+/// each end.
 fn glob_matches(pat: &str, s: &str) -> bool {
     let segments: Vec<&str> = pat.split('*').collect();
     if segments.len() == 1 {
@@ -163,9 +155,8 @@ pub(crate) enum RulesetEnforcement {
     Evaluate,
 }
 
-/// A single rule inside a ruleset. `parameters` is raw JSON — opt into
-/// a typed view via `serde_json::from_value(rule.parameters.clone())`
-/// using one of the typed `*Params` structs below.
+/// One rule. The parameters payload is opaque JSON; typed payload
+/// projections deserialize on demand for known rule types.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RulesetRule {
     #[serde(rename = "type")]
@@ -174,14 +165,14 @@ pub(crate) struct RulesetRule {
     pub parameters: Option<serde_json::Value>,
 }
 
-/// Shape of `parameters` when `rule_type == "copilot_code_review"`.
+/// Typed parameter projection for the reviewer-axis rule type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct CopilotCodeReviewParams {
     pub review_on_push: bool,
     pub review_draft_pull_requests: bool,
 }
 
-/// Shape of `parameters` when `rule_type == "required_status_checks"`.
+/// Typed parameter projection for the required-checks rule type.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RequiredStatusChecksParams {
     pub required_status_checks: Vec<RequiredStatusCheck>,
@@ -190,9 +181,9 @@ pub(crate) struct RequiredStatusChecksParams {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RequiredStatusCheck {
     pub context: CheckName,
-    /// Null when the required check is not pinned to a GitHub App
-    /// (status posted from any source matching the context name).
-    /// Modeling as `u64` would silently drop the entire rule.
+    /// Absent when the check is not pinned to a host app (status
+    /// accepted from any source matching the context). Modeling as
+    /// non-optional would silently drop the entire rule.
     pub integration_id: Option<u64>,
 }
 

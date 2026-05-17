@@ -1,25 +1,26 @@
-//! OODA loop driver — observe → orient → decide → act → repeat
-//! until a halt condition fires.
+//! OODA loop driver: observe → orient → decide → act, repeated
+//! until a halt fires.
 //!
-//! Stall detection: if the same (kind, blocker) pair fires twice
-//! in a row (excluding Wait), the loop halts Stalled. Coarse —
-//! only catches the one-action-spinning case. The iteration cap
-//! is the second line of defense and surfaces as `HaltReason::CapReached`.
+//! # Halt conditions
 //!
-//! The loop returns `HaltReason` directly. Cap, stall, success,
-//! terminal, and handoff are all variants of the same partition.
-//! Exit-code mapping lives on `HaltReason::exit_code()`.
+//! - **Decision halt** — decide returns a halt variant.
+//! - **Stall** — same `(kind_name, blocker)` fires on two
+//!   consecutive non-`Wait` iterations. Coarse: only catches the
+//!   single-action spinning case.
+//! - **Cap** — the iteration cap is reached without halting; the
+//!   last attempted action is the triage anchor.
 //!
-//! Codex-domain shape: each iteration spawns a fresh `observe`
-//! (subprocess fan-out), runs `orient`/`decide`, then `act`s on
-//! Full/Wait. Agent/Human halts return up to the caller.
+//! All four collapse into [`HaltReason`]; exit-code mapping lives
+//! on [`HaltReason::exit_code`].
 //!
-//! `LoopConfig::max_iterations` is `NonZeroU32` so iter 1 is
-//! structurally guaranteed to run; the driver splits iter 1 from
-//! the subsequent iterations so `last_attempted` flows as a typed
-//! `Action` (not `Option<Action>`) into the eventual
-//! `HaltReason::CapReached` — eliminating the runtime expect that
-//! previously documented this invariant.
+//! # Structural invariants
+//!
+//! - `LoopConfig::max_iterations` is `NonZeroU32`, so iter 1 is
+//!   structurally guaranteed to run. The driver splits iter 1
+//!   from subsequent iterations so the cap-halt's
+//!   `last_attempted` is a typed `Action` (not `Option<Action>`),
+//!   eliminating the runtime expect that would otherwise document
+//!   this invariant.
 
 use std::num::NonZeroU32;
 
@@ -51,13 +52,13 @@ impl std::error::Error for LoopError {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct LoopConfig {
-    /// Iteration cap. `NonZeroU32` so the driver's "iter 1
-    /// always runs" guarantee is structural.
+    /// Iteration cap. `NonZeroU32` so iter-1-always-runs is a
+    /// type-level guarantee.
     pub max_iterations: NonZeroU32,
-    /// Top of the reasoning ladder. When the loop reaches an
-    /// all-clean batch at this level, decide halts with
-    /// `Terminal(Succeeded)` (the codex-review fixed point at the
-    /// ceiling) instead of emitting a `Retrospective` handoff.
+    /// Top of the reasoning ladder. An all-clean batch at this
+    /// level halts terminally (the per-target fixed point);
+    /// all-clean below ceiling emits the retrospective handoff
+    /// instead.
     pub ceiling: CodexReasoningLevel,
 }
 
@@ -70,25 +71,22 @@ impl Default for LoopConfig {
     }
 }
 
-/// One iteration's typed outcome. The loop body produces either
-/// an early-halt (`Decision::Halt` or stall-detected) or a completed
-/// Execute that we keep as the running "last attempted" anchor.
+/// One iteration's typed outcome: either an early halt (decision
+/// halt or stall) or a completed Execute, the latter retained as
+/// the running "last attempted" anchor for cap-halt diagnostics.
 enum IterStep {
     Halt(HaltReason),
     Executed(Action),
 }
 
-/// Drive a codex-review session until a halt fires or the
-/// iteration cap trips.
+/// Drive a session until a halt fires or the iteration cap trips.
 ///
-/// `observe` is parameterized: callers supply a closure that
-/// fetches the current `CodexObservations` for the configured
-/// `(repo_id, target)`. This lets the test harness substitute
-/// stub observations without touching subprocesses.
+/// `observe` is supplied as a closure so the test harness can
+/// substitute stub observations without touching subprocesses.
 ///
-/// `on_state` is called once per iteration after decide and
-/// before act, with the iteration index, oriented state, and
-/// chosen decision. Halt decisions also fire it before returning.
+/// `on_state` fires once per iteration after decide and before
+/// act, with the iteration index, oriented state, and chosen
+/// decision; halt decisions also fire it before returning.
 pub(crate) fn run_loop(
     repo_id: &RepoId,
     target: &ReviewTarget,
@@ -99,9 +97,9 @@ pub(crate) fn run_loop(
 ) -> Result<HaltReason, LoopError> {
     let max_iter = config.max_iterations.get();
 
-    // Iter 1 is guaranteed to run; stall is structurally impossible
-    // there (no prior key). Run it explicitly so `last_attempted` is
-    // initialized as a typed `Action`.
+    // Iter 1 runs unconditionally; stall is structurally
+    // impossible there (no prior key). Splitting it out
+    // initializes `last_attempted` as a typed `Action`.
     let mut last_attempted: Action = match run_iter(
         repo_id,
         target,

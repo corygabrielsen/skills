@@ -1,19 +1,26 @@
-//! Decide-side candidate generator for the codex review axis.
+//! Decide projection for the reviewer-ladder axis.
 //!
-//! Maps `CodexReviewReport.status` to one `Action`:
+//! # Mapping
 //!
-//! ```text
-//! Spawn{level}                 → RunCodexReviewBatch{level, n}      Full,  Critical
-//! Await{level, ...}            → AwaitCodexReviewBatch{level}       Wait,  BlockingWait
-//! Address{level, verdicts}     → AddressCodexReviewBatch{level, n}  Agent, BlockingFix
-//! LadderSatisfied              → no candidate (axis empty)
-//! ```
+//! Status × candidate-shape is a total function:
 //!
-//! `LadderSatisfied` returning no candidate is what lets the PR
-//! axes (`RequestApproval`, eventual merge) progress: the codex
-//! review axis emits a `BlockingFix`/`BlockingWait` candidate
-//! whenever it has work, structurally gating merge on codex's
-//! fixed point.
+//! | Status            | Candidate kind        | Effect | Urgency       |
+//! |-------------------|-----------------------|--------|-----------------|
+//! | `Spawn`           | `RunCodexReviewBatch` | Full   | `Critical`      |
+//! | `Await`           | `AwaitCodexReviewBatch` | Wait | `BlockingWait`  |
+//! | `Address`         | `AddressCodexReviewBatch` | Agent | `BlockingFix` |
+//! | `LadderSatisfied` | (none)                | —      | —               |
+//!
+//! # Invariants
+//!
+//! - **One candidate per non-satisfied status**: cardinality is
+//!   exactly one, exercised by the property test below.
+//! - **Empty candidate set is the only unblock**: a non-empty axis
+//!   gates merge structurally; only `LadderSatisfied` releases the
+//!   gate, by returning `Vec::new()`.
+//! - **Issue-filter precondition**: `mk_address` is invoked only
+//!   when at least one verdict is non-clean, so the witness set is
+//!   non-empty by construction.
 
 use crate::ids::{BlockerKey, CodexReasoningLevel};
 use crate::observe::codex::VerdictClass;
@@ -45,8 +52,7 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
                     )
                 })
                 .collect();
-            // Codex-review issue count fits in u32: per-batch verdicts
-            // are bounded by the batch fan-out (well under 4B).
+            // Issue count fits in u32: bounded by batch fan-out.
             let count = u32::try_from(issues.len()).expect("codex issue count fits in u32");
             vec![mk_address(*level, count, &issues)]
         }
@@ -78,12 +84,9 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
                 level.as_str()
             ),
         },
-        // Codex review structurally gates merge until the ladder
-        // is satisfied at ceiling. `Blocks` mirrors `WaitForCi`'s
-        // target_effect; `Neutral` would let `has_advancement_path`
-        // misclassify the await as non-advancing and the merge-
-        // policy fallback would emit a phantom ResolveMergePolicy
-        // candidate alongside the real one.
+        // `Blocks`: the axis gates merge until ladder satisfaction.
+        // `Neutral` would misclassify the await as non-advancing,
+        // letting the merge-policy fallback emit a phantom candidate.
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::BlockingWait,
         blocker: BlockerKey::typed("codex_review_await", &level),
@@ -113,9 +116,9 @@ fn mk_address(
             url: None,
         })
         .collect();
-    // `mk_address` is only invoked when at least one verdict has
-    // issues (decide-side filter above); empty witnesses would
-    // mean an empty Address candidate, which the caller skips.
+    // Witness set is non-empty by precondition (module invariant);
+    // the `try_from_vec` is defensive and falls back to no-op if
+    // the precondition is ever violated.
     if let Some(witnesses) = NonEmpty::try_from_vec(witnesses) {
         prompt.push_witnesses(witnesses);
     }
@@ -228,17 +231,15 @@ mod tests {
         assert!(candidates(&r).is_empty());
     }
 
-    // ─── property test for the class invariant ──────────────────────
-    //
-    // Class invariant: every `CodexReviewStatus` variant maps to a
-    // unique candidate-set shape. The exhaustive match in
-    // `expected_codex_review_axis_behavior` is the contract. Adding
-    // a new `CodexReviewStatus` variant fails to compile here until
-    // the new arm is added.
+    // Property test for the status → candidate-shape mapping.
+    // Exhaustive match in `expected_codex_review_axis_behavior`
+    // enforces the contract at compile time; adding a new
+    // `CodexReviewStatus` variant requires extending both the
+    // expectation arm and the sample set.
 
     #[derive(Debug, PartialEq, Eq)]
     enum CodexReviewAxisBehavior {
-        /// Empty candidate set — ladder is satisfied, nothing to do.
+        /// Empty candidate set — axis is satisfied.
         NoCandidate,
         EmitRunBatch,
         EmitAwaitBatch,

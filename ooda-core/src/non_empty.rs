@@ -1,27 +1,25 @@
 //! Non-empty collection newtype.
 //!
-//! Several [`crate::Action`] payloads carry a collection whose
-//! emptiness is a logic bug — `WaitForCi { pending }` with no
-//! pending checks would be a request to wait for nothing;
-//! `AddressThreads { threads }` with no threads has no agent
-//! prompt material. [`NonEmpty<T>`] makes the "at least one
-//! element" invariant structural: a value of this type guarantees
-//! `len() ≥ 1`, the unwrap on `first()` is statically sound, and
-//! render code does not need a dead "empty case" branch.
+//! Carries a collection whose emptiness would be a logic bug —
+//! e.g. an action payload that means "wait for these things" or
+//! "act on these items" is meaningless with zero things.
+//! [`NonEmpty<T>`] makes the "at least one element" invariant
+//! structural: a value of the type guarantees `len() ≥ 1`,
+//! `first()` is total, and downstream code carries no dead
+//! "empty case" branch.
 //!
-//! `Serialize` emits the inner `Vec<T>` shape directly (just an
-//! array of elements), so JSONL records carrying these payloads
-//! are bit-identical to the pre-NonEmpty form.
+//! `Serialize` is transparent — emits the inner `Vec<T>` shape
+//! directly — so on-the-wire records are byte-identical to a
+//! plain `Vec<T>`.
 
 use serde::{Serialize, Serializer};
 use std::num::NonZeroUsize;
 
 /// `Vec<T>` with the invariant `len() ≥ 1` enforced by construction.
 ///
-/// Storing as a tuple-struct around `Vec<T>` keeps the iterator and
-/// slice APIs cheap; the invariant is preserved by the
-/// constructors and the absence of any `&mut Vec<T>` accessor that
-/// could drop the last element.
+/// Backed by a `Vec<T>` so slice and iterator APIs come for free.
+/// The invariant is preserved by the absence of any mutable
+/// accessor that could empty the inner vector.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NonEmpty<T>(Vec<T>);
 
@@ -49,16 +47,13 @@ impl<T> NonEmpty<T> {
         &self.0[0]
     }
 
-    /// `NonZeroUsize`-typed length, for call sites that want to
-    /// propagate the structural non-empty guarantee through their
-    /// own types. Most callers can just use `.len()` (via the
-    /// `Deref<Target = [T]>` impl) for a `usize` and rely on the
-    /// type-level guarantee that it's `≥ 1`.
+    /// `NonZeroUsize`-typed length, for call sites that propagate
+    /// the non-empty guarantee through their own types.
     ///
     /// # Panics
     ///
-    /// Panics if the `NonEmpty` invariant is violated — which is
-    /// statically impossible through the public API.
+    /// Panics if the `NonEmpty` invariant is violated — statically
+    /// impossible through the public API.
     #[must_use]
     pub fn nonzero_len(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.0.len()).expect("NonEmpty invariant violated: inner Vec is empty")
@@ -70,54 +65,42 @@ impl<T> NonEmpty<T> {
         &self.0
     }
 
-    /// Map each element by reference. The non-empty invariant is
-    /// preserved structurally — `self.len() ≥ 1`, so the result
-    /// has at least one element and is itself non-empty without
-    /// any runtime `unwrap`/`expect`.
+    /// Map each element by reference. Output cardinality equals
+    /// input cardinality, preserving the non-empty invariant
+    /// without runtime checks.
     pub fn map_ref<U>(&self, f: impl FnMut(&T) -> U) -> NonEmpty<U> {
         NonEmpty(self.0.iter().map(f).collect())
     }
 
-    /// Like [`Self::map_ref`], but the closure also receives the
-    /// 0-based index of each element. Preserves the non-empty
-    /// invariant.
+    /// [`Self::map_ref`] with the 0-based index passed alongside
+    /// each element.
     pub fn enumerate_map_ref<U>(&self, mut f: impl FnMut(usize, &T) -> U) -> NonEmpty<U> {
         NonEmpty(self.0.iter().enumerate().map(|(i, t)| f(i, t)).collect())
     }
 
     /// Last element. Total — the `len ≥ 1` invariant makes this
-    /// safe without an `Option` wrap (in contrast to slice's
-    /// `last()`, which Deref still exposes for callers that prefer
-    /// the slice signature).
+    /// safe without an `Option` wrap. Slice's `Option`-returning
+    /// `last()` is still reachable through `Deref` for callers
+    /// that prefer the slice signature.
     #[must_use]
     pub fn last(&self) -> &T {
-        // SAFETY-equivalent at the type level: `len ≥ 1` ⇒
-        // `len - 1 ≥ 0` is a valid index. The slice version
-        // returns Option for the empty case which can't happen here.
         &self.0[self.0.len() - 1]
     }
 
-    /// Consume into a `NonEmpty<U>` via a fallible mapping. Short-
-    /// circuits on the first `Err`. The non-empty invariant is
-    /// preserved structurally — on success, output cardinality
-    /// equals input cardinality (≥ 1).
-    ///
-    /// Useful for building a `NonEmpty<U>` from an iteration that
-    /// can fail (e.g. observe-layer fetchers that return `io::Result`
-    /// per element).
+    /// Consume into a `NonEmpty<U>` via a fallible mapping.
+    /// Short-circuits on the first `Err`; on success, output
+    /// cardinality equals input cardinality, preserving the
+    /// non-empty invariant.
     ///
     /// # Errors
     ///
-    /// Short-circuits and returns the first `Err(E)` produced by
-    /// `f`; otherwise returns `Ok` with the mapped collection.
+    /// Returns the first `Err(E)` produced by `f`.
     pub fn try_map<U, E>(self, mut f: impl FnMut(T) -> Result<U, E>) -> Result<NonEmpty<U>, E> {
         let len = self.0.len();
         let mut out = Vec::with_capacity(len);
         for t in self.0 {
             out.push(f(t)?);
         }
-        // `out.len() == len ≥ 1` by the input invariant; the inner
-        // Vec is non-empty by construction.
         Ok(NonEmpty(out))
     }
 }
@@ -128,12 +111,10 @@ impl<T> From<NonEmpty<T>> for Vec<T> {
     }
 }
 
-/// Deref to `[T]` so `&NonEmpty<T>` flows into any function
-/// expecting `&[T]` without explicit `.as_slice()` calls. All
-/// slice methods (`iter`, `len`, indexing, etc.) are available
-/// transparently — the only "extra" guarantee `NonEmpty<T>`
-/// offers over `&[T]` is that `len() ≥ 1`, which holds whether
-/// you reach it through the newtype's methods or through Deref.
+/// Transparent deref to `[T]`: every slice method is available
+/// without `.as_slice()` boilerplate. The `len() ≥ 1` guarantee
+/// holds whether reached through the newtype's methods or through
+/// the slice surface.
 impl<T> std::ops::Deref for NonEmpty<T> {
     type Target = [T];
     fn deref(&self) -> &[T] {
@@ -157,9 +138,8 @@ impl<'a, T> IntoIterator for &'a NonEmpty<T> {
     }
 }
 
-/// Serialize as a plain array — `[t1, t2, ...]` — so JSONL
-/// records that previously carried `Vec<T>` here are byte-
-/// identical after the migration.
+/// Serialize transparently as the inner `Vec<T>` so on-the-wire
+/// records are byte-identical to a plain `Vec<T>`.
 impl<T: Serialize> Serialize for NonEmpty<T> {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(ser)

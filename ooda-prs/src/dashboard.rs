@@ -1,22 +1,18 @@
 //! Tier-grouped dashboard projection.
 //!
-//! Mission 1 / Phase A — assembles the on-disk surfaces (per-iteration
-//! `next.md`, `blockers.md`, `dashboard.json`) that human callers
-//! consume between OODA iterations. Phases B (`HandoffPrompt`
-//! preamble) and C (PR status comment) reuse the same types.
+//! Projects one iteration's `(oriented, candidates, decision)` triple
+//! into a single typed structure that feeds three independent
+//! rendering surfaces (per-iteration files, handoff-prompt preamble,
+//! status comment). Renderers are pure functions over the projection.
 //!
-//! Name dance: the spec calls this struct `Decision`, but
-//! [`ooda_core::Decision`] already owns that name (`Execute | Halt`,
-//! the runner's executor signal). To avoid collision while keeping
-//! the spec's semantics intact, the structured form here is
-//! [`Dashboard`]; the executor signal stays [`ooda_core::Decision`].
-//! The runner still consumes `decision.candidates.head().action`,
-//! just spelled `dashboard.head_action()`.
+//! The driver-side decision type owns the executor signal; this
+//! type owns the human-facing structured snapshot. The two names
+//! coexist by design — the projection is not a decision, it is a
+//! view derived from one.
 //!
-//! Anti-DRY mirror: this module is per-binary and copied byte-for-
-//! byte across the three PR-side binaries — the same rule the
-//! per-axis health enums follow. Lifting into [`ooda_core`] would
-//! force the cross-binary spine to carry domain-shaped axis names.
+//! Per-binary by construction. A cross-binary lift would force the
+//! shared spine to carry domain-specific axis names; the dashboard
+//! is the right place for those to live.
 
 use crate::decide::action::Action;
 use crate::decide::decision::{Decision, DecisionHalt};
@@ -34,42 +30,36 @@ use std::fmt::Write;
 
 // ── Public types ─────────────────────────────────────────────────────
 
-/// Tier-grouped snapshot the dashboard surfaces consume. Bundles the
-/// ranked candidates (urgency order), per-axis health signals, and
-/// the cross-axis blocker list pulled off each candidate.
-///
-/// The runner does not consume [`Dashboard`] — it still drives off
-/// [`Decision`] for executor semantics. The `Dashboard` exists purely
-/// for human-facing rendering surfaces.
+/// Tier-grouped snapshot for human-facing rendering. Bundles the
+/// ranked candidates, per-axis health signals, and the deduplicated
+/// blocker list. Decoupled from the executor: the runner drives off
+/// the decision type; the dashboard is the view.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Dashboard {
-    /// Candidates in urgency order (already sorted by [`crate::decide::candidates`]).
-    /// `None` iff the executor halt was [`DecisionHalt::Success`] or
-    /// [`DecisionHalt::Terminal`] — no work to surface.
+    /// Candidates in urgency order. Empty iff the upstream halt
+    /// produced no actionable candidate (terminal arms).
     pub candidates: Vec<RankedCandidate>,
-    /// One entry per axis that elected to emit a signal this
-    /// iteration. Axes with `Activity::Idle` (Copilot, CI) and
-    /// `Activity::NotApplicable` (Cursor) project `None` and are
-    /// skipped — see per-axis `*_signal` functions.
+    /// Per-axis health signals, one entry per axis that elected to
+    /// emit. Quiet/inapplicable axes project nothing and are
+    /// omitted at the axis-projection boundary.
     pub signals: Vec<AxisSignal>,
-    /// Deduplicated blocker list across all candidates, in first-
-    /// encountered order. Carries the blocker tag plus the action
-    /// kind that named it.
+    /// Cross-candidate blocker list, deduplicated by key and
+    /// preserving first-seen order.
     pub blockers: Vec<Blocker>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RankedCandidate {
-    /// Action variant name (payload-free) for stable rendering.
+    /// Action discriminant for stable rendering — payload-free so
+    /// the rendered surface survives payload-shape changes.
     pub action_name: &'static str,
-    /// Human-readable log line from `effect.rendered_message()` —
-    /// the same payload the per-iteration log uses.
+    /// Single-line human-readable rendering of the action.
     pub action_log: String,
-    /// Effect debug form for the per-candidate detail line.
+    /// Effect debug form for the detail line.
     pub effect_debug: String,
-    /// Urgency tier — drives the tier-grouping in the renderer.
+    /// Urgency tier — drives tier grouping in the renderer.
     pub urgency: Urgency,
-    /// Stable blocker tag for this candidate.
+    /// Gate identity for this candidate.
     pub blocker: BlockerKey,
 }
 
@@ -80,8 +70,9 @@ pub(crate) struct AxisSignal {
     pub summary: String,
 }
 
-/// Per-axis health icon. Five-bucket coarse projection — the spec
-/// table at the top of the `IMPLEMENTATION_SPEC` fixes the mapping.
+/// Coarse health classification on a five-bucket scale. The bucket
+/// is the rendering primitive; per-axis projectors decide which
+/// bucket each axis-internal state maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum SignalIcon {
     Ok,
@@ -92,8 +83,7 @@ pub(crate) enum SignalIcon {
 }
 
 impl SignalIcon {
-    /// Single-char glyph for compact rendering. The renderer pairs
-    /// this with the axis name and summary.
+    /// Glyph for compact rendering, paired with axis name and summary.
     pub(crate) fn glyph(self) -> &'static str {
         match self {
             Self::Ok => "✓",
@@ -106,7 +96,7 @@ impl SignalIcon {
 }
 
 /// Axis identifier — drives the leading column of each signal line.
-/// Limited to the three reviewer axes; new axes append.
+/// New axes append.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AxisName {
@@ -133,21 +123,18 @@ impl AxisName {
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Blocker {
-    /// The stable `BlockerKey` from the candidate naming this blocker.
+    /// Gate identity carried verbatim from the candidate.
     pub tag: BlockerKey,
-    /// Action variant name that named this blocker — gives a human
-    /// reader the "context" half of the `tag: context` line in
-    /// `blockers.md`.
+    /// Action discriminant — the rendering context paired with the
+    /// gate in human-facing surfaces.
     pub action_name: &'static str,
 }
 
 // ── Construction ─────────────────────────────────────────────────────
 
 impl Dashboard {
-    /// Assemble a [`Dashboard`] from the per-iteration triple
-    /// `(OrientedState, candidates, decision)`. Mirrors the data
-    /// already flowing through [`Recorder::record_iteration`] — no
-    /// new observation source.
+    /// Assemble a [`Dashboard`] from the per-iteration triple.
+    /// Pure projection — no additional observation source.
     pub(crate) fn from_iteration(
         oriented: &OrientedState,
         candidates: &[Action],
@@ -164,11 +151,9 @@ impl Dashboard {
     }
 }
 
-/// Halt arms with no actionable candidate (Success, Terminal) yield
-/// an empty candidate list — there is nothing for the dashboard to
-/// surface beyond the halt itself. The executor-side `Decision`
-/// already captures that and the renderer falls through to the
-/// "no action selected" path.
+/// Project the candidate slice for dashboard rendering. Terminal
+/// halt arms (no actionable candidate by construction) project to
+/// the empty slice; renderers fall through to the no-action path.
 fn build_candidates(candidates: &[Action], decision: &Decision) -> Vec<RankedCandidate> {
     match decision {
         Decision::Halt(DecisionHalt::Success | DecisionHalt::Terminal(_)) => Vec::new(),
@@ -215,9 +200,9 @@ fn collect_signals(oriented: &OrientedState) -> Vec<AxisSignal> {
     out
 }
 
-/// Project PR-meta state onto a dashboard signal. `Synced`
-/// projects an `Ok` quiet positive; `Drift` warns with the commit
-/// count; `NeverAttested` warns with a first-attestation prompt.
+/// Project the PR-metadata attestation axis onto a dashboard signal.
+/// Synced → Ok; drift → Warn with commit-count detail; never-attested
+/// → Warn with a first-attestation summary.
 #[must_use]
 pub(crate) fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisSignal {
     let (icon, summary) = match state {
@@ -246,8 +231,8 @@ pub(crate) fn pull_request_metadata_signal(state: &PullRequestMetadata) -> AxisS
     }
 }
 
-/// Project doc-review state onto a dashboard signal. Same shape as
-/// `pull_request_metadata_signal`.
+/// Project the doc-review attestation axis onto a dashboard signal.
+/// Same bucket assignment as the other SHA-keyed attestation axes.
 #[must_use]
 pub(crate) fn doc_review_signal(state: &DocReview) -> AxisSignal {
     let (icon, summary) = match state {
@@ -276,11 +261,10 @@ pub(crate) fn doc_review_signal(state: &DocReview) -> AxisSignal {
     }
 }
 
-/// Project Claude-review state onto a dashboard signal. Three
-/// projections: `NoActivity` collapses to `NotApplicable` (Claude has
-/// not been requested on this PR — no review surface to grade);
-/// `Addressed` is an `Ok` quiet positive; `Fresh` is a `Warn` with
-/// the inline thread count.
+/// Project the Claude-review axis onto a dashboard signal. Diverges
+/// from the SHA-keyed axes by collapsing the "no surface to grade"
+/// case to `NotApplicable` instead of a warn — there is no upstream
+/// surface whose drift could be measured.
 #[must_use]
 pub(crate) fn claude_review_signal(state: &ClaudeReview) -> AxisSignal {
     let (icon, summary) = match state {
@@ -311,10 +295,9 @@ fn short_sha(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
-/// Render a Drift `commits_behind` field. `None` means the
-/// `gh api compare` call failed (attested SHA pruned post-rebase,
-/// transport error, etc.) — drift still exists but the count is
-/// not available.
+/// Render a drift commit-count. `None` encodes "drift exists but
+/// the count is unobservable" — the upstream compare call was
+/// unavailable.
 fn drift_commits(commits_behind: Option<usize>) -> String {
     match commits_behind {
         Some(n) => crate::text::count(n, "commit"),
@@ -322,9 +305,8 @@ fn drift_commits(commits_behind: Option<usize>) -> String {
     }
 }
 
-/// Deduplicate by `BlockerKey` while preserving first-seen order.
-/// Two candidates naming the same blocker (e.g. two CI escalations
-/// on the same `ci:failed` tag) collapse to one row.
+/// Deduplicate by gate identity while preserving first-seen order.
+/// Multiple candidates naming the same gate collapse to one row.
 fn collect_blockers(candidates: &[RankedCandidate]) -> Vec<Blocker> {
     let mut out: Vec<Blocker> = Vec::new();
     for c in candidates {
@@ -342,9 +324,10 @@ fn collect_blockers(candidates: &[RankedCandidate]) -> Vec<Blocker> {
 // ── Rendering ────────────────────────────────────────────────────────
 
 impl Dashboard {
-    /// Render `next.md`. Tier-grouped — winner with its `action_log`,
-    /// then any same-tier alternatives, then a section per lower
-    /// urgency tier. Empty sections are omitted.
+    /// Render the per-iteration next-action surface. Section order:
+    /// recommended winner → same-tier alternatives → one section
+    /// per lower-urgency tier → signals → blockers. Empty sections
+    /// are omitted.
     pub(crate) fn render_next_md(&self) -> String {
         let Some(winner) = self.candidates.first() else {
             return "# Next\n\nNo action selected.\n".to_string();
@@ -359,13 +342,11 @@ impl Dashboard {
         writeln!(out, "- blocker: `{}`", winner.blocker).expect("write to String");
 
         let mut by_tier = tiers(&self.candidates);
-        // Drop the winner from its own tier — same urgency, but the
-        // first entry is already rendered above. Skip the bucket
-        // entirely if the winner was alone in it.
+        // The winner was rendered in its own section; drop it from
+        // its bucket so the alternatives list does not repeat it.
         if let Some(bucket) = by_tier.first_mut() {
             bucket.candidates.remove(0);
         }
-        // Render same-tier alternatives (if any survived the drop).
         if let Some(top) = by_tier.first()
             && !top.candidates.is_empty()
         {
@@ -375,7 +356,6 @@ impl Dashboard {
             }
         }
 
-        // Render lower tiers — every bucket past the first.
         let lower: Vec<&TierBucket> = by_tier.iter().skip(1).collect();
         if !lower.is_empty() {
             out.push_str("\n## Queued (lower urgency)\n");
@@ -412,19 +392,12 @@ impl Dashboard {
         out
     }
 
-    /// Render the PR status comment body. Tier-grouped — recommended
-    /// winner on top, then same-tier alternatives, then lower-urgency
-    /// tiers grouped one section per tier, then per-axis signals, then
-    /// the cross-axis blocker list. Empty sections are omitted.
-    ///
-    /// Tuned for the GitHub PR comment view: compact at the top
-    /// (winner front and centre), bullet-list dense below, no
-    /// `effect` debug line (that's a `next.md` reader's concern).
-    /// The header (`## OODA · {repo}#{pr} — iteration N`) is added by
-    /// the caller that knows slug/pr/iter; this method renders the
-    /// body below the header. Returns the empty string for an empty
-    /// candidate list — the caller decides what to substitute (e.g.
-    /// a terminal-halt summary line).
+    /// Render the PR status comment body. Same section order as the
+    /// per-iteration surface; tuned for the comment context (compact
+    /// headline, no effect-debug line). The caller supplies the
+    /// header (it depends on identifiers the projection does not
+    /// carry). Empty candidate list ⇒ empty body, leaving the
+    /// caller to substitute a halt summary.
     pub(crate) fn render_status_comment(&self) -> String {
         let Some(winner) = self.candidates.first() else {
             return String::new();
@@ -444,8 +417,6 @@ impl Dashboard {
         if let Some(bucket) = by_tier.first_mut() {
             bucket.candidates.remove(0);
         }
-        // Same-tier alternatives — listed inline under the winner;
-        // tier label is implicit (same as the winner's).
         if let Some(top) = by_tier.first()
             && !top.candidates.is_empty()
         {
@@ -455,9 +426,9 @@ impl Dashboard {
             }
         }
 
-        // Lower-tier queued candidates — one bullet per candidate,
-        // tier label italicised inline so the comment stays a single
-        // bulleted block rather than a stack of `###` subheadings.
+        // Lower tiers render inline with italicised labels rather
+        // than as nested subheadings — the comment surface reads
+        // better as one bulleted block.
         let lower: Vec<&TierBucket> = by_tier.iter().skip(1).collect();
         if !lower.is_empty() {
             out.push_str("\n**Queued (lower urgency):**\n");
@@ -494,7 +465,7 @@ impl Dashboard {
         out
     }
 
-    /// Render `blockers.md` — structured blocker list on its own.
+    /// Render the structured blocker list as a standalone surface.
     pub(crate) fn render_blockers_md(&self) -> String {
         if self.blockers.is_empty() {
             return "# Blockers\n\nNo current blocker.\n".to_string();
@@ -506,16 +477,9 @@ impl Dashboard {
         out
     }
 
-    /// Project the dashboard as a sequence of [`PromptSection`]s
-    /// suitable for prepending to an existing handoff prompt body.
-    /// The Phase-B preamble — universal across `HandoffAgent` and
-    /// `HandoffHuman` handoffs, layered on top of any per-action
-    /// context the existing decorator (5bf9c7c) appends.
-    ///
-    /// Section order mirrors `next.md`: recommended winner →
-    /// queued lower-tier groups → signals → blockers. Empty
-    /// sections are omitted — the same rule the on-disk surfaces
-    /// follow.
+    /// Project the dashboard as prompt sections suitable for
+    /// prepending to a handoff body. Section order matches the
+    /// other rendering surfaces; empty sections are omitted.
     pub(crate) fn render_handoff_preamble(&self) -> Vec<PromptSection> {
         let mut sections: Vec<PromptSection> = Vec::new();
 
@@ -535,10 +499,9 @@ impl Dashboard {
         if let Some(bucket) = by_tier.first_mut() {
             bucket.candidates.remove(0);
         }
-        // Same-tier alternatives — header paragraph then a numbered
-        // list of candidates. Two-section pairing keeps each
-        // candidate at a meaningful index ("1.", "2." …) without
-        // the header chewing position 1.
+        // Header-and-list pairing keeps the candidate ordinals
+        // meaningful: header is a separate paragraph so the list
+        // numbering starts at one.
         if let Some(top) = by_tier.first()
             && !top.candidates.is_empty()
         {
@@ -549,9 +512,8 @@ impl Dashboard {
             push_candidate_list(&mut sections, &top.candidates);
         }
 
-        // Queued lower tiers — one header paragraph + numbered list
-        // pair per tier. The tier label is the only thing that
-        // varies between buckets.
+        // One header-and-list pair per lower tier; only the tier
+        // label varies across buckets.
         for bucket in by_tier.iter().skip(1) {
             sections.push(PromptSection::Paragraph(format!(
                 "Queued ({}):",
@@ -560,8 +522,6 @@ impl Dashboard {
             push_candidate_list(&mut sections, &bucket.candidates);
         }
 
-        // Signals — header paragraph then numbered list of axis
-        // entries (axis name + icon glyph + summary).
         if !self.signals.is_empty() {
             sections.push(PromptSection::Paragraph("Signals:".to_string()));
             let items: Vec<SingleLineString> = self
@@ -581,8 +541,6 @@ impl Dashboard {
             }
         }
 
-        // Blockers — header paragraph then numbered list of `tag:
-        // action` lines, deduplicated upstream by `collect_blockers`.
         if !self.blockers.is_empty() {
             sections.push(PromptSection::Paragraph("Blockers:".to_string()));
             let items: Vec<SingleLineString> = self
@@ -599,9 +557,9 @@ impl Dashboard {
     }
 }
 
-/// Push a [`PromptSection::NumberedList`] of `<action>: <log>`
-/// lines for each candidate. No-op when the slice is empty (the
-/// caller already gated on emptiness for the section header).
+/// Append a numbered list of `<action>: <log>` lines for the given
+/// candidates. No-op on an empty slice; the caller is responsible
+/// for gating the section header.
 fn push_candidate_list(sections: &mut Vec<PromptSection>, candidates: &[&RankedCandidate]) {
     let items: Vec<SingleLineString> = candidates
         .iter()
@@ -612,10 +570,9 @@ fn push_candidate_list(sections: &mut Vec<PromptSection>, candidates: &[&RankedC
     }
 }
 
-/// Tier bucket — one urgency level with its candidates in input
-/// order (axis order, since `candidates()` does a stable sort by
-/// `urgency`). Used by [`Dashboard::render_next_md`] to walk the
-/// tier-grouped output.
+/// One urgency level paired with its candidates in stable input
+/// order. The stability of the upstream sort makes this equivalent
+/// to axis order within the bucket.
 struct TierBucket<'a> {
     urgency: Urgency,
     candidates: Vec<&'a RankedCandidate>,
@@ -635,9 +592,9 @@ fn tiers(candidates: &[RankedCandidate]) -> Vec<TierBucket<'_>> {
     out
 }
 
-/// Stable human-readable label for an [`Urgency`] tier. Lowercase,
-/// space-separated — distinct from the variant names so the rendered
-/// surface stays readable without coupling to the Rust enum casing.
+/// Stable human-readable label for an urgency tier. Decoupled from
+/// the variant identifier so the rendered surface survives Rust-side
+/// renames.
 fn urgency_label(u: Urgency) -> &'static str {
     match u {
         Urgency::Critical => "critical",
@@ -795,8 +752,8 @@ mod tests {
 
     #[test]
     fn next_md_empty_optional_sections_omitted() {
-        // Empty candidate set → "No action selected" — no signals,
-        // no blockers, no recommended block.
+        // Empty projection ⇒ single no-action paragraph; every
+        // optional section is suppressed.
         let d = Dashboard {
             candidates: Vec::new(),
             signals: Vec::new(),
@@ -844,9 +801,8 @@ mod tests {
 
     #[test]
     fn next_md_three_candidate_scenario_demo() {
-        // Prints a representative 3-candidate dashboard. Behind
-        // `--nocapture` this is the visual-verification path; the
-        // assertion is the contract.
+        // Representative projection for visual inspection under
+        // `--nocapture`. The assertion is the binding contract.
         let signals = vec![
             AxisSignal {
                 axis: AxisName::Copilot,
@@ -903,8 +859,8 @@ mod tests {
         assert!(!body.contains("**Also at this tier:**"), "{body}");
         assert!(!body.contains("**Queued"), "{body}");
         assert!(!body.contains("**Signals:**"), "{body}");
-        // Single candidate still yields a Blockers section — the
-        // winner's blocker is always surfaced for the reader.
+        // A non-empty candidate set always projects a Blockers
+        // section — even one candidate names one gate.
         assert!(body.contains("**Blockers:**"), "{body}");
         assert!(
             body.contains("- `copilot:rerequest` — RerequestCopilot"),
@@ -1006,8 +962,8 @@ mod tests {
 
     #[test]
     fn status_comment_demo_print() {
-        // Visual-verification path under --nocapture; pins the
-        // headline as the contract.
+        // Visual inspection under --nocapture; the headline
+        // assertion is the binding contract.
         let signals = vec![
             AxisSignal {
                 axis: AxisName::Copilot,
@@ -1044,9 +1000,9 @@ mod tests {
     // ── Snapshot tests for handoff preamble rendering ────────────
 
     fn preamble_text(d: &Dashboard) -> String {
-        // Render via HandoffPrompt so the preamble flows through
-        // the same Display path the binary ships at runtime — any
-        // section-formatter drift surfaces here.
+        // Render through the runtime Display path so any drift
+        // between the prompt section formatter and the dashboard's
+        // expected rendering surfaces in tests.
         let mut p = HandoffPrompt::new("HEAD");
         for s in d.render_handoff_preamble() {
             p.sections.push(s);
@@ -1111,10 +1067,8 @@ mod tests {
 
     #[test]
     fn preamble_demo_print_full_dashboard() {
-        // Visual-verification path — prints the preamble for a
-        // representative 3-candidate / 3-signal / 3-blocker state
-        // behind --nocapture. The assertion just pins the headline
-        // so the test stays meaningful in CI.
+        // Visual inspection under --nocapture; the headline
+        // assertion is the binding contract in CI.
         let signals = vec![
             AxisSignal {
                 axis: AxisName::Copilot,
@@ -1236,10 +1190,10 @@ mod tests {
 
     // ── Signal projection exhaustive enumeration ──────────────────
 
-    /// Walk every (`CopilotActivity`, `CiActivity`, `CursorActivity`)
-    /// combination that the per-axis signal projections classify, and
-    /// assert each yields the spec-table icon. Adding a variant to
-    /// any activity enum breaks compilation in the matches below.
+    /// Exhaustive cross-product over the per-axis activity enums:
+    /// every variant is classified to its expected bucket. The
+    /// matches below are structurally exhaustive — a new variant in
+    /// any axis fails to compile here.
     #[test]
     fn signal_projection_table_matches_spec() {
         use crate::ids::{CheckName, GitCommitSha, Timestamp};
@@ -1262,7 +1216,7 @@ mod tests {
             comments_suppressed: 0,
         };
 
-        // Copilot — Idle omits; every other variant emits.
+        // Idle is the single-emit-nothing case for this axis.
         assert!(copilot_signal(&CopilotActivity::Idle).is_none());
         for (h, icon) in [
             (CopilotHealth::Healthy, SignalIcon::InFlight),
@@ -1287,7 +1241,8 @@ mod tests {
             .expect("Reviewed emits a signal");
         assert_eq!(sig.icon, SignalIcon::Ok);
 
-        // CI — Idle omits; InFlight + every ResolvedState emits.
+        // Idle is the only non-emitting CI state; every Resolved
+        // and InFlight variant projects to a bucket.
         assert!(ci_signal(&CiActivity::Idle).is_none());
         let pending = PendingCheck {
             name: CheckName::parse("ci/build").unwrap(),
@@ -1310,7 +1265,7 @@ mod tests {
         .expect("Resolved MissingRequired emits");
         assert_eq!(sig.icon, SignalIcon::Warn);
 
-        // Cursor — NotApplicable omits; every other variant emits.
+        // NotApplicable is the only non-emitting Cursor state.
         assert!(cursor_signal(&CursorActivity::NotApplicable).is_none());
         let sig = cursor_signal(&CursorActivity::Skipped(SkipReason::AuthorClass))
             .expect("Skipped emits");

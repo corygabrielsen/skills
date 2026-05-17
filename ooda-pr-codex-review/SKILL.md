@@ -502,14 +502,11 @@ and `$?` remains the dispatch contract.
   section for sample values and the consequences for parsing
   the `<ActionKind>:<BlockerKey>` projection.
 - `<Automation>` — `Full` or `Wait(<duration>)`. The renderer
-  (`format_automation`) has arms for all 4 enum variants, but
-  `decide`'s automation classifier (`fn classify` in
-  `src/decide.rs:57`) routes `Agent`/`Human` to
-  `DecisionHalt::AgentNeeded` / `HumanNeeded`, which `outcome.rs`
-  collapses to `HandoffAgent` / `HandoffHuman` Outcome variants
-  before they could reach a `WouldAdvance`, so only
-  `Full`/`Wait(_)` appear here in practice (decide-side
-  invariant, not render-side).
+  has arms for all 4 `Automation` variants, but `decide` routes
+  `Agent`/`Human` to halts (`HandoffAgent` / `HandoffHuman`)
+  before they could reach a `WouldAdvance`. Only `Full`/`Wait(_)`
+  appear here in practice — invariant established at the decide
+  boundary, not the render boundary.
   `<duration>` is rendered as `<seconds>s` (under 1 minute),
   `<minutes>m` (whole minutes), or `<minutes>m<seconds>s` for
   the mixed case. Current actions only construct intervals of
@@ -575,15 +572,13 @@ Each variant carries exactly the evidence its caller needs:
   what `act` would do. No separate `pace` payload — it lives on
   the action.
 - **`BinaryError(String)`** is intentionally opaque at the
-  boundary. Internal source structure varies by mode: loop mode
-  goes through a typed `LoopError = Observe(GhError) |
-Act(ActError)` flattened by `From<LoopError>`; inspect mode
-  constructs `BinaryError` directly from the `observe` failure
-  (no `act` call), so `act:`-prefixed messages cannot occur in
-  inspect mode. Either way the string is the flattened
-  human-triage rendering. **Invariant:** the string contains no
-  newlines (any newline in the underlying error is replaced
-  with a space at construction).
+  boundary. Loop mode flattens a typed loop-error union (observe
+  failure, codex-observe failure, or act failure) into the
+  string; inspect mode can only surface observe failures (no act
+  call). **Invariant:** the string contains no newlines — any
+  newline in the underlying error is replaced with a space at
+  construction, so the stderr header always occupies exactly
+  one line.
 - **`Paused`** carries no payload. Paused means decide selected
   no candidate action — there is no action to carry. Diagnostic
   context for "why no candidate" lives in the orient log
@@ -719,19 +714,16 @@ Each iteration consists of four stages: `observe → orient →
 decide → act`. The first three always run; `act` runs only when
 `decide` selects an `Execute(action)` decision (i.e. when
 `automation ∈ {Full, Wait { .. }}`). For `Wait` actions, `act`
-performs `thread::sleep(interval)` and returns; for `Full`
-actions, `act` invokes the action's side-effect (`gh` call,
-etc.). For `Agent` / `Human` automations, `decide` returns a
-`Halt(...)` directly so `act` is not called under correct
-control flow. As a defense-in-depth guard, `act` itself
-returns `ActError::UnsupportedAutomation` for two structural
-edge cases: (a) an `Agent` or `Human` action ever reaches `act`
-(should not happen — `decide`'s automation classifier (`fn classify` in `src/decide.rs`) halts those before
-Execute); (b) a `Full` action with an `ActionKind` not wired
-into `act::run_full` (currently impossible — all 3 Full kinds
-have arms, but the trap fires if a future `Full` kind is added
-without an `act` handler). Both are programmer-error traps;
-neither fires in practice today.
+sleeps the interval and returns; for `Full` actions, `act`
+invokes the action's side-effect. For `Agent` / `Human`
+automations, `decide` returns a `Halt(...)` directly so `act`
+is not called under correct control flow. `act` additionally
+returns `ActError::UnsupportedAutomation` as a defense-in-depth
+trap for two structural edge cases: (a) an `Agent` or `Human`
+action ever reaches `act` (decide should have halted); (b) a
+`Full` action with an `ActionKind` not wired into the `Full`
+dispatcher. Both are programmer-error traps; neither fires in
+practice today.
 
 `observe` runs unconditionally each iteration; `orient` runs whenever `observe` succeeds (an `observe` failure short-circuits to `BinaryError(msg)` exit 70 before `orient`).
 `decide` then checks the PR's lifecycle state: if `Merged` or
@@ -799,9 +791,9 @@ blocked_checks }`, `FixCi { check_name }`. If any of these
   iteration-bounded, not wall-clock-bounded; callers needing a
   wall-clock deadline must impose it externally.
 - A caught external failure occurs (`BinaryError(msg)` — exit
-  6). Internal taxonomy: `Observe(GhError)` for gh subprocess /
-  network / IO during observe; `Act(ActError)` for failures
-  during action dispatch. The boundary flattens these into a
+  70). Internal taxonomy: errors during observe (gh subprocess
+  / network / IO), errors during codex observation, and errors
+  during act dispatch are flattened at the boundary into a
   single human-triage string.
 
 ### `BlockerKey`

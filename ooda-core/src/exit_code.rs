@@ -1,13 +1,12 @@
 //! Process exit codes — the wire-level contract.
 //!
-//! Single source of truth for the numeric codes the OODA binaries
-//! return to `$?`. Every typed result in the family
+//! Single source of truth for the numeric codes a binary in this
+//! family returns to `$?`. Every typed result type
 //! ([`crate::Outcome`], [`crate::Decision`], [`crate::DecisionHalt`],
-//! [`crate::HaltReason`], and per-binary aggregate types like
-//! `ooda-prs`'s `MultiOutcome`) produces an `ExitCode` rather than
-//! a raw `u8`. The numeric values live only in this enum's
-//! `#[repr(u8)]` discriminants — call sites refer to variants by
-//! name.
+//! [`crate::HaltReason`], and per-binary aggregates over them)
+//! produces an `ExitCode` rather than a raw `u8`; numeric values
+//! live only in this enum's `#[repr(u8)]` discriminants. Call sites
+//! refer to variants by name.
 //!
 //! # Numbering rationale
 //!
@@ -32,10 +31,10 @@
 //!   failure (subprocess, IO, network). What a reader fluent in
 //!   `sysexits` expects to find at this slot.
 //! - `130` / `143` — reserved for `SIGINT` / `SIGTERM` per POSIX
-//!   shell convention (`128 + N`). The binary itself never
-//!   returns these; the kernel and shell synthesize them when the
-//!   process is signal-killed. Documented here so the caller's
-//!   `$?` dispatch table is complete.
+//!   shell convention (`128 + N`). Synthesized by the shell when
+//!   the process is signal-killed; never returned by the binary
+//!   itself. Documented here so caller dispatch tables stay
+//!   complete.
 //!
 //! Codes `8–63` and `65–69` are deliberately unassigned. New
 //! variants should land in the low range only when they encode a
@@ -46,17 +45,17 @@
 use serde::{Serialize, Serializer};
 use std::fmt;
 
-/// The set of process exit codes the OODA binaries can produce.
+/// The set of process exit codes a binary in this family can
+/// produce.
 ///
-/// `#[repr(u8)]` pins each variant to its numeric value; callers
-/// convert via [`ExitCode::as_u8`] or the `From<ExitCode> for u8`
-/// / `for i32` / `for std::process::ExitCode` impls when handing
-/// the value to `std::process::exit` or returning from `main`.
+/// `#[repr(u8)]` pins each variant to its numeric value; convert
+/// via [`ExitCode::as_u8`] or the `From` impls into `u8` / `i32` /
+/// [`std::process::ExitCode`] when returning from `main`.
 ///
 /// `Serialize` emits the **numeric value** (not the variant name)
-/// so JSONL emitters can use `json!(outcome.exit_code())` and
-/// produce a number as expected. The variant name is available
-/// separately via [`ExitCode::name`].
+/// so JSON / JSONL records always carry a number in the exit-code
+/// field. The variant name is available separately via
+/// [`ExitCode::name`].
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExitCode {
@@ -101,9 +100,10 @@ impl ExitCode {
         self as u8
     }
 
-    /// Stable variant identifier — same string as the Rust
-    /// variant name. Used in iter-log lines, manifest fields, and
-    /// per-binary help text generation.
+    /// Stable variant identifier — exactly the Rust variant name
+    /// as a `&'static str`. Used wherever a token, not a number,
+    /// is the appropriate rendering (log lines, manifest fields,
+    /// help text).
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -120,13 +120,12 @@ impl ExitCode {
         }
     }
 
-    /// Every variant the binary can produce, in numeric order.
-    /// Stable for iteration in `--help` text generation, doc-table
-    /// builders, and external schema dumps. Excludes the reserved
-    /// signal codes ([`Self::RESERVED_SIGINT`],
-    /// [`Self::RESERVED_SIGTERM`]) — those are observed in `$?`
-    /// when the kernel signal-kills the process but are never
-    /// returned by this enum.
+    /// Every returnable variant in numeric order. Stable for
+    /// iteration in help-text generation, doc-table builders, and
+    /// external schema dumps. Excludes the reserved signal codes
+    /// ([`Self::RESERVED_SIGINT`], [`Self::RESERVED_SIGTERM`])
+    /// because they are synthesized by the shell, never returned
+    /// by this enum.
     pub const ALL: &'static [ExitCode] = &[
         Self::DoneSucceeded,
         Self::Paused,
@@ -141,8 +140,8 @@ impl ExitCode {
     ];
 
     /// `128 + SIGINT (2)`. Synthesized by the shell when the
-    /// process is killed by `SIGINT`. The OODA binaries do not
-    /// trap signals; the kernel + shell produce this value.
+    /// process is killed by `SIGINT`. Binaries in this family do
+    /// not trap signals; the kernel and shell produce this value.
     pub const RESERVED_SIGINT: u8 = 130;
 
     /// `128 + SIGTERM (15)`. Synthesized by the shell when the

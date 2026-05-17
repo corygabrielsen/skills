@@ -1,5 +1,6 @@
-//! Branded identifier types. Each wraps a primitive with a validating
-//! constructor so invalid IDs cannot be constructed outside this module.
+//! Branded identifier types. Each wraps a primitive with a
+//! validating constructor; an invalid value cannot exist as a
+//! typed instance.
 
 use std::fmt;
 
@@ -70,13 +71,9 @@ impl fmt::Display for GitCommitSha {
 
 // -- BlockerKey ------------------------------------------------------
 
-/// Stable iteration key for stall detection. Two consecutive
-/// iterations with the same `(ActionKind discriminant, BlockerKey)`
-/// halt the loop with `Stalled`. The key MUST NOT embed varying
-/// counts or progress markers.
-///
-/// Re-exported from [`ooda_core::BlockerKey`]; the type, validating
-/// constructor, and infallible `tag` live in the shared crate.
+/// Re-export of [`ooda_core::BlockerKey`]. The stall-comparator
+/// key and its gate-stability invariant live in the shared crate;
+/// this module just brings the type into scope for local use.
 pub(crate) use ooda_core::BlockerKey;
 
 // -- BranchName ------------------------------------------------------
@@ -177,11 +174,10 @@ impl fmt::Display for Timestamp {
 
 // -- RepoId ----------------------------------------------------------
 
-/// Stable identifier for a repository. Derived from
-/// `git config remote.origin.url` (sha256 prefix, 12 hex chars)
-/// plus the working-tree basename for human readability:
-/// `<basename>-<urlhash12>`. Two worktrees of the same remote
-/// share the same `RepoId` even if their on-disk paths differ.
+/// Stable identifier for a repository. By construction:
+/// non-empty, no `/`, no whitespace. Producers compose the value
+/// from the remote URL (or a stand-in when absent) plus a stable
+/// derived discriminator; consumers treat it as opaque.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RepoId(String);
@@ -224,20 +220,19 @@ impl fmt::Display for RepoId {
 
 // -- ReviewMode + ReviewTarget --------------------------------------
 
-/// Which slice of changes `codex review` is invoked against.
-/// Mutually exclusive with respect to one CLI invocation.
+/// Which slice of changes the review is invoked against. Mutually
+/// exclusive within one invocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ReviewMode {
-    /// `codex review --uncommitted` — working-tree changes vs HEAD.
+    /// Working-tree changes vs HEAD.
     Uncommitted,
-    /// `codex review --base <branch>` — current branch vs base.
+    /// Current branch vs a named base branch.
     Base,
-    /// `codex review --commit <sha>` — a specific commit.
+    /// A specific commit.
     Commit,
-    /// User-facing `--pr <num>` sugar. The CLI resolves the PR's
-    /// base branch with `gh pr view`; `codex review` itself is
-    /// invoked with `--base <baseRefName>`.
+    /// User-facing PR sugar. The PR's base branch is resolved
+    /// upstream; the underlying review CLI sees only the Base form.
     Pr,
 }
 
@@ -258,8 +253,9 @@ impl fmt::Display for ReviewMode {
     }
 }
 
-/// The target value paired with a `ReviewMode`. `Uncommitted`
-/// carries no target; the others carry a domain-typed value.
+/// The mode tag fused with its associated value. Each variant
+/// carries the validation-strong typed value its mode requires
+/// (or no value for the working-tree case).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub(crate) enum ReviewTarget {
     Uncommitted,
@@ -278,8 +274,8 @@ impl ReviewTarget {
         }
     }
 
-    /// Path-safe key for recorder layout. `<mode>/<value>` or just
-    /// `<mode>` for Uncommitted.
+    /// Path-safe key for recorder layout. `<mode>/<value>` or
+    /// bare `<mode>` for value-less variants.
     pub(crate) fn path_key(&self) -> String {
         match self {
             Self::Uncommitted => "uncommitted".to_string(),

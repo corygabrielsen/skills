@@ -1,16 +1,13 @@
-//! Positive-duration newtype for polling waits.
+//! Strictly-positive duration newtype for polling waits.
 //!
-//! The runner's `ActionEffect::Wait { interval, .. }` puts the loop to
-//! sleep for `interval` between observe passes. The interval is
-//! intended to be a real wait (seconds to minutes for CI / bot
-//! polling). [`PollingInterval`] makes that intent structural:
-//! `Duration::ZERO` is unrepresentable, so a Wait action cannot
-//! accidentally degenerate into a busy-loop. Constructors fail
-//! fast on zero.
+//! A wait-style effect sleeps for `interval` between observe
+//! passes. [`PollingInterval`] enforces strict positivity at
+//! construction so a wait-effect cannot degenerate into a
+//! busy-loop: `Duration::ZERO` is unrepresentable.
 //!
-//! No upper bound is enforced — interval policy (cap, jitter,
-//! backoff) belongs to caller-chosen values, not the type. The
-//! lower bound is the only structural guarantee.
+//! Only the lower bound is structural; upper-bound policy (cap,
+//! jitter, backoff) is the caller's choice and lives in the
+//! values passed to the constructors, not the type.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -18,12 +15,9 @@ use std::time::Duration;
 
 /// `Duration` guaranteed to be strictly positive (`> 0`).
 ///
-/// `Copy` matches `Duration`'s shape: the inner value is a 96-bit
-/// pair (`u64` seconds + `u32` nanos) and copying is free.
-///
-/// Serializes transparently as the underlying `Duration` so
-/// recorder state and JSONL records carrying interval fields are
-/// byte-identical to the pre-newtype form.
+/// `Copy` mirrors `Duration`'s own `Copy`. Serialization is
+/// transparent — byte-identical to the inner `Duration` — so
+/// on-the-wire records carrying interval fields are unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PollingInterval(Duration);
 
@@ -53,9 +47,7 @@ impl PollingInterval {
         }
     }
 
-    /// Construct from whole seconds. `secs` must be non-zero;
-    /// panics otherwise. Matches the existing call sites that all
-    /// use `Duration::from_secs(N)` with N ≥ 1.
+    /// Construct from whole seconds. Strictly positive only.
     ///
     /// # Panics
     ///
@@ -81,9 +73,8 @@ impl PollingInterval {
         Self(Duration::from_millis(millis))
     }
 
-    /// Borrow the underlying `Duration`. Use this when handing
-    /// the value to a `std::thread::sleep` or other API expecting
-    /// `Duration`.
+    /// Project to the underlying `Duration` for APIs that take one
+    /// (sleep, timeouts, etc.).
     #[must_use]
     pub const fn as_duration(self) -> Duration {
         self.0
@@ -103,10 +94,10 @@ impl Serialize for PollingInterval {
 }
 
 impl<'de> Deserialize<'de> for PollingInterval {
-    /// Mirrors [`Serialize`]: deserializes a `Duration` and
-    /// validates strict positivity. Zero — which `Duration` does
-    /// allow — fails with a serde error rather than silently
-    /// reconstructing a degenerate value.
+    /// Mirrors [`Serialize`]: deserializes a `Duration`, then
+    /// re-establishes strict positivity at the boundary. Zero —
+    /// which `Duration` accepts — fails with a serde error rather
+    /// than silently reconstructing a degenerate value.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let dur = Duration::deserialize(d)?;
         Self::try_from_duration(dur).map_err(serde::de::Error::custom)

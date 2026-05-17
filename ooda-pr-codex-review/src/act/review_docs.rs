@@ -1,8 +1,7 @@
-//! Compose the `ReviewDocs` handoff prompt.
+//! Handoff-prompt composition for the doc-review candidate.
 //!
-//! `ReviewDocs` is `ActionEffect::Agent` — `act()` never executes it;
-//! the runner converts it to `Outcome::HandoffAgent` and exits. This
-//! module only builds the prompt body the recipient agent reads.
+//! This candidate's effect is agent-handoff; no driver-side action
+//! runs. The module produces the prompt body the agent receives.
 
 use std::path::Path;
 
@@ -11,11 +10,12 @@ use ooda_core::HandoffPrompt;
 use crate::ids::PullRequestNumber;
 use crate::orient::doc_review::DocReview;
 
-/// Build the `ReviewDocs` handoff prompt body.
+/// Build the doc-review handoff prompt body.
 ///
-/// `state` selects the "why" preamble; `attest_path` is recovered to
-/// the state-root for the literal CLI invocation. `attest_path` is
-/// `Option` because the binary may run without `--state-root`.
+/// `state` selects the why-preamble. `attest_path` is `Option`
+/// because the binary may run without a configured state root;
+/// when present the prompt surfaces a literal CLI invocation,
+/// when absent the prompt asks the agent to supply the path.
 #[must_use]
 pub(crate) fn build_review_docs_prompt(
     pr: PullRequestNumber,

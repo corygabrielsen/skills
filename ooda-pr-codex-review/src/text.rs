@@ -1,13 +1,13 @@
-//! Prose helpers — count-noun pluralization for user-facing strings.
+//! Count-noun pluralization for user-facing strings.
 //!
-//! Regular plural only (append `s`). Irregular plurals are out of
-//! scope; add them when a real consumer needs one.
+//! Domain: English-regular pluralization only. Singular iff `n == 1`;
+//! every other count (including zero) takes the plural form.
+//! Irregular plurals are out of scope — the caller is responsible
+//! for choosing a regular noun phrase.
 
-/// Format a count + noun phrase with English-regular pluralization.
+/// Format `<n> <noun>` with English-regular pluralization.
 ///
-/// `count(1, "thread")` → `"1 thread"`
-/// `count(0, "thread")` → `"0 threads"`
-/// `count(5, "low-confidence finding")` → `"5 low-confidence findings"`
+/// Invariant: the returned string is singular iff `n == 1`.
 pub(crate) fn count(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("{n} {noun}")

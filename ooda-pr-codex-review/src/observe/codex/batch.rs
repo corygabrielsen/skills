@@ -1,34 +1,38 @@
-//! Per-level batch scanning: read the run directory, count log
-//! files, extract completed verdicts, build [`BatchState`].
+//! Scan a single batch directory and reduce it to a [`BatchState`].
 //!
-//! Filesystem layout:
+//! # Batch layout
 //!
-//! ```text
-//! <batch_dir>/
-//!   head_sha.txt              (the PR head SHA the batch was spawned against)
-//!   {level}-1.log             stdout/stderr of the codex review subprocess
-//!   {level}-1.exit            exit status written when the subprocess finished
-//!   {level}-2.log
-//!   {level}-2.exit
-//!   ...
-//!   {level}-n.log
-//!   {level}-n.exit
-//! ```
+//! A *batch* is a directory containing:
+//! - an *identity stamp* file recording the target identity the
+//!   batch was spawned against,
+//! - per-slot *log* files holding reviewer output, named
+//!   `{level}-{slot}.log`,
+//! - optional per-slot *exit* files holding subprocess exit codes,
+//!   named `{level}-{slot}.exit`.
 //!
-//! A log file is "completed" once it contains a `codex` marker line
-//! AND a non-empty body after the marker. The marker-only state
-//! (body still streaming) counts as Running — operationally the body
-//! lands within seconds of the marker, but observing mid-stream once
-//! burned us with empty-verdict false-cleans.
+//! # Invariants
 //!
-//! Head-SHA gating: each batch directory is stamped with the PR
-//! head SHA at spawn time (`head_sha.txt`). When the PR head
-//! changes (e.g. a fix is pushed) the per-head batch directory
-//! naming already prevents collisions, but a stale `batch_dir`
-//! lingering from a prior head would otherwise look complete and
-//! short-circuit the re-run. Treating a missing or mismatched
-//! `head_sha.txt` as `NotStarted` forces a fresh spawn at the
-//! current head.
+//! - **Slot completion ⇔ marker + non-empty body**: a log is
+//!   *completed* when its verdict marker is present AND the body
+//!   following it is non-empty. Marker-without-body is a streaming
+//!   intermediate, not a clean verdict — collapsing them would
+//!   admit empty-body false-cleans.
+//! - **Identity gate**: a batch directory whose stamp is missing
+//!   or whose recorded identity does not match the supplied one is
+//!   reported as not-started, forcing re-spawn. This is the entire
+//!   mechanism by which a target-identity change invalidates prior
+//!   reviewer batches.
+//! - **Exit-without-log is a binary error**: an exit file with no
+//!   matching log indicates the spawn protocol was violated; the
+//!   scan cannot classify the batch and fails loudly rather than
+//!   silently dropping the slot.
+//! - **Zero-exit-without-verdict is a binary error**: a slot that
+//!   exited successfully but produced no verdict marker or an empty
+//!   body fails the scan — a clean exit must produce a verdict.
+//! - **`completed == expected` is required for `Complete`**: extra
+//!   completed slots (stragglers from a prior batch) keep the
+//!   batch in `Running` so decide does not commit to a mis-sized
+//!   verdict set.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -41,60 +45,50 @@ use crate::ids::CodexReasoningLevel;
 
 use super::verdict::{self, VerdictClass};
 
-/// Per-level batch state. The three discrete states a batch can be
-/// in from the observe layer's perspective.
+/// Discrete state of a batch from the observe layer's perspective.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BatchState {
-    /// No log files for this level yet — `RunCodexReviewBatch` has
-    /// not been dispatched (or its spawn failed before any process
-    /// created its log), OR a prior batch's `head_sha.txt` does not
-    /// match the current PR head (treated as never-started so the
-    /// runner re-spawns at the current head).
+    /// No batch is in progress for the current target identity.
+    /// Either no slots have been spawned, or the on-disk batch was
+    /// stamped against a different identity and is being ignored.
     NotStarted,
-    /// Some logs are still streaming. `total` files exist on disk;
-    /// `completed` of them have a verdict body extracted.
-    /// `pending = total - completed`. Decide reads `completed` vs
-    /// `expected` to choose `AwaitCodexReviewBatch` vs
-    /// `AddressCodexReviewBatch`.
+    /// `total` slots have logs on disk; `completed ≤ total` of
+    /// them have a non-empty verdict body. The remainder are
+    /// streaming.
     Running { total: u32, completed: u32 },
-    /// All `expected` log files have completed verdicts. The
-    /// per-slot bodies and classifications are attached for the
-    /// orient/decide layers.
+    /// `expected` slots have produced verdict bodies. Per-slot
+    /// records are attached.
     Complete { verdicts: Vec<VerdictRecord> },
 }
 
-/// One reviewer's verdict within a batch.
+/// A single reviewer's verdict within a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct VerdictRecord {
-    /// 1-indexed slot within the batch (matches the `{n}` in
-    /// `{level}-{n}.log`).
+    /// 1-indexed slot identifier within the batch.
     pub slot: u32,
-    /// Raw verdict body — everything after the last `codex` marker
-    /// line in the log.
+    /// Verdict body — the log suffix after the last verdict marker.
     pub body: String,
-    /// Heuristic classification.
+    /// Classification of the body.
     pub class: VerdictClass,
 }
 
-/// Scan `batch_dir` for `{level}-*.log` files and produce a
-/// [`BatchState`]. `expected` is the configured `n` — the number
-/// of reviews launched for this batch.
+/// Reduce a batch directory to a [`BatchState`] against the
+/// supplied target identity.
 ///
-/// Stale batches (missing or mismatched `head_sha.txt`) are
-/// reported as [`BatchState::NotStarted`] so the runner re-spawns
-/// at the current head. This is the entire mechanism that lets a
-/// pushed fix invalidate prior codex verdicts.
+/// **Reduction**:
+/// - Identity-stamp mismatch or absence → `NotStarted`.
+/// - Empty directory → `NotStarted`.
+/// - `completed < expected` → `Running { total, completed }`.
+/// - `completed == expected` → `Complete { verdicts }`.
 ///
-/// Three-way logic once `head_sha` matches:
-///   - 0 files                 → `NotStarted`
-///   - completed < expected    → `Running { total, completed }`
-///   - completed == expected   → `Complete { verdicts }`
+/// **Errors**: protocol violations (exit without log, zero-exit
+/// without verdict, non-zero exit) surface as `io::Error::other`
+/// rather than silently degrading the classification.
 ///
-/// `expected` is required because filesystem absence cannot
-/// distinguish "review hasn't started" from "review crashed before
-/// its first log write". The orient/decide layer owns that
-/// interpretation; observe surfaces what's on disk.
+/// `expected` is supplied externally because filesystem absence
+/// cannot distinguish "not yet spawned" from "spawned and crashed
+/// pre-write"; the calling layer owns that interpretation.
 pub(crate) fn scan_batch(
     batch_dir: &Path,
     level: CodexReasoningLevel,
@@ -108,9 +102,7 @@ pub(crate) fn scan_batch(
         Err(e) => return Err(e),
     };
 
-    // Head SHA gate: a batch_dir without `head_sha.txt` or with a
-    // mismatch is treated as if the batch never started so the
-    // runner re-spawns at the current head.
+    // Identity gate — see module invariant.
     match fs::read_to_string(batch_dir.join("head_sha.txt")) {
         Ok(stored) => {
             if stored.trim() != expected_head_sha {
@@ -193,7 +185,7 @@ pub(crate) fn scan_batch(
         }
     }
 
-    // Batch fan-out is bounded (per-iteration N reviewers); u32 fits.
+    // Batch fan-out is bounded; widths fit in u32.
     let total = u32::try_from(log_paths.len()).expect("batch log count fits in u32");
     let completed = u32::try_from(verdicts.len()).expect("batch verdict count fits in u32");
     if completed == expected {
@@ -296,7 +288,7 @@ mod tests {
     fn marker_only_counts_as_running() {
         let dir = temp_batch_dir("marker-only");
         write_head(&dir, SHA);
-        // Marker present but body empty → still streaming.
+        // Marker without body must classify as streaming, not clean.
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
@@ -424,9 +416,8 @@ mod tests {
 
     #[test]
     fn extra_completed_logs_are_still_running_until_expected_match() {
-        // 4 done but expected=3 — could happen if a stray log lingers
-        // from a prior batch. Treat as Running so decide doesn't commit
-        // to a mis-sized verdict set.
+        // completed > expected must NOT classify Complete — see
+        // module invariant on exact-match completion.
         let dir = temp_batch_dir("oversize");
         write_head(&dir, SHA);
         for n in 1..=4 {

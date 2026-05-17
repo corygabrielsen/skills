@@ -1,12 +1,20 @@
 //! File-based attestation schema and IO.
 //!
-//! `PullRequestMetadataAttestation` records a claim that PR metadata is correct
-//! for a specific commit SHA. Write is atomic: temp file plus
-//! rename. Read is total: missing file yields `Ok(None)`; malformed
-//! or wrong-version content yields a typed error.
+//! An attestation is a signed claim that a particular axis of work
+//! is correct at a specific commit SHA. Each axis has its own
+//! attestation type and on-disk file; readers and writers across
+//! producer (attest CLI) and consumer (OODA decide layer) share
+//! this module as the single schema definition.
 //!
-//! Single source of truth for both the `ooda-attest` CLI and the
-//! PR-side OODA binaries.
+//! # Invariants
+//!
+//! - **Atomic write**: a partial write is never observed by readers
+//!   (via [`crate::atomic_io::write_atomic`]).
+//! - **Total read**: a missing file is `Ok(None)`; malformed content
+//!   and wrong-schema content yield typed errors distinguishable
+//!   from genuine IO failure.
+//! - **SHA discipline**: 40 lowercase hex characters at both write
+//!   and read; any other shape is rejected at the type boundary.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -99,17 +107,17 @@ fn is_valid_sha(s: &str) -> bool {
 }
 
 /// Atomically write an attestation for `attested_sha` to `path`.
-///
-/// Generates `attested_at` via `Utc::now()`. Creates the parent
-/// directory if missing. Writes to `<path>.tmp` then renames over
-/// `path`; the destination is never observed in a partial state.
+/// Stamps `attested_at` from the system clock; creates parent
+/// directories on demand; preserves atomicity per
+/// [`crate::atomic_io`].
 ///
 /// # Errors
 ///
-/// Returns [`AttestError::BadShaFormat`] if `attested_sha` is not
-/// 40 lowercase hex characters. Returns [`AttestError::Io`] on
-/// filesystem failure. Returns [`AttestError::Parse`] if
-/// serialization fails (does not occur for the well-known shape).
+/// - [`AttestError::BadShaFormat`] — `attested_sha` violates the
+///   40-lowercase-hex discipline.
+/// - [`AttestError::Io`] — filesystem failure.
+/// - [`AttestError::Parse`] — serialization failure (unreachable
+///   for the well-known shape).
 pub fn write_pull_request_metadata_atomic(
     path: &Path,
     attested_sha: String,
@@ -127,18 +135,17 @@ pub fn write_pull_request_metadata_atomic(
     Ok(attestation)
 }
 
-/// Read the attestation at `path`.
-///
-/// Returns `Ok(None)` when the file does not exist. Returns
-/// `Err(AttestError::SchemaVersion { .. })` when the file parses but
-/// carries a different schema version. Returns
-/// `Err(AttestError::BadShaFormat(_))` when the parsed SHA is not
-/// 40 lowercase hex characters.
+/// Read the attestation at `path`. Total over the absence case
+/// (missing file ⇒ `Ok(None)`).
 ///
 /// # Errors
 ///
-/// See variants above; [`AttestError::Io`] for non-`NotFound`
-/// filesystem errors, [`AttestError::Parse`] for malformed JSON.
+/// - [`AttestError::Io`] — non-`NotFound` filesystem failure.
+/// - [`AttestError::Parse`] — malformed JSON.
+/// - [`AttestError::SchemaVersion`] — parsed cleanly under a
+///   different schema version.
+/// - [`AttestError::BadShaFormat`] — parsed value violates the
+///   40-lowercase-hex discipline.
 pub fn read_pull_request_metadata(
     path: &Path,
 ) -> Result<Option<PullRequestMetadataAttestation>, AttestError> {
@@ -160,16 +167,13 @@ pub fn read_pull_request_metadata(
     Ok(Some(attestation))
 }
 
-/// Atomically write a doc-review attestation for `attested_sha` to
-/// `path`. Mirrors [`write_pull_request_metadata_atomic`] — same atomic
-/// rename, same SHA validation, same parent-dir auto-create.
+/// Atomically write a doc-review attestation. Mirrors
+/// [`write_pull_request_metadata_atomic`] — same invariants, same
+/// error taxonomy.
 ///
 /// # Errors
 ///
-/// Returns [`AttestError::BadShaFormat`] if `attested_sha` is not
-/// 40 lowercase hex characters. Returns [`AttestError::Io`] on
-/// filesystem failure. Returns [`AttestError::Parse`] if
-/// serialization fails (does not occur for the well-known shape).
+/// See [`write_pull_request_metadata_atomic`].
 pub fn write_doc_review_atomic(
     path: &Path,
     attested_sha: String,
@@ -188,13 +192,11 @@ pub fn write_doc_review_atomic(
 }
 
 /// Read the doc-review attestation at `path`. Mirrors
-/// [`read_pull_request_metadata`] — same `Ok(None)` for absent file,
-/// same typed errors for malformed, version mismatch, bad SHA.
+/// [`read_pull_request_metadata`].
 ///
 /// # Errors
 ///
-/// See variants above; [`AttestError::Io`] for non-`NotFound`
-/// filesystem errors, [`AttestError::Parse`] for malformed JSON.
+/// See [`read_pull_request_metadata`].
 pub fn read_doc_review(path: &Path) -> Result<Option<DocReviewAttestation>, AttestError> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
@@ -214,16 +216,12 @@ pub fn read_doc_review(path: &Path) -> Result<Option<DocReviewAttestation>, Atte
     Ok(Some(attestation))
 }
 
-/// Atomically write a Claude-review attestation for `attested_sha` to
-/// `path`. Mirrors [`write_doc_review_atomic`] — same atomic rename,
-/// same SHA validation, same parent-dir auto-create.
+/// Atomically write a Claude-review attestation. Mirrors
+/// [`write_pull_request_metadata_atomic`].
 ///
 /// # Errors
 ///
-/// Returns [`AttestError::BadShaFormat`] if `attested_sha` is not
-/// 40 lowercase hex characters. Returns [`AttestError::Io`] on
-/// filesystem failure. Returns [`AttestError::Parse`] if
-/// serialization fails (does not occur for the well-known shape).
+/// See [`write_pull_request_metadata_atomic`].
 pub fn write_claude_review_atomic(
     path: &Path,
     attested_sha: String,
@@ -242,13 +240,11 @@ pub fn write_claude_review_atomic(
 }
 
 /// Read the Claude-review attestation at `path`. Mirrors
-/// [`read_doc_review`] — same `Ok(None)` for absent file, same typed
-/// errors for malformed, version mismatch, bad SHA.
+/// [`read_pull_request_metadata`].
 ///
 /// # Errors
 ///
-/// See variants above; [`AttestError::Io`] for non-`NotFound`
-/// filesystem errors, [`AttestError::Parse`] for malformed JSON.
+/// See [`read_pull_request_metadata`].
 pub fn read_claude_review(path: &Path) -> Result<Option<ClaudeReviewAttestation>, AttestError> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
@@ -268,16 +264,12 @@ pub fn read_claude_review(path: &Path) -> Result<Option<ClaudeReviewAttestation>
     Ok(Some(attestation))
 }
 
-/// Atomically write a closeout attestation for `attested_sha` to
-/// `path`. Mirrors [`write_claude_review_atomic`] — same atomic rename,
-/// same SHA validation, same parent-dir auto-create.
+/// Atomically write a closeout attestation. Mirrors
+/// [`write_pull_request_metadata_atomic`].
 ///
 /// # Errors
 ///
-/// Returns [`AttestError::BadShaFormat`] if `attested_sha` is not
-/// 40 lowercase hex characters. Returns [`AttestError::Io`] on
-/// filesystem failure. Returns [`AttestError::Parse`] if
-/// serialization fails (does not occur for the well-known shape).
+/// See [`write_pull_request_metadata_atomic`].
 pub fn write_closeout_atomic(
     path: &Path,
     attested_sha: String,
@@ -296,13 +288,11 @@ pub fn write_closeout_atomic(
 }
 
 /// Read the closeout attestation at `path`. Mirrors
-/// [`read_claude_review`] — same `Ok(None)` for absent file, same typed
-/// errors for malformed, version mismatch, bad SHA.
+/// [`read_pull_request_metadata`].
 ///
 /// # Errors
 ///
-/// See variants above; [`AttestError::Io`] for non-`NotFound`
-/// filesystem errors, [`AttestError::Parse`] for malformed JSON.
+/// See [`read_pull_request_metadata`].
 pub fn read_closeout(path: &Path) -> Result<Option<CloseoutAttestation>, AttestError> {
     let bytes = match fs::read(path) {
         Ok(b) => b,

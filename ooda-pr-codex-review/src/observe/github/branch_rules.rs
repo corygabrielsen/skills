@@ -1,10 +1,9 @@
-//! Typed view of `GET /repos/{o}/{r}/rules/branches/{branch}`.
+//! Rule-source projection for branch-level rules.
 //!
-//! Returns all active rules (across all rulesets) that target the
-//! given branch. Each entry carries both the rule body (type +
-//! parameters) and the ruleset metadata identifying which ruleset
-//! produced it. Rule parameters are polymorphic — see
-//! [`crate::observe::github::rulesets`] for typed parameter structs.
+//! Yields every active rule targeting the given branch, across all
+//! configured rule sources. Rule parameters are polymorphic — each
+//! row carries the parameter payload as opaque JSON; typed
+//! parameter projections deserialize on demand.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,18 +11,10 @@ use crate::ids::RepoSlug;
 
 use super::gh::{GhError, encode_path_segment, gh_json_paginate};
 
-/// Fetch all active rules (across all rulesets) that target a
-/// specific branch via `GET /repos/{o}/{r}/rules/branches/{branch}`.
-/// `branch` is URL-encoded — branches like `release/1.2` would
-/// otherwise be treated as multiple path segments.
-///
-/// Uses `--paginate` with `per_page=100`. The endpoint returns at
-/// most 30 rules per page by default; on branches with many active
-/// rulesets, later pages would be silently dropped without
-/// pagination, causing required-status-checks rules to disappear
-/// from the decision model and a still-blocked PR to look clean.
-/// Class invariant: every list endpoint that may exceed one page
-/// uses `gh_json_paginate`.
+/// Fetch every active rule targeting `branch`. Branch name is path-
+/// segment-encoded; pagination is fetcher-side because dropping
+/// later pages silently removes required-check rules from the
+/// decision model and would make a still-blocked PR look clean.
 pub(crate) fn fetch_branch_rules(
     slug: &RepoSlug,
     branch: &str,

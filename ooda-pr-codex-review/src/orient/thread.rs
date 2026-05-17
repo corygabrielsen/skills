@@ -1,12 +1,20 @@
-//! Typed domain model for review threads.
+//! Domain model for review threads.
 //!
-//! Distinct from the wire-level [`crate::observe::github::review_threads::ReviewThread`]:
-//! the wire model mirrors GraphQL field names; the domain model
-//! carries a parsed author, a partitioned `state` enum, and a typed
-//! location. Decide consumes the domain model so it can fire
-//! `AddressThreads { threads: Vec<ReviewThread> }` with the literal
-//! threads (witness, not cardinality) — the actor receives prompt
-//! material directly, no second `gh` round-trip.
+//! # Invariants
+//!
+//! - **Wire vs domain separation**: the wire shape mirrors the host
+//!   API; this domain shape carries a parsed author, a partitioned
+//!   lifecycle state, and a typed location. Renaming a wire field
+//!   never propagates into decide.
+//! - **Originator-defines-authorship**: thread authorship is fixed
+//!   by the first comment. Replies — bot or human — do not reassign
+//!   it. Same rule as the bot-thread accountant.
+//! - **Lifecycle partition is exhaustive**: every wire pair of
+//!   `(resolved, outdated)` maps to exactly one lifecycle variant.
+//!   Resolution dominates outdation when both flags are set.
+//! - **Witness, not cardinality**: decide consumes the literal
+//!   threads so prompts carry the source text directly, with no
+//!   secondary round-trip to the host needed to render them.
 
 use crate::ids::{GitHubLogin, Timestamp};
 use crate::observe::github::review_threads::ReviewThread as WireThread;
@@ -14,8 +22,9 @@ use crate::orient::copilot::is_copilot;
 use crate::orient::cursor::is_cursor;
 use serde::Serialize;
 
-/// GraphQL global node id for a review thread. Opaque string used
-/// for paginating comments and (eventually) for stable stall keys.
+/// Opaque host node id for a review thread. Used for paginating
+/// further comments and as a stable key for cross-iteration
+/// identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct ThreadId(String);
 
@@ -34,8 +43,8 @@ impl std::fmt::Display for ThreadId {
     }
 }
 
-/// Repo-relative file path. Forward slashes, no leading slash —
-/// the canonical form GitHub returns and `git ls-files` produces.
+/// Repo-relative file path in canonical form: forward slashes, no
+/// leading slash. Same shape every source (host, VCS index) yields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FilePath(String);
 
@@ -54,8 +63,8 @@ impl std::fmt::Display for FilePath {
     }
 }
 
-/// Where a thread is anchored at HEAD. `line` is `None` for
-/// outdated threads (anchor line shifted away by rebase/amend).
+/// Anchor of a thread on HEAD. Line is absent when the anchor has
+/// moved off a live line (outdated lifecycle state).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ThreadLocation {
     pub path: FilePath,
@@ -71,9 +80,9 @@ impl std::fmt::Display for ThreadLocation {
     }
 }
 
-/// Recognized review bots. `Other` carries the raw login for any
-/// bot we don't have a typed variant for — preserves authorship
-/// without forcing a code change for every new bot vendor.
+/// Reviewer-bot identity. Typed variants for first-class bots; an
+/// `Other` arm carries the raw login for any other bot — preserves
+/// authorship without coupling the type to vendor enumeration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum BotName {
     Copilot,
@@ -91,8 +100,8 @@ impl std::fmt::Display for BotName {
     }
 }
 
-/// Author of a review thread, by the *first* (originating) comment.
-/// Replies do not change authorship for routing/grouping purposes.
+/// Thread authorship — bot or human — fixed by the originating
+/// comment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub enum ThreadAuthor {
     Bot(BotName),
@@ -108,41 +117,39 @@ impl std::fmt::Display for ThreadAuthor {
     }
 }
 
-/// Lifecycle state of a thread, partitioning the `(is_resolved, is_outdated)`
-/// space — exactly one variant matches any wire-level pair.
+/// Lifecycle state of a thread. Total partition over the wire pair
+/// `(resolved, outdated)`; resolution dominates outdation when both
+/// bits are set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ThreadState {
-    /// `!is_resolved && !is_outdated` — actor can address.
+    /// Open and anchored to a live line; actionable.
     Live,
-    /// `!is_resolved && is_outdated` — anchor moved; not actionable.
+    /// Open but anchor moved off a live line; not actionable.
     Outdated,
-    /// `is_resolved` — closed by reviewer or actor.
+    /// Closed by reviewer or actor.
     Resolved,
 }
 
-/// Domain-level review thread carrying everything decide and the
-/// description renderer need: identity, author, location, body, and
-/// lifecycle state.
+/// Domain review thread. Carries everything decide and rendering
+/// need: identity, author, location, originating body, lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewThread {
     pub id: ThreadId,
     pub author: ThreadAuthor,
     pub location: ThreadLocation,
-    /// Body of the originating (first) comment — the issue
-    /// description as authored.
+    /// Body of the originating comment — the issue as authored.
     pub body: String,
     pub state: ThreadState,
     pub created_at: Timestamp,
 }
 
 impl ReviewThread {
-    /// Project a wire-level thread into the domain model.
+    /// Project the wire shape into the domain model.
     ///
-    /// Returns `None` for threads with no first comment or no
-    /// author on the first comment — both are pathological wire
-    /// states (orphan thread, deleted account on the originator).
-    /// Decide cannot meaningfully attribute or describe such threads,
-    /// so they are dropped at the boundary.
+    /// Returns `None` for threads with no originating comment or no
+    /// originating author — both are pathological wire states (orphan
+    /// thread, deleted account). Such threads cannot be attributed or
+    /// described and are dropped at the boundary.
     pub fn from_wire(wire: &WireThread) -> Option<Self> {
         let first = wire.comments.nodes.first()?;
         let author_login = first.author.as_ref()?.login.clone();
@@ -166,9 +173,9 @@ impl ReviewThread {
     }
 }
 
-/// Map a login to a typed author. Recognized bots get their named
-/// variants; unrecognized bot logins (suffix `[bot]`) become
-/// `Bot(Other(login))`; everything else is a human.
+/// Classify a login into a typed author. First-class bot identities
+/// route to their named variants; any other bot-suffixed login routes
+/// to the open bot arm; non-bot logins are human.
 fn classify_author(login: &GitHubLogin) -> ThreadAuthor {
     let s = login.as_str();
     if is_copilot(s) {

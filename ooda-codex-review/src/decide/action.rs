@@ -2,22 +2,23 @@
 //! for the codex-review domain.
 //!
 //! [`Action`], [`ActionEffect`], [`TargetEffect`], [`Urgency`] are
-//! re-exported from [`ooda_core`] — the cross-binary spine. This
-//! module owns the per-binary [`ActionKind`] enum (the codex-review
-//! domain's action variants), its [`ActionKindName`] impl, and the
-//! [`CodexReasoningLevel`] ladder type referenced by several action
-//! payloads.
+//! re-exports from [`ooda_core`] — the cross-binary spine. This
+//! module owns the per-binary [`ActionKind`] enum, its
+//! [`ActionKindName`] impl, and the [`CodexReasoningLevel`] ladder
+//! type used in several action payloads.
 //!
-//! Domain notes:
-//!   - `RunReviews` / `AwaitReviews` / `ParseVerdicts` — the
-//!     observe-side procedural pipeline.
-//!   - `AddressBatch` / `Retrospective` — Agent halts; outer
-//!     orchestrator dispatches a Claude Task.
-//!   - `AdvanceLevel` / `DropLevel` / `RestartFromFloor` — pure
-//!     state transitions on the reasoning ladder.
-//!   - `RunTests` — Full procedural test invocation.
-//!   - `RequestCriteriaRefinement` — reserved human halt for any
-//!     future review-criteria flow.
+//! Domain partition:
+//!
+//! - **In-batch pipeline** — `RunReviews` / `AwaitReviews` /
+//!   `ParseVerdicts` drive the observe-side state machine.
+//! - **Agent handoffs** — `AddressBatch` / `Retrospective` /
+//!   `TestsFailedTriage` exit the loop with a prompt for an
+//!   external dispatcher.
+//! - **Ladder transitions** — `AdvanceLevel` / `DropLevel` /
+//!   `RestartFromFloor` mutate position on the reasoning ladder.
+//! - **Test invocation** — `RunTests`.
+//! - **Reserved** — `RequestCriteriaRefinement` is not yet
+//!   emitted; declared so consumers can match exhaustively today.
 
 pub(crate) use ooda_core::{ActionEffect, ActionKindName, TargetEffect, Urgency};
 use serde::Serialize;
@@ -78,7 +79,8 @@ impl std::fmt::Display for CodexReasoningLevel {
     }
 }
 
-// 4-variant enum; same level → same string. Gate-stable.
+// Closed enum whose `Display` returns a per-variant `&'static str`
+// — gate-stable by construction; eligible for `GateIdentity`.
 impl ooda_core::GateIdentity for CodexReasoningLevel {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -150,11 +152,9 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// The variant name only — the leading `Identifier` of the
-    /// `Debug` form, with any payload (`{ ... }` or `(...)`)
-    /// stripped. Used for the `<ActionKind>` placeholder in the
-    /// SKILL.md stderr contract: caller-stable identity, no
-    /// payload noise.
+    /// Payload-free variant identifier. Stable token, no payload
+    /// noise; used wherever caller-stable identity must appear
+    /// without exposing internals.
     pub fn name(&self) -> &'static str {
         ActionKindName::name(self)
     }

@@ -1,18 +1,20 @@
-//! act — execute Full and Wait actions.
+//! Dispatch in-loop (Full / Wait) actions.
 //!
-//! Phase 5b wires the `RunReviews` arm: spawn `n` parallel
-//! `codex review` subprocesses with stdout/stderr redirected to
-//! `<batch_dir>/<level>-<slot>.log` and exit status written to
-//! `<batch_dir>/<level>-<slot>.exit`. Other Full kinds
-//! (AdvanceLevel/DropLevel/RestartFromFloor/RunTests) return
-//! `NotImplemented` until Phase 6b/8 wires the recorder. Wait
-//! sleeps the configured interval. Agent/Human never reach act
-//! under correct decide flow.
+//! Behaviour by effect:
 //!
-//! `ActContext` supplies the per-invocation environment that
-//! actions need (where to write logs, which target to review,
-//! where to cd before spawn). The runner threads one through
-//! per invocation.
+//! - **Wait** — sleep the configured interval.
+//! - **Full** — dispatch the per-kind handler.
+//! - **Agent / Human** — unreachable; decide must halt these
+//!   instead of routing them through act.
+//!
+//! Spawning a review batch fans out `n` subprocesses, redirects
+//! each one's stdout/stderr to a per-slot log file, and records
+//! its exit status to a sibling `.exit` file. Other Full handlers
+//! return `NotImplemented` until they are wired up.
+//!
+//! [`ActContext`] supplies the per-invocation environment
+//! (log directory, target, working directory, subprocess binary
+//! path). The runner threads one through per invocation.
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -26,45 +28,44 @@ use crate::ids::ReviewTarget;
 /// iterations of a single `run_loop` call.
 #[derive(Debug, Clone)]
 pub(crate) struct ActContext {
-    /// Directory where per-slot log files (`<level>-<slot>.log`)
-    /// are written.
+    /// Directory where per-slot log and exit-status files are
+    /// written.
     pub batch_dir: PathBuf,
-    /// What slice of changes `codex review` is invoked against.
+    /// What slice of changes the review is invoked against.
     pub target: ReviewTarget,
-    /// Working directory for the spawned `codex` subprocesses.
-    /// Usually the repo root resolved from `git rev-parse
-    /// --show-toplevel`.
+    /// Working directory for spawned subprocesses; usually the
+    /// repo's git toplevel.
     pub repo_root: PathBuf,
-    /// Path to the `codex` binary. Defaults to `"codex"` (PATH
-    /// lookup); tests inject a fake binary path.
+    /// Path to the review binary. Defaults to bare name (PATH
+    /// lookup); tests inject a fake path.
     pub codex_bin: PathBuf,
 }
 
 #[derive(Debug)]
 pub enum ActError {
+    /// Agent or Human effect routed to act. Decide must halt
+    /// these; reaching act is an invariant violation.
     UnsupportedAutomation,
-    /// A target reached act that the current `codex review` CLI
-    /// cannot execute directly. Callers should resolve user-facing
-    /// sugar like `--pr` before constructing `ActContext`.
+    /// Target reached act in a form the underlying review CLI
+    /// cannot execute directly. Surface-level sugar must be
+    /// resolved to the underlying form before constructing
+    /// [`ActContext`].
     UnsupportedTarget(String),
+    /// Handler not yet wired.
     NotImplemented,
-    /// Spawning a `codex review` subprocess failed (binary not
-    /// found, log file open failed, etc.). Carries which slot
-    /// failed and the underlying io error.
-    Spawn {
-        slot: u32,
-        source: std::io::Error,
-    },
+    /// Subprocess spawn failed (binary not found, log open
+    /// failed, etc.). Carries the failing slot and the underlying
+    /// IO error.
+    Spawn { slot: u32, source: std::io::Error },
 }
 
 impl std::fmt::Display for ActError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedAutomation => write!(
-                f,
-                "act received an Agent/Human action — decide must halt those"
-            ),
-            Self::UnsupportedTarget(msg) => write!(f, "unsupported codex review target: {msg}"),
+            Self::UnsupportedAutomation => {
+                write!(f, "act received a handoff effect — decide must halt those")
+            }
+            Self::UnsupportedTarget(msg) => write!(f, "unsupported review target: {msg}"),
             Self::NotImplemented => write!(f, "act handler not yet implemented"),
             Self::Spawn { slot, source } => {
                 write!(f, "spawn slot {slot}: {source}")
@@ -82,9 +83,8 @@ impl std::error::Error for ActError {
     }
 }
 
-/// Dispatch one action against `ctx`. Wait sleeps; Full kinds
-/// dispatch to handler functions; Agent/Human are an invariant
-/// violation (decide should have halted instead of executing).
+/// Dispatch one action against `ctx`. See module doc for the
+/// per-effect behaviour table.
 pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Wait { interval, .. } => {
@@ -101,21 +101,23 @@ pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
 fn dispatch_full(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.kind {
         ActionKind::RunReviews { level, n } => spawn_codex_reviews(*level, *n, ctx),
-        // Phase 6b/8: AdvanceLevel/DropLevel/RestartFromFloor/RunTests
-        // wire to the recorder. ParseVerdicts is implicit in observe
-        // (scan_batch returns Complete with parsed verdicts).
+        // Ladder transitions and test invocation are not yet
+        // wired through act; the recorder mutates ladder state
+        // out of band via side-effect commands. Verdict parsing
+        // is implicit in observe (the scan returns parsed
+        // verdicts in the Complete state).
         _ => Err(ActError::NotImplemented),
     }
 }
 
-/// Spawn `n` `codex review` subprocesses. Returns immediately
-/// after spawn — observe/await polls log and exit files for
-/// completion.
+/// Spawn `n` review subprocesses. Returns immediately after
+/// spawn; completion is detected by the observe layer reading log
+/// and exit files.
 ///
-/// Failures: if any spawn fails, the function returns the first
-/// error. Already-spawned children are *not* killed — they'll
-/// continue and their logs will land. The next observe call will
-/// see partial completion (Running with `total < expected`).
+/// On partial-spawn failure: already-spawned children are not
+/// killed; they run to completion and their logs land. The next
+/// observe pass sees this as `Running` with `total < expected`
+/// — the in-batch state machine handles it naturally.
 fn spawn_codex_reviews(
     level: CodexReasoningLevel,
     n: u32,
@@ -165,8 +167,8 @@ fn spawn_codex_reviews(
     Ok(())
 }
 
-/// Build the `codex review` argv for the given target and reasoning
-/// level. Pure — no I/O. Public for unit tests.
+/// Build the review-CLI argv for the given target and reasoning
+/// level. Pure — no I/O.
 pub(crate) fn build_codex_args(
     level: CodexReasoningLevel,
     target: &ReviewTarget,
@@ -198,9 +200,9 @@ pub(crate) fn build_codex_args(
     Ok(args)
 }
 
-/// Build the direct `codex review` command for unit tests.
-/// Runtime spawning uses [`build_logged_codex_command`] so observe
-/// can see child exit status after this process returns.
+/// Build a direct review-CLI command for unit tests. The runtime
+/// path wraps the command in a shell that captures exit status
+/// so observe can see it after this process returns.
 #[cfg(test)]
 pub(crate) fn build_codex_command(
     codex_bin: &std::path::Path,

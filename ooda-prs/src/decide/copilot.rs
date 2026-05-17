@@ -1,5 +1,8 @@
-//! Copilot candidates: wait when Copilot is mid-cycle, advance
-//! tier when it has reviewed but more is achievable.
+//! Bot-review axis candidates.
+//!
+//! Wait while the review is in flight; advance to a higher quality
+//! tier when a review has landed but progress is still available;
+//! escalate when the per-HEAD health budget is exhausted.
 
 use crate::ids::BlockerKey;
 
@@ -9,21 +12,21 @@ use crate::orient::copilot::{
 
 use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
 
-// Health → Action mapping for the Copilot axis. Same shape will land
-// on decide_ci and any subsequent axis; lift the common
-// Healthy/Degraded/Failed branching when 3+ wear it.
+// Flat decision table over the activity variants of this axis. The
+// table's length is its specification: each arm carries action,
+// blocker, and rationale inline. Factoring into helpers would split
+// the per-arm mapping across files and weaken the audit surface.
 //
-// Flat decision table over `CopilotActivity` variants: length is the
-// spec. Each arm names its action, blocker tag, and rationale inline;
-// refactoring into helpers would split that 1:1 mapping across files
-// and harm the auditability the table provides.
+// The Healthy / Degraded / Failed branching shape recurs on other
+// bot axes; a future shared abstraction can lift it once three or
+// more axes wear it.
 #[allow(clippy::too_many_lines)]
 pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
 
     match &report.activity {
         CopilotActivity::Idle => {
-            // Absence of signal is not a blocker — don't emit anything.
+            // Absence of signal is not a gate.
         }
         CopilotActivity::Requested {
             health: InFlightHealth::Healthy,
@@ -98,7 +101,7 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
             if report.tier == CopilotTier::Platinum {
                 return out;
             }
-            // Unresolved threads are the reviews axis's job, not ours.
+            // Per-thread feedback is owned by the reviews axis.
             if report.threads.unresolved > 0 {
                 return out;
             }
@@ -106,9 +109,9 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
             let not_at_head = !report.fresh;
             let suppressed = latest.comments_suppressed;
 
-            // Rerequest dominates when stale OR not-fresh — a fresh
-            // pass clears stale replies AND may resolve suppressed
-            // findings in one shot.
+            // A fresh re-request dominates the staleness and
+            // not-at-HEAD conditions: one pass clears both and may
+            // resolve suppressed findings as a side effect.
             if stale > 0 || not_at_head {
                 let desc = if stale > 0 {
                     format!(
@@ -146,9 +149,9 @@ pub(super) fn candidates(report: &CopilotReport) -> Vec<Action> {
     out
 }
 
-/// Health-driven re-request. The blocker tag carries the symptom so
-/// the stall comparator separates "start" from "review" symptom
-/// stalls, and so the JSONL trace pinpoints which timeout fired.
+/// Health-driven re-request. The blocker key carries the symptom so
+/// the stall comparator distinguishes timeout classes and the
+/// per-iteration trace records which class fired.
 fn degraded_rerequest(symptom: Symptom) -> Action {
     let (tag, log) = match symptom {
         Symptom::StartTimeout => (
@@ -171,16 +174,15 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
     }
 }
 
-/// Per-HEAD budget exhausted; humans must triage. No automatic side
-/// effect — the act layer never sees this; the runner consumes
-/// `Outcome::HandoffHuman` and exits.
+/// Per-HEAD health budget exhausted. Human handoff with no driver
+/// side effect — the runner translates this directly to its terminal
+/// handoff outcome.
 ///
-/// `timing` carries the per-round timestamps from the matched
-/// `CopilotActivity` variant; the prompt surfaces them so the human
-/// sees exactly when the request was filed (and, for `ReviewTimeout`,
-/// when Copilot ack'd) instead of a generic "investigate Copilot"
-/// instruction. `report` carries `rounds.len()` for the attempt
-/// count and `tier.slug()` for the current tier label.
+/// `timing` and `report` are the prompt's enrichment surface:
+/// per-round timestamps replace generic "investigate" instructions
+/// with the concrete request and acknowledgement times, and the
+/// attempt count and tier label situate the failure in the axis's
+/// progress lattice.
 fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotReport) -> Action {
     let (tag, headline) = match symptom {
         Symptom::StartTimeout => (
@@ -226,9 +228,8 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
     }
 }
 
-/// Subset of the matched `CopilotActivity` variant's timestamps the
-/// failure escalation prompt needs. `ack_at` is `None` for the
-/// `Requested` variant (Copilot never started), `Some` for `Working`.
+/// Timestamps the failed-escalation prompt enriches with.
+/// `ack_at` is present iff the bot acknowledged before failing.
 #[derive(Clone, Copy)]
 struct FailedTiming {
     requested_at: crate::ids::Timestamp,
@@ -374,20 +375,15 @@ mod tests {
         assert!(candidates(&r).is_empty());
     }
 
-    // ─── property test for the class invariant ──────────────────────
+    // ─── per-variant baseline property ────────────────────────────
     //
-    // The copilot axis's per-variant baseline behavior: in the
-    // most-progressive state (tier=Bronze, fresh at HEAD, no unresolved
-    // threads, no stale replies, no suppressed comments) each
-    // `CopilotActivity` variant — extended by `InFlightHealth` on
-    // the in-flight variants — produces a deterministic candidate
-    // set. The Reviewed branch has sub-conditions exercised by the
-    // scenario tests above (gold-not-fresh, silver-with-suppressed,
-    // etc.); this property test pins the per-variant baseline.
-    //
-    // Exhaustive (CopilotActivity × InFlightHealth) coverage. New
-    // variants fail-to-compile here first; that's the contract
-    // working as designed.
+    // Class invariant: in the baseline configuration (Bronze tier,
+    // fresh at HEAD, no thread or suppression backlog) each
+    // (Activity × Health) pair maps to a deterministic candidate
+    // shape. Sub-conditions on the Reviewed branch are pinned by
+    // the scenario tests above; the cross-product is enumerated
+    // exhaustively here. A new variant in either enum fails to
+    // compile at the exhaustive match below.
 
     #[derive(Debug, PartialEq, Eq)]
     enum CopilotBaselineBehavior {
@@ -398,14 +394,9 @@ mod tests {
         EmitFailedEscalation(Symptom),
     }
 
-    /// What the copilot axis emits for each `(CopilotActivity,
-    /// InFlightHealth)` pair in the baseline state (Bronze tier,
-    /// fresh, no stale, no suppressed). Other states are exercised
-    /// by the scenario tests.
-    ///
-    /// The match below is structurally exhaustive — adding a new
-    /// `CopilotActivity` variant OR a new `InFlightHealth` variant
-    /// fails to compile here until a new arm is added.
+    /// Baseline projection: one expected behaviour per (Activity ×
+    /// Health) pair. Structurally exhaustive — the match below is
+    /// the contract.
     fn expected_copilot_baseline_behavior(activity: &CopilotActivity) -> CopilotBaselineBehavior {
         // Intentional exhaustive match per axis pattern; arms are
         // duplicated for spec clarity.
@@ -436,10 +427,9 @@ mod tests {
                 health: InFlightHealth::Failed,
                 ..
             } => CopilotBaselineBehavior::EmitFailedEscalation(Symptom::ReviewTimeout),
-            // Reviewed at Bronze tier, fresh, no stale, no suppressed:
-            // nothing actionable at the copilot layer. Tier advancement
-            // gates on the next code push (re-requests Copilot
-            // automatically) or on the agent addressing threads.
+            // Baseline Reviewed has nothing to gate on; advancement
+            // happens through either a new code push or per-thread
+            // remediation owned by another axis.
             CopilotActivity::Reviewed { .. } => CopilotBaselineBehavior::NoCandidate,
         }
     }
@@ -507,13 +497,10 @@ mod tests {
         assert_eq!(
             activities.len(),
             8,
-            "`all_copilot_activities` must enumerate every \
-             (CopilotActivity × InFlightHealth) case: Idle (1) + \
-             Requested×3 + Working×3 + Reviewed (1) = 8. Adding a \
-             new `CopilotActivity` variant OR a new `InFlightHealth` \
-             variant requires updating this sample list, the \
-             exhaustive match in `expected_copilot_baseline_behavior`, \
-             AND this length sentinel.",
+            "Sample enumeration must cover every (Activity × Health) \
+             case: Idle (1) + Requested×3 + Working×3 + Reviewed (1) = 8. \
+             A new variant in either enum requires updating the sample \
+             list, the exhaustive match, and this length sentinel.",
         );
         for activity in activities {
             let r = report(

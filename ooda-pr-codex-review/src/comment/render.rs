@@ -74,13 +74,13 @@ pub(crate) fn render(
         format!("{header}\n\n{dashboard_body}")
     };
 
-    let ci = ci_line(oriented);
-    let copilot = copilot_line(oriented);
-    let cursor = cursor_line(oriented);
-    let reviews = reviews_line(oriented);
-    let pr_meta = pull_request_metadata_line(oriented);
-    let doc_review = doc_review_line(oriented);
-    let claude_review = claude_review_line(oriented);
+    let ci = ci_line(&oriented.ci);
+    let copilot = copilot_line(oriented.copilot.as_ref());
+    let cursor = cursor_line(oriented.cursor.as_ref());
+    let reviews = reviews_line(&oriented.reviews);
+    let pr_meta = pull_request_metadata_line(&oriented.pull_request_metadata);
+    let doc_review = doc_review_line(&oriented.doc_review);
+    let claude_review = claude_review_line(&oriented.claude_review);
     // Dedup key composition: per-axis lines (structural state) +
     // decision discriminant (which arm fired) + decision blocker
     // tagged with payload (which gate, with cardinality-bearing
@@ -173,8 +173,8 @@ fn action_payload_tag(kind: &crate::decide::action::ActionKind) -> String {
 
 // ── per-axis lines ───────────────────────────────────────────────────
 
-fn ci_line(o: &OrientedState) -> String {
-    let ci = &o.ci.summary;
+fn ci_line(ci: &crate::orient::ci::CiReport) -> String {
+    let ci = &ci.summary;
     if ci.required.fail() > 0 {
         let names: Vec<String> = ci
             .required
@@ -208,8 +208,8 @@ fn ci_line(o: &OrientedState) -> String {
     }
 }
 
-fn copilot_line(o: &OrientedState) -> String {
-    let Some(c) = &o.copilot else {
+fn copilot_line(copilot: Option<&crate::orient::copilot::CopilotReport>) -> String {
+    let Some(c) = copilot else {
         return "— Copilot · not configured".into();
     };
     // An idle axis does not render a tier glyph: the default
@@ -235,8 +235,8 @@ fn copilot_line(o: &OrientedState) -> String {
     format!("{} Copilot · {}{suffix}", tier_emoji(slug), slug)
 }
 
-fn cursor_line(o: &OrientedState) -> String {
-    let Some(c) = &o.cursor else {
+fn cursor_line(cursor: Option<&crate::orient::cursor::CursorReport>) -> String {
+    let Some(c) = cursor else {
         return "— Cursor · no activity".into();
     };
     let mut detail: Vec<String> = Vec::new();
@@ -257,9 +257,9 @@ fn cursor_line(o: &OrientedState) -> String {
     format!("{} Cursor · {}{suffix}", tier_emoji(slug), slug)
 }
 
-fn reviews_line(o: &OrientedState) -> String {
+fn reviews_line(reviews: &crate::orient::reviews::ReviewSummary) -> String {
     use crate::observe::github::pull_request_view::ReviewDecision;
-    match o.reviews.decision {
+    match reviews.decision {
         Some(ReviewDecision::Approved) => "✅ Approval".into(),
         Some(ReviewDecision::ChangesRequested) => "❌ Changes requested".into(),
         Some(ReviewDecision::ReviewRequired) => "👤 Approval required".into(),
@@ -267,8 +267,8 @@ fn reviews_line(o: &OrientedState) -> String {
     }
 }
 
-fn pull_request_metadata_line(o: &OrientedState) -> String {
-    match &o.pull_request_metadata {
+fn pull_request_metadata_line(meta: &PullRequestMetadata) -> String {
+    match meta {
         PullRequestMetadata::Synced => "✅ PR meta · synced".into(),
         PullRequestMetadata::Drift {
             attested_sha,
@@ -283,8 +283,8 @@ fn pull_request_metadata_line(o: &OrientedState) -> String {
     }
 }
 
-fn doc_review_line(o: &OrientedState) -> String {
-    match &o.doc_review {
+fn doc_review_line(doc_review: &DocReview) -> String {
+    match doc_review {
         DocReview::Synced => "✅ Doc review · synced".into(),
         DocReview::Drift {
             attested_sha,
@@ -310,8 +310,8 @@ fn drift_count(commits_behind: Option<usize>) -> String {
     }
 }
 
-fn claude_review_line(o: &OrientedState) -> String {
-    match &o.claude_review {
+fn claude_review_line(claude_review: &ClaudeReview) -> String {
+    match claude_review {
         ClaudeReview::NoActivity => "— Claude review · not requested".into(),
         ClaudeReview::Addressed => "✅ Claude review · addressed".into(),
         ClaudeReview::Fresh {
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn ci_line_pass_state() {
         let o = empty_oriented();
-        assert_eq!(ci_line(&o), "✅ CI · required checks pass");
+        assert_eq!(ci_line(&o.ci), "✅ CI · required checks pass");
     }
 
     #[test]
@@ -445,26 +445,29 @@ mod tests {
             description: String::new(),
             link: String::new(),
         }];
-        assert!(ci_line(&o).starts_with("❌ CI · 1 required check"));
-        assert!(ci_line(&o).contains("Lint"));
+        assert!(ci_line(&o.ci).starts_with("❌ CI · 1 required check"));
+        assert!(ci_line(&o.ci).contains("Lint"));
     }
 
     #[test]
     fn copilot_line_unconfigured() {
         let o = empty_oriented();
-        assert_eq!(copilot_line(&o), "— Copilot · not configured");
+        assert_eq!(
+            copilot_line(o.copilot.as_ref()),
+            "— Copilot · not configured"
+        );
     }
 
     #[test]
     fn cursor_line_no_activity() {
         let o = empty_oriented();
-        assert_eq!(cursor_line(&o), "— Cursor · no activity");
+        assert_eq!(cursor_line(o.cursor.as_ref()), "— Cursor · no activity");
     }
 
     #[test]
     fn reviews_line_no_policy() {
         let o = empty_oriented();
-        assert_eq!(reviews_line(&o), "— Approval · no review policy");
+        assert_eq!(reviews_line(&o.reviews), "— Approval · no review policy");
     }
 
     #[test]
@@ -621,7 +624,10 @@ mod tests {
     fn pull_request_metadata_line_synced_renders_check() {
         let mut o = empty_oriented();
         o.pull_request_metadata = PullRequestMetadata::Synced;
-        assert_eq!(pull_request_metadata_line(&o), "✅ PR meta · synced");
+        assert_eq!(
+            pull_request_metadata_line(&o.pull_request_metadata),
+            "✅ PR meta · synced"
+        );
     }
 
     #[test]
@@ -632,7 +638,7 @@ mod tests {
             head_sha: "9".repeat(40),
             commits_behind: Some(5),
         };
-        let line = pull_request_metadata_line(&o);
+        let line = pull_request_metadata_line(&o.pull_request_metadata);
         assert!(line.contains("drifted 5 commits"), "{line}");
         assert!(line.contains("abcdef1"), "{line}");
     }
@@ -641,7 +647,10 @@ mod tests {
     fn pull_request_metadata_line_never_attested_renders_warn() {
         let mut o = empty_oriented();
         o.pull_request_metadata = PullRequestMetadata::NeverAttested;
-        assert_eq!(pull_request_metadata_line(&o), "⚠ PR meta · never attested");
+        assert_eq!(
+            pull_request_metadata_line(&o.pull_request_metadata),
+            "⚠ PR meta · never attested"
+        );
     }
 
     // ── doc_review_line ──
@@ -650,7 +659,7 @@ mod tests {
     fn doc_review_line_synced_renders_check() {
         let mut o = empty_oriented();
         o.doc_review = DocReview::Synced;
-        assert_eq!(doc_review_line(&o), "✅ Doc review · synced");
+        assert_eq!(doc_review_line(&o.doc_review), "✅ Doc review · synced");
     }
 
     #[test]
@@ -661,7 +670,7 @@ mod tests {
             head_sha: "9".repeat(40),
             commits_behind: Some(5),
         };
-        let line = doc_review_line(&o);
+        let line = doc_review_line(&o.doc_review);
         assert!(line.contains("drifted 5 commits"), "{line}");
         assert!(line.contains("abcdef1"), "{line}");
     }
@@ -670,7 +679,10 @@ mod tests {
     fn doc_review_line_never_attested_renders_warn() {
         let mut o = empty_oriented();
         o.doc_review = DocReview::NeverAttested;
-        assert_eq!(doc_review_line(&o), "⚠ Doc review · never attested");
+        assert_eq!(
+            doc_review_line(&o.doc_review),
+            "⚠ Doc review · never attested"
+        );
     }
 
     // ── claude_review_line ──
@@ -678,14 +690,20 @@ mod tests {
     #[test]
     fn claude_review_line_no_activity_renders_dash() {
         let o = empty_oriented();
-        assert_eq!(claude_review_line(&o), "— Claude review · not requested");
+        assert_eq!(
+            claude_review_line(&o.claude_review),
+            "— Claude review · not requested"
+        );
     }
 
     #[test]
     fn claude_review_line_addressed_renders_check() {
         let mut o = empty_oriented();
         o.claude_review = ClaudeReview::Addressed;
-        assert_eq!(claude_review_line(&o), "✅ Claude review · addressed");
+        assert_eq!(
+            claude_review_line(&o.claude_review),
+            "✅ Claude review · addressed"
+        );
     }
 
     #[test]
@@ -703,7 +721,7 @@ mod tests {
             attested_at: None,
             head_sha: "a".repeat(40),
         };
-        let line = claude_review_line(&o);
+        let line = claude_review_line(&o.claude_review);
         assert!(line.contains("Claude review · fresh"), "{line}");
         assert!(line.contains("2 inline threads"), "{line}");
     }

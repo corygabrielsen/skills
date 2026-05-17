@@ -10,7 +10,6 @@ use crate::orient::pull_request_metadata::PullRequestMetadata;
 use crate::orient::state::PullRequestProjection;
 use ooda_core::Axis;
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct PullRequestMetadataObservation<'a> {
     pub state: &'a PullRequestProjection,
     pub pull_request_metadata: &'a PullRequestMetadata,
@@ -18,7 +17,6 @@ pub(crate) struct PullRequestMetadataObservation<'a> {
     pub pr: PullRequestNumber,
 }
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct PullRequestMetadataAxis;
 
 impl<'a> Axis<PullRequestMetadataObservation<'a>> for PullRequestMetadataAxis {

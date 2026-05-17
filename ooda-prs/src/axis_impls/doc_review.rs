@@ -10,7 +10,6 @@ use crate::orient::doc_review::DocReview;
 use crate::orient::state::PullRequestProjection;
 use ooda_core::Axis;
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct DocReviewObservation<'a> {
     pub state: &'a PullRequestProjection,
     pub doc_review: &'a DocReview,
@@ -18,7 +17,6 @@ pub(crate) struct DocReviewObservation<'a> {
     pub pr: PullRequestNumber,
 }
 
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct DocReviewAxis;
 
 impl<'a> Axis<DocReviewObservation<'a>> for DocReviewAxis {

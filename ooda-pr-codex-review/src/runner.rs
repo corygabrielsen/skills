@@ -53,10 +53,10 @@ use ooda_core::{Axis, decide_from_candidates};
 /// uniform iterator. Two reasons: (a) each axis's `Observation` is
 /// intentionally distinct (the declared-deps shape) — unifying them
 /// behind a single dispatch fn would require per-axis adapters that
-/// reconstruct typed Observations from a shared context, which is
-/// the god-struct we just removed; (b) cross-axis dep ordering
-/// (state must project before CI consumes `has_open_parent_pr`) is
-/// intrinsic and locally checkable when the call list is explicit.
+/// reconstruct typed Observations from a shared context, defeating
+/// the declared-deps invariant; (b) cross-axis dep ordering (state
+/// must project before CI consumes `has_open_parent_pr`) is intrinsic
+/// and locally checkable when the call list is explicit.
 ///
 /// Codex-review divergence: this binary's wiring includes a tenth
 /// axis call (`codex_review`) interleaved at the bot-review tier;

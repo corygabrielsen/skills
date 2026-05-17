@@ -9,13 +9,11 @@ use crate::orient::copilot::CopilotReport;
 use ooda_core::Axis;
 
 /// Per-axis observation slice for [`CopilotAxis`].
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CopilotObservation<'a> {
     pub report: Option<&'a CopilotReport>,
 }
 
 /// Wrapper exposing Copilot as an [`Axis`] impl.
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CopilotAxis;
 
 impl<'a> Axis<CopilotObservation<'a>> for CopilotAxis {

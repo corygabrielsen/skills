@@ -13,13 +13,11 @@ use ooda_core::Axis;
 /// `report` is `Option` because `orient_cursor` returns `None`
 /// when no observation source contributes anything — that's
 /// distinct from a present-but-NotApplicable report.
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CursorObservation<'a> {
     pub report: Option<&'a CursorReport>,
 }
 
 /// Wrapper exposing Cursor as an [`Axis`] impl.
-#[allow(dead_code)] // Wired into the driver in the next arc; today reachable only via tests.
 pub(crate) struct CursorAxis;
 
 impl<'a> Axis<CursorObservation<'a>> for CursorAxis {

@@ -170,7 +170,7 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
         effect: ActionEffect::Full { log: log.into() },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingFix),
-        blocker: BlockerKey::for_test(tag),
+        blocker: BlockerKey::from_static(tag),
     }
 }
 
@@ -224,7 +224,7 @@ fn failed_escalation(symptom: Symptom, timing: FailedTiming, report: &CopilotRep
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingHuman),
-        blocker: BlockerKey::for_test(tag),
+        blocker: BlockerKey::from_static(tag),
     }
 }
 

@@ -89,9 +89,23 @@ impl HandoffPrompt {
     /// Construct a prompt with only a headline. Sections can be
     /// added via `push_*` helpers or by extending the
     /// `sections` field directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `headline` is empty or whitespace-only. The
+    /// headline is the first line a recipient reads; a blank one
+    /// is a programmer error at the call site, never a user
+    /// input. The single-line invariant is already carried by
+    /// [`SingleLineString`]; this constructor adds the
+    /// non-empty rule.
     pub fn new(headline: impl Into<SingleLineString>) -> Self {
+        let headline = headline.into();
+        assert!(
+            !headline.as_str().trim().is_empty(),
+            "HandoffPrompt::new called with empty or whitespace-only headline",
+        );
         Self {
-            headline: headline.into(),
+            headline,
             sections: Vec::new(),
         }
     }

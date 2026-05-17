@@ -16,7 +16,7 @@
 //!   threads so prompts carry the source text directly, with no
 //!   secondary round-trip to the host needed to render them.
 
-use crate::ids::{GitHubLogin, Timestamp};
+use crate::ids::{GitHubLogin, IdError, Timestamp};
 use crate::observe::github::review_threads::ReviewThread as WireThread;
 use crate::orient::copilot::is_copilot;
 use crate::orient::cursor::is_cursor;
@@ -25,12 +25,23 @@ use serde::Serialize;
 /// Opaque host node id for a review thread. Used for paginating
 /// further comments and as a stable key for cross-iteration
 /// identity.
+///
+/// Constructor invariant: non-empty after trim, no ASCII control
+/// bytes. A `\n` or `\0` in the id would split stderr framing
+/// and break cursor-equality across iterations.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct ThreadId(String);
 
 impl ThreadId {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl Into<String>) -> Result<Self, IdError> {
+        let s = s.into();
+        if s.trim().is_empty() {
+            return Err(IdError::new("thread id", "empty or whitespace-only"));
+        }
+        if s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return Err(IdError::new("thread id", "contains ASCII control byte"));
+        }
+        Ok(Self(s))
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -45,12 +56,30 @@ impl std::fmt::Display for ThreadId {
 
 /// Repo-relative file path in canonical form: forward slashes, no
 /// leading slash. Same shape every source (host, VCS index) yields.
+///
+/// Constructor invariant: non-empty, no leading `/`, no backslash
+/// (mixed Windows separator), no ASCII control bytes. `Display`
+/// renders the path verbatim into prompts; a `\n` or `\0` here
+/// would inject a line boundary into stderr framing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FilePath(String);
 
 impl FilePath {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    pub fn new(s: impl Into<String>) -> Result<Self, IdError> {
+        let s = s.into();
+        if s.is_empty() {
+            return Err(IdError::new("file path", "empty"));
+        }
+        if s.starts_with('/') {
+            return Err(IdError::new("file path", "leading '/'"));
+        }
+        if s.contains('\\') {
+            return Err(IdError::new("file path", "contains '\\' (non-canonical)"));
+        }
+        if s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+            return Err(IdError::new("file path", "contains ASCII control byte"));
+        }
+        Ok(Self(s))
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -159,11 +188,17 @@ impl ReviewThread {
             (false, true) => ThreadState::Outdated,
             (false, false) => ThreadState::Live,
         };
+        // Invalid wire values for the typed slots — empty id,
+        // path with a control byte — fail the boundary the same
+        // way an orphan thread does: drop the row rather than
+        // propagate the malformation downstream.
+        let id = ThreadId::new(wire.id.clone()).ok()?;
+        let path = FilePath::new(wire.path.clone()).ok()?;
         Some(ReviewThread {
-            id: ThreadId::new(wire.id.clone()),
+            id,
             author,
             location: ThreadLocation {
-                path: FilePath::new(wire.path.clone()),
+                path,
                 line: wire.line,
             },
             body: first.body.clone(),
@@ -336,7 +371,7 @@ mod tests {
     #[test]
     fn location_displays_with_line() {
         let loc = ThreadLocation {
-            path: FilePath::new("src/foo.rs"),
+            path: FilePath::new("src/foo.rs").unwrap(),
             line: Some(42),
         };
         assert_eq!(loc.to_string(), "src/foo.rs:42");
@@ -345,9 +380,41 @@ mod tests {
     #[test]
     fn location_displays_without_line_when_outdated() {
         let loc = ThreadLocation {
-            path: FilePath::new("src/foo.rs"),
+            path: FilePath::new("src/foo.rs").unwrap(),
             line: None,
         };
         assert_eq!(loc.to_string(), "src/foo.rs");
+    }
+
+    #[test]
+    fn thread_id_rejects_empty_and_control_bytes() {
+        assert!(ThreadId::new("").is_err());
+        assert!(ThreadId::new("   ").is_err());
+        assert!(ThreadId::new("abc\n").is_err());
+        assert!(ThreadId::new("abc\0").is_err());
+        assert_eq!(ThreadId::new("t1").unwrap().as_str(), "t1");
+    }
+
+    #[test]
+    fn file_path_rejects_empty_leading_slash_backslash_and_control_bytes() {
+        assert!(FilePath::new("").is_err());
+        assert!(FilePath::new("/etc/passwd").is_err());
+        assert!(FilePath::new("a\\b").is_err());
+        assert!(FilePath::new("a\nb").is_err());
+        assert_eq!(FilePath::new("src/foo.rs").unwrap().as_str(), "src/foo.rs",);
+    }
+
+    #[test]
+    fn from_wire_drops_thread_with_empty_id() {
+        let mut w = wire(false, false, "src/foo.rs", Some(1), "alice", "x");
+        w.id = String::new();
+        assert!(ReviewThread::from_wire(&w).is_none());
+    }
+
+    #[test]
+    fn from_wire_drops_thread_with_control_byte_in_path() {
+        let mut w = wire(false, false, "src/foo.rs", Some(1), "alice", "x");
+        w.path = "src/foo\nrs".into();
+        assert!(ReviewThread::from_wire(&w).is_none());
     }
 }

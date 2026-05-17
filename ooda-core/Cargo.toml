@@ -12,5 +12,12 @@ serde_json = "1"
 [dev-dependencies]
 tempfile = "3"
 
+[features]
+# Exposes fixture-only escape-hatch constructors (e.g. `BlockerKey::for_test`)
+# that bypass production invariants. Domain crates opt in via their
+# `[dev-dependencies]` so unit tests can build payload values without
+# re-implementing the production discipline; release builds never see them.
+test-support = []
+
 [lints.clippy]
 pedantic = "deny"

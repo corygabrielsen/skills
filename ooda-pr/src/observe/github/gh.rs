@@ -19,7 +19,7 @@ use std::process::Command;
 use ooda_core::{PollingInterval, RateLimitHit, RateLimitScope};
 use serde::de::DeserializeOwned;
 
-use crate::state;
+use crate::recorder;
 
 #[derive(Debug)]
 pub enum GhError {
@@ -157,7 +157,7 @@ pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
     args: &[&str],
     empty_default: Option<(T, &str)>,
 ) -> Result<T, GhError> {
-    let guard = state::tool_call_started("gh", args);
+    let guard = recorder::tool_call_started("gh", args);
     let output = match Command::new("gh").args(args).output() {
         Ok(output) => {
             if let Some(guard) = guard {
@@ -209,7 +209,7 @@ pub(crate) fn gh_run(args: &[&str]) -> Result<(), GhError> {
 }
 
 fn run_raw(args: &[&str]) -> Result<std::process::Output, GhError> {
-    let guard = state::tool_call_started("gh", args);
+    let guard = recorder::tool_call_started("gh", args);
     let output = match Command::new("gh").args(args).output() {
         Ok(output) => {
             if let Some(guard) = guard {

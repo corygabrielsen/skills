@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
-use crate::state::Recorder;
+use crate::recorder::Recorder;
 
 use super::render::Rendered;
 
@@ -175,7 +175,7 @@ fn hash_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Recorder, RecorderConfig, RunMode};
+    use crate::recorder::{Recorder, RecorderConfig, RunMode};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]

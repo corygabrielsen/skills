@@ -340,23 +340,9 @@ impl Recorder {
                     "dashboard": serde_json::to_value(&dashboard).unwrap_or(Value::Null),
                 }),
             )?;
-            // Tier-grouped markdown projections written as blobs
-            // so a downstream cockpit/agent reader can pull them
-            // by `BlobRef` without re-rendering.
-            let blockers_blob = inner
-                .writer
-                .write_blob(dashboard.render_blockers_md().as_bytes(), "md")?;
-            inner.append_domain(
-                "blockers_md",
-                json!({ "iteration": iteration, "blob": blockers_blob }),
-            )?;
-            let next_blob = inner
-                .writer
-                .write_blob(dashboard.render_next_md().as_bytes(), "md")?;
-            inner.append_domain(
-                "next_md",
-                json!({ "iteration": iteration, "blob": next_blob }),
-            )?;
+            // blockers_md / next_md are derived projections of the
+            // dashboard already serialized above; readers re-render
+            // on demand rather than committing redundant blobs.
             Ok(())
         });
     }

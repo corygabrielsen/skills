@@ -347,19 +347,11 @@ impl Recorder {
             )?;
 
             let dashboard_blob = inner.write_json_blob(&dashboard)?;
-            let blockers_blob = inner
-                .writer
-                .write_blob(dashboard.render_blockers_md().as_bytes(), "md")?;
-            let next_blob = inner
-                .writer
-                .write_blob(dashboard.render_next_md().as_bytes(), "md")?;
             inner.append_domain(
                 "iteration_dashboard",
                 json!({
                     "iteration": iteration,
                     "blob": dashboard_blob,
-                    "blockers_md": blockers_blob,
-                    "next_md": next_blob,
                 }),
             )?;
 

@@ -11,8 +11,8 @@ mod ids;
 mod observe;
 mod orient;
 mod outcome;
+mod recorder;
 mod runner;
-mod state;
 mod text;
 
 use dashboard::Dashboard;
@@ -23,8 +23,8 @@ use observe::github::{FetchOutcome, fetch_all};
 use ooda_core::decide_from_candidates;
 use orient::orient;
 use outcome::Outcome;
+use recorder::{Recorder, RecorderConfig, RunMode};
 use runner::{LoopConfig, current_timestamp, run_loop};
-use state::{Recorder, RecorderConfig, RunMode};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
@@ -299,7 +299,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     recorder.record_iteration(
         1,
         &obs,
-        &state::RecorderInputs::from(&oriented),
+        &recorder::RecorderInputs::from(&oriented),
         &candidate_actions,
         &decision,
     );
@@ -376,7 +376,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
         recorder.record_iteration(
             i,
             obs,
-            &state::RecorderInputs::from(oriented),
+            &recorder::RecorderInputs::from(oriented),
             candidate_actions,
             d,
         );

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -336,10 +336,16 @@ fn run_mode(mode: Mode) -> RunMode {
 
 fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
     let code = outcome.exit_code();
-    render_outcome(&mut std::io::stderr(), outcome);
+    let handoff_path = match (outcome, recorder.as_ref()) {
+        (Outcome::HandoffAgent(h) | Outcome::HandoffHuman(h), Some(r)) => {
+            r.write_handoff_md(&h.prompt.to_string())
+        }
+        _ => None,
+    };
+    render_outcome(&mut std::io::stderr(), outcome, handoff_path.as_deref());
     if let Some(recorder) = recorder {
         let mut rendered = Vec::new();
-        render_outcome(&mut rendered, outcome);
+        render_outcome(&mut rendered, outcome, handoff_path.as_deref());
         if let Ok(text) = String::from_utf8(rendered) {
             for line in text.lines() {
                 recorder.write_trace_line(line);
@@ -821,9 +827,16 @@ fn push_handoff_context(
 }
 
 /// Render `Outcome` to a writer (typically stderr) per the SKILL
-/// contract: single-line header, optionally followed by a prompt
-/// block for `Handoff*` variants. No trailing content.
-fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
+/// contract: single-line header, optionally followed by a pointer
+/// block (`Handoff*` variants). No trailing content.
+///
+/// `handoff_path` is the absolute path of the `latest/handoff.md`
+/// file the recorder wrote for this outcome. When `Some`, the
+/// emitted block is `  see: <path>` (a 7-byte sentinel + absolute
+/// path on one line); the agent reads the prompt body from the
+/// file. When `None` (recorder unavailable, or tests), the
+/// fallback is the legacy `  prompt: <body>` inline block.
+fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Option<&Path>) {
     match oc {
         Outcome::DoneSucceeded => {
             let _ = writeln!(out, "DoneMerged");
@@ -846,7 +859,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         }
         Outcome::HandoffHuman(handoff) => {
             let _ = writeln!(out, "HandoffHuman: {}", handoff.kind.name());
-            write_prompt_block(out, &handoff.prompt.to_string());
+            write_handoff_block(out, &handoff.prompt.to_string(), handoff_path);
         }
         Outcome::WouldAdvance(action) => {
             let _ = writeln!(
@@ -858,7 +871,7 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         }
         Outcome::HandoffAgent(handoff) => {
             let _ = writeln!(out, "HandoffAgent: {}", handoff.kind.name());
-            write_prompt_block(out, &handoff.prompt.to_string());
+            write_handoff_block(out, &handoff.prompt.to_string(), handoff_path);
         }
         Outcome::BinaryError(msg) => {
             let _ = writeln!(out, "BinaryError: {msg}");
@@ -876,14 +889,31 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
     }
 }
 
-/// Write a prompt block: a single line beginning with the literal
-/// 10-byte sequence `␣␣prompt:␣` (two spaces, "prompt", colon,
-/// space) followed by the description content. Continuation lines
-/// in the description carry no prefix; the block ends at the last
-/// byte of content (no trailing newline beyond what the description
-/// itself supplies — but `writeln!` adds one for clean line-ending).
-fn write_prompt_block(out: &mut dyn std::io::Write, description: &str) {
-    let _ = writeln!(out, "  prompt: {description}");
+/// Write the handoff block. Two shapes:
+///
+/// - **Path form** (`handoff_path = Some`): one line beginning with
+///   the literal 7-byte sequence `␣␣see:␣` (two spaces, "see",
+///   colon, space) followed by the absolute path of the
+///   `latest/handoff.md` file holding the prompt body. The agent
+///   reads that file to obtain the prompt; the file's size is
+///   observable via `stat` before commit, so consumption has no
+///   truncation pressure. This is the production path.
+///
+/// - **Inline fallback** (`handoff_path = None`): one line beginning
+///   with the legacy 10-byte sequence `␣␣prompt:␣` followed by the
+///   description content. Continuation lines carry no prefix; the
+///   block ends at the last byte of content. Used by tests and as a
+///   defensive fallback when the recorder is unavailable.
+fn write_handoff_block(
+    out: &mut dyn std::io::Write,
+    description: &str,
+    handoff_path: Option<&Path>,
+) {
+    if let Some(path) = handoff_path {
+        let _ = writeln!(out, "  see: {}", path.display());
+    } else {
+        let _ = writeln!(out, "  prompt: {description}");
+    }
 }
 
 /// Format `ActionEffect` for the `WouldAdvance` stderr render.
@@ -1006,21 +1036,21 @@ mod tests {
     #[test]
     fn render_done_merged() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::DoneSucceeded);
+        render_outcome(&mut buf, &Outcome::DoneSucceeded, None);
         assert_eq!(String::from_utf8(buf).unwrap(), "DoneMerged\n");
     }
 
     #[test]
     fn render_paused() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::Paused);
+        render_outcome(&mut buf, &Outcome::Paused, None);
         assert_eq!(String::from_utf8(buf).unwrap(), "Paused\n");
     }
 
     #[test]
     fn render_done_closed() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::DoneAborted);
+        render_outcome(&mut buf, &Outcome::DoneAborted, None);
         assert_eq!(String::from_utf8(buf).unwrap(), "DoneClosed\n");
     }
 
@@ -1028,7 +1058,7 @@ mod tests {
     fn render_stuck_cap_reached_carries_action() {
         let action = action("rebase-needed");
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::StuckCapReached(Box::new(action)));
+        render_outcome(&mut buf, &Outcome::StuckCapReached(Box::new(action)), None);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
             "StuckCapReached: Rebase:rebase-needed\n"
@@ -1038,24 +1068,49 @@ mod tests {
     #[test]
     fn render_binary_error() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::BinaryError("gh: 401".into()));
+        render_outcome(&mut buf, &Outcome::BinaryError("gh: 401".into()), None);
         assert_eq!(String::from_utf8(buf).unwrap(), "BinaryError: gh: 401\n");
     }
 
-    #[test]
-    fn render_handoff_agent_includes_prompt() {
+    fn make_handoff_outcome(description: &str) -> Outcome {
         let handoff = ooda_core::HandoffAction {
             kind: decide::action::ActionKind::Rebase,
-            prompt: ooda_core::HandoffPrompt::new("Rebase onto base"),
+            prompt: ooda_core::HandoffPrompt::new(description),
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::BlockingFix,
             blocker: ids::BlockerKey::from_static("rebase-needed"),
         };
+        Outcome::HandoffAgent(Box::new(handoff))
+    }
+
+    #[test]
+    fn render_handoff_agent_fallback_inline_prompt() {
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::HandoffAgent(Box::new(handoff)));
+        render_outcome(&mut buf, &make_handoff_outcome("Rebase onto base"), None);
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with("HandoffAgent: Rebase\n"));
         assert!(s.contains("\n  prompt: Rebase onto base\n"));
+    }
+
+    #[test]
+    fn render_handoff_agent_pointer_form() {
+        let mut buf = Vec::new();
+        let path = Path::new("/state/github.com/acme/widget/prs/42/latest/handoff.md");
+        render_outcome(
+            &mut buf,
+            &make_handoff_outcome("Rebase onto base"),
+            Some(path),
+        );
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.starts_with("HandoffAgent: Rebase\n"));
+        assert!(
+            s.contains("\n  see: /state/github.com/acme/widget/prs/42/latest/handoff.md\n"),
+            "rendered: {s}"
+        );
+        assert!(
+            !s.contains("\n  prompt: "),
+            "pointer form must not emit inline prompt block: {s}"
+        );
     }
 
     #[test]
@@ -1406,7 +1461,7 @@ mod tests {
             blocker: ids::BlockerKey::from_static("waiting"),
         };
         let mut buf = Vec::new();
-        render_outcome(&mut buf, &Outcome::WouldAdvance(Box::new(action)));
+        render_outcome(&mut buf, &Outcome::WouldAdvance(Box::new(action)), None);
         assert_eq!(
             String::from_utf8(buf).unwrap(),
             "WouldAdvance: Rebase:Wait(30s)\n"

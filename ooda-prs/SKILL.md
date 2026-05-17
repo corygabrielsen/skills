@@ -305,7 +305,8 @@ memory.
 <root>/github.com/<owner>/<repo>/prs/<pr>/
   latest/        index.md, state.json (copy of latest oriented.json),
                  decision.json, blockers.md, next.md, action.json
-                 (conditional), outcome.json (conditional)
+                 (conditional), outcome.json (conditional),
+                 handoff.md (written only on Handoff* outcomes — exit 3 / 4)
                  (action.json is present when the latest decision
                   carries an Action; absent on Success / Terminal
                   halts which call remove_latest. outcome.json is
@@ -629,7 +630,9 @@ because the post step there sets `verbose_skip = true`.)
 
 After the per-iteration lines, each PR emits its final variant
 block (the `Outcome` rendered the same way `/ooda-pr` renders it on
-exit — header line plus optional prompt block for `Handoff*`).
+exit — header line plus, for `Handoff*`, a single `  see: <abs-path-to-latest/handoff.md>`
+pointer line. The prompt body lives in the file, not on stderr —
+read the file in full rather than tail-truncating stderr).
 
 **Inspect mode** runs no iteration loop, so it emits no `[iter N]`
 lines at all. What can reach stderr in inspect mode:
@@ -640,7 +643,9 @@ lines at all. What can reach stderr in inspect mode:
 - When `--status-comment` is set: a `comment: posted`,
   `comment: skipped (unchanged)`, or `comment: <PostError>` line
   emitted by the post step.
-- The final variant block (header + optional prompt block).
+- The final variant block (header + optional `  see: <path>`
+  pointer line for `Handoff*` — prompt body lives in
+  `latest/handoff.md`, not on stderr).
 
 **Concurrent interleaving.** Lines from different PRs are NOT
 slug-prefixed. Rust's stderr lock serializes individual `eprintln!`

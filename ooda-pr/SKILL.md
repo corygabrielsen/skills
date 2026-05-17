@@ -280,6 +280,7 @@ multiple checkouts shares one host-local memory:
     outcome.json
     blockers.md
     next.md
+    handoff.md            (written only on Handoff* outcomes — exit 3 / 4)
   ledger.md
   ledger.jsonl
   events.jsonl
@@ -366,8 +367,10 @@ Outcome's emission). Listed by emission site:
   - When `--status-comment` is set: `comment: posted`,
     `comment: skipped (unchanged)`, or `comment: <PostError>`.
 - **Final variant block** (last emission, both modes): the
-  Outcome header, optionally followed by the prompt block
-  (`Handoff*`) or the usage block (`UsageError`).
+  Outcome header, optionally followed by a single pointer line
+  `  see: <abs-path-to-latest/handoff.md>` (`Handoff*`) or the
+  usage block (`UsageError`). The prompt body lives in
+  `handoff.md`, not on stderr — see `Handoff*` prompt format below.
 
 The always-on `runs/<run-id>/trace.md` receives an appended run
 header before observation begins, then the same stack / iteration /
@@ -430,20 +433,20 @@ no-payload headers, `^<Header>: ` for the rest. There is no
 always carries an `Action` and always emits the
 `<ActionKind>:<BlockerKey>` payload.
 
-| Exit | Outcome variant           | Stderr header                                           | Caller's response                                                                                                                                                                                                                                                                                                                                                |
-| :--: | ------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|  0   | `DoneSucceeded`           | `DoneMerged`                                            | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
-|  1   | `Paused`                  | `Paused`                                                | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
-|  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`               | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
-|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by prompt block) | Surface the prompt verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                                                                                                              |
-|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by prompt block) | Dispatch an agent with the prompt as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                                                                                       |
-|  5   | `DoneAborted`             | `DoneClosed`                                            | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
-|  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`              | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
-|  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`            | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
-|  64  | `UsageError(msg)`         | `UsageError: <msg>` (followed by full usage block)      | Fix the invocation. The usage block (same content as `--help` writes to stdout) is written to stderr immediately after the header, so callers don't need to re-invoke with `--help` to see syntax.                                                                                                                                                               |
-|  70  | `BinaryError(msg)`        | `BinaryError: <msg>`                                    | BSD sysexits `EX_SOFTWARE`. Caught external failure (gh subprocess, network, IO). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                                  |
-| 130  | _(reserved)_              | _(none — kernel kills)_                                 | `SIGINT` (`128 + 2`). Synthesized by the shell when the process is signal-killed; the binary itself never returns this. Treat as user-initiated abort.                                                                                                                                                                                                           |
-| 143  | _(reserved)_              | _(none — kernel kills)_                                 | `SIGTERM` (`128 + 15`). Synthesized by the shell when the process is signal-killed; same handling as `SIGINT`.                                                                                                                                                                                                                                                   |
+| Exit | Outcome variant           | Stderr header                                                      | Caller's response                                                                                                                                                                                                                                                                                                                                                |
+| :--: | ------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|  0   | `DoneSucceeded`           | `DoneMerged`                                                       | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
+|  1   | `Paused`                  | `Paused`                                                           | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
+|  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`                          | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
+|  3   | `HandoffHuman(action)`    | `HandoffHuman: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to `latest/handoff.md` file and surface it verbatim to a human. Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                                                |
+|  4   | `HandoffAgent(action)`    | `HandoffAgent: <ActionKind>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to `latest/handoff.md` file and dispatch an agent with it as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                                                                                         |
+|  5   | `DoneAborted`             | `DoneClosed`                                                       | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
+|  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`                         | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
+|  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                       | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
+|  64  | `UsageError(msg)`         | `UsageError: <msg>` (followed by full usage block)                 | Fix the invocation. The usage block (same content as `--help` writes to stdout) is written to stderr immediately after the header, so callers don't need to re-invoke with `--help` to see syntax.                                                                                                                                                               |
+|  70  | `BinaryError(msg)`        | `BinaryError: <msg>`                                               | BSD sysexits `EX_SOFTWARE`. Caught external failure (gh subprocess, network, IO). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                                  |
+| 130  | _(reserved)_              | _(none — kernel kills)_                                            | `SIGINT` (`128 + 2`). Synthesized by the shell when the process is signal-killed; the binary itself never returns this. Treat as user-initiated abort.                                                                                                                                                                                                           |
+| 143  | _(reserved)_              | _(none — kernel kills)_                                            | `SIGTERM` (`128 + 15`). Synthesized by the shell when the process is signal-killed; same handling as `SIGINT`.                                                                                                                                                                                                                                                   |
 
 **1:1 variant-to-exit-code mapping** is the design rule. Each
 variant has a unique exit code; `$?` is sufficient for dispatch.
@@ -512,29 +515,40 @@ require source repair.
 ### `Handoff*` prompt format
 
 For `HandoffAgent(action)` and `HandoffHuman(action)`, the prompt
-is verbatim prompt material — surface it as-is to the recipient,
-do not paraphrase. The prompt block begins on the line immediately
-after the header. Its first line begins with the literal **10-byte**
-sequence consisting of two ASCII spaces (`0x20 0x20`), the ASCII
-word `prompt` (`0x70 0x72 0x6f 0x6d 0x70 0x74`), an ASCII colon
-(`0x3a`), and one ASCII space (`0x20`). Strip exactly those 10
-bytes from the **first line only**; the byte at offset 10 is the
-start of the prompt content. **Continuation lines are unprefixed**
-— do not strip from them.
+body is **written to disk** at
+`<state-root>/github.com/<owner>/<repo>/prs/<pr>/latest/handoff.md`
+and the **only** stderr emission after the header is a single
+pointer line of the form:
 
-The prompt content is non-empty by convention — every current
-`decide` site constructs `Action.description` with non-empty
-text — but `Action.description` is a plain `String` and the
-type does not enforce non-emptiness. Embedded newlines print as-is;
-continuation lines appear at column 0 unless the prompt's own
-content starts them with whitespace. The prompt block runs from
-the first line to **EOF on stderr** (no sentinel; streaming
-consumers detect end via process exit). The block always ends
-with a trailing `\n` from the renderer's `writeln!`. **Edge
-case**: if the description content itself ends in `\n`, the
-emitted block ends in `\n\n` (the description's own newline
-followed by the writeln-added one); do not interpret consecutive
-newlines as a sentinel.
+```
+  see: <absolute-path-to-handoff.md>
+```
+
+The pointer line begins with the literal **7-byte** sequence: two
+ASCII spaces (`0x20 0x20`), the ASCII word `see` (`0x73 0x65 0x65`),
+an ASCII colon (`0x3a`), and one ASCII space (`0x20`). The
+remainder of the line (until `\n`) is the absolute path. There is
+no inline prompt body on stderr.
+
+**Caller protocol**: read the path from the pointer line, then
+read the file in full. The file is bounded — its size is
+observable via `stat` before commit — so callers should `Read`
+the whole file rather than tail-truncate stderr (which would lose
+the dashboard preamble that explains _why_ this action was
+selected). Do not interpret an `EOF` on stderr after the pointer
+line as a boundary on the prompt — the prompt lives in the file.
+
+The prompt content is non-empty by convention but
+`Action.description` is a plain `String` and the type does not
+enforce non-emptiness; the file may be zero-length. Embedded
+newlines in the description appear verbatim in `handoff.md`.
+
+**Fallback (rare)**: if the recorder cannot write `handoff.md`
+(IO failure, recorder absent), the binary falls back to the
+legacy inline form — a `  prompt: <body>` line (10-byte sentinel
+`␣␣prompt:␣`) followed by the prompt content streamed to EOF on
+stderr. Callers SHOULD prefer the `see:` form when present; the
+fallback exists only so the prompt is never lost.
 
 In `inspect` mode, the `Handoff*` prompt has the same
 **directive form** as in loop mode — the content tells the
@@ -544,16 +558,32 @@ Single-line prompt example:
 
 ```
 HandoffAgent: Rebase
-  prompt: Rebase onto the latest base branch
+  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/latest/handoff.md
 ```
 
-Multi-line prompt example. **The blank line and the leading
-whitespace on `   > <body>` are part of the prompt content,
-not added by ooda-pr:**
+`handoff.md` contents:
+
+```
+Rebase onto the latest base branch
+```
+
+Multi-line prompt example. `handoff.md` carries the dashboard
+preamble + per-action body verbatim:
 
 ```
 HandoffAgent: AddressThreads
-  prompt: Address 2 unresolved review threads.
+  see: /home/user/.local/state/ooda-pr/github.com/acme/widget/prs/42/latest/handoff.md
+```
+
+`handoff.md` contents:
+
+```
+Recommended (blocking fix): AddressThreads: 2 unresolved [blocker: unresolved_threads]
+...
+Blockers:
+1. unresolved_threads: AddressThreads
+
+Address 2 unresolved review threads.
 Copilot: 2 issues.
 
 1. Copilot @ src/foo.rs:42

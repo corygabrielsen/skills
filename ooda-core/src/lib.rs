@@ -44,7 +44,9 @@ pub mod single_line_string;
 pub mod stall_key;
 pub mod state_root;
 
-pub use action::{Action, ActionEffect, ActionKindName, HandoffAction, TargetEffect, Urgency};
+pub use action::{
+    Action, ActionEffect, ActionKindName, HandoffAction, MidTier, TargetEffect, Urgency,
+};
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};
 pub use current_manifest::{CurrentManifest, SCHEMA_VERSION as CURRENT_MANIFEST_SCHEMA_VERSION};
 pub use decision::{

@@ -138,7 +138,7 @@ fn decision_halt_to_outcome<K>(halt: DecisionHalt<K>) -> Outcome<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Action, ActionEffect, TargetEffect, Urgency};
+    use crate::action::{Action, ActionEffect, MidTier, TargetEffect, Urgency};
     use crate::blocker::BlockerKey;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -149,7 +149,7 @@ mod tests {
             kind: K,
             effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("t"),
         }
     }
@@ -159,7 +159,7 @@ mod tests {
             kind: K,
             prompt: crate::handoff_prompt::HandoffPrompt::new("h"),
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("t"),
         }
     }
@@ -321,14 +321,14 @@ mod tests {
             "kind": null,
             "effect": {"Full": {"log": "x"}},
             "target_effect": "Blocks",
-            "urgency": "BlockingFix",
+            "urgency": {"Mid": "BlockingFix"},
             "blocker": "t",
         });
         let dummy_handoff_json = json!({
             "kind": null,
             "prompt": {"headline": "h", "sections": []},
             "target_effect": "Blocks",
-            "urgency": "BlockingHuman",
+            "urgency": {"Mid": "BlockingHuman"},
             "blocker": "t",
         });
         match o {

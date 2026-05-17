@@ -12,7 +12,7 @@ use crate::orient::OrientedState;
 use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadState};
 
-use super::action::{Action, ActionEffect, ActionKind, NonEmpty, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, NonEmpty, TargetEffect, Urgency};
 
 /// Mechanical merge blockers — every candidate here must clear
 /// before the PR can merge at all. Composed over the whole
@@ -33,7 +33,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 log: "Mark PR as ready for review".into(),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::Critical,
+            urgency: Urgency::Mid(MidTier::Critical),
             blocker: BlockerKey::from_static("draft"),
         });
     }
@@ -44,7 +44,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 log: "Remove \"work in progress\" label".into(),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::Critical,
+            urgency: Urgency::Mid(MidTier::Critical),
             blocker: BlockerKey::from_static("wip_label"),
         });
     }
@@ -63,7 +63,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 )),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("title_too_long"),
         });
     }
@@ -78,7 +78,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 log: "GitHub is still computing mergeability — wait and re-observe".into(),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             blocker: BlockerKey::from_static("mergeability_unknown"),
         });
     } else if state.conflict == Mergeable::Conflicting {
@@ -93,7 +93,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 ),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("merge_conflict"),
         });
     } else if state.behind {
@@ -108,7 +108,7 @@ pub(super) fn blocking_candidates(oriented: &OrientedState) -> Vec<Action> {
                 ),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("behind_base"),
         });
     }
@@ -306,7 +306,7 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
                 prompt: merge_blocked_unmodeled_prompt(state),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("merge_blocked_unmodeled"),
         }],
         MergeStateStatus::HasHooks => vec![Action {
@@ -316,7 +316,7 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
                 log: "Commit hooks are still running — wait and re-observe".into(),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             blocker: BlockerKey::from_static("merge_state_has_hooks"),
         }],
         MergeStateStatus::Unknown => vec![Action {
@@ -326,7 +326,7 @@ pub(super) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec
                 log: "GitHub is still computing merge state — wait and re-observe".into(),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingWait,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
             blocker: BlockerKey::from_static("merge_state_unknown"),
         }],
         // The remaining upstream states are either modeled by

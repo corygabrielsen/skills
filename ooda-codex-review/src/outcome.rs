@@ -41,6 +41,7 @@ mod tests {
     };
     use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
     use crate::ids::BlockerKey;
+    use ooda_core::MidTier;
 
     fn dummy_action() -> Action {
         Action {
@@ -50,7 +51,7 @@ mod tests {
             },
             effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Advances,
-            urgency: Urgency::Critical,
+            urgency: Urgency::Mid(MidTier::Critical),
             blocker: BlockerKey::from_static("not-started"),
         }
     }
@@ -60,7 +61,7 @@ mod tests {
             kind: ActionKind::TestsFailedTriage,
             prompt: ooda_core::HandoffPrompt::new("h"),
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("address-failed"),
         }
     }

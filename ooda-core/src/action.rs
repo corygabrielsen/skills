@@ -149,20 +149,43 @@ pub trait ActionKindName {
     fn name(&self) -> &'static str;
 }
 
-/// Sort order for candidate actions. `Ord` ascending = selection
-/// order; lower variants are picked first. Each tier names a
-/// distinct semantic class; adding a class is a single enum
-/// extension.
+/// Sort order for candidate actions, three-phase. `Ord` ascending =
+/// selection order; lower variants are picked first. The merge
+/// function is `argmin` over the lex order: `Pre < Mid(_) < Post`,
+/// and within `Mid` the `MidTier` enum's declaration order.
+///
+/// The three-phase structure separates *cycle-position* from
+/// *cycle-internal priority*. Pre and Post are book-ends — agent
+/// work that must precede or follow the iterative cycle. Mid is
+/// the iterative cycle itself, with its own internal ordering.
+///
+/// Adding a new Mid-cycle priority class is a single `MidTier`
+/// extension. Adding a new phase is an `Urgency` extension; phases
+/// are deliberately scarce — three is the natural count for any
+/// task with setup + work + sign-off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Urgency {
-    /// Strictly most-urgent tier — the first-attestation gate.
-    /// Inverse of [`Self::Closeout`]. Emitted only by axes whose
-    /// state is "never-attested-yet": the agent has work to
-    /// witness into a local file but has not yet done so.
-    /// Preempts mechanical setup so the agent's witness is in
+    /// Pre-cycle gate — agent precondition work. Strictly the
+    /// most-urgent phase. Emitted by axes whose witness must be in
     /// place before any state-mutating action triggers downstream
-    /// reviewers.
-    Opening,
+    /// (e.g., SHA-keyed attestations on a fresh commit; reviewers
+    /// trigger on push, so the agent's witness must precede them).
+    Pre,
+    /// In-cycle iteration. Holds the existing six-tier priority
+    /// lattice; cross-axis interleaving happens via the inner
+    /// `MidTier` ordering.
+    Mid(MidTier),
+    /// Post-cycle gate — agent postcondition / sign-off work.
+    /// Strictly the least-urgent phase. Wins only when no Mid-phase
+    /// axis emits anything (the empty-set arm collapses through
+    /// Mid into Post if Post emits).
+    Post,
+}
+
+/// In-cycle priority lattice. Used only inside [`Urgency::Mid`];
+/// `Pre` and `Post` are singletons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum MidTier {
     /// In-loop actions that make unconditional forward progress.
     /// MUST preempt any blocking handoff — passing one up to pick
     /// a Wait/Human halt ends the iteration with the target still
@@ -178,14 +201,9 @@ pub enum Urgency {
     /// Active advancement that does not unblock but raises the
     /// target's tier.
     Advancing,
-    /// Non-blocking metadata cleanup. Sorts ahead of
-    /// [`Self::Closeout`] so cleanup completes before the final
-    /// sign-off gate fires.
+    /// Non-blocking metadata cleanup. Sorts last within `Mid`;
+    /// `Urgency::Post` still wins overall ordering below `Mid`.
     Hygiene,
-    /// Strictly least-urgent tier — the final sign-off gate. By
-    /// being last, its handoff is conditional on every other axis
-    /// being silent.
-    Closeout,
 }
 
 /// What dispatching this action would do to the blocker state.
@@ -223,59 +241,83 @@ mod tests {
             kind,
             effect: ActionEffect::Full { log: "test".into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("test:blocker"),
         }
     }
 
     #[test]
-    fn urgency_sorts_opening_first() {
+    fn urgency_sorts_pre_first_post_last() {
         let mut us = [
-            Urgency::Closeout,
-            Urgency::Hygiene,
-            Urgency::Critical,
-            Urgency::BlockingHuman,
-            Urgency::BlockingFix,
-            Urgency::Advancing,
-            Urgency::BlockingWait,
-            Urgency::Opening,
+            Urgency::Post,
+            Urgency::Mid(MidTier::Hygiene),
+            Urgency::Mid(MidTier::Critical),
+            Urgency::Mid(MidTier::BlockingHuman),
+            Urgency::Mid(MidTier::BlockingFix),
+            Urgency::Mid(MidTier::Advancing),
+            Urgency::Mid(MidTier::BlockingWait),
+            Urgency::Pre,
         ];
         us.sort();
         assert_eq!(
             us,
             [
-                Urgency::Opening,
-                Urgency::Critical,
-                Urgency::BlockingFix,
-                Urgency::BlockingWait,
-                Urgency::BlockingHuman,
-                Urgency::Advancing,
-                Urgency::Hygiene,
-                Urgency::Closeout,
+                Urgency::Pre,
+                Urgency::Mid(MidTier::Critical),
+                Urgency::Mid(MidTier::BlockingFix),
+                Urgency::Mid(MidTier::BlockingWait),
+                Urgency::Mid(MidTier::BlockingHuman),
+                Urgency::Mid(MidTier::Advancing),
+                Urgency::Mid(MidTier::Hygiene),
+                Urgency::Post,
             ]
         );
     }
 
     #[test]
-    fn opening_is_strictly_most_urgent() {
-        assert!(Urgency::Opening < Urgency::Critical);
-        assert!(Urgency::Opening < Urgency::BlockingFix);
-        assert!(Urgency::Opening < Urgency::BlockingWait);
-        assert!(Urgency::Opening < Urgency::BlockingHuman);
-        assert!(Urgency::Opening < Urgency::Advancing);
-        assert!(Urgency::Opening < Urgency::Hygiene);
-        assert!(Urgency::Opening < Urgency::Closeout);
+    fn pre_is_strictly_most_urgent() {
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::Critical));
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::BlockingFix));
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::BlockingWait));
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::BlockingHuman));
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::Advancing));
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::Hygiene));
+        assert!(Urgency::Pre < Urgency::Post);
     }
 
     #[test]
-    fn closeout_is_strictly_least_urgent() {
-        assert!(Urgency::Hygiene < Urgency::Closeout);
-        assert!(Urgency::Advancing < Urgency::Closeout);
-        assert!(Urgency::BlockingHuman < Urgency::Closeout);
-        assert!(Urgency::BlockingWait < Urgency::Closeout);
-        assert!(Urgency::BlockingFix < Urgency::Closeout);
-        assert!(Urgency::Critical < Urgency::Closeout);
-        assert!(Urgency::Opening < Urgency::Closeout);
+    fn post_is_strictly_least_urgent() {
+        assert!(Urgency::Mid(MidTier::Hygiene) < Urgency::Post);
+        assert!(Urgency::Mid(MidTier::Advancing) < Urgency::Post);
+        assert!(Urgency::Mid(MidTier::BlockingHuman) < Urgency::Post);
+        assert!(Urgency::Mid(MidTier::BlockingWait) < Urgency::Post);
+        assert!(Urgency::Mid(MidTier::BlockingFix) < Urgency::Post);
+        assert!(Urgency::Mid(MidTier::Critical) < Urgency::Post);
+        assert!(Urgency::Pre < Urgency::Post);
+    }
+
+    #[test]
+    fn mid_tier_internal_order_critical_first() {
+        let mut tiers = [
+            MidTier::Hygiene,
+            MidTier::Critical,
+            MidTier::BlockingHuman,
+            MidTier::BlockingFix,
+            MidTier::Advancing,
+            MidTier::BlockingWait,
+        ];
+        tiers.sort();
+        assert_eq!(
+            tiers,
+            [
+                MidTier::Critical,
+                MidTier::BlockingFix,
+                MidTier::BlockingWait,
+                MidTier::BlockingHuman,
+                MidTier::Advancing,
+                MidTier::Hygiene,
+            ]
+        );
     }
 
     #[test]

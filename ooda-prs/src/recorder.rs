@@ -1266,6 +1266,7 @@ mod tests {
     use super::*;
     use crate::decide::action::{ActionEffect, ActionKind, TargetEffect, Urgency};
     use crate::ids::BlockerKey;
+    use ooda_core::MidTier;
     use ooda_core::{HandoffPrompt, PollingInterval};
 
     // ─── recorder JSONL schema goldens ─────────────────────────────
@@ -1280,7 +1281,7 @@ mod tests {
             kind: ActionKind::Rebase,
             effect,
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("rebase-needed"),
         }
     }

@@ -46,7 +46,7 @@ impl<K: ActionKindName> Action<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{ActionEffect, TargetEffect, Urgency};
+    use crate::action::{ActionEffect, MidTier, TargetEffect, Urgency};
     use serde::Serialize;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,7 +70,7 @@ mod tests {
             kind,
             effect: ActionEffect::Full { log: desc.into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::for_test(blocker),
         }
     }

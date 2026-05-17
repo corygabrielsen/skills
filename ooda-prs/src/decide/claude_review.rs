@@ -11,7 +11,7 @@ use crate::ids::{BlockerKey, PullRequestNumber};
 use crate::orient::OrientedState;
 use crate::orient::claude_review::ClaudeReview;
 
-use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
 #[must_use]
 pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
@@ -44,7 +44,7 @@ pub(super) fn candidates(oriented: &OrientedState, pr: PullRequestNumber) -> Vec
         kind,
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Neutral,
-        urgency: Urgency::Hygiene,
+        urgency: Urgency::Mid(MidTier::Hygiene),
         blocker: BlockerKey::from_static("claude_review_fresh"),
     }]
 }
@@ -60,6 +60,7 @@ mod tests {
     use crate::orient::reviews::{PendingReviews, ReviewSummary};
     use crate::orient::state::PullRequestProjection;
     use chrono::{DateTime, Utc};
+    use ooda_core::MidTier;
 
     const HEAD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -163,7 +164,7 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::AddressClaudeReview { .. }));
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
-        assert_eq!(cs[0].urgency, Urgency::Hygiene);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Hygiene));
         assert_eq!(cs[0].target_effect, TargetEffect::Neutral);
         assert_eq!(cs[0].blocker.as_str(), "claude_review_fresh");
     }

@@ -204,7 +204,7 @@ pub enum Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Action, ActionEffect, TargetEffect, Urgency};
+    use crate::action::{Action, ActionEffect, MidTier, TargetEffect, Urgency};
     use crate::blocker::BlockerKey;
     use crate::handoff_prompt::HandoffPrompt;
 
@@ -216,7 +216,7 @@ mod tests {
             kind: K,
             effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("t"),
         }
     }
@@ -226,7 +226,7 @@ mod tests {
             kind: K,
             prompt: HandoffPrompt::new("handoff"),
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("t"),
         }
     }
@@ -302,7 +302,7 @@ mod tests {
             kind: K,
             effect,
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("t"),
         }
     }

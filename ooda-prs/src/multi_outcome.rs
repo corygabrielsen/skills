@@ -138,6 +138,7 @@ mod tests {
     use super::*;
     use crate::decide::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
     use crate::ids::BlockerKey;
+    use ooda_core::MidTier;
 
     fn slug(s: &str) -> RepoSlug {
         RepoSlug::parse(s).unwrap()
@@ -152,7 +153,7 @@ mod tests {
             kind: ActionKind::Rebase,
             effect: ActionEffect::Full { log: "x".into() },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingFix,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("rebase-needed"),
         }
     }
@@ -162,7 +163,7 @@ mod tests {
             kind: ActionKind::RequestApproval,
             prompt: ooda_core::HandoffPrompt::new("h"),
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("not-approved"),
         }
     }

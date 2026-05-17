@@ -26,7 +26,7 @@ use crate::ids::{BlockerKey, CodexReasoningLevel};
 use crate::observe::codex::VerdictClass;
 use crate::orient::codex_review::{CodexReviewReport, CodexReviewStatus};
 
-use super::action::{Action, ActionEffect, ActionKind, TargetEffect, Urgency};
+use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
 const AWAIT_INTERVAL_SECS: u64 = 30;
 
@@ -69,7 +69,7 @@ fn mk_run(level: CodexReasoningLevel, n: u32) -> Action {
             ),
         },
         target_effect: TargetEffect::Advances,
-        urgency: Urgency::Critical,
+        urgency: Urgency::Mid(MidTier::Critical),
         blocker: BlockerKey::typed("codex_review_runbatch", &level),
     }
 }
@@ -88,7 +88,7 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
         // `Neutral` would misclassify the await as non-advancing,
         // letting the merge-policy fallback emit a phantom candidate.
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingWait,
+        urgency: Urgency::Mid(MidTier::BlockingWait),
         blocker: BlockerKey::typed("codex_review_await", &level),
     }
 }
@@ -126,7 +126,7 @@ fn mk_address(
         kind: ActionKind::AddressCodexReviewBatch { level, count },
         effect: ActionEffect::Agent { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::BlockingFix,
+        urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::typed("codex_review_address", &level),
     }
 }
@@ -135,6 +135,7 @@ fn mk_address(
 mod tests {
     use super::*;
     use crate::observe::codex::VerdictRecord;
+    use ooda_core::MidTier;
     use std::path::PathBuf;
 
     fn report(status: CodexReviewStatus) -> CodexReviewReport {
@@ -164,7 +165,7 @@ mod tests {
             }
         ));
         assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
-        assert_eq!(cs[0].urgency, Urgency::Critical);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Critical));
     }
 
     #[test]
@@ -184,7 +185,7 @@ mod tests {
             }
         ));
         assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
-        assert_eq!(cs[0].urgency, Urgency::BlockingWait);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingWait));
     }
 
     #[test]
@@ -219,7 +220,7 @@ mod tests {
             other => panic!("expected AddressCodexReviewBatch, got {other:?}"),
         }
         assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
-        assert_eq!(cs[0].urgency, Urgency::BlockingFix);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
         // Description bundles verdict bodies.
         assert!(cs[0].rendered_payload().contains("slot 2"));
         assert!(cs[0].rendered_payload().contains("slot 3"));

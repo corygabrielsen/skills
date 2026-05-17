@@ -24,6 +24,7 @@ use crate::orient::copilot::copilot_signal;
 use crate::orient::cursor::cursor_signal;
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
+use ooda_core::MidTier;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
 use std::fmt::Write;
@@ -597,14 +598,14 @@ fn tiers(candidates: &[RankedCandidate]) -> Vec<TierBucket<'_>> {
 /// renames.
 fn urgency_label(u: Urgency) -> &'static str {
     match u {
-        Urgency::Opening => "opening",
-        Urgency::Critical => "critical",
-        Urgency::BlockingFix => "blocking fix",
-        Urgency::BlockingWait => "blocking wait",
-        Urgency::BlockingHuman => "blocking human",
-        Urgency::Advancing => "advancing",
-        Urgency::Hygiene => "hygiene",
-        Urgency::Closeout => "closeout",
+        Urgency::Pre => "opening",
+        Urgency::Mid(MidTier::Critical) => "critical",
+        Urgency::Mid(MidTier::BlockingFix) => "blocking fix",
+        Urgency::Mid(MidTier::BlockingWait) => "blocking wait",
+        Urgency::Mid(MidTier::BlockingHuman) => "blocking human",
+        Urgency::Mid(MidTier::Advancing) => "advancing",
+        Urgency::Mid(MidTier::Hygiene) => "hygiene",
+        Urgency::Post => "closeout",
     }
 }
 
@@ -615,6 +616,7 @@ mod tests {
     use crate::orient::copilot::CopilotActivity;
     use crate::orient::cursor::CursorActivity;
     use ooda_core::HandoffPrompt;
+    use ooda_core::MidTier;
 
     fn act(kind: ActionKind, urgency: Urgency, blocker: &str, log: &str) -> Action {
         Action {
@@ -640,7 +642,7 @@ mod tests {
     fn rerequest_copilot() -> Action {
         act(
             ActionKind::RerequestCopilot { symptom: None },
-            Urgency::Critical,
+            Urgency::Mid(MidTier::Critical),
             "copilot:rerequest",
             "rerequest copilot",
         )
@@ -651,7 +653,7 @@ mod tests {
             ooda_core::NonEmpty::singleton(crate::ids::CheckName::parse("ci/build").unwrap());
         act(
             ActionKind::WaitForCi { pending },
-            Urgency::BlockingWait,
+            Urgency::Mid(MidTier::BlockingWait),
             "ci:wait",
             "wait for ci/build",
         )
@@ -664,7 +666,7 @@ mod tests {
                 prompt: HandoffPrompt::new("approve"),
             },
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("review:approval"),
         }
     }
@@ -690,7 +692,7 @@ mod tests {
     fn next_md_winner_with_same_tier_alternative() {
         let other = act(
             ActionKind::Rebase,
-            Urgency::Critical,
+            Urgency::Mid(MidTier::Critical),
             "state:rebase",
             "rebase onto base",
         );
@@ -790,7 +792,7 @@ mod tests {
     fn blockers_dedup_preserves_first_seen_order() {
         let dup = act(
             ActionKind::RerequestCopilot { symptom: None },
-            Urgency::Critical,
+            Urgency::Mid(MidTier::Critical),
             "copilot:rerequest",
             "rerequest copilot again",
         );
@@ -873,7 +875,7 @@ mod tests {
     fn status_comment_winner_with_same_tier_alternative() {
         let other = act(
             ActionKind::Rebase,
-            Urgency::Critical,
+            Urgency::Mid(MidTier::Critical),
             "state:rebase",
             "rebase onto base",
         );
@@ -1044,7 +1046,7 @@ mod tests {
     fn preamble_winner_with_same_tier_alternative() {
         let other = act(
             ActionKind::Rebase,
-            Urgency::Critical,
+            Urgency::Mid(MidTier::Critical),
             "state:rebase",
             "rebase onto base",
         );
@@ -1181,7 +1183,7 @@ mod tests {
             kind: ActionKind::RequestApproval,
             prompt: HandoffPrompt::new("approve"),
             target_effect: TargetEffect::Blocks,
-            urgency: Urgency::BlockingHuman,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
             blocker: BlockerKey::from_static("review:approval"),
         };
         let decision = Decision::Halt(DecisionHalt::HumanNeeded(handoff));

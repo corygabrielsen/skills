@@ -5,6 +5,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use ooda_core::ExitCode;
+
 use crate::r#loop::{ConvergeOpts, converge};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -26,16 +28,17 @@ Options:
   -h, --help           This message
   --version            Version
 
-Exit codes:
-   0 success              target reached
-   1 stalled              no advancing actions
-   2 timeout              iteration cap hit
-   3 hil                  human action required
-   4 error                runtime failure
-   5 agent_needed         agent task required
-   6 terminal             subject reached terminal state
-   7 cancelled            SIGINT / SIGTERM
-   8 fitness_unavailable  fitness command unreachable
+Exit codes (see ooda-core::ExitCode for the family-wide table):
+   0 DoneSucceeded       target reached
+   3 HandoffHuman        human action required
+   4 HandoffAgent        agent task required
+   5 DoneAborted         subject reached terminal state
+   6 StuckRepeated       no advancing actions
+   7 StuckCapReached     iteration cap hit
+  64 UsageError          CLI parse / validation failure
+  70 BinaryError         caught runtime failure (incl. fitness unavailable, SIGINT trap)
+ 130 reserved            SIGINT (synthesized by shell when untrapped)
+ 143 reserved            SIGTERM (synthesized by shell when untrapped)
 "
     );
     std::process::exit(0);
@@ -43,7 +46,7 @@ Exit codes:
 
 fn die(msg: &str) -> ! {
     eprintln!("converge: {msg}");
-    std::process::exit(64);
+    std::process::exit(ExitCode::UsageError.as_u8().into());
 }
 
 /// djb2 hash for session-id derivation.
@@ -150,7 +153,7 @@ fn parse_args() -> ParsedArgs {
     }
 }
 
-pub(crate) fn run() -> i32 {
+pub(crate) fn run() -> ExitCode {
     let parsed = parse_args();
 
     let session_id = parsed.session_id.unwrap_or_else(|| {
@@ -184,10 +187,10 @@ pub(crate) fn run() -> i32 {
     };
 
     match converge(&opts, &cancelled) {
-        Ok(halt) => halt.status.exit_code(),
+        Ok(halt) => ExitCode::from(halt.status),
         Err(msg) => {
             eprintln!("converge: {msg}");
-            4 // error
+            ExitCode::BinaryError
         }
     }
 }

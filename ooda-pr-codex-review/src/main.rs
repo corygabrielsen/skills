@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+// Aliased to avoid collision with `ooda_core::ExitCode` (used via
+// the `Outcome::exit_code()` projection below). The two types are
+// distinct: `ExitCode` is the typed family-wide enum; `ProcessExitCode`
+// is the OS-facing `std::process::ExitCode` that `main` returns.
+use std::process::ExitCode as ProcessExitCode;
 use std::time::Duration;
 
 mod act;
@@ -172,6 +176,9 @@ fn parse_args() -> Result<Args, Outcome> {
                         "--max-iter must be ≥ 1; got negative value: {v}"
                     )));
                 }
+                if v.starts_with('+') {
+                    return Err(usage(&format!("--max-iter: leading `+` not accepted: {v}")));
+                }
                 let Ok(n) = v.parse::<u32>() else {
                     return Err(usage(&format!("--max-iter: not an integer: {v}")));
                 };
@@ -224,6 +231,11 @@ fn parse_args() -> Result<Args, Outcome> {
                         "--codex-review-n must be ≥ 1; got negative value: {v}"
                     )));
                 }
+                if v.starts_with('+') {
+                    return Err(usage(&format!(
+                        "--codex-review-n: leading `+` not accepted: {v}"
+                    )));
+                }
                 let Ok(n) = v.parse::<u32>() else {
                     return Err(usage(&format!("--codex-review-n: not an integer: {v}")));
                 };
@@ -271,6 +283,18 @@ fn parse_args() -> Result<Args, Outcome> {
             ceiling.as_str()
         )));
     }
+    // Cross-flag dependency: --codex-review-{bin,floor,n} all tune
+    // the codex-review axis. With --codex-review-ceiling unset, the
+    // axis is disabled and the tuning flags are silently ignored —
+    // reject the inconsistent invocation at the boundary instead of
+    // accepting it and dropping the values on the floor.
+    if codex_review_ceiling.is_none()
+        && (saw_codex_review_bin || saw_codex_review_floor || saw_codex_review_n)
+    {
+        return Err(usage(
+            "--codex-review-{bin|floor|n} requires --codex-review-ceiling",
+        ));
+    }
 
     Ok(Args {
         mode,
@@ -290,7 +314,7 @@ fn usage(msg: &str) -> Outcome {
     Outcome::usage_error(msg)
 }
 
-fn main() -> ExitCode {
+fn main() -> ProcessExitCode {
     let outcome = match parse_args() {
         Ok(args) => {
             let recorder = match Recorder::open(RecorderConfig {
@@ -334,7 +358,7 @@ fn run_mode(mode: Mode) -> RunMode {
     }
 }
 
-fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
+fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     let code = outcome.exit_code();
     let handoff_path = match (outcome, recorder.as_ref()) {
         (Outcome::HandoffAgent(h) | Outcome::HandoffHuman(h), Some(r)) => {
@@ -355,7 +379,7 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ExitCode {
         }
         recorder.record_outcome(outcome, code, &headline, handoff_path.as_deref());
     }
-    ExitCode::from(code)
+    ProcessExitCode::from(code)
 }
 
 fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {

@@ -6,6 +6,6 @@ mod r#loop;
 mod protocol;
 mod session;
 
-fn main() {
-    std::process::exit(cli::run());
+fn main() -> std::process::ExitCode {
+    cli::run().into()
 }

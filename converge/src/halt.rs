@@ -1,10 +1,13 @@
 //! Halt status and exit code mapping.
 
+use ooda_core::ExitCode;
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{Action, Automation, FitnessReport};
 
-/// Terminal outcome of the convergence loop.
+/// Terminal outcome of the convergence loop. Projects to the
+/// canonical [`ooda_core::ExitCode`] via the `From` impl below;
+/// numeric exit codes live only in `ExitCode`'s discriminants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum HaltStatus {
@@ -19,18 +22,18 @@ pub(crate) enum HaltStatus {
     FitnessUnavailable,
 }
 
-impl HaltStatus {
-    pub(crate) fn exit_code(self) -> i32 {
-        match self {
-            Self::Success => 0,
-            Self::Stalled => 1,
-            Self::Timeout => 2,
-            Self::Hil => 3,
-            Self::Error => 4,
-            Self::AgentNeeded => 5,
-            Self::Terminal => 6,
-            Self::Cancelled => 7,
-            Self::FitnessUnavailable => 8,
+impl From<HaltStatus> for ExitCode {
+    fn from(status: HaltStatus) -> Self {
+        match status {
+            HaltStatus::Success => ExitCode::DoneSucceeded,
+            HaltStatus::Stalled => ExitCode::StuckRepeated,
+            HaltStatus::Timeout => ExitCode::StuckCapReached,
+            HaltStatus::Hil => ExitCode::HandoffHuman,
+            HaltStatus::AgentNeeded => ExitCode::HandoffAgent,
+            HaltStatus::Terminal => ExitCode::DoneAborted,
+            HaltStatus::Error | HaltStatus::Cancelled | HaltStatus::FitnessUnavailable => {
+                ExitCode::BinaryError
+            }
         }
     }
 }
@@ -105,47 +108,56 @@ mod tests {
 
     #[test]
     fn exit_code_success() {
-        assert_eq!(HaltStatus::Success.exit_code(), 0);
+        assert_eq!(ExitCode::from(HaltStatus::Success), ExitCode::DoneSucceeded);
     }
 
     #[test]
     fn exit_code_stalled() {
-        assert_eq!(HaltStatus::Stalled.exit_code(), 1);
+        assert_eq!(ExitCode::from(HaltStatus::Stalled), ExitCode::StuckRepeated);
     }
 
     #[test]
     fn exit_code_timeout() {
-        assert_eq!(HaltStatus::Timeout.exit_code(), 2);
+        assert_eq!(
+            ExitCode::from(HaltStatus::Timeout),
+            ExitCode::StuckCapReached
+        );
     }
 
     #[test]
     fn exit_code_hil() {
-        assert_eq!(HaltStatus::Hil.exit_code(), 3);
+        assert_eq!(ExitCode::from(HaltStatus::Hil), ExitCode::HandoffHuman);
     }
 
     #[test]
     fn exit_code_error() {
-        assert_eq!(HaltStatus::Error.exit_code(), 4);
+        assert_eq!(ExitCode::from(HaltStatus::Error), ExitCode::BinaryError);
     }
 
     #[test]
     fn exit_code_agent_needed() {
-        assert_eq!(HaltStatus::AgentNeeded.exit_code(), 5);
+        assert_eq!(
+            ExitCode::from(HaltStatus::AgentNeeded),
+            ExitCode::HandoffAgent
+        );
     }
 
     #[test]
     fn exit_code_terminal() {
-        assert_eq!(HaltStatus::Terminal.exit_code(), 6);
+        assert_eq!(ExitCode::from(HaltStatus::Terminal), ExitCode::DoneAborted);
     }
 
     #[test]
     fn exit_code_cancelled() {
-        assert_eq!(HaltStatus::Cancelled.exit_code(), 7);
+        assert_eq!(ExitCode::from(HaltStatus::Cancelled), ExitCode::BinaryError);
     }
 
     #[test]
     fn exit_code_fitness_unavailable() {
-        assert_eq!(HaltStatus::FitnessUnavailable.exit_code(), 8);
+        assert_eq!(
+            ExitCode::from(HaltStatus::FitnessUnavailable),
+            ExitCode::BinaryError
+        );
     }
 
     #[test]

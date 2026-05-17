@@ -5,6 +5,7 @@ edition = "2024"
 description = "Local web companion UI for OODA agents — daemon + browser surface"
 
 [dependencies]
+ooda-core = { path = "../ooda-core" }
 ooda-state = { path = "../ooda-state" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "fs", "io-util"] }

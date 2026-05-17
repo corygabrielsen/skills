@@ -99,16 +99,16 @@ fn invalid_level_is_usage_error() {
 
 #[test]
 fn negative_n_is_usage_error() {
-    let (code, _, stderr) = run(&["--uncommitted", "-n", "-3"]);
+    let (code, _, stderr) = run(&["--uncommitted", "--codex-review-n", "-3"]);
     assert_eq!(code, 64);
-    assert!(stderr.contains("-n"));
+    assert!(stderr.contains("--codex-review-n"));
 }
 
 #[test]
 fn zero_n_is_usage_error() {
-    let (code, _, stderr) = run(&["--uncommitted", "-n", "0"]);
+    let (code, _, stderr) = run(&["--uncommitted", "--codex-review-n", "0"]);
     assert_eq!(code, 64);
-    assert!(stderr.contains("-n"));
+    assert!(stderr.contains("--codex-review-n"));
 }
 
 #[test]
@@ -205,7 +205,7 @@ Review comment: src/foo.rs:42\\nSQL injection detected.\\n'\n",
     cmd.env("OODA_AWAIT_SECS", "1"); // 1s between observations
     cmd.args([
         "--uncommitted",
-        "-n",
+        "--codex-review-n",
         "1", // single review keeps the test deterministic
         "--codex-bin",
         fake_codex.to_str().unwrap(),
@@ -253,7 +253,7 @@ fn end_to_end_with_fake_codex_clean_below_ceiling_halts_on_retro() {
     cmd.env("OODA_AWAIT_SECS", "1");
     cmd.args([
         "--uncommitted",
-        "-n",
+        "--codex-review-n",
         "1",
         "--codex-bin",
         fake_codex.to_str().unwrap(),
@@ -304,7 +304,7 @@ fn end_to_end_with_fake_codex_clean_at_ceiling_halts_done_fixed_point() {
         "xhigh",
         "--ceiling",
         "xhigh",
-        "-n",
+        "--codex-review-n",
         "1",
         "--codex-bin",
         fake_codex.to_str().unwrap(),
@@ -378,7 +378,7 @@ fn pull_request_mode_resolves_base_branch_before_spawning_codex() {
         "xhigh",
         "--ceiling",
         "xhigh",
-        "-n",
+        "--codex-review-n",
         "1",
         "--codex-bin",
         fake_codex.to_str().unwrap(),
@@ -423,7 +423,7 @@ fn codex_usage_error_exit_file_surfaces_as_binary_error() {
     cmd.env("OODA_AWAIT_SECS", "1");
     cmd.args([
         "--uncommitted",
-        "-n",
+        "--codex-review-n",
         "1",
         "--codex-bin",
         fake_codex.to_str().unwrap(),
@@ -572,7 +572,7 @@ Review comment: src/foo.rs:42\\nRegression detected.\\n'\n",
     seed.env("OODA_AWAIT_SECS", "1");
     seed.args([
         "--uncommitted",
-        "-n",
+        "--codex-review-n",
         "1",
         "--codex-bin",
         fake_codex.to_str().unwrap(),

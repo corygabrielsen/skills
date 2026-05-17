@@ -61,7 +61,10 @@ repos:
         files: ^ooda-(pr|prs|pr-codex-review)/src/.*\.rs$
 
       - id: validate-commit-message
-        name: Validate commit message (50/72 rule)
+        name: Validate commit subject (≤50 chars)
         entry: scripts/validate-commit-message.sh
+        # No PR-suffix room needed: this repo doesn't squash-merge through
+        # GitHub PRs. --max 50 disables the default 42/50 suffix-aware logic.
+        args: ["--max", "50"]
         language: script
         stages: [commit-msg]

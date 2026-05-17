@@ -156,7 +156,7 @@ fn build_rebase_prompt(
             let body = t
                 .body
                 .lines()
-                .map(|line| format!("   > {line}"))
+                .map(|line| format!("> {line}"))
                 .collect::<Vec<_>>()
                 .join("\n");
             Witness {

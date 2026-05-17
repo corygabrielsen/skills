@@ -183,11 +183,11 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
             .map_or_else(|| "unknown time".to_string(), Timestamp::to_string);
         let label = SingleLineString::new(format!("{} @ {when}", h.author));
         let body = if h.body.trim().is_empty() {
-            "   > (review body was empty)".to_string()
+            "> (review body was empty)".to_string()
         } else {
             h.body
                 .lines()
-                .map(|line| format!("   > {line}"))
+                .map(|line| format!("> {line}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -326,7 +326,7 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
         let body = t
             .body
             .lines()
-            .map(|line| format!("   > {line}"))
+            .map(|line| format!("> {line}"))
             .collect::<Vec<_>>()
             .join("\n");
         Witness {

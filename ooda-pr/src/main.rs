@@ -513,10 +513,17 @@ struct HandoffSnapshot {
 ///
 /// # Decoration layers
 ///
-/// - **Preamble (universal)**: prepends a dashboard projection —
+/// Both layers append to the per-action body so the artifact reads
+/// top-to-bottom as instructions-then-context: the per-action
+/// headline + body explain *what to do*; the appended preamble
+/// and context block answer *what state was observed and why this
+/// halt fired*. Reordering this is a deliberate UX choice — a
+/// reader scanning a long session lands on the action first.
+///
+/// - **Preamble (universal)**: appends a dashboard projection —
 ///   tier-grouped candidates, per-axis signals, blockers — to every
 ///   `HandoffHuman` and `HandoffAgent` outcome. Established by
-///   `prepend_dashboard_preamble`.
+///   `append_dashboard_preamble`.
 /// - **Per-action context (gated)**: appends PR URL / branch / CI
 ///   summary / review summary to `HandoffHuman` outcomes and to
 ///   `HandoffAgent` outcomes whose kind passes
@@ -537,12 +544,12 @@ fn decorate_handoff_human(
 ) -> Outcome {
     match outcome {
         Outcome::HandoffHuman(mut action) => {
-            prepend_dashboard_preamble(&mut action, snapshot);
+            append_dashboard_preamble(&mut action, snapshot);
             push_handoff_context(&mut action, slug, pr, snapshot);
             Outcome::HandoffHuman(action)
         }
         Outcome::HandoffAgent(mut action) => {
-            prepend_dashboard_preamble(&mut action, snapshot);
+            append_dashboard_preamble(&mut action, snapshot);
             if agent_action_needs_context(&action.kind) {
                 push_handoff_context(&mut action, slug, pr, snapshot);
             }
@@ -552,12 +559,14 @@ fn decorate_handoff_human(
     }
 }
 
-/// Prepend dashboard preamble sections onto the handoff prompt.
+/// Append dashboard preamble sections onto the handoff prompt
+/// (after the per-action body so the artifact reads
+/// instructions-then-context).
 ///
 /// Identity on either of two preconditions: snapshot absent
 /// (synthetic handoff outside the iteration loop) or dashboard
 /// projects no sections (terminal halts).
-fn prepend_dashboard_preamble(
+fn append_dashboard_preamble(
     handoff: &mut ooda_core::HandoffAction<decide::action::ActionKind>,
     snapshot: Option<&HandoffSnapshot>,
 ) {
@@ -568,9 +577,7 @@ fn prepend_dashboard_preamble(
     if preamble.is_empty() {
         return;
     }
-    let mut sections = preamble;
-    sections.extend(std::mem::take(&mut handoff.prompt.sections));
-    handoff.prompt.sections = sections;
+    handoff.prompt.sections.extend(preamble);
 }
 
 /// Allowlist predicate: which `HandoffAgent` kinds receive the

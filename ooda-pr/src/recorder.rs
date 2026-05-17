@@ -1275,6 +1275,31 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn write_handoff_md_persists_body_at_latest_path() {
+        let root = temp_root("handoff_md");
+        let _ = fs::remove_dir_all(&root);
+        let recorder = Recorder::open(RecorderConfig {
+            slug: RepoSlug::parse("example/widgets").unwrap(),
+            pr: PullRequestNumber::new(7).unwrap(),
+            mode: RunMode::Inspect,
+            max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
+            status_comment: false,
+            state_root: Some(root.clone()),
+            legacy_trace: None,
+        })
+        .unwrap();
+
+        let body = "Rebase onto base\n\nContinuation line.";
+        let path = recorder
+            .write_handoff_md(body)
+            .expect("write should succeed under temp root");
+
+        assert_eq!(path, recorder.pull_request_root().join("latest/handoff.md"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), body);
+        let _ = fs::remove_dir_all(root);
+    }
+
     // ── iteration_decided envelope golden ──
     //
     // Phase A (b272b80) added `dashboard_ref` as the 5th artifact in

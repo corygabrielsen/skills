@@ -431,8 +431,9 @@ Outcome's emission). Listed by emission site:
     `DoneClosed`), `AgentNeeded` → `HandoffAgent` (exit 4),
     `HumanNeeded` → `HandoffHuman` (exit 3). Payloads are not
     expanded in the iter-log line; the boundary emission carries
-    them — `Handoff*` in the prompt block, `Stuck*` in the
-    `:<BlockerKey>` projection, terminal/Paused with no payload.
+    them — `Handoff*` in `latest/handoff.md` (pointed to by the
+    stderr `  see:` line), `Stuck*` in the `:<BlockerKey>`
+    projection, terminal/Paused with no payload.
   - When `--status-comment` is set: `[iter N] comment: posted`,
     `[iter N] comment: <PostError>`, or silently skipped on the
     common dedup-no-change case. (See "comment lines" below.)

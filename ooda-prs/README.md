@@ -479,22 +479,24 @@ Outcome, no exception type).
 
 `render_outcome : &Outcome → write to stderr`. Each variant emits
 exactly one header line; `Handoff*` variants additionally emit a
-prompt block. See `SKILL.md` for the per-variant header format.
+single `see:` pointer to `latest/handoff.md`. See `SKILL.md` for
+the per-variant header format.
 
 ```
 header(Outcome) ::=                      ← left: variant; right: emitted stderr text
     DoneSucceeded                        "DoneMerged"
     StuckRepeated(a)                     "StuckRepeated: {a.kind.name()}:{a.blocker}"
     StuckCapReached(a)                   "StuckCapReached: {a.kind.name()}:{a.blocker}"
-    HandoffHuman(a)                      "HandoffHuman: {a.kind.name()}"  + prompt block
+    HandoffHuman(a)                      "HandoffHuman: {a.kind.name()}"  + see-pointer
     WouldAdvance(a)                      "WouldAdvance: {a.kind.name()}:{format_automation(a.automation)}"
-    HandoffAgent(a)                      "HandoffAgent: {a.kind.name()}"  + prompt block
+    HandoffAgent(a)                      "HandoffAgent: {a.kind.name()}"  + see-pointer
     BinaryError(msg)                     "BinaryError: {msg}"
     Paused                               "Paused"
     DoneAborted                          "DoneClosed"
     UsageError(msg)                      "UsageError: {msg}" + usage text
 
-prompt block ::= "  prompt: {a.description}"      ← 10-byte prefix is contract
+see-pointer ::= "  see: {abs-path-to-latest/handoff.md}"   ← 7-byte prefix is contract
+                                                            (prompt body is in the file)
 ```
 
 `ActionKind::name() : &'static str` returns the bare variant name

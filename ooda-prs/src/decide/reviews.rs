@@ -202,10 +202,9 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
             "No human CHANGES_REQUESTED review observed in the reviews \
              projection (rare bot-only path or REST/GraphQL race).",
         );
-        prompt
-            .push_paragraph("Step 1 — fetch the latest CHANGES_REQUESTED review body:".to_string());
-        prompt.push_paragraph("gh pr view --json reviews".to_string());
-        prompt.push_paragraph("Step 2 — address the requested changes.".to_string());
+        prompt.push_heading(3, "Step 1 — fetch the latest CHANGES_REQUESTED review body");
+        prompt.push_code("bash", "gh pr view --json reviews");
+        prompt.push_heading(3, "Step 2 — address the requested changes");
     }
 
     prompt.push_paragraph(
@@ -300,7 +299,9 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
     if !by_author.is_empty() {
         let bits: Vec<String> = by_author
             .iter()
-            .map(|(author, count)| format!("{}: {}", author, crate::text::count(*count, "issue")))
+            .map(|(author, count)| {
+                format!("**{}:** {}", author, crate::text::count(*count, "issue"))
+            })
             .collect();
         prompt.push_paragraph(format!("{}.", bits.join(" · ")));
     }
@@ -337,44 +338,43 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
     });
     prompt.push_witnesses(witnesses);
 
+    prompt.push_heading(3, "Step 1 — solve the class, not the instance");
     prompt.push_paragraph(
-        "Step 1 — for each issue, think deeply about the entire class of issue, \
-         in general, and solve the general form of the issue across all relevant \
+        "For each issue, think deeply about the entire class of issue, in \
+         general, and solve the general form of the issue across all relevant \
          code. This ensures the entire category of each issue is solved in \
          general, not just the specific instance the reviewer flagged.",
     );
 
     if outdated_count > 0 {
+        prompt.push_heading(3, "Step 1a — outdated threads only");
         prompt.push_paragraph(
-            "Step 1a (outdated threads only) — GitHub's `isOutdated` flag is \
-             positional, not content-relevance: the diff hunk that anchored the \
-             thread has moved (typically due to a refactor or rebase), so the \
-             comment no longer renders inline, but the logical feedback may \
-             still apply to the current code. For each outdated thread, locate \
-             the current code that the comment is about (often near the original \
-             `path:line` after a small refactor; sometimes elsewhere) and decide \
-             whether the feedback still applies. If it does, address it as you \
-             would a live thread. If it does not, resolve the thread with a \
-             brief reply explaining why.",
+            "GitHub's `isOutdated` flag is positional, not content-relevance: \
+             the diff hunk that anchored the thread has moved (typically due \
+             to a refactor or rebase), so the comment no longer renders \
+             inline, but the logical feedback may still apply to the current \
+             code. For each outdated thread, locate the current code that the \
+             comment is about (often near the original `path:line` after a \
+             small refactor; sometimes elsewhere) and decide whether the \
+             feedback still applies. If it does, address it as you would a \
+             live thread. If it does not, resolve the thread with a brief \
+             reply explaining why.",
         );
     }
 
+    prompt.push_heading(3, "Step 2 — mark each thread resolved");
     prompt.push_paragraph(
-        "Step 2 — after addressing (or judging not-applicable) each thread, mark \
-         it resolved on GitHub by running:"
-            .to_string(),
+        "After addressing (or judging not-applicable) each thread, mark it \
+         resolved on GitHub by running:",
     );
-
-    prompt.push_paragraph(
+    prompt.push_code(
+        "bash",
         "gh api graphql -f query='mutation { resolveReviewThread(input: \
-         { threadId: \"<thread_id>\" }) { thread { id } } }'"
-            .to_string(),
+         { threadId: \"<thread_id>\" }) { thread { id } } }'",
     );
-
     prompt.push_paragraph(
         "Substitute the per-thread `thread_id` shown in each entry above. The \
-         mutation is idempotent — already-resolved threads succeed as a no-op."
-            .to_string(),
+         mutation is idempotent — already-resolved threads succeed as a no-op.",
     );
 
     prompt
@@ -505,7 +505,7 @@ mod tests {
         let desc = &cs[0].rendered_payload();
         // Headline + per-author breakdown
         assert!(desc.contains("Address 2 unresolved review threads."));
-        assert!(desc.contains("Copilot: 2 issues."));
+        assert!(desc.contains("**Copilot:** 2 issues."));
         // Both witnesses inlined (location + body)
         assert!(desc.contains("Copilot @ src/foo.rs:42"));
         assert!(desc.contains("> unwrap should be ?"));

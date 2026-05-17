@@ -27,14 +27,12 @@ pub(crate) fn build_review_docs_prompt(
 
     prompt.push_paragraph(why_paragraph(state).to_string());
 
+    prompt.push_heading(3, "Step 1 — review the PR diff for doc/comment hygiene");
     prompt.push_paragraph(
-        "Step 1 — review the full PR diff for doc and comment hygiene. \
-         Run `git diff $merge_base..HEAD --` against the PR's working tree. \
+        "Run `git diff $merge_base..HEAD --` against the PR's working tree. \
          Inspect every changed `.rs` file's added or modified comments \
-         (`///`, `//`, `//!`) and module docs."
-            .to_string(),
+         (`///`, `//`, `//!`) and module docs.",
     );
-
     prompt.push_paragraph(
         "Apply these principles (repo convention; also see CONTRIBUTING.md \
          if present): default to NO comments — code should be self-documenting \
@@ -44,17 +42,17 @@ pub(crate) fn build_review_docs_prompt(
          invariant; no multi-paragraph narration — one short line per concept; \
          comments must say something the code can't say — outdated comments \
          rot faster than code because they lack linters. If you find slop: \
-         tighten or delete it in place. Commit your edits before Step 2."
-            .to_string(),
+         tighten or delete it in place. Commit your edits before Step 2.",
     );
 
-    prompt.push_paragraph(format!(
-        "Step 2 — run the attestation CLI:\n\n    {}\n\nThis reads HEAD and \
-         writes the attestation file atomically. State-root is resolved via \
-         the same env chain as ooda-pr (OODA_PR_STATE_HOME → \
-         XDG_STATE_HOME/ooda-pr → HOME/.local/state/ooda-pr).",
-        cli_invocation(pr, attest_path),
-    ));
+    prompt.push_heading(3, "Step 2 — run the attestation CLI");
+    prompt.push_code("bash", cli_invocation(pr, attest_path));
+    prompt.push_paragraph(
+        "This reads HEAD and writes the attestation file atomically. \
+         State-root is resolved via the same env chain as ooda-pr \
+         (OODA_PR_STATE_HOME → XDG_STATE_HOME/ooda-pr → \
+         HOME/.local/state/ooda-pr).",
+    );
 
     prompt
 }

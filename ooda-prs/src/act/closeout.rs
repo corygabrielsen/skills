@@ -33,36 +33,35 @@ pub(crate) fn build_closeout_prompt(
 
     prompt.push_paragraph(why_paragraph(state).to_string());
 
+    prompt.push_heading(3, "Step 1 — verify what no axis catches");
     prompt.push_paragraph(
-        "Step 1 — verify what no axis catches. Walk the PR diff one \
-         more time and check for: leftover scaffolding (TODO / XXX / \
-         FIXME, debug prints, commented-out code, dead helpers); \
-         description-to-diff alignment (the description describes \
-         what actually shipped); label appropriateness; commit-message \
-         hygiene; no accidental file inclusions (build artifacts, \
-         local config, secrets). Treat anything you'd flag in a human \
-         peer's PR as something to fix."
-            .to_string(),
+        "Walk the PR diff one more time and check for: leftover \
+         scaffolding (TODO / XXX / FIXME, debug prints, commented-out \
+         code, dead helpers); description-to-diff alignment (the \
+         description describes what actually shipped); label \
+         appropriateness; commit-message hygiene; no accidental file \
+         inclusions (build artifacts, local config, secrets). Treat \
+         anything you'd flag in a human peer's PR as something to fix.",
     );
 
+    prompt.push_heading(3, "Step 2 — cross-check the Dashboard preamble above");
     prompt.push_paragraph(
-        "Step 2 — cross-check the Dashboard preamble above. Per-axis \
-         state (CI, reviews, Copilot, Cursor, hygiene attestations) \
-         is the system's view of the PR. If anything reads stale or \
-         surprising, investigate before attesting — the gate is your \
-         word that the PR is genuinely ready, not just that the queue \
-         is empty."
-            .to_string(),
+        "Per-axis state (CI, reviews, Copilot, Cursor, hygiene \
+         attestations) is the system's view of the PR. If anything \
+         reads stale or surprising, investigate before attesting — \
+         the gate is your word that the PR is genuinely ready, not \
+         just that the queue is empty.",
     );
 
-    prompt.push_paragraph(format!(
-        "Step 3 — if everything checks out, run the attestation CLI:\n\n    {}\n\n\
-         If anything needs fixing, fix it and push. The SHA will \
+    prompt.push_heading(3, "Step 3 — run the attestation CLI");
+    prompt.push_paragraph("If everything checks out, run:");
+    prompt.push_code("bash", cli_invocation(pr, attest_path));
+    prompt.push_paragraph(
+        "If anything needs fixing, fix it and push. The SHA will \
          change and the cycle reopens automatically — do not attest \
          in that case. Attesting is the terminal act; only attest \
          when you are ready to hand off.",
-        cli_invocation(pr, attest_path),
-    ));
+    );
 
     prompt
 }

@@ -34,18 +34,17 @@ pub(crate) fn build_address_claude_review_prompt(
 
     prompt.push_paragraph(
         "Claude has posted review content past the last attestation. \
-         Address the threads and main review body, then re-attest at HEAD."
-            .to_string(),
+         Address the threads and main review body, then re-attest at HEAD.",
     );
 
+    prompt.push_heading(3, "Step 1 — address the review");
     prompt.push_paragraph(format!(
-        "Step 1 — run `/loop-address-pr-feedback --pr {pr}`. This skill \
-         polls all three GitHub surfaces where Claude lands (issue \
-         comments, review comments, review threads), triages each \
-         finding, fixes valid ones, replies, resolves threads, and \
-         re-requests review. The main Claude review body is inlined \
-         below; inline threads (if any) are addressed automatically \
-         by the skill."
+        "Run `/loop-address-pr-feedback --pr {pr}`. This skill polls all \
+         three GitHub surfaces where Claude lands (issue comments, review \
+         comments, review threads), triages each finding, fixes valid \
+         ones, replies, resolves threads, and re-requests review. The \
+         main Claude review body is inlined below; inline threads (if \
+         any) are addressed automatically by the skill."
     ));
 
     let label = SingleLineString::new(format!(
@@ -64,14 +63,14 @@ pub(crate) fn build_address_claude_review_prompt(
     };
     prompt.push_witnesses(NonEmpty::singleton(Witness { label, body, url }));
 
-    prompt.push_paragraph(format!(
-        "Step 2 — run the attestation CLI:\n\n    {}\n\nThis reads HEAD \
-         and writes the attestation file atomically. State-root is \
-         resolved via the same env chain as ooda-pr (OODA_PR_STATE_HOME \
-         → XDG_STATE_HOME/ooda-pr → HOME/.local/state/ooda-pr) if \
-         --state-root is omitted.",
-        cli_invocation(pr, attest_path),
-    ));
+    prompt.push_heading(3, "Step 2 — run the attestation CLI");
+    prompt.push_code("bash", cli_invocation(pr, attest_path));
+    prompt.push_paragraph(
+        "This reads HEAD and writes the attestation file atomically. \
+         State-root is resolved via the same env chain as ooda-pr \
+         (OODA_PR_STATE_HOME → XDG_STATE_HOME/ooda-pr → \
+         HOME/.local/state/ooda-pr) if --state-root is omitted.",
+    );
 
     prompt
 }

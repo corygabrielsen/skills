@@ -32,18 +32,20 @@ pub(crate) fn build_sync_pull_request_metadata_prompt(
         why_paragraph(state),
     ));
 
+    prompt.push_heading(3, "Step 1 — update title, description, and labels");
     prompt.push_paragraph(
-        "Step 1 — update the PR title, description, and labels to match HEAD. \
-         Refer to the repository's CONTRIBUTING.md for conventions. Keep it tight."
-            .to_string(),
+        "Update the PR title, description, and labels to match HEAD. \
+         Refer to the repository's CONTRIBUTING.md for conventions. \
+         Keep it tight.",
     );
 
-    prompt.push_paragraph(format!(
-        "Step 2 — run the attestation CLI:\n\n    {}\n\nThis reads HEAD and \
-         writes the attestation file (SHA, timestamp, schema version) \
-         atomically. You do not construct JSON or look up the SHA yourself.",
-        cli_invocation(pr, attest_path),
-    ));
+    prompt.push_heading(3, "Step 2 — run the attestation CLI");
+    prompt.push_code("bash", cli_invocation(pr, attest_path));
+    prompt.push_paragraph(
+        "This reads HEAD and writes the attestation file (SHA, \
+         timestamp, schema version) atomically. You do not construct \
+         JSON or look up the SHA yourself.",
+    );
 
     prompt
 }

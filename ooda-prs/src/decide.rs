@@ -10,7 +10,7 @@ pub(crate) mod action;
 pub(crate) mod ci;
 mod claude_review;
 mod closeout;
-mod copilot;
+pub(crate) mod copilot;
 pub(crate) mod cursor;
 pub(crate) mod decision;
 mod doc_review;

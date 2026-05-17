@@ -9,4 +9,5 @@
 //! this module establishes the per-axis shape only.
 
 pub(crate) mod ci;
+pub(crate) mod copilot;
 pub(crate) mod cursor;

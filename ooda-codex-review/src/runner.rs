@@ -13,6 +13,14 @@
 //! All four collapse into [`HaltReason`]; exit-code mapping lives
 //! on [`HaltReason::exit_code`].
 //!
+//! # Event emission
+//!
+//! Each iteration emits a fixed sequence of events through
+//! [`EventSink`] for audit: orient snapshot → decision → (act
+//! result OR halt reason). Snapshots large enough to dwarf an
+//! events line go through the sink's content-addressed blob
+//! store; everything else is inlined on the event.
+//!
 //! # Structural invariants
 //!
 //! - `LoopConfig::max_iterations` is `NonZeroU32`, so iter 1 is
@@ -24,17 +32,19 @@
 
 use std::num::NonZeroU32;
 
+use ooda_state::{EventBody, RunWriter};
+
 use crate::act::{ActContext, ActError, act};
-use crate::decide::action::{Action, CodexReasoningLevel};
+use crate::decide::action::{Action, ActionEffect, CodexReasoningLevel};
 use crate::decide::decide;
-use crate::decide::decision::{Decision, HaltReason};
+use crate::decide::decision::{Decision, DecisionHalt, HaltReason};
 use crate::ids::{RepoId, ReviewTarget};
 use crate::observe::codex::CodexObservations;
 use crate::orient::OrientedState;
 use crate::orient::orient;
 
 #[derive(Debug)]
-pub enum LoopError {
+pub(crate) enum LoopError {
     Observe(String),
     Act(ActError),
 }
@@ -71,6 +81,67 @@ impl Default for LoopConfig {
     }
 }
 
+/// Per-iteration event emitter backed by an [`ooda_state::RunWriter`].
+/// One method per OODA stage; each writes one [`EventBody`] (and
+/// optionally a content-addressed blob) to the run's events.jsonl.
+///
+/// Errors are intentionally swallowed: the loop's correctness must
+/// not regress on audit-trail filesystem failures. The exit code
+/// the binary returns remains the authoritative outcome signal.
+pub(crate) struct EventSink<'a> {
+    writer: &'a mut RunWriter,
+}
+
+impl<'a> EventSink<'a> {
+    pub(crate) fn new(writer: &'a mut RunWriter) -> Self {
+        Self { writer }
+    }
+
+    fn oriented(&mut self, iter: u32, oriented: &OrientedState) {
+        let Ok(bytes) = serde_json::to_vec(oriented) else {
+            return;
+        };
+        let Ok(blob) = self.writer.write_blob(&bytes, "json") else {
+            return;
+        };
+        let _ = self.writer.append(EventBody::IterationOriented {
+            iteration: iter,
+            blob,
+        });
+    }
+
+    fn decided(&mut self, iter: u32, decision: &Decision) {
+        let kind = match decision {
+            Decision::Execute(a) => a.kind.name().to_string(),
+            Decision::Halt(DecisionHalt::Success) => "Halt::Success".into(),
+            Decision::Halt(DecisionHalt::Terminal(t)) => format!("Halt::Terminal::{t:?}"),
+            Decision::Halt(DecisionHalt::AgentNeeded(_)) => "Halt::AgentNeeded".into(),
+            Decision::Halt(DecisionHalt::HumanNeeded(_)) => "Halt::HumanNeeded".into(),
+        };
+        let _ = self.writer.append(EventBody::IterationDecided {
+            iteration: iter,
+            decision_kind: kind,
+        });
+    }
+
+    fn acted(&mut self, iter: u32, action: &Action) {
+        let body = match &action.effect {
+            ActionEffect::Wait { interval, .. } => EventBody::IterationWaited {
+                iteration: iter,
+                action_kind: action.kind.name().to_string(),
+                interval_ms: u64::try_from(interval.as_duration().as_millis()).unwrap_or(u64::MAX),
+            },
+            ActionEffect::Full { .. } | ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
+                EventBody::IterationExecuted {
+                    iteration: iter,
+                    action_kind: action.kind.name().to_string(),
+                }
+            }
+        };
+        let _ = self.writer.append(body);
+    }
+}
+
 /// One iteration's typed outcome: either an early halt (decision
 /// halt or stall) or a completed Execute, the latter retained as
 /// the running "last attempted" anchor for cap-halt diagnostics.
@@ -84,16 +155,16 @@ enum IterStep {
 /// `observe` is supplied as a closure so the test harness can
 /// substitute stub observations without touching subprocesses.
 ///
-/// `on_state` fires once per iteration after decide and before
-/// act, with the iteration index, oriented state, and chosen
-/// decision; halt decisions also fire it before returning.
+/// `events` collects per-stage events (orient snapshot, decision,
+/// act result) on the run's events.jsonl. Audit-only — failures
+/// to write events do not surface as `LoopError`.
 pub(crate) fn run_loop(
     repo_id: &RepoId,
     target: &ReviewTarget,
     config: LoopConfig,
     ctx: &ActContext,
     mut observe: impl FnMut(&RepoId, &ReviewTarget) -> Result<CodexObservations, String>,
-    mut on_state: impl FnMut(u32, &OrientedState, &Decision),
+    events: &mut EventSink<'_>,
 ) -> Result<HaltReason, LoopError> {
     let max_iter = config.max_iterations.get();
 
@@ -106,7 +177,7 @@ pub(crate) fn run_loop(
         config.ceiling,
         ctx,
         &mut observe,
-        &mut on_state,
+        events,
         1,
         None,
     )? {
@@ -126,7 +197,7 @@ pub(crate) fn run_loop(
             config.ceiling,
             ctx,
             &mut observe,
-            &mut on_state,
+            events,
             iter,
             last_non_wait_key.as_ref(),
         )?;
@@ -152,14 +223,15 @@ fn run_iter(
     ceiling: CodexReasoningLevel,
     ctx: &ActContext,
     mut observe: impl FnMut(&RepoId, &ReviewTarget) -> Result<CodexObservations, String>,
-    mut on_state: impl FnMut(u32, &OrientedState, &Decision),
+    events: &mut EventSink<'_>,
     iter: u32,
     last_non_wait_key: Option<&ooda_core::StallKey>,
 ) -> Result<IterStep, LoopError> {
     let obs = observe(repo_id, target).map_err(LoopError::Observe)?;
     let oriented = orient(&obs, ceiling);
+    events.oriented(iter, &oriented);
     let decision = decide(&oriented);
-    on_state(iter, &oriented, &decision);
+    events.decided(iter, &decision);
 
     match decision {
         Decision::Halt(halt) => Ok(IterStep::Halt(HaltReason::Decision(halt))),
@@ -169,6 +241,7 @@ fn run_iter(
                 return Ok(IterStep::Halt(HaltReason::Stalled(action)));
             }
             act(&action, ctx).map_err(LoopError::Act)?;
+            events.acted(iter, &action);
             Ok(IterStep::Executed(action))
         }
     }
@@ -180,8 +253,10 @@ mod tests {
     use crate::ids::{BranchName, RepoId};
     use crate::observe::codex::VerdictClass;
     use crate::observe::codex::batch::{BatchState, VerdictRecord};
+    use ooda_state::{RunId, StateRoot};
     use std::cell::RefCell;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
     fn repo_id() -> RepoId {
         RepoId::parse("ooda-codex-review-test").unwrap()
@@ -244,6 +319,23 @@ mod tests {
         }
     }
 
+    /// Fresh state-root + started run for tests that need an
+    /// `EventSink` but don't care about reading back what was
+    /// written. Returns the temp dir so it lives for the test's
+    /// scope.
+    fn fresh_writer() -> (TempDir, RunWriter) {
+        let tmp = TempDir::new().unwrap();
+        let state = StateRoot::new(tmp.path()).unwrap();
+        let mut writer = state.create_run(RunId::generate()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "codex-review".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        (tmp, writer)
+    }
+
     // ── iter-1 guaranteed run ──
 
     #[test]
@@ -257,19 +349,17 @@ mod tests {
                 verdicts: vec![record(1, VerdictClass::Clean)],
             })
         }]);
-        let mut callbacks = 0;
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
         let halt = run_loop(
             &repo_id(),
             &target(),
             loop_cfg(1),
             &ctx(),
             observe,
-            |_iter, _o, _d| {
-                callbacks += 1;
-            },
+            &mut sink,
         )
         .unwrap();
-        assert_eq!(callbacks, 1, "on_state must fire exactly once on iter 1");
         assert!(matches!(
             halt,
             HaltReason::Decision(crate::decide::decision::DecisionHalt::Terminal(_))
@@ -297,13 +387,15 @@ mod tests {
         let observe = scripted_observe(vec![obs(BatchState::Complete {
             verdicts: vec![record(1, VerdictClass::HasIssues)],
         })]);
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
         let halt = run_loop(
             &repo_id(),
             &target(),
             loop_cfg(10),
             &ctx(),
             observe,
-            |_, _, _| {},
+            &mut sink,
         )
         .unwrap();
         assert!(matches!(
@@ -337,13 +429,15 @@ mod tests {
                 completed: 2,
             }),
         ]);
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
         let halt = run_loop(
             &repo_id(),
             &target(),
             loop_cfg(2),
             &ctx(),
             observe,
-            |_, _, _| {},
+            &mut sink,
         )
         .unwrap();
         // Cap reached with the last AwaitReviews as last_attempted —
@@ -381,13 +475,15 @@ mod tests {
                 completed: 2,
             }),
         ]);
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
         let halt = run_loop(
             &repo_id(),
             &target(),
             loop_cfg(2),
             &ctx(),
             observe,
-            |_, _, _| {},
+            &mut sink,
         )
         .unwrap();
         match halt {
@@ -411,18 +507,75 @@ mod tests {
         let observe = |_: &_, _: &_| -> Result<CodexObservations, String> {
             Err("subprocess crashed".to_string())
         };
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
         let err = run_loop(
             &repo_id(),
             &target(),
             loop_cfg(3),
             &ctx(),
             observe,
-            |_, _, _| {},
+            &mut sink,
         )
         .unwrap_err();
         match err {
             LoopError::Observe(e) => assert!(e.contains("subprocess crashed")),
             other @ LoopError::Act(_) => panic!("expected Observe error, got {other:?}"),
         }
+    }
+
+    // ── event emission ──
+
+    #[test]
+    fn iteration_emits_orient_and_decision_events() {
+        let observe = scripted_observe(vec![obs(BatchState::Complete {
+            verdicts: vec![record(1, VerdictClass::HasIssues)],
+        })]);
+        let tmp = TempDir::new().unwrap();
+        let state = StateRoot::new(tmp.path()).unwrap();
+        let run_id = RunId::generate();
+        let mut writer = state.create_run(run_id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "codex-review".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        {
+            let mut sink = EventSink::new(&mut writer);
+            let _ = run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(2),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap();
+        }
+        let reader = state.open_run(run_id).unwrap();
+        let kinds: Vec<&'static str> = reader
+            .events()
+            .unwrap()
+            .iter()
+            .map(|e| match &e.body {
+                EventBody::RunStarted { .. } => "run_started",
+                EventBody::IterationObserved { .. } => "iteration_observed",
+                EventBody::IterationOriented { .. } => "iteration_oriented",
+                EventBody::IterationDecided { .. } => "iteration_decided",
+                EventBody::IterationHandoff { .. } => "iteration_handoff",
+                EventBody::IterationExecuted { .. } => "iteration_executed",
+                EventBody::IterationWaited { .. } => "iteration_waited",
+                EventBody::RunHalted { .. } => "run_halted",
+                EventBody::RunStalled { .. } => "run_stalled",
+                EventBody::RunCapReached { .. } => "run_cap_reached",
+                EventBody::DomainSpecific { .. } => "domain_specific",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["run_started", "iteration_oriented", "iteration_decided"],
+            "AgentNeeded halt should emit orient + decision but no act/halt event",
+        );
     }
 }

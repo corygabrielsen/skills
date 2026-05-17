@@ -32,7 +32,6 @@ pub mod atomic_io;
 pub mod attest;
 pub mod axis;
 pub mod blocker;
-pub mod current_manifest;
 pub mod decision;
 pub mod exit_code;
 pub mod handoff_prompt;
@@ -43,14 +42,12 @@ pub mod pull_request_state;
 pub mod rate_limit;
 pub mod single_line_string;
 pub mod stall_key;
-pub mod state_root;
 
 pub use action::{
     Action, ActionEffect, ActionKindName, HandoffAction, MidTier, TargetEffect, Urgency,
 };
 pub use axis::Axis;
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};
-pub use current_manifest::{CurrentManifest, SCHEMA_VERSION as CURRENT_MANIFEST_SCHEMA_VERSION};
 pub use decision::{
     Decision, DecisionHalt, HaltReason, Terminal, classify, decide_from_candidates,
 };

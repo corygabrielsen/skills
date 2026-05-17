@@ -42,7 +42,7 @@ use crate::observe::github::gh::GhError;
 use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
-use crate::state::Recorder;
+use crate::recorder::Recorder;
 use ooda_core::{Axis, decide_from_candidates};
 
 /// Driver-level orchestration: invoke each axis's `candidates()` via

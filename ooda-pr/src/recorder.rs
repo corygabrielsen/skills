@@ -31,7 +31,10 @@ use std::time::Instant;
 use serde::Serialize;
 use serde_json::json;
 
-use ooda_state::{BlobRef, EventBody, RunId, RunWriter, StateError, StateRoot, resolve_state_root};
+use ooda_state::{
+    BlobRef, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunId, RunWriter,
+    StateError, StateRoot, domain_specific, resolve_state_root, terminal_event,
+};
 
 use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
@@ -238,24 +241,29 @@ impl Recorder {
     /// Persist a handoff prompt body as a content-addressed blob and
     /// return its absolute path. The stderr `see:` pointer targets
     /// this file verbatim.
-    pub(crate) fn write_handoff_md(&self, prompt: &str) -> Option<PathBuf> {
+    ///
+    /// `outcome` names which handoff variant is in flight
+    /// ([`OutcomeKind::HandoffHuman`] or [`OutcomeKind::HandoffAgent`]);
+    /// the emitted [`EventBody::IterationHandoff`] carries the
+    /// outcome's wire variant name so the reader can pivot on the
+    /// same token the stderr header uses.
+    pub(crate) fn write_handoff_md(
+        &self,
+        prompt: &str,
+        outcome: OutcomeKind,
+        action_kind: &str,
+    ) -> Option<PathBuf> {
         let mut inner = self.inner.lock().ok()?;
         let blob = inner.writer.write_blob(prompt.as_bytes(), "md").ok()?;
-        let path = inner
-            .root
-            .path()
-            .join("runs")
-            .join(inner.writer.run_id().as_str())
-            .join("blobs")
-            .join(format!("{}.{}", blob.sha, blob.ext));
+        let path = ooda_state::blob_path(inner.root.path(), inner.writer.run_id().as_str(), &blob);
         let iteration = inner.current_iteration?;
         // Best-effort: announce the handoff via an event referencing
         // the blob. The path is also derivable from (run_id, sha) so
         // even a failed append leaves the file reachable.
         let _ = inner.writer.append(EventBody::IterationHandoff {
             iteration,
-            variant: "Pending".into(),
-            action_kind: "Pending".into(),
+            variant: outcome.variant_name().to_string(),
+            action_kind: action_kind.to_string(),
             blob,
         });
         Some(path)
@@ -266,6 +274,14 @@ impl Recorder {
             if let Some(file) = inner.legacy_trace.as_mut() {
                 writeln!(file, "{line}")?;
             }
+            let iteration = inner.current_iteration;
+            inner.writer.append(domain_specific(
+                DomainKind::TraceLine,
+                json!({
+                    "iteration": iteration,
+                    "line": line,
+                }),
+            ))?;
             Ok(())
         });
     }
@@ -296,19 +312,46 @@ impl Recorder {
             inner.current_iteration = Some(iteration);
 
             let obs_blob = inner.write_json_blob(observations)?;
-            let oriented_blob = inner.write_json_blob(inputs)?;
-            let _ = inner.write_json_blob(candidates)?;
-            let _ = inner.write_json_blob(decision)?;
-            let _ = inner.write_json_blob(&dashboard)?;
-
             inner.writer.append(EventBody::IterationObserved {
                 iteration,
                 blob: obs_blob,
             })?;
+
+            let oriented_blob = inner.write_json_blob(inputs)?;
             inner.writer.append(EventBody::IterationOriented {
                 iteration,
                 blob: oriented_blob,
             })?;
+
+            let candidates_blob = inner.write_json_blob(candidates)?;
+            inner.writer.append(domain_specific(
+                DomainKind::IterationCandidates,
+                json!({
+                    "iteration": iteration,
+                    "blob": candidates_blob,
+                    "count": candidates.len(),
+                }),
+            ))?;
+
+            let dashboard_blob = inner.write_json_blob(&dashboard)?;
+            inner.writer.append(domain_specific(
+                DomainKind::IterationDashboard,
+                json!({
+                    "iteration": iteration,
+                    "blob": dashboard_blob,
+                }),
+            ))?;
+
+            let decision_blob = inner.write_json_blob(decision)?;
+            inner.writer.append(domain_specific(
+                DomainKind::IterationDecisionEnvelope,
+                json!({
+                    "iteration": iteration,
+                    "blob": decision_blob,
+                    "decision": decision_projection(decision),
+                }),
+            ))?;
+
             inner.writer.append(EventBody::IterationDecided {
                 iteration,
                 decision_kind: decision_kind(decision),
@@ -319,26 +362,44 @@ impl Recorder {
 
     pub(crate) fn record_observe_start(&self, iteration: u32) {
         self.best_effort(|inner| {
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "observe_started".into(),
-                payload: json!({ "iteration": iteration }),
-            })?;
+            inner.writer.append(domain_specific(
+                DomainKind::ObserveStarted,
+                json!({ "iteration": iteration }),
+            ))?;
             Ok(())
         });
     }
 
-    pub(crate) fn record_observe_end(&self, iteration: u32, result: Result<(), String>) {
-        let success = result.is_ok();
-        let error = result.err();
+    // Held by-value for shape-parity with the mirrored consumers
+    // across the 3 PR-side OODA binaries; `ObserveOutcome` owns
+    // heap-allocated fields and the recorder reads them all.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn record_observe_end(&self, iteration: u32, outcome: ObserveOutcome) {
+        let success = outcome.is_ok();
+        let kind = outcome.kind();
+        let error = outcome.error_message();
+        let retry_after_secs = match &outcome {
+            ObserveOutcome::RateLimited {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
+        };
+        let scope = match &outcome {
+            ObserveOutcome::RateLimited { scope, .. } => Some(scope.clone()),
+            _ => None,
+        };
         self.best_effort(|inner| {
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "observe_finished".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::ObserveFinished,
+                json!({
                     "iteration": iteration,
+                    "kind": kind,
                     "success": success,
                     "error": error,
+                    "rate_limit_scope": scope,
+                    "rate_limit_retry_after_secs": retry_after_secs,
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
@@ -352,14 +413,14 @@ impl Recorder {
         let summary = summary.into();
         self.best_effort(|inner| {
             let blob = inner.write_json_blob(rendered)?;
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "status_comment_rendered".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::StatusCommentRendered,
+                json!({
                     "iteration": iteration,
                     "summary": summary,
                     "blob": blob,
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
@@ -373,27 +434,27 @@ impl Recorder {
         let summary = summary.into();
         self.best_effort(|inner| {
             let blob = inner.write_json_blob(result)?;
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "status_comment_result".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::StatusCommentResult,
+                json!({
                     "iteration": iteration,
                     "summary": summary,
                     "blob": blob,
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
 
     pub(crate) fn record_action_start(&self, iteration: u32, action: &Action) {
         self.best_effort(|inner| {
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "action_started".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::ActionStarted,
+                json!({
                     "iteration": iteration,
                     "action": action_projection(action),
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
@@ -407,32 +468,39 @@ impl Recorder {
         let success = result.is_ok();
         let error = result.err();
         self.best_effort(|inner| {
-            inner.writer.append(EventBody::IterationExecuted {
-                iteration,
-                action_kind: action.kind.name().to_string(),
-            })?;
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "action_finished".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::ActionFinished,
+                json!({
                     "iteration": iteration,
                     "action": action_projection(action),
                     "success": success,
                     "error": error,
                 }),
-            })?;
+            ))?;
+            // `IterationExecuted` is the typed audit-trail marker for
+            // non-wait actions. Wait actions emit their own
+            // `IterationWaited` from `record_wait_end`; gating here
+            // keeps the two event streams disjoint.
+            if !action.effect.is_wait() {
+                inner.writer.append(EventBody::IterationExecuted {
+                    iteration,
+                    action_kind: action.kind.name().to_string(),
+                    success,
+                })?;
+            }
             Ok(())
         });
     }
 
     pub(crate) fn record_wait_start(&self, iteration: u32, action: &Action) {
         self.best_effort(|inner| {
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "wait_started".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::WaitStarted,
+                json!({
                     "iteration": iteration,
                     "action": action_projection(action),
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
@@ -450,6 +518,13 @@ impl Recorder {
                 action_kind: action.kind.name().to_string(),
                 interval_ms,
             })?;
+            inner.writer.append(domain_specific(
+                DomainKind::WaitFinished,
+                json!({
+                    "iteration": iteration,
+                    "action": action_projection(action),
+                }),
+            ))?;
             Ok(())
         });
     }
@@ -461,35 +536,45 @@ impl Recorder {
         headline: &str,
         handoff_path: Option<&Path>,
     ) {
-        let outcome_name = outcome_name(outcome).to_string();
+        let kind = outcome_kind(outcome);
+        let last_action = stall_action_kind(outcome);
         self.best_effort(|inner| {
             let outcome_blob = inner.write_json_blob(outcome)?;
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "outcome_artifact".into(),
-                payload: json!({
-                    "blob": outcome_blob,
+            inner.writer.append(domain_specific(
+                DomainKind::Outcome,
+                json!({
+                    "exit_code": code,
                     "headline": headline,
                     "handoff_path": handoff_path.map(|p| p.display().to_string()),
+                    "blob": outcome_blob,
                 }),
-            })?;
+            ))?;
             if let Some(file) = inner.legacy_trace.as_mut() {
                 writeln!(file, "exit={code}")?;
             }
-            let exit_code_i32 = i32::from(u8::from(code));
             // `halt` deletes the live marker. After this returns the
             // run no longer appears in `live/`; further appends are
             // best-effort.
-            inner.writer.halt(EventBody::RunHalted {
-                outcome: outcome_name,
-                exit_code: exit_code_i32,
-            })?;
+            inner.writer.halt(terminal_event(
+                &PrDomain,
+                kind,
+                i32::from(u8::from(code)),
+                last_action.as_deref(),
+            ))?;
             Ok(())
         });
     }
 
     fn best_effort(&self, f: impl FnOnce(&mut Inner) -> Result<(), RecorderError>) {
-        if let Ok(mut inner) = self.inner.lock() {
-            let _ = f(&mut inner);
+        match self.inner.lock() {
+            Ok(mut inner) => {
+                if let Err(e) = f(&mut inner) {
+                    eprintln!("ooda recorder: append failed: {e}");
+                }
+            }
+            Err(_) => {
+                eprintln!("ooda recorder: mutex poisoned; event dropped");
+            }
         }
     }
 
@@ -530,16 +615,16 @@ pub(crate) fn tool_call_started(program: &str, args: &[&str]) -> Option<ToolCall
         .map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
 
     recorder.best_effort(|inner| {
-        inner.writer.append(EventBody::DomainSpecific {
-            kind_suffix: "tool_call_started".into(),
-            payload: json!({
+        inner.writer.append(domain_specific(
+            DomainKind::ToolCallStarted,
+            json!({
                 "iteration": iteration,
                 "call_id": call_id,
                 "program": program,
                 "args": args_v,
                 "cwd": cwd,
             }),
-        })?;
+        ))?;
         Ok(())
     });
 
@@ -562,9 +647,9 @@ impl ToolCallGuard {
         self.recorder.best_effort(|inner| {
             let stdout_blob = inner.writer.write_blob(&output.stdout, "bin")?;
             let stderr_blob = inner.writer.write_blob(&output.stderr, "bin")?;
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "tool_call_finished".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::ToolCallFinished,
+                json!({
                     "iteration": self.iteration,
                     "call_id": self.call_id,
                     "program": self.program,
@@ -576,7 +661,7 @@ impl ToolCallGuard {
                     "stdout_blob": stdout_blob,
                     "stderr_blob": stderr_blob,
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
@@ -585,9 +670,9 @@ impl ToolCallGuard {
         let duration_ms = self.started.elapsed().as_millis();
         let err_str = err.to_string();
         self.recorder.best_effort(|inner| {
-            inner.writer.append(EventBody::DomainSpecific {
-                kind_suffix: "tool_call_finished".into(),
-                payload: json!({
+            inner.writer.append(domain_specific(
+                DomainKind::ToolCallFinished,
+                json!({
                     "iteration": self.iteration,
                     "call_id": self.call_id,
                     "program": self.program,
@@ -597,7 +682,7 @@ impl ToolCallGuard {
                     "success": false,
                     "error": err_str,
                 }),
-            })?;
+            ))?;
             Ok(())
         });
     }
@@ -644,9 +729,13 @@ fn pr_index_path(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf
 /// Single-token rendering for the `IterationDecided` event's
 /// `decision_kind` field. Domain-stable; downstream readers
 /// switch on this string.
+/// Single-token rendering for the `IterationDecided` event's
+/// `decision_kind` field. `Execute` is bare (no `::<kind>` suffix);
+/// downstream readers that need the action kind read the
+/// `iteration_decision_envelope` event's blob.
 fn decision_kind(decision: &Decision) -> String {
     match decision {
-        Decision::Execute(action) => format!("Execute::{}", action.kind.name()),
+        Decision::Execute(_) => "Execute".into(),
         Decision::Halt(halt) => match halt {
             DecisionHalt::Success => "Halt::Success".into(),
             DecisionHalt::Terminal(t) => format!("Halt::Terminal({t:?})"),
@@ -663,21 +752,75 @@ fn action_projection(action: &Action) -> serde_json::Value {
         "urgency": format!("{:?}", action.urgency),
         "blocker": action.blocker.to_string(),
         "effect": &action.effect,
+        "description": action.rendered_payload(),
     })
 }
 
-fn outcome_name(outcome: &Outcome) -> &'static str {
+fn handoff_action_projection(
+    handoff: &ooda_core::HandoffAction<crate::decide::action::ActionKind>,
+) -> serde_json::Value {
+    json!({
+        "kind": handoff.kind.name(),
+        "target_effect": format!("{:?}", handoff.target_effect),
+        "urgency": format!("{:?}", handoff.urgency),
+        "blocker": handoff.blocker.to_string(),
+        "prompt": &handoff.prompt,
+        "description": handoff.prompt.to_string(),
+    })
+}
+
+fn decision_projection(decision: &Decision) -> serde_json::Value {
+    match decision {
+        Decision::Execute(action) => json!({
+            "type": "execute",
+            "action": action_projection(action),
+        }),
+        Decision::Halt(halt) => match halt {
+            DecisionHalt::Success => json!({ "type": "halt", "halt": "success" }),
+            DecisionHalt::Terminal(t) => {
+                json!({ "type": "halt", "halt": "terminal", "terminal": format!("{t:?}") })
+            }
+            DecisionHalt::AgentNeeded(handoff) => json!({
+                "type": "halt",
+                "halt": "agent_needed",
+                "action": handoff_action_projection(handoff),
+            }),
+            DecisionHalt::HumanNeeded(handoff) => json!({
+                "type": "halt",
+                "halt": "human_needed",
+                "action": handoff_action_projection(handoff),
+            }),
+        },
+    }
+}
+
+/// Project an [`Outcome`] onto its [`OutcomeKind`] discriminant.
+/// Strips the payload; the recorder uses this to drive the
+/// per-domain `outcome_token` table without coupling `ooda-state`
+/// to `ooda-core`.
+pub(crate) fn outcome_kind(outcome: &Outcome) -> OutcomeKind {
     match outcome {
-        Outcome::DoneSucceeded => "DoneSucceeded",
-        Outcome::Paused => "Paused",
-        Outcome::WouldAdvance(_) => "WouldAdvance",
-        Outcome::HandoffHuman(_) => "HandoffHuman",
-        Outcome::HandoffAgent(_) => "HandoffAgent",
-        Outcome::DoneAborted => "DoneAborted",
-        Outcome::StuckRepeated(_) => "StuckRepeated",
-        Outcome::StuckCapReached(_) => "StuckCapReached",
-        Outcome::UsageError(_) => "UsageError",
-        Outcome::BinaryError(_) => "BinaryError",
+        Outcome::DoneSucceeded => OutcomeKind::DoneSucceeded,
+        Outcome::DoneAborted => OutcomeKind::DoneAborted,
+        Outcome::Paused => OutcomeKind::Paused,
+        Outcome::WouldAdvance(_) => OutcomeKind::WouldAdvance,
+        Outcome::HandoffHuman(_) => OutcomeKind::HandoffHuman,
+        Outcome::HandoffAgent(_) => OutcomeKind::HandoffAgent,
+        Outcome::StuckRepeated(_) => OutcomeKind::StuckRepeated,
+        Outcome::StuckCapReached(_) => OutcomeKind::StuckCapReached,
+        Outcome::UsageError(_) => OutcomeKind::UsageError,
+        Outcome::BinaryError(_) => OutcomeKind::BinaryError,
+    }
+}
+
+/// Repeating action's kind name for stall-class outcomes, used as
+/// the `last_action` payload on `RunStalled` / `RunCapReached`.
+fn stall_action_kind(outcome: &Outcome) -> Option<String> {
+    match outcome {
+        Outcome::StuckRepeated(action) | Outcome::StuckCapReached(action) => {
+            Some(action.kind.name().to_string())
+        }
+        _ => None,
     }
 }
 
@@ -731,6 +874,7 @@ mod tests {
             "urgency": format!("{:?}", action.urgency),
             "blocker": action.blocker.to_string(),
             "effect": effect_json,
+            "description": action.rendered_payload(),
         })
     }
 
@@ -833,7 +977,7 @@ mod tests {
 
         let body = "Rebase onto base\n\nContinuation line.";
         let path = recorder
-            .write_handoff_md(body)
+            .write_handoff_md(body, OutcomeKind::HandoffHuman, "Rebase")
             .expect("write should succeed under temp root");
 
         assert!(

@@ -44,6 +44,7 @@ use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
 use ooda_core::{Axis, decide_from_candidates};
+use ooda_state::ObserveOutcome;
 
 /// Driver-level orchestration: invoke each axis's `candidates()` via
 /// the [`Axis`] trait and merge into one urgency-sorted list.
@@ -273,7 +274,7 @@ fn run_iter(
     recorder.record_observe_start(iter);
     let obs = match fetch_all(slug, pr, state_root) {
         Ok(FetchOutcome::Observations(obs)) => {
-            recorder.record_observe_end(iter, Ok(()));
+            recorder.record_observe_end(iter, ObserveOutcome::Ok);
             *obs
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
@@ -282,7 +283,13 @@ fn run_iter(
             // retry window and re-observe from a clean slate;
             // running orient/decide on a partial bundle would
             // surface false halts.
-            recorder.record_observe_end(iter, Ok(()));
+            recorder.record_observe_end(
+                iter,
+                ObserveOutcome::RateLimited {
+                    scope: hit.scope.name().to_string(),
+                    retry_after_secs: hit.retry_after.as_duration().as_secs(),
+                },
+            );
             let action = rate_limit_wait_action(hit);
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
@@ -299,7 +306,7 @@ fn run_iter(
             return Ok(IterStep::Executed(action));
         }
         Err(e) => {
-            recorder.record_observe_end(iter, Err(e.to_string()));
+            recorder.record_observe_end(iter, ObserveOutcome::Error(e.to_string()));
             return Err(LoopError::Observe(e));
         }
     };

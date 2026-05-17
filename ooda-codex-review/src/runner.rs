@@ -132,9 +132,13 @@ impl<'a> EventSink<'a> {
                 interval_ms: u64::try_from(interval.as_duration().as_millis()).unwrap_or(u64::MAX),
             },
             ActionEffect::Full { .. } | ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
+                // `acted` is only invoked after the act stage
+                // succeeded; failed acts return early via the
+                // `HaltReason::ActFailed` path before reaching here.
                 EventBody::IterationExecuted {
                     iteration: iter,
                     action_kind: action.kind.name().to_string(),
+                    success: true,
                 }
             }
         };

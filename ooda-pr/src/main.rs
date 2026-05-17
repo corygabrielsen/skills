@@ -295,7 +295,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         recorder.write_trace_line(&line);
     }
     let oriented = orient(&obs, None, current_timestamp());
-    let candidate_actions = candidates(&oriented, args.pr);
+    let candidate_actions = candidates(&decide::CandidatesInputs::from(&oriented), args.pr);
     let decision = decide_from_candidates(candidate_actions.clone(), obs.pull_request_view.state);
     recorder.record_iteration(
         1,

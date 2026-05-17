@@ -32,6 +32,7 @@ STRICT_FILES=(
     "src/act/ci.rs"
     "src/act/closeout.rs"
     "src/axis_impls/ci.rs"
+    "src/axis_impls/cursor.rs"
     "src/axis_impls/mod.rs"
     "src/act/copilot.rs"
     "src/act/review_docs.rs"

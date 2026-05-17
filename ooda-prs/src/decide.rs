@@ -11,7 +11,7 @@ pub(crate) mod ci;
 mod claude_review;
 mod closeout;
 mod copilot;
-mod cursor;
+pub(crate) mod cursor;
 pub(crate) mod decision;
 mod doc_review;
 mod pull_request_metadata;

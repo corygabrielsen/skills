@@ -267,6 +267,21 @@ impl Recorder {
             .unwrap_or_default()
     }
 
+    /// Write the `Handoff*` prompt body to `<pr_root>/latest/handoff.md`
+    /// and return its absolute path. Stderr emits a `see: <path>`
+    /// pointer to this file in place of the inline prompt block, so
+    /// callers consume the prompt via a file read with observable
+    /// size rather than tail-truncating an unbounded stream.
+    /// Returns `None` if the write fails — caller falls back to
+    /// inline emission so the prompt is never lost.
+    pub(crate) fn write_handoff_md(&self, prompt: &str) -> Option<PathBuf> {
+        self.with_inner(|inner| {
+            let path = inner.pr_root.join("latest/handoff.md");
+            write_bytes_at(&path, prompt.as_bytes()).ok().map(|()| path)
+        })
+        .flatten()
+    }
+
     pub(crate) fn write_trace_line(&self, line: &str) {
         self.best_effort(|inner| {
             writeln!(inner.trace_md, "{line}")?;

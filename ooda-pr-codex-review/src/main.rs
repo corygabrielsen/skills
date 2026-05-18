@@ -509,6 +509,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
     let ctx = ActContext {
         slug: args.slug.clone(),
         pr: args.pr,
+        action_lock_path: recorder.action_lock_path(),
         codex: codex_act,
     };
     let mut snapshot: Option<HandoffSnapshot> = None;

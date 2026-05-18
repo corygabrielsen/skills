@@ -29,7 +29,7 @@ use crate::{BlobRef, EventBody};
 // ── Outcome discriminator ────────────────────────────────────────────
 
 /// Payload-stripped projection of a binary's `Outcome` variant. The
-/// 10 variants exhaustively cover `ooda_core::Outcome<K>`; this enum
+/// 11 variants exhaustively cover `ooda_core::Outcome<K>`; this enum
 /// is the cross-crate handshake so `ooda-state` can name the wire
 /// token without depending on `ooda-core`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,6 +44,11 @@ pub enum OutcomeKind {
     StuckCapReached,
     UsageError,
     BinaryError,
+    /// Loop polled the shutdown atomic and observed a trapped
+    /// `SIGINT` / `SIGTERM`. The recorder writes
+    /// [`EventBody::RunHalted`] with the domain's
+    /// `SignalInterrupted` token before the process exits.
+    SignalInterrupted,
 }
 
 impl OutcomeKind {
@@ -64,6 +69,7 @@ impl OutcomeKind {
             Self::StuckCapReached => "StuckCapReached",
             Self::UsageError => "UsageError",
             Self::BinaryError => "BinaryError",
+            Self::SignalInterrupted => "SignalInterrupted",
         }
     }
 }
@@ -106,6 +112,7 @@ impl Domain for PrDomain {
             OutcomeKind::StuckCapReached => "StuckCapReached",
             OutcomeKind::UsageError => "UsageError",
             OutcomeKind::BinaryError => "BinaryError",
+            OutcomeKind::SignalInterrupted => "SignalInterrupted",
         }
     }
 }
@@ -134,6 +141,7 @@ impl Domain for CodexReviewDomain {
             OutcomeKind::StuckCapReached => "StuckCapReached",
             OutcomeKind::UsageError => "UsageError",
             OutcomeKind::BinaryError => "BinaryError",
+            OutcomeKind::SignalInterrupted => "SignalInterrupted",
         }
     }
 }

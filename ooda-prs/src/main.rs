@@ -19,6 +19,7 @@ mod orient;
 mod outcome;
 mod recorder;
 mod runner;
+mod signal;
 mod suite;
 mod text;
 
@@ -33,7 +34,7 @@ use ooda_state::ObserveOutcome;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};
-use runner::{LoopConfig, current_timestamp, run_loop};
+use runner::{LoopConfig, LoopExit, current_timestamp, run_loop};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
@@ -345,6 +346,17 @@ fn usage(msg: &str) -> ooda_core::SingleLineString {
 }
 
 fn main() -> ProcessExitCode {
+    // Install signal handlers before any worker spawns: every
+    // per-PR loop polls the same atomic, so a `SIGTERM` lands on
+    // each worker's next iteration boundary uniformly. Failure to
+    // install is reported as a UsageError-grade bundle error
+    // rather than silently dropping the graceful-shutdown
+    // contract.
+    if let Err(e) = signal::install_signal_handlers() {
+        let outcome: Outcome = Outcome::binary_error(format!("install signal handlers: {e}"));
+        render_outcome(&mut std::io::stderr(), &outcome, None);
+        return ProcessExitCode::from(outcome.exit_code());
+    }
     let multi = match parse_args() {
         Ok(args) => {
             // Parallel per-PR dispatch under `thread::scope`. Each
@@ -653,7 +665,8 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
         recorder,
         on_state,
     ) {
-        Ok(reason) => Outcome::from(reason),
+        Ok(LoopExit::Halted(reason)) => Outcome::from(reason),
+        Ok(LoopExit::SignalInterrupted { exit_code }) => Outcome::SignalInterrupted { exit_code },
         Err(e) => Outcome::from(e),
     };
     decorate_handoff_human(outcome, slug, pr, snapshot.as_ref())
@@ -965,6 +978,13 @@ fn per_pr_jsonl_record(po: &ProcessOutcome) -> String {
             // Terminal-no-payload variants: the constant fields
             // fully describe them.
         }
+        Outcome::SignalInterrupted { exit_code } => {
+            // The wrapped numeric is also surfaced via `exit`;
+            // duplicating it on a typed field keeps the record
+            // self-describing for consumers that pivot on outcome
+            // tokens rather than exit codes.
+            obj.insert("signal_exit_code".into(), json!(exit_code));
+        }
     }
     Value::Object(obj).to_string()
 }
@@ -981,6 +1001,7 @@ fn outcome_variant_name(o: &Outcome) -> &'static str {
         Outcome::Paused => "Paused",
         Outcome::DoneAborted => "DoneClosed",
         Outcome::UsageError(_) => "UsageError",
+        Outcome::SignalInterrupted { .. } => "SignalInterrupted",
     }
 }
 
@@ -1046,6 +1067,9 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
         Outcome::UsageError(msg) => {
             let _ = writeln!(out, "UsageError: {msg}");
             print_usage(out);
+        }
+        Outcome::SignalInterrupted { exit_code } => {
+            let _ = writeln!(out, "Interrupted: exit code {exit_code}");
         }
     }
 }
@@ -1396,6 +1420,11 @@ mod tests {
                 o.insert("exit".into(), json!(70));
                 o.insert("msg".into(), json!(msg.as_str()));
             }
+            Outcome::SignalInterrupted { exit_code } => {
+                o.insert("outcome".into(), json!("SignalInterrupted"));
+                o.insert("exit".into(), json!(exit_code));
+                o.insert("signal_exit_code".into(), json!(exit_code));
+            }
         }
         serde_json::Value::Object(o)
     }
@@ -1441,6 +1470,7 @@ mod tests {
             Outcome::StuckCapReached(Box::new(stuck_action)),
             Outcome::UsageError("bad --concurrency".into()),
             Outcome::BinaryError("observe: gh: connection refused".into()),
+            Outcome::SignalInterrupted { exit_code: 143 },
         ]
     }
 
@@ -1454,7 +1484,7 @@ mod tests {
         let samples = pull_request_jsonl_sample_outcomes();
         assert_eq!(
             samples.len(),
-            10,
+            11,
             "`pull_request_jsonl_sample_outcomes` must include one sample per `Outcome` variant; \
              adding a new variant requires adding both a golden arm in `pull_request_jsonl_golden` \
              AND a sample here.",

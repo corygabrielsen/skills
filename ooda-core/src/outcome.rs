@@ -64,6 +64,13 @@ pub enum Outcome<K> {
     /// [`SingleLineString`] per the same invariant as
     /// [`Self::BinaryError`].
     UsageError(SingleLineString),
+    /// Loop polled `SHUTDOWN_SIGNAL` at an iteration boundary and
+    /// observed a trapped `SIGINT` / `SIGTERM`. The wrapped exit
+    /// code (`130` for `SIGINT`, `143` for `SIGTERM`) is the
+    /// process-exit value; the loop owns the halt path so the
+    /// recorder writes a terminal event and the live marker is
+    /// released before exit.
+    SignalInterrupted { exit_code: u8 },
 }
 
 impl<K> Outcome<K> {
@@ -85,6 +92,15 @@ impl<K> Outcome<K> {
             Self::StuckCapReached(_) => ExitCode::StuckCapReached,
             Self::UsageError(_) => ExitCode::UsageError,
             Self::BinaryError(_) => ExitCode::BinaryError,
+            // Project the wrapped u8 onto the matching typed variant.
+            // Out-of-band values (the loop only stores 130 / 143)
+            // fall back to `SignalSigterm` so the projection is
+            // total — the typed enum stays the single source of
+            // truth for shell-dispatch numerics.
+            Self::SignalInterrupted { exit_code } => match *exit_code {
+                130 => ExitCode::SignalSigint,
+                _ => ExitCode::SignalSigterm,
+            },
         }
     }
 
@@ -199,6 +215,14 @@ mod tests {
         assert_eq!(
             Outcome::<K>::BinaryError("oops".into()).exit_code(),
             ExitCode::BinaryError
+        );
+        assert_eq!(
+            Outcome::<K>::SignalInterrupted { exit_code: 130 }.exit_code(),
+            ExitCode::SignalSigint
+        );
+        assert_eq!(
+            Outcome::<K>::SignalInterrupted { exit_code: 143 }.exit_code(),
+            ExitCode::SignalSigterm
         );
     }
 
@@ -349,6 +373,11 @@ mod tests {
             // serializes transparently as a String.
             Outcome::BinaryError(s) => json!({"BinaryError": s.as_str()}),
             Outcome::UsageError(s) => json!({"UsageError": s.as_str()}),
+            // Struct-shaped variant — serde emits
+            // `{"SignalInterrupted": {"exit_code": N}}`.
+            Outcome::SignalInterrupted { exit_code } => json!({
+                "SignalInterrupted": {"exit_code": exit_code},
+            }),
         }
     }
 
@@ -367,6 +396,7 @@ mod tests {
             Outcome::HandoffAgent(Box::new(dummy_handoff())),
             Outcome::BinaryError("err".into()),
             Outcome::UsageError("bad flag".into()),
+            Outcome::SignalInterrupted { exit_code: 143 },
         ]
     }
 
@@ -375,7 +405,7 @@ mod tests {
         let samples = outcome_variant_samples();
         assert_eq!(
             samples.len(),
-            10,
+            11,
             "`outcome_variant_samples` must include one sample per \
              `Outcome` variant; adding a new variant requires adding \
              both an arm in `outcome_serialization_golden` AND a \

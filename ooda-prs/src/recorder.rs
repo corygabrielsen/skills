@@ -705,6 +705,7 @@ pub(crate) fn outcome_kind(outcome: &Outcome) -> OutcomeKind {
         Outcome::StuckCapReached(_) => OutcomeKind::StuckCapReached,
         Outcome::UsageError(_) => OutcomeKind::UsageError,
         Outcome::BinaryError(_) => OutcomeKind::BinaryError,
+        Outcome::SignalInterrupted { .. } => OutcomeKind::SignalInterrupted,
     }
 }
 

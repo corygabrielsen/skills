@@ -17,6 +17,7 @@ mod orient;
 mod outcome;
 mod recorder;
 mod runner;
+mod signal;
 mod text;
 
 use dashboard::Dashboard;
@@ -29,7 +30,7 @@ use ooda_state::ObserveOutcome;
 use orient::orient;
 use outcome::Outcome;
 use recorder::{Recorder, RecorderConfig, RunMode};
-use runner::{LoopConfig, current_timestamp, run_loop};
+use runner::{LoopConfig, LoopExit, current_timestamp, run_loop};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(
@@ -203,6 +204,17 @@ fn usage(msg: &str) -> Outcome {
 }
 
 fn main() -> ProcessExitCode {
+    // Install signal handlers before any loop work: a `SIGTERM`
+    // arriving during args-parse should be picked up on the first
+    // iteration boundary instead of killing the process uncleanly.
+    // Failure to install is reported as a binary error rather than
+    // silently dropping the graceful-shutdown contract.
+    if let Err(e) = signal::install_signal_handlers() {
+        return finish(
+            &Outcome::binary_error(format!("install signal handlers: {e}")),
+            None,
+        );
+    }
     let outcome = match parse_args() {
         Ok(args) => {
             let recorder = match Recorder::open(RecorderConfig {
@@ -451,7 +463,8 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
         recorder,
         on_state,
     ) {
-        Ok(reason) => Outcome::from(reason),
+        Ok(LoopExit::Halted(reason)) => Outcome::from(reason),
+        Ok(LoopExit::SignalInterrupted { exit_code }) => Outcome::SignalInterrupted { exit_code },
         Err(e) => Outcome::from(e),
     };
     decorate_handoff_human(outcome, &args.slug, args.pr, snapshot.as_ref())
@@ -765,6 +778,9 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome, handoff_path: Opti
         Outcome::UsageError(msg) => {
             let _ = writeln!(out, "UsageError: {msg}");
             print_usage(out);
+        }
+        Outcome::SignalInterrupted { exit_code } => {
+            let _ = writeln!(out, "Interrupted: exit code {exit_code}");
         }
     }
 }

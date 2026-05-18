@@ -18,6 +18,7 @@
 //!
 //! ```text
 //! UsageError(_)                                 → 64
+//! ∃ ProcessOutcome with SignalInterrupted(N)    → N (130/143)
 //! ∃ ProcessOutcome with BinaryError(_)          → 70
 //! ∃ ProcessOutcome with HandoffAgent(_)         → 4
 //! ∃ ProcessOutcome with HandoffHuman(_)         → 3
@@ -27,6 +28,13 @@
 //! ∃ ProcessOutcome with DoneAborted(_)          → 5
 //! all DoneSucceeded/Paused                       → 0
 //! ```
+//!
+//! `SignalInterrupted` ranks above every per-PR outcome because it
+//! is an out-of-band shutdown request the operator issued; a
+//! wrapper script polling `$?` learns the shutdown happened
+//! without parsing stdout. `SIGTERM` (143) beats `SIGINT` (130) so
+//! that if both fire across workers the higher-urgency token
+//! surfaces.
 //!
 //! `Paused` (per-PR exit 1) folds into `0` at the suite level: it is
 //! a non-actionable "no action this pass" outcome. `DoneAborted`
@@ -97,6 +105,22 @@ impl MultiOutcome {
 }
 
 fn bundle_exit_code(prs: &[ProcessOutcome]) -> ExitCode {
+    // Signal-interrupt projection: SIGTERM (143) is the higher
+    // shutdown token; check it first so a mixed bundle surfaces
+    // the more-urgent signal. Either signal still beats every
+    // ordinary per-PR outcome below.
+    if prs
+        .iter()
+        .any(|p| matches!(p.outcome, Outcome::SignalInterrupted { exit_code: 143 }))
+    {
+        return ExitCode::SignalSigterm;
+    }
+    if prs
+        .iter()
+        .any(|p| matches!(p.outcome, Outcome::SignalInterrupted { .. }))
+    {
+        return ExitCode::SignalSigint;
+    }
     if prs
         .iter()
         .any(|p| matches!(p.outcome, Outcome::BinaryError(_)))

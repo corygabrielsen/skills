@@ -13,7 +13,11 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-BIN="$DIR/target/release/ooda-prs"
+# Honour CARGO_TARGET_DIR (set by some user environments to share
+# a build cache across crates). When unset, cargo defaults to
+# `<workspace>/target`, which is what `$DIR/target` mirrors.
+TARGET_DIR="${CARGO_TARGET_DIR:-$DIR/target}"
+BIN="$TARGET_DIR/release/ooda-prs"
 (cd "$DIR" && cargo build --release --quiet) >&2
 [ -x "$BIN" ] || { printf '%s: build produced no executable at %s\n' "$0" "$BIN" >&2; exit 1; }
 exec "$BIN" "$@"

@@ -19,8 +19,11 @@ call**. Do not chain with `&&`, `;`, or pipes — the exit code is
 the communication channel.
 
 ```bash
-~/code/skills/converge/target/release/converge [opts] -- <command> [args...]
+~/code/skills/converge/run [opts] -- <command> [args...]
 ```
+
+The `run` wrapper builds on demand and execs the binary; it
+honours `CARGO_TARGET_DIR` for shared-cache environments.
 
 Everything after `--` is the fitness command. converge spawns it
 repeatedly, reads a JSON fitness report from its stdout, and
@@ -104,7 +107,7 @@ Re-run the same command when the blocking condition clears.
 ## Example: converge with pr-fitness
 
 ```bash
-~/code/skills/converge/target/release/converge \
+~/code/skills/converge/run \
   -- npx tsx ~/code/skills/pr-fitness/src/cli.ts -q -c -C OWNER/REPO PR
 ```
 

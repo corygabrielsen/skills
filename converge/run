@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Thin wrapper for `/converge`. Installs from a fresh checkout
+# without requiring the user to know about `cargo build --release`
+# first — `target/` is gitignored, so SKILL.md cannot point at the
+# release binary directly.
+#
+# Builds (or no-ops if already up-to-date — cargo's incremental
+# compile handles that) and execs the binary. Cargo's progress
+# output goes to stderr so it doesn't pollute the binary's stdout
+# channel.
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Honour CARGO_TARGET_DIR (set by some user environments to share
+# a build cache across crates). When unset, cargo defaults to
+# `<workspace>/target`, which is what `$DIR/target` mirrors.
+TARGET_DIR="${CARGO_TARGET_DIR:-$DIR/target}"
+BIN="$TARGET_DIR/release/converge"
+(cd "$DIR" && cargo build --release --quiet) >&2
+[ -x "$BIN" ] || { printf '%s: build produced no executable at %s\n' "$0" "$BIN" >&2; exit 1; }
+exec "$BIN" "$@"

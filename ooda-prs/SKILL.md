@@ -620,7 +620,7 @@ your harness's own actions.
 # against wrapper / cargo build failures, whose exit codes fall
 # through to the `*)` arm but might confuse logs.
 loop:
-  [[ -x ~/.claude/skills/ooda-prs/target/release/ooda-prs ]] || \
+  [[ -x ~/.claude/skills/ooda-prs/run ]] || \
     { wrapper_build_failed; break; }
   ~/.claude/skills/ooda-prs/run <suite> > prs.jsonl
   case $? in

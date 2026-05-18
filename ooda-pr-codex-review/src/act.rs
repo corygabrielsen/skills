@@ -48,6 +48,9 @@ pub enum ActError {
     /// or `flock` syscall failed; concurrent-invocation exclusion
     /// could not be established for this action.
     Lock(std::io::Error),
+    /// `gt sync` subprocess failed. Surfaced with stderr so the
+    /// agent path that owns triage sees the underlying reason.
+    GraphiteSync(String),
 }
 
 impl std::fmt::Display for ActError {
@@ -66,6 +69,7 @@ impl std::fmt::Display for ActError {
                 write!(f, "codex review spawn slot {slot}: {source}")
             }
             Self::Lock(e) => write!(f, "acquire per-PR action lock: {e}"),
+            Self::GraphiteSync(stderr) => write!(f, "`gt sync` failed: {stderr}"),
         }
     }
 }
@@ -177,7 +181,24 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
             let codex = ctx.codex.as_ref().ok_or(ActError::CodexDisabled)?;
             spawn_codex_review_batch(codex, *level, *n)?;
         }
+        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync()?,
         _ => return Err(ActError::UnsupportedAutomation),
+    }
+    Ok(())
+}
+
+/// Invoke `gt sync` in the current working directory. Graphite
+/// rebases the local stack onto the latest base; the next observe
+/// pass picks up the resulting SHA and the post-observe sticky
+/// write normalises the divergence signal.
+fn run_graphite_sync() -> Result<(), ActError> {
+    let out = Command::new("gt")
+        .arg("sync")
+        .output()
+        .map_err(|e| ActError::GraphiteSync(format!("spawn `gt sync`: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(ActError::GraphiteSync(stderr));
     }
     Ok(())
 }

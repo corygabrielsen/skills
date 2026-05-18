@@ -33,6 +33,7 @@
 //! behaviour-tested by the underlying `decide::<axis>::candidates`
 //! tests. Per-wrapper smoke tests for them would duplicate coverage.
 
+pub(crate) mod branch_sync;
 pub(crate) mod ci;
 pub(crate) mod claude_review;
 pub(crate) mod closeout;

@@ -286,6 +286,7 @@ mod tests {
             mergeable: Mergeable::Mergeable,
             merge_state_status: MergeStateStatus::Clean,
             head_ref_oid: GitCommitSha::parse(HEAD).unwrap(),
+            head_ref_name: crate::ids::BranchName::parse("feat/branch").unwrap(),
             base_ref_name: crate::ids::BranchName::parse("master").unwrap(),
             updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             closed_at: None,

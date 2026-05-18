@@ -24,6 +24,7 @@
 use std::num::NonZeroU32;
 
 use crate::act::{ActContext, ActError, act};
+use crate::axis_impls::branch_sync::BranchSyncAxis;
 use crate::axis_impls::ci::{CiAxis, CiObservation};
 use crate::axis_impls::claude_review::{ClaudeReviewAxis, ClaudeReviewObservation};
 use crate::axis_impls::closeout::{CloseoutAxis, CloseoutObservation};
@@ -119,6 +120,7 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
         attest_path: oriented.closeout_attest_path.as_deref(),
         pr,
     }));
+    out.extend(BranchSyncAxis.candidates(&&oriented.branch_sync));
     let has_advancement_path = out.iter().any(|a| {
         matches!(
             a.target_effect,
@@ -294,9 +296,20 @@ fn run_iter(
 
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
-    let obs = match fetch_all(&slug, pr, state_root) {
+    let sticky_path = recorder.last_seen_head_path();
+    let obs = match fetch_all(&slug, pr, state_root, Some(&sticky_path)) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, ObserveOutcome::Ok);
+            // Post-observe sticky update: record the current
+            // remote head as the new baseline. Best-effort —
+            // a sticky write failure leaves the divergence
+            // signal stale for one iteration, never bricks
+            // the loop.
+            let _ = crate::observe::branch::write_sticky(
+                &sticky_path,
+                obs.pull_request_view.head_ref_oid.as_str(),
+                false,
+            );
             *obs
         }
         Ok(FetchOutcome::RateLimited(hit)) => {

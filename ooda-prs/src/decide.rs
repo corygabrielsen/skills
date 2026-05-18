@@ -12,6 +12,7 @@
 //! no aggregate score gating the loop.
 
 pub(crate) mod action;
+pub(crate) mod branch_sync;
 pub(crate) mod ci;
 pub(crate) mod claude_review;
 pub(crate) mod closeout;

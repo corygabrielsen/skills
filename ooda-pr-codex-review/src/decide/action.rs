@@ -231,6 +231,23 @@ pub enum ActionKind {
     Closeout {
         attest_path: std::path::PathBuf,
     },
+
+    // ── Branch sync ──
+    /// Out-of-band push on a graphite-tracked branch; driver-side
+    /// convergence. The act layer runs `gt sync` in the repo root
+    /// to rebase the local stack onto the new remote head.
+    SyncGraphiteStack {
+        from_sha: String,
+        to_sha: String,
+    },
+    /// Out-of-band push on a branch the driver cannot
+    /// auto-converge (untracked branch, `gt` missing, etc.). Agent
+    /// handoff; the prompt names the SHA delta and instructs the
+    /// agent to reconcile locally before re-driving.
+    InvestigatePush {
+        from_sha: String,
+        to_sha: String,
+    },
 }
 
 impl ActionKind {
@@ -279,6 +296,8 @@ impl ActionKindName for ActionKind {
             Self::ReviewDocs { .. } => "ReviewDocs",
             Self::AddressClaudeReview { .. } => "AddressClaudeReview",
             Self::Closeout { .. } => "Closeout",
+            Self::SyncGraphiteStack { .. } => "SyncGraphiteStack",
+            Self::InvestigatePush { .. } => "InvestigatePush",
         }
     }
 }

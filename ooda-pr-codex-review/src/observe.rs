@@ -4,5 +4,6 @@
 //! external system; the output is a bundle of unprojected facts.
 //! Interpretation, classification, and policy live downstream.
 
+pub(crate) mod branch;
 pub(crate) mod codex;
 pub(crate) mod github;

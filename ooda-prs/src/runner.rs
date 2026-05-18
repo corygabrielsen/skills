@@ -293,7 +293,8 @@ fn run_iter(
             let action = rate_limit_wait_action(hit);
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
-            let act_result = act(&action, slug, pr);
+            let lock_path = recorder.action_lock_path();
+            let act_result = act(&action, slug, pr, &lock_path);
             if act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
             }
@@ -333,7 +334,8 @@ fn run_iter(
             if is_wait {
                 recorder.record_wait_start(iter, &action);
             }
-            let act_result = act(&action, slug, pr);
+            let lock_path = recorder.action_lock_path();
+            let act_result = act(&action, slug, pr, &lock_path);
             if is_wait && act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
             }

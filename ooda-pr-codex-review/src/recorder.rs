@@ -277,6 +277,22 @@ impl Recorder {
         self.pr_workspace_root().join("status-comment.json")
     }
 
+    /// Per-PR advisory-lock sidecar target. Acquiring an
+    /// [`ooda_core::FileLock`] on this path at the act-stage boundary
+    /// serialises concurrent OODA invocations against the same PR:
+    /// two drivers cannot dispatch a side-effecting action
+    /// simultaneously. The path is per-`(slug, pr)`, not per-run, so
+    /// drivers in distinct processes see the same lock.
+    ///
+    /// Distinct from the workspace-level codex `.lock` held
+    /// FD-tied by [`crate::act::CodexActContext`] — the codex lock
+    /// excludes concurrent invocations from sharing the spawn
+    /// directories; this lock serialises the act-stage dispatch
+    /// itself.
+    pub(crate) fn action_lock_path(&self) -> PathBuf {
+        self.pr_workspace_root().join(".action.lock")
+    }
+
     /// Persist a handoff prompt body as a content-addressed blob and
     /// return its absolute on-disk path. Callers point stderr's
     /// `see:` line at this path; the file's size is observable via

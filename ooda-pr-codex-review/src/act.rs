@@ -44,6 +44,10 @@ pub enum ActError {
     CodexDisabled,
     /// Codex subprocess spawn or backing I/O failed.
     CodexSpawn { slot: u32, source: std::io::Error },
+    /// Failed to acquire the per-PR action lock. The sidecar open
+    /// or `flock` syscall failed; concurrent-invocation exclusion
+    /// could not be established for this action.
+    Lock(std::io::Error),
 }
 
 impl std::fmt::Display for ActError {
@@ -61,6 +65,7 @@ impl std::fmt::Display for ActError {
             Self::CodexSpawn { slot, source } => {
                 write!(f, "codex review spawn slot {slot}: {source}")
             }
+            Self::Lock(e) => write!(f, "acquire per-PR action lock: {e}"),
         }
     }
 }
@@ -107,17 +112,33 @@ pub(crate) struct CodexActContext {
 
 /// Per-iteration act-stage context. The action enum stays narrow
 /// because runtime data lives here.
+///
+/// `action_lock_path` is the per-PR advisory-lock sidecar target;
+/// every mutating action arm acquires a [`ooda_core::FileLock`] on
+/// the path before dispatching and releases on Drop. This serialises
+/// concurrent OODA invocations against the same PR — distinct from
+/// the codex sub-context's `_lock`, which excludes concurrent
+/// invocations from sharing the codex spawn directory.
 #[derive(Debug)]
 pub(crate) struct ActContext {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
+    pub action_lock_path: PathBuf,
     pub codex: Option<CodexActContext>,
 }
 
 /// Realise one action's side effect; the caller re-iterates on Ok.
+///
+/// `Full` actions acquire the per-PR action lock before dispatching;
+/// `Wait` actions skip it (sleeping has no side effect); handoff
+/// arms never reach this stage.
 pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
-        ActionEffect::Full { .. } => run_full(&action.kind, ctx),
+        ActionEffect::Full { .. } => {
+            let _lock =
+                ooda_core::FileLock::acquire(&ctx.action_lock_path).map_err(ActError::Lock)?;
+            run_full(&action.kind, ctx)
+        }
         ActionEffect::Wait { interval, .. } => {
             thread::sleep(interval.as_duration());
             Ok(())

@@ -121,11 +121,20 @@ pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
                 } else {
                     "Re-request Copilot review on HEAD to reach platinum".into()
                 };
+                // BlockingFix (not Critical): re-requesting a reviewer is
+                // not unconditional progress. When other axes have
+                // outstanding address-work (e.g. unresolved cursor
+                // threads from `decide::reviews::candidates`), the
+                // address-work must run first — pinging Copilot at a
+                // state with known issues wastes its re-review. Same
+                // urgency as `AddressThreads`; Reviews axis emits first
+                // in `drive()`, so the stable-sort tiebreaker resolves
+                // in favour of addressing known feedback.
                 out.push(Action {
                     kind: ActionKind::RerequestCopilot { symptom: None },
                     effect: ActionEffect::Full { log: desc },
                     target_effect: TargetEffect::Advances,
-                    urgency: Urgency::Mid(MidTier::Critical),
+                    urgency: Urgency::Mid(MidTier::BlockingFix),
                     blocker: BlockerKey::typed("copilot_tier", &report.tier),
                 });
             } else if report.tier == CopilotTier::Silver && suppressed > 0 {
@@ -335,6 +344,11 @@ mod tests {
             ActionKind::RerequestCopilot { symptom: None }
         ));
         assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
+        // Urgency is BlockingFix, not Critical: re-requesting a
+        // reviewer must not preempt addressing known feedback from
+        // other reviewers (Reviews axis emits AddressThreads at the
+        // same tier, sorts first by stable-sort axis order).
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
     }
 
     #[test]

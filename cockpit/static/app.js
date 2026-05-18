@@ -9,6 +9,8 @@ const state = {
   stream: null,
   backoff: 1000,
   listTimer: null,
+  // {state: "pending"|"ok"|"error", message?: string} | null
+  haltStatus: null,
 };
 
 // ── DOM refs ───────────────────────────────────────────────
@@ -68,6 +70,13 @@ function shortRun(id) {
   // already the better label; for non-PR runs we keep the id.
   return id.length > 24 ? id.slice(0, 24) + "…" : id;
 }
+function writerPidOf(runId) {
+  // Mirror of RunId::writer_pid in ooda-state: id ends with -p<digits>.
+  // Returns null if the suffix is missing (caller-supplied ids).
+  if (!runId) return null;
+  const m = runId.match(/-p(\d+)$/);
+  return m ? Number(m[1]) : null;
+}
 
 // ── API ────────────────────────────────────────────────────
 async function listRuns() {
@@ -92,6 +101,20 @@ async function getBlobText(runId, sha) {
     ct.startsWith("application/json") ||
     ct.startsWith("text/markdown");
   return { isText, text: isText ? await resp.text() : null, ct };
+}
+async function postHalt(runId, reason) {
+  const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/halt`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  let body;
+  try {
+    body = await resp.json();
+  } catch {
+    body = null;
+  }
+  return { status: resp.status, body };
 }
 
 // ── Stream ─────────────────────────────────────────────────
@@ -222,6 +245,7 @@ async function routeChanged() {
     state.selectedIteration = null;
     state.selectedBlob = null;
     state.blobText = null;
+    state.haltStatus = null;
     if (state.stream) {
       state.stream.close();
       state.stream = null;
@@ -265,6 +289,33 @@ async function selectBlob(sha) {
       : "(binary blob; download via the link above)";
   } catch (e) {
     state.blobText = `error: ${e}`;
+  }
+  renderRight();
+}
+async function haltCurrentRun() {
+  const runId = state.currentRunId;
+  if (!runId) return;
+  const pid = writerPidOf(runId);
+  if (pid == null) {
+    setBanner("Halt unavailable: run id has no -p<pid> suffix.");
+    return;
+  }
+  if (!confirm(`Halt run ${runId}? Sends SIGTERM to writer pid ${pid}.`)) return;
+  state.haltStatus = { state: "pending" };
+  renderRight();
+  try {
+    const { status, body } = await postHalt(runId, "user requested via cockpit");
+    if (status === 200) {
+      state.haltStatus = {
+        state: "ok",
+        message: `Signalled pid ${body && body.pid != null ? body.pid : pid}. The run will terminate shortly; watch the live stream.`,
+      };
+    } else {
+      const err = (body && body.error) || `HTTP ${status}`;
+      state.haltStatus = { state: "error", message: `Halt failed: ${err}` };
+    }
+  } catch (e) {
+    state.haltStatus = { state: "error", message: `Halt failed: ${e}` };
   }
   renderRight();
 }
@@ -452,6 +503,17 @@ function renderIterationRow(i) {
 
 function renderRight() {
   rightEl.innerHTML = "";
+  // Halt-control block: shows when the current run is active AND its
+  // id carries a -p<pid> suffix that lets us derive the writer pid.
+  // Persists across iteration selection so the affordance is always
+  // visible while a run is live.
+  if (
+    state.currentRun &&
+    state.currentRun.status === "active" &&
+    writerPidOf(state.currentRunId) != null
+  ) {
+    rightEl.appendChild(renderHaltBlock());
+  }
   if (!state.currentRun || state.selectedIteration == null) {
     rightEl.appendChild(
       el("div", { class: "pane-empty" }, "Select an iteration to inspect."),
@@ -520,6 +582,32 @@ function renderRight() {
 }
 function detailRow(k, v) {
   return el("div", { class: "detail-row" }, el("span", { class: "k" }, k), el("span", null, v));
+}
+function renderHaltBlock() {
+  const status = state.haltStatus;
+  const pending = status && status.state === "pending";
+  const btn = el(
+    "button",
+    {
+      id: "halt-btn",
+      class: "danger",
+      disabled: pending ? "disabled" : null,
+      onclick: haltCurrentRun,
+    },
+    pending ? "Halting…" : "Halt run",
+  );
+  const block = el("section", { class: "section halt-block" });
+  block.appendChild(btn);
+  if (status && status.state !== "pending") {
+    block.appendChild(
+      el(
+        "div",
+        { class: `halt-feedback ${status.state}` },
+        status.message,
+      ),
+    );
+  }
+  return block;
 }
 
 // ── Boot ───────────────────────────────────────────────────

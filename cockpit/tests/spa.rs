@@ -149,3 +149,29 @@ fn app_js_served_with_correct_content_type() {
     let body = r.text().unwrap();
     assert!(body.contains("/api/runs"), "expected fetch URL in JS");
 }
+
+#[test]
+fn app_js_includes_halt_affordance() {
+    // The halt button is conditional in JS — assert the wiring is
+    // shipped (POST + confirm + button id) so a refactor that
+    // accidentally drops the affordance breaks loudly.
+    let d = spawn();
+    let r = reqwest::blocking::get(format!("{}/assets/app.js", d.base())).unwrap();
+    let body = r.text().unwrap();
+    assert!(body.contains("/halt"), "expected /halt fetch path");
+    assert!(body.contains("halt-btn"), "expected halt button id");
+    assert!(body.contains("confirm("), "expected confirm dialog");
+    assert!(body.contains("writerPidOf"), "expected pid extractor");
+}
+
+#[test]
+fn style_css_includes_halt_styles() {
+    let d = spawn();
+    let r = reqwest::blocking::get(format!("{}/assets/style.css", d.base())).unwrap();
+    let body = r.text().unwrap();
+    assert!(body.contains(".halt-block"), "expected halt-block style");
+    assert!(
+        body.contains("button.danger"),
+        "expected danger button style"
+    );
+}

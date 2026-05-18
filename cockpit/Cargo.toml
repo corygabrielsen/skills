@@ -7,6 +7,7 @@ description = "Local web companion UI for OODA agents — daemon + browser surfa
 [dependencies]
 ooda-core = { path = "../ooda-core" }
 ooda-state = { path = "../ooda-state" }
+ooda-projection = { path = "../ooda-projection" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "fs", "io-util"] }
 tokio-stream = { version = "0.1", features = ["time", "sync"] }

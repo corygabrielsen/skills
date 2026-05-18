@@ -34,6 +34,7 @@ pub mod atomic_io;
 pub mod attest;
 pub mod axis;
 pub mod blocker;
+pub mod cohort;
 pub mod decision;
 pub mod exit_code;
 pub mod file_lock;
@@ -54,6 +55,7 @@ pub use action::{
 };
 pub use axis::Axis;
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};
+pub use cohort::CohortSha;
 pub use decision::{
     Decision, DecisionHalt, HaltReason, Terminal, classify, decide_from_candidates,
 };

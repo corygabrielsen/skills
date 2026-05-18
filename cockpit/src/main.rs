@@ -44,10 +44,10 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
 use futures_util::stream::{self, Stream, StreamExt as FuturesStreamExt};
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -105,6 +105,10 @@ struct AppState {
     /// channel fans projected deltas out to SSE subscribers tailing
     /// that specific run.
     runs: Arc<Mutex<HashMap<RunId, Arc<ProjectionEntry>>>>,
+    /// HTTP port the daemon is bound to. Used by the Origin check on
+    /// write endpoints to allowlist `http://localhost:<port>` and
+    /// `http://127.0.0.1:<port>` and reject every other Origin header.
+    port: u16,
 }
 
 /// One per-run projection slot. `snapshot` is the latest aggregated
@@ -242,11 +246,13 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/runs/:run_id", get(get_run))
         .route("/api/runs/:run_id/events", get(run_events_sse))
         .route("/api/runs/:run_id/blobs/:sha", get(get_blob))
+        .route("/api/runs/:run_id/halt", post(halt_run))
         .with_state(AppState {
             state_root: state_root_path.clone(),
             tx,
             metrics,
             runs,
+            port: args.port,
         });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -573,6 +579,332 @@ async fn get_blob(
         resp.headers_mut().insert(header::CONTENT_TYPE, value);
     }
     resp
+}
+
+// ── Halt endpoint ────────────────────────────────────────────────────
+
+/// Request body for `POST /api/runs/<id>/halt`. The `reason` field is
+/// surfaced in cockpit logs only; it does not (today) reach the on-disk
+/// audit trail. Body is optional — a missing or empty body yields the
+/// default reason.
+#[derive(Debug, Default, Deserialize)]
+struct HaltRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// Response body for a successful halt. Carries the resolved PID + run
+/// id so the caller has the same key it would observe via `/api/runs`.
+#[derive(Debug, Serialize)]
+struct HaltAccepted {
+    status: &'static str,
+    pid: u32,
+    run_id: String,
+    reason: String,
+}
+
+const DEFAULT_HALT_REASON: &str = "user requested via cockpit";
+
+/// `POST /api/runs/<run-id>/halt` — send `SIGTERM` to the writer PID
+/// embedded in the run id.
+///
+/// The endpoint deliberately performs no on-disk mutation. The
+/// writer's `Drop` impl (and any future signal handler in ooda-state)
+/// is responsible for releasing the live marker + appending the
+/// terminal event; on a hard kill, `StateRoot::sweep_dead_markers`
+/// reclaims the marker at the next reader/writer startup.
+///
+/// Response codes follow the V2.0 spec:
+///
+/// - 200 OK — signal queued; `{"status":"signalled", "pid":..., ...}`
+/// - 404 Not Found — no live marker, or the recorded PID is already dead
+/// - 409 Conflict — last event on disk is terminal
+/// - 412 Precondition Failed — run id lacks the `-p<pid>` suffix
+/// - 403 Forbidden — PID is alive but is not an OODA writer
+/// - 400 Bad Request — run id rejected by `RunId::new`
+///
+/// PID-ownership check reads `/proc/<pid>/comm` on Linux and requires
+/// the comm value to start with `ooda-`. On non-Linux Unix targets
+/// (BSD, macOS) the check is skipped with a warning — `/proc/<pid>/comm`
+/// is Linux-specific and the run-id collision risk between an OODA
+/// run and an unrelated PID under the same numeric range is real but
+/// low. On non-Unix targets the endpoint returns 412 (the syscall is
+/// unsupported).
+async fn halt_run(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(run_id): AxumPath<String>,
+    body: Option<Json<HaltRequest>>,
+) -> Response {
+    if let Err(resp) = check_origin(&headers, app.port) {
+        return *resp;
+    }
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let reason = req
+        .reason
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_HALT_REASON.to_string());
+
+    let id = match RunId::new(run_id) {
+        Ok(id) => id,
+        Err(err) => return error_json(StatusCode::BAD_REQUEST, &err.to_string()),
+    };
+    let Some(pid) = id.writer_pid() else {
+        return error_json(
+            StatusCode::PRECONDITION_FAILED,
+            "run_id missing -p<pid> suffix; cannot derive target pid",
+        );
+    };
+
+    let state_root = match StateRoot::new(&app.state_root) {
+        Ok(r) => r,
+        Err(err) => return error_json(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    };
+    let live_marker = app.state_root.join("live").join(id.as_str());
+    if !live_marker.exists() {
+        return error_json(StatusCode::NOT_FOUND, "no live marker for run_id");
+    }
+
+    match last_event_kind(&state_root, &id) {
+        Ok(Some(kind)) if is_terminal_kind(&kind) => {
+            return error_json(
+                StatusCode::CONFLICT,
+                &format!("run is terminal (last event: {kind})"),
+            );
+        }
+        Ok(_) => {}
+        Err(err) => return error_json(StatusCode::INTERNAL_SERVER_ERROR, &err.to_string()),
+    }
+
+    if !is_pid_alive(pid) {
+        // Dead PID with a leftover marker — sweep best-effort so the
+        // next reader/lister sees a clean state.
+        if let Err(err) = state_root.sweep_dead_markers() {
+            tracing::warn!(%err, "sweep_dead_markers after stale marker failed");
+        }
+        return error_json(StatusCode::NOT_FOUND, "writer pid is no longer alive");
+    }
+
+    match check_pid_ownership(pid) {
+        PidOwnership::Owned => {}
+        PidOwnership::Foreign => {
+            return error_json(
+                StatusCode::FORBIDDEN,
+                &format!("pid {pid} exists but does not appear to be an OODA writer"),
+            );
+        }
+        PidOwnership::Unverifiable => {
+            tracing::warn!(
+                pid,
+                "skipping pid ownership check (unsupported platform); proceeding with SIGTERM"
+            );
+        }
+    }
+
+    match send_sigterm(pid) {
+        Ok(()) => {
+            tracing::info!(run_id = %id, pid, %reason, "halt: signalled");
+            (
+                StatusCode::OK,
+                Json(HaltAccepted {
+                    status: "signalled",
+                    pid,
+                    run_id: id.as_str().to_string(),
+                    reason,
+                }),
+            )
+                .into_response()
+        }
+        Err(SigError::Esrch) => {
+            // Race: pid died between our liveness probe and kill(2).
+            // Surface as 404 and let the caller observe via SSE.
+            if let Err(err) = state_root.sweep_dead_markers() {
+                tracing::warn!(%err, "sweep_dead_markers after ESRCH failed");
+            }
+            error_json(StatusCode::NOT_FOUND, "writer pid is no longer alive")
+        }
+        Err(SigError::Eperm) => error_json(
+            StatusCode::FORBIDDEN,
+            &format!("not permitted to signal pid {pid}"),
+        ),
+        Err(SigError::Other(rc)) => error_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("kill(pid={pid}, SIGTERM) failed: errno {rc}"),
+        ),
+        Err(SigError::Unsupported) => error_json(
+            StatusCode::PRECONDITION_FAILED,
+            "halt unsupported on this platform",
+        ),
+    }
+}
+
+/// Enforce the origin allowlist on write endpoints. Curl + server-side
+/// callers omit `Origin` entirely; browsers always set it. The check
+/// exists to block cross-site browser POSTs from a rogue tab on a
+/// different origin (CSRF defense-in-depth, NOT auth).
+///
+/// Returns the rejection [`Response`] boxed so the result is small —
+/// `axum::Response` itself carries a heap-allocated body but is
+/// stack-large enough to trip `clippy::result_large_err` on a bare
+/// `Result<(), Response>`.
+fn check_origin(headers: &HeaderMap, port: u16) -> Result<(), Box<Response>> {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Ok(());
+    };
+    let Ok(value) = origin.to_str() else {
+        return Err(Box::new(error_json(
+            StatusCode::FORBIDDEN,
+            "origin header not utf-8",
+        )));
+    };
+    let allowed = [
+        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
+    ];
+    if allowed.iter().any(|a| a == value) {
+        Ok(())
+    } else {
+        Err(Box::new(error_json(
+            StatusCode::FORBIDDEN,
+            "origin not allowed",
+        )))
+    }
+}
+
+/// Return the `kind` discriminant of the last event in
+/// `runs/<id>/events.jsonl`, or `None` if the file is empty / missing.
+/// Tolerates malformed trailing lines (writer mid-flight) by walking
+/// backwards to the most recent well-formed line.
+fn last_event_kind(state_root: &StateRoot, id: &RunId) -> Result<Option<String>, std::io::Error> {
+    let reader = state_root
+        .open_run(id.clone())
+        .map_err(std::io::Error::other)?;
+    let events = reader.events().map_err(std::io::Error::other)?;
+    Ok(events
+        .last()
+        .map(|ev| event_body_kind(&ev.body).to_string()))
+}
+
+/// Map an [`ooda_state::EventBody`] variant to its on-disk
+/// `kind` token. Mirrors the `#[serde(tag = "kind", rename_all =
+/// "snake_case")]` projection — kept hand-rolled rather than
+/// re-serializing so this stays O(1) per call and free of allocation
+/// surprises.
+fn event_body_kind(body: &ooda_state::EventBody) -> &'static str {
+    use ooda_state::EventBody as B;
+    match body {
+        B::RunStarted { .. } => "run_started",
+        B::IterationObserved { .. } => "iteration_observed",
+        B::IterationOriented { .. } => "iteration_oriented",
+        B::IterationDecided { .. } => "iteration_decided",
+        B::IterationHandoff { .. } => "iteration_handoff",
+        B::IterationExecuted { .. } => "iteration_executed",
+        B::IterationWaited { .. } => "iteration_waited",
+        B::RunHalted { .. } => "run_halted",
+        B::RunStalled { .. } => "run_stalled",
+        B::RunCapReached { .. } => "run_cap_reached",
+        B::DomainSpecific { .. } => "domain_specific",
+    }
+}
+
+/// Closed set of `kind` discriminants that terminate a run. Any of
+/// these as the last event means the run is on-disk-final and a halt
+/// POST is a 409.
+fn is_terminal_kind(kind: &str) -> bool {
+    matches!(kind, "run_halted" | "run_stalled" | "run_cap_reached")
+}
+
+/// PID-ownership check outcome.
+#[derive(Debug)]
+enum PidOwnership {
+    /// `/proc/<pid>/comm` starts with `ooda-`.
+    Owned,
+    /// `/proc/<pid>/comm` was readable but did not start with `ooda-`.
+    Foreign,
+    /// Platform lacks a supported `/proc/<pid>/comm` (BSD, macOS,
+    /// non-Unix). Caller logs and proceeds without the check.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    Unverifiable,
+}
+
+#[cfg(target_os = "linux")]
+fn check_pid_ownership(pid: u32) -> PidOwnership {
+    let path = format!("/proc/{pid}/comm");
+    match std::fs::read_to_string(&path) {
+        Ok(comm) => {
+            let trimmed = comm.trim();
+            if trimmed.starts_with("ooda-") {
+                PidOwnership::Owned
+            } else {
+                PidOwnership::Foreign
+            }
+        }
+        Err(err) => {
+            tracing::warn!(pid, %err, "proc comm read failed; treating as foreign");
+            PidOwnership::Foreign
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_pid_ownership(_pid: u32) -> PidOwnership {
+    PidOwnership::Unverifiable
+}
+
+#[derive(Debug)]
+enum SigError {
+    /// `ESRCH` — pid does not exist (race vs. our liveness probe).
+    Esrch,
+    /// `EPERM` — pid exists but we lack permission to signal it.
+    Eperm,
+    /// Any other syscall error; `i32` is `raw_os_error`.
+    Other(i32),
+    /// Non-Unix build target.
+    #[cfg_attr(unix, allow(dead_code))]
+    Unsupported,
+}
+
+/// POSIX `kill(pid, SIGTERM)`. SIGTERM is the polite stop signal; the
+/// target process is expected (today or eventually) to install a
+/// handler that releases its live marker + appends a halt event.
+#[cfg(unix)]
+fn send_sigterm(pid: u32) -> Result<(), SigError> {
+    if pid == 0 {
+        // kill(0, …) addresses every process in the caller's group.
+        // Refuse: never a valid writer pid.
+        return Err(SigError::Esrch);
+    }
+    let pid_i32 = i32::try_from(pid).unwrap_or(i32::MAX);
+    // SAFETY: `libc::kill(pid, SIGTERM)` is a synchronous syscall
+    // with no aliasing or memory contract; the only side effect is
+    // signal delivery to `pid`.
+    let rc = unsafe { libc_kill_signal(pid_i32, SIGTERM) };
+    if rc == 0 {
+        return Ok(());
+    }
+    match io::Error::last_os_error().raw_os_error() {
+        Some(3) => Err(SigError::Esrch),
+        Some(1) => Err(SigError::Eperm),
+        Some(other) => Err(SigError::Other(other)),
+        None => Err(SigError::Other(-1)),
+    }
+}
+
+#[cfg(not(unix))]
+fn send_sigterm(_pid: u32) -> Result<(), SigError> {
+    Err(SigError::Unsupported)
+}
+
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+
+#[cfg(unix)]
+unsafe extern "C" {
+    // Distinct symbol from the `libc_kill` signal-0 probe earlier in
+    // this file so each call site reads independently; both bind to
+    // the same C `kill(2)` regardless.
+    #[link_name = "kill"]
+    fn libc_kill_signal(pid: i32, sig: i32) -> i32;
 }
 
 fn content_type_for_ext(ext: &str) -> &'static str {
@@ -1516,5 +1848,68 @@ mod tests {
                 .as_str(),
             "abc-123"
         );
+    }
+
+    #[test]
+    fn is_terminal_kind_covers_three_closed_variants() {
+        assert!(is_terminal_kind("run_halted"));
+        assert!(is_terminal_kind("run_stalled"));
+        assert!(is_terminal_kind("run_cap_reached"));
+        assert!(!is_terminal_kind("run_started"));
+        assert!(!is_terminal_kind("iteration_decided"));
+        assert!(!is_terminal_kind("domain_specific"));
+    }
+
+    #[test]
+    fn event_body_kind_matches_serde_tag_for_terminal_bodies() {
+        let halted = EventBody::RunHalted {
+            outcome: "DoneMerged".into(),
+            exit_code: 0,
+        };
+        let stalled = EventBody::RunStalled {
+            last_action: "x".into(),
+        };
+        let cap = EventBody::RunCapReached {
+            last_action: "y".into(),
+        };
+        assert_eq!(event_body_kind(&halted), "run_halted");
+        assert_eq!(event_body_kind(&stalled), "run_stalled");
+        assert_eq!(event_body_kind(&cap), "run_cap_reached");
+        // Spot-check: kind discriminant matches the serde tag.
+        let v: serde_json::Value = serde_json::to_value(OodaEvent::now(halted)).unwrap();
+        assert_eq!(v["kind"], "run_halted");
+    }
+
+    #[test]
+    fn check_origin_allows_missing_header() {
+        let h = HeaderMap::new();
+        assert!(check_origin(&h, 7777).is_ok());
+    }
+
+    #[test]
+    fn check_origin_allows_localhost_and_loopback_on_port() {
+        let mut h = HeaderMap::new();
+        h.insert(header::ORIGIN, "http://localhost:7777".parse().unwrap());
+        assert!(check_origin(&h, 7777).is_ok());
+        h.insert(header::ORIGIN, "http://127.0.0.1:7777".parse().unwrap());
+        assert!(check_origin(&h, 7777).is_ok());
+    }
+
+    #[test]
+    fn check_origin_rejects_other_hosts_and_wrong_port() {
+        let mut h = HeaderMap::new();
+        h.insert(header::ORIGIN, "http://evil.example".parse().unwrap());
+        assert!(check_origin(&h, 7777).is_err());
+        h.insert(header::ORIGIN, "http://localhost:7778".parse().unwrap());
+        assert!(check_origin(&h, 7777).is_err());
+        h.insert(header::ORIGIN, "https://localhost:7777".parse().unwrap());
+        assert!(check_origin(&h, 7777).is_err());
+    }
+
+    #[test]
+    fn run_id_writer_pid_round_trips_on_generated_ids() {
+        let id = RunId::generate();
+        let pid = id.writer_pid().expect("generated id has pid suffix");
+        assert_eq!(pid, std::process::id());
     }
 }

@@ -234,6 +234,8 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/assets/style.css", get(style_css))
+        .route("/assets/app.js", get(app_js))
         .route("/api/health", get(health))
         .route("/api/events", get(events_sse))
         .route("/api/runs", get(list_runs))
@@ -261,6 +263,23 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn index() -> impl IntoResponse {
     Html(include_str!("../static/index.html"))
+}
+
+async fn style_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../static/style.css"),
+    )
+}
+
+async fn app_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../static/app.js"),
+    )
 }
 
 async fn health(State(app): State<AppState>) -> Json<Health> {

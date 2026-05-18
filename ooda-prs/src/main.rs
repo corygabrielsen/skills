@@ -485,9 +485,20 @@ fn run_inspect(
 ) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
-    let obs = match fetch_all(slug, pr, args.state_root.as_deref()) {
+    let sticky_path = recorder.last_seen_head_path();
+    let obs = match fetch_all(slug, pr, args.state_root.as_deref(), Some(&sticky_path)) {
         Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, ObserveOutcome::Ok);
+            // Post-observe sticky update — same write site as
+            // the main loop. Inspect is single-iteration, but
+            // recording the SHA we read keeps subsequent loops
+            // (run by other tools) consistent with the
+            // divergence comparator.
+            let _ = crate::observe::branch::write_sticky(
+                &sticky_path,
+                o.pull_request_view.head_ref_oid.as_str(),
+                false,
+            );
             *o
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
@@ -1646,6 +1657,11 @@ mod tests {
             claude_review_attest_path: None,
             closeout: orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
+            branch_sync: crate::observe::branch::BranchSyncObservation {
+                divergence: None,
+                branch_graphite_tracked: false,
+                gt_available: false,
+            },
         }
     }
 

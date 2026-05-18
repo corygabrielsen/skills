@@ -23,6 +23,7 @@ pub(crate) mod review_docs;
 pub(crate) mod sync_pull_request_metadata;
 
 use std::path::Path;
+use std::process::Command;
 use std::thread;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind};
@@ -43,6 +44,9 @@ pub enum ActError {
     /// or `flock` syscall failed; concurrent-invocation exclusion
     /// could not be established for this action.
     Lock(std::io::Error),
+    /// `gt sync` subprocess failed. Surfaced with stderr so the
+    /// agent path that owns triage sees the underlying reason.
+    GraphiteSync(String),
 }
 
 impl std::fmt::Display for ActError {
@@ -56,6 +60,7 @@ impl std::fmt::Display for ActError {
             }
             Self::Gh(e) => write!(f, "{e}"),
             Self::Lock(e) => write!(f, "acquire per-PR action lock: {e}"),
+            Self::GraphiteSync(stderr) => write!(f, "`gt sync` failed: {stderr}"),
         }
     }
 }
@@ -119,7 +124,24 @@ fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result
                 ci::rerun_workflow(slug, &c.run_id)?;
             }
         }
+        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync()?,
         _ => return Err(ActError::UnsupportedAutomation),
+    }
+    Ok(())
+}
+
+/// Invoke `gt sync` in the current working directory. Graphite
+/// rebases the local stack onto the latest base; the next observe
+/// pass picks up the resulting SHA and the post-observe sticky
+/// write normalises the divergence signal.
+fn run_graphite_sync() -> Result<(), ActError> {
+    let out = Command::new("gt")
+        .arg("sync")
+        .output()
+        .map_err(|e| ActError::GraphiteSync(format!("spawn `gt sync`: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(ActError::GraphiteSync(stderr));
     }
     Ok(())
 }

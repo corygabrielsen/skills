@@ -78,6 +78,8 @@ pub(crate) enum FetchOutcome {
     RateLimited(RateLimitHit),
 }
 
+pub(crate) use super::branch::BranchSyncObservation;
+
 /// Per-PR host-side observation bundle. The field named
 /// `review_threads_page` holds every thread on the PR — the cursor
 /// loop has already been drained before the bundle is assembled.
@@ -134,6 +136,11 @@ pub(crate) struct GitHubObservations {
     /// SHA-keyed attestation snapshot for closeout. No commit-count
     /// field — HEAD-equality is the only signal the axis carries.
     pub closeout: CloseoutObservation,
+    /// Branch-sync observation: divergence between the per-PR
+    /// sticky head SHA and the live remote head, plus the
+    /// graphite-availability probe results. Drives the
+    /// `branch_sync` axis.
+    pub branch_sync: BranchSyncObservation,
 }
 
 /// Fetch every observation needed to describe the PR's state.
@@ -152,6 +159,7 @@ pub(crate) fn fetch_all(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     state_root: Option<&std::path::Path>,
+    sticky_path: Option<&std::path::Path>,
 ) -> Result<FetchOutcome, GhError> {
     /// Lift rate-limit hits into an early `Ok` return so they reach
     /// decide as typed data; non-rate-limit errors propagate.
@@ -282,6 +290,9 @@ pub(crate) fn fetch_all(
             &review_threads_page,
         );
 
+        let branch_sync =
+            observe_branch_sync(sticky_path, &head_sha, &pull_request_view.head_ref_name);
+
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pull_request_view,
             checks,
@@ -302,8 +313,30 @@ pub(crate) fn fetch_all(
             doc_review,
             claude_review,
             closeout,
+            branch_sync,
         })))
     })
+}
+
+/// Compose the branch-sync observation: probe `gt` availability,
+/// probe whether the PR branch is graphite-tracked, and classify
+/// the sticky-vs-current head delta.
+fn observe_branch_sync(
+    sticky_path: Option<&std::path::Path>,
+    current_head: &crate::ids::GitCommitSha,
+    branch: &crate::ids::BranchName,
+) -> BranchSyncObservation {
+    let gt_available = super::branch::gt_available();
+    let branch_graphite_tracked = gt_available && super::branch::branch_graphite_tracked(branch);
+    let divergence = sticky_path
+        .and_then(super::branch::read_sticky)
+        .as_ref()
+        .and_then(|s| super::branch::classify_divergence(Some(s), current_head));
+    BranchSyncObservation {
+        divergence,
+        branch_graphite_tracked,
+        gt_available,
+    }
 }
 
 /// Bundle for terminal PRs. Auxiliary fields are stubbed because
@@ -367,6 +400,15 @@ fn terminal_observations(
             attestation: None,
             head_sha,
             attest_path: None,
+        },
+        // Terminal PRs skip branch-sync detection: the branch is
+        // either merged or closed, so out-of-band pushes carry no
+        // remediation path. Stub the field; decide short-circuits
+        // on the terminal state before reading it.
+        branch_sync: BranchSyncObservation {
+            divergence: None,
+            branch_graphite_tracked: false,
+            gt_available: false,
         },
     }
 }

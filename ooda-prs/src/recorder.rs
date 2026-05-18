@@ -253,6 +253,18 @@ impl Recorder {
             .join(".action.lock")
     }
 
+    /// Per-PR sticky file recording the last remote head SHA the
+    /// driver observed or caused. The branch-sync axis compares the
+    /// current `headRefOid` against this sticky to detect drift; an
+    /// unequal pair (with `pending = false`) is divergence (an
+    /// out-of-band push). Path is per-`(slug, pr)`, parallel to
+    /// [`Self::dedup_path`] and [`Self::action_lock_path`].
+    pub(crate) fn last_seen_head_path(&self) -> PathBuf {
+        self.with_inner(|inner| pr_index_path(inner.state_root.path(), &inner.slug, inner.pr))
+            .unwrap_or_default()
+            .join("last_seen_head.json")
+    }
+
     /// Persist a handoff prompt body as a content-addressed blob
     /// and return its absolute path.
     ///

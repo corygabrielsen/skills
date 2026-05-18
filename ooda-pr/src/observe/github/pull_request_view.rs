@@ -13,8 +13,8 @@ use super::gh::{GhError, gh_json};
 /// projection struct below; adding a field requires updating both
 /// in lockstep.
 const PR_FIELDS: &str = "title,number,url,body,state,isDraft,mergeable,\
-     mergeStateStatus,headRefOid,baseRefName,updatedAt,closedAt,mergedAt,\
-     labels,assignees,reviewRequests,reviewDecision,commits,author";
+     mergeStateStatus,headRefOid,headRefName,baseRefName,updatedAt,closedAt,\
+     mergedAt,labels,assignees,reviewRequests,reviewDecision,commits,author";
 
 /// Fetch PR metadata via `gh pr view`.
 pub(crate) fn fetch_pull_request_view(
@@ -38,6 +38,7 @@ pub(crate) struct PullRequestView {
     pub mergeable: Mergeable,
     pub merge_state_status: MergeStateStatus,
     pub head_ref_oid: GitCommitSha,
+    pub head_ref_name: BranchName,
     pub base_ref_name: BranchName,
     pub updated_at: Timestamp,
     pub closed_at: Option<Timestamp>,

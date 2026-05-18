@@ -474,6 +474,11 @@ mod tests {
             codex_review: None,
             closeout: crate::orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
+            branch_sync: crate::observe::branch::BranchSyncObservation {
+                divergence: None,
+                branch_graphite_tracked: false,
+                gt_available: false,
+            },
         }
     }
 

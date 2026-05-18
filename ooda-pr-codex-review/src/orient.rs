@@ -114,6 +114,12 @@ pub(crate) struct OrientedState {
     pub closeout: Closeout,
     /// Attestation-file path for the closeout axis.
     pub closeout_attest_path: Option<std::path::PathBuf>,
+    /// Branch-sync observation passed through verbatim. The
+    /// classification is purely deterministic from the upstream
+    /// SHA delta and local-tool probes; no projection is needed,
+    /// but carrying the field through orient keeps the Driver's
+    /// dispatch interface uniform across axes.
+    pub branch_sync: crate::observe::branch::BranchSyncObservation,
 }
 
 /// Compose all axes from one observation bundle plus optional
@@ -224,5 +230,6 @@ pub(crate) fn orient(
         claude_review_attest_path,
         closeout,
         closeout_attest_path,
+        branch_sync: obs.branch_sync.clone(),
     }
 }

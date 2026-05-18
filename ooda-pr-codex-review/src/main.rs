@@ -390,12 +390,29 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     ProcessExitCode::from(code)
 }
 
+/// Post-observe sticky-head write site. Inspect and the iterated
+/// loop both call this after a successful observe so the divergence
+/// comparator's baseline tracks the most recent observed head.
+/// Best-effort: a sticky write failure leaves the signal stale for
+/// one iteration, never bricks the caller.
+fn record_observed_head(sticky_path: &std::path::Path, obs: &observe::github::GitHubObservations) {
+    let head = obs.pull_request_view.head_ref_oid.as_str();
+    let _ = crate::observe::branch::write_sticky(sticky_path, head, false);
+}
+
 fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
-    let obs = match fetch_all(&args.slug, args.pr, args.state_root.as_deref()) {
+    let sticky_path = recorder.last_seen_head_path();
+    let obs = match fetch_all(
+        &args.slug,
+        args.pr,
+        args.state_root.as_deref(),
+        Some(&sticky_path),
+    ) {
         Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, ObserveOutcome::Ok);
+            record_observed_head(&sticky_path, &o);
             *o
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
@@ -1444,6 +1461,11 @@ mod tests {
             claude_review_attest_path: None,
             closeout: orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
+            branch_sync: crate::observe::branch::BranchSyncObservation {
+                divergence: None,
+                branch_graphite_tracked: false,
+                gt_available: false,
+            },
         }
     }
 

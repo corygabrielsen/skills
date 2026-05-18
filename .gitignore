@@ -1,1 +1,7 @@
 node_modules/
+
+# Claude Code per-user state: local settings, agent worktrees,
+# session caches. Project-shared config (`.claude/settings.json`)
+# is unignored below if/when it exists.
+.claude/
+!.claude/settings.json

@@ -632,7 +632,10 @@ impl std::fmt::Display for SnapshotError {
 
 impl From<ooda_state::StateError> for SnapshotError {
     fn from(err: ooda_state::StateError) -> Self {
-        Self::Io(err)
+        match err {
+            ooda_state::StateError::UnknownRun(_) => Self::UnknownRun,
+            other => Self::Io(other),
+        }
     }
 }
 

@@ -30,11 +30,13 @@
 //! - `70` — BSD `sysexits.h` `EX_SOFTWARE`. Caught internal
 //!   failure (subprocess, IO, network). What a reader fluent in
 //!   `sysexits` expects to find at this slot.
-//! - `130` / `143` — reserved for `SIGINT` / `SIGTERM` per POSIX
-//!   shell convention (`128 + N`). Synthesized by the shell when
-//!   the process is signal-killed; never returned by the binary
-//!   itself. Documented here so caller dispatch tables stay
-//!   complete.
+//! - `130` / `143` — `SIGINT` / `SIGTERM` per POSIX shell convention
+//!   (`128 + N`). Returned by the binary itself when the loop polls
+//!   the `SHUTDOWN_SIGNAL` atomic at an iteration boundary and exits
+//!   cleanly via [`Self::SignalSigint`] / [`Self::SignalSigterm`].
+//!   The shell synthesizes the same numbers on an uncaught signal,
+//!   so caller dispatch tables stay correct regardless of which
+//!   half of the contract produced the code.
 //!
 //! Codes `8–63` and `65–69` are deliberately unassigned. New
 //! variants should land in the low range only when they encode a
@@ -91,6 +93,15 @@ pub enum ExitCode {
     /// BSD `sysexits.h` `EX_SOFTWARE`. Caught external failure
     /// (subprocess nonzero exit, network, IO).
     BinaryError = 70,
+    /// `128 + SIGINT (2)`. Loop polled `SHUTDOWN_SIGNAL` at an
+    /// iteration boundary and exited cleanly after a `SIGINT`.
+    /// Matches the POSIX shell convention for an uncaught signal so
+    /// callers cannot distinguish the trapped path from the kernel
+    /// path on `$?` alone.
+    SignalSigint = 130,
+    /// `128 + SIGTERM (15)`. Counterpart to [`Self::SignalSigint`]
+    /// for clean shutdown on `SIGTERM`.
+    SignalSigterm = 143,
 }
 
 impl ExitCode {
@@ -117,15 +128,14 @@ impl ExitCode {
             Self::StuckCapReached => "StuckCapReached",
             Self::UsageError => "UsageError",
             Self::BinaryError => "BinaryError",
+            Self::SignalSigint => "SignalSigint",
+            Self::SignalSigterm => "SignalSigterm",
         }
     }
 
     /// Every returnable variant in numeric order. Stable for
     /// iteration in help-text generation, doc-table builders, and
-    /// external schema dumps. Excludes the reserved signal codes
-    /// ([`Self::RESERVED_SIGINT`], [`Self::RESERVED_SIGTERM`])
-    /// because they are synthesized by the shell, never returned
-    /// by this enum.
+    /// external schema dumps.
     pub const ALL: &'static [ExitCode] = &[
         Self::DoneSucceeded,
         Self::Paused,
@@ -137,16 +147,9 @@ impl ExitCode {
         Self::StuckCapReached,
         Self::UsageError,
         Self::BinaryError,
+        Self::SignalSigint,
+        Self::SignalSigterm,
     ];
-
-    /// `128 + SIGINT (2)`. Synthesized by the shell when the
-    /// process is killed by `SIGINT`. Binaries in this family do
-    /// not trap signals; the kernel and shell produce this value.
-    pub const RESERVED_SIGINT: u8 = 130;
-
-    /// `128 + SIGTERM (15)`. Synthesized by the shell when the
-    /// process is killed by `SIGTERM`.
-    pub const RESERVED_SIGTERM: u8 = 143;
 }
 
 impl From<ExitCode> for u8 {
@@ -199,8 +202,8 @@ mod tests {
 
     #[test]
     fn signal_codes_match_posix() {
-        assert_eq!(ExitCode::RESERVED_SIGINT, 130);
-        assert_eq!(ExitCode::RESERVED_SIGTERM, 143);
+        assert_eq!(ExitCode::SignalSigint.as_u8(), 130);
+        assert_eq!(ExitCode::SignalSigterm.as_u8(), 143);
     }
 
     #[test]
@@ -232,7 +235,9 @@ mod tests {
         assert!(names.contains(&"StuckCapReached"));
         assert!(names.contains(&"UsageError"));
         assert!(names.contains(&"BinaryError"));
-        assert_eq!(names.len(), 10);
+        assert!(names.contains(&"SignalSigint"));
+        assert!(names.contains(&"SignalSigterm"));
+        assert_eq!(names.len(), 12);
     }
 
     #[test]

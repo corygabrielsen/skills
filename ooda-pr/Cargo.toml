@@ -10,6 +10,7 @@ ooda-state = { path = "../ooda-state" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde", "clock"] }
+signal-hook = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 ooda-core = { path = "../ooda-core", features = ["test-support"] }

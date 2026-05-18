@@ -846,6 +846,7 @@ pub(crate) fn outcome_kind(outcome: &Outcome) -> OutcomeKind {
         Outcome::StuckCapReached(_) => OutcomeKind::StuckCapReached,
         Outcome::UsageError(_) => OutcomeKind::UsageError,
         Outcome::BinaryError(_) => OutcomeKind::BinaryError,
+        Outcome::SignalInterrupted { .. } => OutcomeKind::SignalInterrupted,
     }
 }
 
@@ -1001,6 +1002,58 @@ mod tests {
 
         // Live marker has been removed by `halt`.
         assert!(!root.join("live").join(&run_ids[0]).exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn signal_interrupted_outcome_records_run_halted_and_clears_live_marker() {
+        // Exercises the full graceful-shutdown contract end-to-end
+        // at the recorder layer: a trapped `SIGTERM` projects to
+        // `Outcome::SignalInterrupted { exit_code: 143 }`, which
+        // routes through `record_outcome` exactly like any other
+        // halt — the terminal event is `RunHalted` carrying the
+        // domain-mapped `"SignalInterrupted"` token plus the
+        // wrapped exit code, and the live marker is released.
+        let root = temp_root("signal-interrupted");
+        let recorder = open_recorder(&root);
+
+        let outcome = Outcome::SignalInterrupted { exit_code: 143 };
+        recorder.record_outcome(
+            &outcome,
+            ExitCode::SignalSigterm,
+            "Interrupted: exit code 143",
+            None,
+        );
+
+        let runs = root.join("runs");
+        let mut run_ids = Vec::new();
+        for entry in fs::read_dir(&runs).unwrap() {
+            run_ids.push(entry.unwrap().file_name().into_string().unwrap());
+        }
+        assert_eq!(run_ids.len(), 1, "exactly one run: {run_ids:?}");
+        let events_path = runs.join(&run_ids[0]).join("events.jsonl");
+        let body = fs::read_to_string(&events_path).unwrap();
+        // Terminal event shape: a `RunHalted` line with the
+        // domain-mapped `SignalInterrupted` token + exit_code 143.
+        assert!(body.contains(r#""kind":"run_halted""#), "{body}");
+        assert!(body.contains(r#""outcome":"SignalInterrupted""#), "{body}");
+        assert!(body.contains(r#""exit_code":143"#), "{body}");
+        // Live marker is gone — the loop's halt path released it.
+        assert!(!root.join("live").join(&run_ids[0]).exists());
+        // No orphan blob temp files: only `.json` / `.md` / `.bin`
+        // finalized blobs may exist under `runs/<id>/blobs/`.
+        let blobs_dir = runs.join(&run_ids[0]).join("blobs");
+        if blobs_dir.exists() {
+            for entry in fs::read_dir(&blobs_dir).unwrap() {
+                let name = entry.unwrap().file_name();
+                let name = name.to_string_lossy();
+                assert!(
+                    !name.ends_with(".tmp"),
+                    "orphan blob temp file leaked: {name}"
+                );
+            }
+        }
 
         let _ = fs::remove_dir_all(root);
     }

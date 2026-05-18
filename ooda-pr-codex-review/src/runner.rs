@@ -210,6 +210,17 @@ enum IterStep {
     Executed(Action),
 }
 
+/// Loop terminator. `Halted` is the ordinary exit path (decision /
+/// stall / cap); `SignalInterrupted` carries the trapped
+/// `SIGINT` / `SIGTERM` exit code observed at an iteration
+/// boundary. Both arms route through `Outcome::from(_)` at the
+/// `main`-side boundary.
+#[derive(Debug)]
+pub(crate) enum LoopExit {
+    Halted(HaltReason),
+    SignalInterrupted { exit_code: u8 },
+}
+
 /// Drive a PR until a halt fires or the iteration cap trips.
 ///
 /// `on_state` runs once per iteration between decide and act, and
@@ -223,10 +234,17 @@ pub(crate) fn run_loop(
     config: LoopConfig,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
-) -> Result<HaltReason, LoopError> {
+) -> Result<LoopExit, LoopError> {
     let max_iter = config.max_iterations.get();
     let codex_cfg = config.codex_review;
 
+    // Boundary signal poll. The handler runs in signal context and
+    // only stores into the atomic; the loop owns every side effect
+    // (recorder.halt + live-marker release) so the terminal event
+    // lands on the same write path as every other halt.
+    if let Some(exit_code) = crate::signal::check_shutdown() {
+        return Ok(LoopExit::SignalInterrupted { exit_code });
+    }
     // First iteration is unrolled: the NonZeroU32 cap guarantees it
     // runs, and a stall comparator does not exist yet.
     let mut last_attempted: Action = match run_iter(
@@ -238,7 +256,7 @@ pub(crate) fn run_loop(
         1,
         None,
     )? {
-        IterStep::Halt(reason) => return Ok(reason),
+        IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
         IterStep::Executed(action) => action,
     };
     // Wait does not seed the stall comparator. An axis that detects
@@ -251,6 +269,9 @@ pub(crate) fn run_loop(
     };
 
     for iter in 2..=max_iter {
+        if let Some(exit_code) = crate::signal::check_shutdown() {
+            return Ok(LoopExit::SignalInterrupted { exit_code });
+        }
         let step = run_iter(
             &mut ctx,
             state_root,
@@ -261,7 +282,7 @@ pub(crate) fn run_loop(
             last_non_wait_key.as_ref(),
         )?;
         match step {
-            IterStep::Halt(reason) => return Ok(reason),
+            IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
             IterStep::Executed(action) => {
                 if !action.effect.is_wait() {
                     last_non_wait_key = Some(action.stall_key());
@@ -274,7 +295,7 @@ pub(crate) fn run_loop(
     // `last_attempted: Action` is the witness for the cap-reached
     // path: the unrolled first iteration either returned a Halt or
     // populated it.
-    Ok(HaltReason::CapReached(last_attempted))
+    Ok(LoopExit::Halted(HaltReason::CapReached(last_attempted)))
 }
 
 /// One observe → orient → decide → act cycle. Returns an early-halt
@@ -406,6 +427,47 @@ fn run_iter(
             );
             act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Process-global mutex guarding the shutdown atomic for
+    /// signal-poll unit tests. The atomic is global; sibling tests
+    /// must serialize against `set_for_test` so their boundary
+    /// poll doesn't observe a stray signal stored by another.
+    static SIGNAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn check_shutdown_round_trips_through_atomic() {
+        // The loop's signal-poll wraps a SeqCst load on the
+        // process-global atomic. This pins the round trip so a
+        // refactor that swaps the storage ordering or the wrapper
+        // function shape regresses loudly.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        assert!(crate::signal::check_shutdown().is_none());
+        crate::signal::set_for_test(143);
+        assert_eq!(crate::signal::check_shutdown(), Some(143));
+        crate::signal::set_for_test(130);
+        assert_eq!(crate::signal::check_shutdown(), Some(130));
+        crate::signal::reset_for_test();
+        assert!(crate::signal::check_shutdown().is_none());
+    }
+
+    #[test]
+    fn loop_exit_variant_carries_signal_exit_code() {
+        // `LoopExit::SignalInterrupted` is the wire surface that
+        // `main.rs` projects onto `Outcome::SignalInterrupted`.
+        // Pin the round trip — the wrapped u8 is the exit code
+        // the process returns.
+        let exit = LoopExit::SignalInterrupted { exit_code: 143 };
+        match exit {
+            LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 143),
+            LoopExit::Halted(_) => panic!("expected SignalInterrupted"),
         }
     }
 }

@@ -97,6 +97,7 @@ STRICT_FILES=(
     "src/orient/state.rs"
     "src/orient/thread.rs"
     "src/outcome.rs"
+    "src/signal.rs"
     "src/text.rs"
 )
 

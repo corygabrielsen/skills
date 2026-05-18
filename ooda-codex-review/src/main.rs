@@ -33,6 +33,7 @@ mod observe;
 mod orient;
 mod outcome;
 mod runner;
+mod signal;
 
 use act::ActContext;
 use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
@@ -42,7 +43,7 @@ use ooda_state::{
     CodexReviewDomain, EventBody, OutcomeKind, RunId, RunWriter, StateRoot, terminal_event,
 };
 use outcome::Outcome;
-use runner::{EventSink, LoopConfig, run_loop};
+use runner::{EventSink, LoopConfig, LoopExit, run_loop};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
@@ -538,7 +539,8 @@ fn run_session(args: &Args) -> Outcome {
     );
 
     let outcome = match result {
-        Ok(halt) => Outcome::from(halt),
+        Ok(LoopExit::Halted(halt)) => Outcome::from(halt),
+        Ok(LoopExit::SignalInterrupted { exit_code }) => Outcome::SignalInterrupted { exit_code },
         Err(e) => Outcome::from(e),
     };
     finalize(&mut writer, &outcome);
@@ -582,6 +584,7 @@ fn outcome_kind(outcome: &Outcome) -> OutcomeKind {
         Outcome::StuckCapReached(_) => OutcomeKind::StuckCapReached,
         Outcome::UsageError(_) => OutcomeKind::UsageError,
         Outcome::BinaryError(_) => OutcomeKind::BinaryError,
+        Outcome::SignalInterrupted { .. } => OutcomeKind::SignalInterrupted,
     }
 }
 
@@ -761,6 +764,17 @@ fn apply_mark_address_failed(
 }
 
 fn main() -> ProcessExitCode {
+    // Install signal handlers before any loop work: a `SIGTERM`
+    // arriving during args-parse should be picked up on the first
+    // iteration boundary instead of killing the process uncleanly.
+    // Failure to install is reported as a binary error rather than
+    // silently dropping the graceful-shutdown contract.
+    if let Err(e) = signal::install_signal_handlers() {
+        let outcome: Outcome = Outcome::binary_error(format!("install signal handlers: {e}"));
+        let code = outcome.exit_code();
+        render_outcome(&mut std::io::stderr(), &outcome);
+        return ProcessExitCode::from(code);
+    }
     let outcome = match parse_args() {
         Ok(args) => run_session(&args),
         Err(e) => e,
@@ -817,6 +831,9 @@ fn render_outcome(out: &mut dyn std::io::Write, oc: &Outcome) {
         Outcome::UsageError(msg) => {
             let _ = writeln!(out, "UsageError: {msg}");
             print_usage(out);
+        }
+        Outcome::SignalInterrupted { exit_code } => {
+            let _ = writeln!(out, "Interrupted: exit code {exit_code}");
         }
     }
 }

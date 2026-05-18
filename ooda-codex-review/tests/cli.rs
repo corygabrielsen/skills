@@ -442,6 +442,146 @@ fn codex_usage_error_exit_file_surfaces_as_binary_error() {
     let _ = std::fs::remove_dir_all(&state_root);
 }
 
+// ----- trapped-signal graceful shutdown --------------------------------
+
+#[test]
+#[cfg(unix)]
+fn sigterm_during_loop_writes_run_halted_signal_interrupted_and_clears_marker() {
+    // End-to-end shutdown contract: spawn the binary against a fake
+    // codex that emits a verdict synchronously, let the loop enter
+    // its inter-iteration sleep, send `SIGTERM`, and verify:
+    //   (1) the process exits with `143` (the trapped-signal token)
+    //   (2) `events.jsonl` ends with a `run_halted` carrying the
+    //       `SignalInterrupted` token + exit_code 143
+    //   (3) the `live/<run-id>` marker is gone
+    //   (4) no orphan `.tmp` blob files leaked
+    //
+    // The fake codex produces a clean verdict at level `low`; the
+    // loop's default ceiling is `xhigh`, so iter 1 emits
+    // `RetroClean::Advance` (handoff). To make the loop actually
+    // *loop* and reach a boundary check past iter 1 we ask for two
+    // codex reviewers but only fake produces one — the observe layer
+    // sees `Running { total: 2, completed: 1 }` and the loop issues
+    // a long-running `AwaitReviews` `Wait` action between
+    // iterations. `SIGTERM` lands during that sleep; the loop's
+    // boundary poll on the next iter sees the atomic and short-
+    // circuits to `LoopExit::SignalInterrupted`.
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let state_root = std::env::temp_dir().join(format!(
+        "ooda-codex-review-e2e-sigterm-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&state_root);
+    std::fs::create_dir_all(&state_root).unwrap();
+
+    // Fake codex sleeps briefly, then writes one verdict file in the
+    // batch directory passed via `--codex-review-n` semantics, then
+    // exits. Slot 1 finishes; slots 2-3 never write, so observe sees
+    // a perpetual `Running` state and the loop waits between iters.
+    //
+    // The sleep keeps slot 1 alive long enough that we can SIGTERM
+    // during the loop's `AwaitReviews` boundary wait.
+    let fake_codex = state_root.join("fake-codex-hang.sh");
+    std::fs::write(&fake_codex, b"#!/bin/sh\nsleep 60\n").unwrap();
+    std::fs::set_permissions(&fake_codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Spawn the binary. `--max-iter 50` is far above what should run;
+    // the actual exit comes from the SIGTERM we deliver below.
+    // `OODA_AWAIT_SECS=1` keeps the inter-iteration sleep short so
+    // the loop hits its boundary poll quickly after we signal.
+    let mut cmd = Command::new(BIN);
+    cmd.env("OODA_AWAIT_SECS", "1");
+    cmd.args([
+        "--uncommitted",
+        "--codex-review-n",
+        "3",
+        "--codex-bin",
+        fake_codex.to_str().unwrap(),
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--max-iter",
+        "50",
+    ]);
+
+    let mut child = cmd.spawn().expect("spawn");
+    let pid = child.id();
+
+    // Let the binary enter its loop. The fake codex `sleep 60` keeps
+    // every slot subprocess alive; the parent must reach the
+    // `AwaitReviews` boundary wait before we signal so the boundary
+    // poll catches the atomic.
+    std::thread::sleep(Duration::from_secs(3));
+
+    // SIGTERM (15). The handler stores 143 into `SHUTDOWN_SIGNAL`;
+    // the loop's next boundary check observes it.
+    unsafe {
+        // SAFETY: `libc::kill` is unsafe by signature only; `SIGTERM`
+        // on a child PID we own is well-defined.
+        libc::kill(pid.cast_signed(), libc::SIGTERM);
+    }
+
+    // Wait for the process. We bound the wait at 30s — the loop
+    // should observe the signal at its next boundary poll
+    // (≤ OODA_AWAIT_SECS + scheduling slack).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("try_wait") {
+            break s;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().ok();
+            let _ = child.wait();
+            panic!("child did not exit within 30s after SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let code = status.code().expect("no exit code");
+    assert_eq!(code, 143, "expected exit 143 (SIGTERM); got {code}");
+
+    // Locate the run id and validate the on-disk artifacts.
+    let runs = state_root.join("runs");
+    let mut run_ids = Vec::new();
+    for entry in std::fs::read_dir(&runs).unwrap() {
+        run_ids.push(entry.unwrap().file_name().into_string().unwrap());
+    }
+    assert_eq!(run_ids.len(), 1, "exactly one run: {run_ids:?}");
+    let events_path = runs.join(&run_ids[0]).join("events.jsonl");
+    let body = std::fs::read_to_string(&events_path).unwrap();
+    let last_line = body
+        .lines()
+        .rfind(|l| !l.is_empty())
+        .expect("at least one event");
+    assert!(
+        last_line.contains(r#""kind":"run_halted""#)
+            && last_line.contains(r#""outcome":"SignalInterrupted""#)
+            && last_line.contains(r#""exit_code":143"#),
+        "last event line does not match contract: {last_line}",
+    );
+
+    // Live marker is gone — the loop's halt path released it.
+    assert!(
+        !state_root.join("live").join(&run_ids[0]).exists(),
+        "live marker leaked under {state_root:?}",
+    );
+
+    // No orphan blob temp files.
+    let blobs_dir = runs.join(&run_ids[0]).join("blobs");
+    if blobs_dir.exists() {
+        for entry in std::fs::read_dir(&blobs_dir).unwrap() {
+            let name = entry.unwrap().file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.ends_with(".tmp"),
+                "orphan blob temp file leaked: {name}"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&state_root);
+}
+
 // ----- --mark-* side effects -------------------------------------------
 
 fn fresh_state_root(label: &str) -> std::path::PathBuf {

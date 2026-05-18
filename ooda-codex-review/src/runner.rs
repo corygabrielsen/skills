@@ -154,6 +154,17 @@ enum IterStep {
     Executed(Action),
 }
 
+/// Loop terminator. `Halted` is the ordinary exit path (decision /
+/// stall / cap); `SignalInterrupted` carries the trapped
+/// `SIGINT` / `SIGTERM` exit code observed at an iteration
+/// boundary. Both arms route through `Outcome::from(_)` at the
+/// `main`-side boundary.
+#[derive(Debug)]
+pub(crate) enum LoopExit {
+    Halted(HaltReason),
+    SignalInterrupted { exit_code: u8 },
+}
+
 /// Drive a session until a halt fires or the iteration cap trips.
 ///
 /// `observe` is supplied as a closure so the test harness can
@@ -169,9 +180,16 @@ pub(crate) fn run_loop(
     ctx: &ActContext,
     mut observe: impl FnMut(&RepoId, &ReviewTarget) -> Result<CodexObservations, String>,
     events: &mut EventSink<'_>,
-) -> Result<HaltReason, LoopError> {
+) -> Result<LoopExit, LoopError> {
     let max_iter = config.max_iterations.get();
 
+    // Boundary signal poll. The handler runs in signal context and
+    // only stores into the atomic; the loop owns every side effect
+    // (recorder.halt + live-marker release) so the terminal event
+    // lands on the same write path as every other halt.
+    if let Some(exit_code) = crate::signal::check_shutdown() {
+        return Ok(LoopExit::SignalInterrupted { exit_code });
+    }
     // Iter 1 runs unconditionally; stall is structurally
     // impossible there (no prior key). Splitting it out
     // initializes `last_attempted` as a typed `Action`.
@@ -185,7 +203,7 @@ pub(crate) fn run_loop(
         1,
         None,
     )? {
-        IterStep::Halt(reason) => return Ok(reason),
+        IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
         IterStep::Executed(action) => action,
     };
     let mut last_non_wait_key = if last_attempted.effect.is_wait() {
@@ -195,6 +213,9 @@ pub(crate) fn run_loop(
     };
 
     for iter in 2..=max_iter {
+        if let Some(exit_code) = crate::signal::check_shutdown() {
+            return Ok(LoopExit::SignalInterrupted { exit_code });
+        }
         let step = run_iter(
             repo_id,
             target,
@@ -206,7 +227,7 @@ pub(crate) fn run_loop(
             last_non_wait_key.as_ref(),
         )?;
         match step {
-            IterStep::Halt(reason) => return Ok(reason),
+            IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
             IterStep::Executed(action) => {
                 if !action.effect.is_wait() {
                     last_non_wait_key = Some(action.stall_key());
@@ -216,7 +237,7 @@ pub(crate) fn run_loop(
         }
     }
 
-    Ok(HaltReason::CapReached(last_attempted))
+    Ok(LoopExit::Halted(HaltReason::CapReached(last_attempted)))
 }
 
 /// Run one full observe → orient → decide → act cycle.
@@ -323,6 +344,21 @@ mod tests {
         }
     }
 
+    fn unwrap_halt(exit: LoopExit) -> HaltReason {
+        match exit {
+            LoopExit::Halted(reason) => reason,
+            LoopExit::SignalInterrupted { exit_code } => {
+                panic!("unexpected signal-interrupt exit (code {exit_code})")
+            }
+        }
+    }
+
+    /// Process-global mutex guarding the shutdown atomic for
+    /// signal-poll unit tests. The atomic is global; sibling tests
+    /// must serialize against `set_for_test` so their boundary
+    /// poll doesn't observe a stray signal stored by another.
+    static SIGNAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Fresh state-root + started run for tests that need an
     /// `EventSink` but don't care about reading back what was
     /// written. Returns the temp dir so it lives for the test's
@@ -347,6 +383,8 @@ mod tests {
         // max_iter=1 + Complete(all-clean) at ceiling → halts after
         // iter 1 with Decision(Terminal::Succeeded). The point: iter
         // 1 IS reached and observed even at the minimum cap.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         let observe = scripted_observe(vec![CodexObservations {
             current_level: CodexReasoningLevel::Xhigh,
             ..obs(BatchState::Complete {
@@ -355,15 +393,17 @@ mod tests {
         }]);
         let (_tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);
-        let halt = run_loop(
-            &repo_id(),
-            &target(),
-            loop_cfg(1),
-            &ctx(),
-            observe,
-            &mut sink,
-        )
-        .unwrap();
+        let halt = unwrap_halt(
+            run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(1),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap(),
+        );
         assert!(matches!(
             halt,
             HaltReason::Decision(crate::decide::decision::DecisionHalt::Terminal(_))
@@ -388,20 +428,24 @@ mod tests {
         // returns via the IterStep::Halt branch — no stall key is
         // ever stored. The stall code path is exercised by the
         // running-Wait scenario below.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         let observe = scripted_observe(vec![obs(BatchState::Complete {
             verdicts: vec![record(1, VerdictClass::HasIssues)],
         })]);
         let (_tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);
-        let halt = run_loop(
-            &repo_id(),
-            &target(),
-            loop_cfg(10),
-            &ctx(),
-            observe,
-            &mut sink,
-        )
-        .unwrap();
+        let halt = unwrap_halt(
+            run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(10),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap(),
+        );
         assert!(matches!(
             halt,
             HaltReason::Decision(crate::decide::decision::DecisionHalt::AgentNeeded(_))
@@ -420,6 +464,8 @@ mod tests {
         // env so the test completes immediately.
         // SAFETY: env vars are process-global; setting it inside a
         // serial #[test] is fine but flagged unsafe in 2024 edition.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         unsafe {
             std::env::set_var("OODA_AWAIT_SECS", "1");
         }
@@ -435,15 +481,17 @@ mod tests {
         ]);
         let (_tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);
-        let halt = run_loop(
-            &repo_id(),
-            &target(),
-            loop_cfg(2),
-            &ctx(),
-            observe,
-            &mut sink,
-        )
-        .unwrap();
+        let halt = unwrap_halt(
+            run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(2),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap(),
+        );
         // Cap reached with the last AwaitReviews as last_attempted —
         // Wait DID NOT trigger stall.
         match halt {
@@ -466,6 +514,8 @@ mod tests {
     #[test]
     fn cap_reached_carries_typed_last_attempted_action() {
         // Two Running iters at cap=2 → CapReached(AwaitReviews).
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         unsafe {
             std::env::set_var("OODA_AWAIT_SECS", "1");
         }
@@ -481,15 +531,17 @@ mod tests {
         ]);
         let (_tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);
-        let halt = run_loop(
-            &repo_id(),
-            &target(),
-            loop_cfg(2),
-            &ctx(),
-            observe,
-            &mut sink,
-        )
-        .unwrap();
+        let halt = unwrap_halt(
+            run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(2),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap(),
+        );
         match halt {
             HaltReason::CapReached(action) => {
                 // The typed Action carries the kind directly; no
@@ -508,6 +560,8 @@ mod tests {
 
     #[test]
     fn observe_error_bubbles_as_loop_error() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         let observe = |_: &_, _: &_| -> Result<CodexObservations, String> {
             Err("subprocess crashed".to_string())
         };
@@ -532,6 +586,8 @@ mod tests {
 
     #[test]
     fn iteration_emits_orient_and_decision_events() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         let observe = scripted_observe(vec![obs(BatchState::Complete {
             verdicts: vec![record(1, VerdictClass::HasIssues)],
         })]);
@@ -581,5 +637,36 @@ mod tests {
             vec!["run_started", "iteration_oriented", "iteration_decided"],
             "AgentNeeded halt should emit orient + decision but no act/halt event",
         );
+    }
+
+    // ── trapped-signal short-circuit ──
+
+    #[test]
+    fn signal_interrupt_short_circuits_before_first_iteration() {
+        // Direct-poke the shutdown atomic to simulate a `SIGTERM`
+        // landing before the loop body runs. The driver must
+        // observe the signal at the boundary check and route to
+        // `LoopExit::SignalInterrupted` without invoking observe.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::set_for_test(143);
+        let observe = |_: &_, _: &_| -> Result<CodexObservations, String> {
+            panic!("observe must not run when signal is armed pre-loop");
+        };
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
+        let exit = run_loop(
+            &repo_id(),
+            &target(),
+            loop_cfg(10),
+            &ctx(),
+            observe,
+            &mut sink,
+        )
+        .unwrap();
+        crate::signal::reset_for_test();
+        match exit {
+            LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 143),
+            halt @ LoopExit::Halted(_) => panic!("expected SignalInterrupted, got {halt:?}"),
+        }
     }
 }

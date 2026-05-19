@@ -326,9 +326,17 @@ impl fmt::Display for GitCommitSha {
 
 // -- GitHubLogin -----------------------------------------------------
 
-/// A GitHub account login. Bot identity is encoded by the `[bot]`
-/// suffix on one API surface and absent on another, so [`is_bot`]
-/// inspects the suffix rather than carrying a separate flag.
+/// A GitHub account login. Three observed surface forms, all valid:
+///
+/// - `<name>` — plain user or org login
+/// - `<name>[bot]` — bot login from REST / GraphQL Bot-typed actor
+/// - `app/<slug>` — GitHub App identity as returned by `gh pr view`'s
+///   `author` field for App-authored PRs (e.g. dependabot opens PRs
+///   in this form)
+///
+/// Bot identity is encoded by either the `[bot]` suffix or the
+/// `app/` prefix, so [`is_bot`] inspects both rather than carrying
+/// a separate flag.
 ///
 /// [`is_bot`]: GitHubLogin::is_bot
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -337,7 +345,17 @@ pub struct GitHubLogin(String);
 
 impl GitHubLogin {
     pub fn parse(s: &str) -> Result<Self, IdError> {
-        let stem = s.strip_suffix("[bot]").unwrap_or(s);
+        // Three forms reduce to a stem that's a regular account
+        // login (charset `[A-Za-z0-9-]{1,39}`). Order matters: check
+        // `app/` first because the slug itself could in principle
+        // end in `[bot]`.
+        let stem = if let Some(rest) = s.strip_prefix("app/") {
+            rest
+        } else if let Some(rest) = s.strip_suffix("[bot]") {
+            rest
+        } else {
+            s
+        };
         validate_github_account_login("github login", stem)?;
         Ok(Self(s.to_owned()))
     }
@@ -347,7 +365,7 @@ impl GitHubLogin {
     }
 
     pub fn is_bot(&self) -> bool {
-        self.0.ends_with("[bot]")
+        self.0.ends_with("[bot]") || self.0.starts_with("app/")
     }
 }
 
@@ -685,6 +703,24 @@ mod tests {
         assert!(GitHubLogin::parse("").is_err());
         assert!(!GitHubLogin::parse("alice").unwrap().is_bot());
         assert!(GitHubLogin::parse("copilot[bot]").unwrap().is_bot());
+    }
+
+    /// Regression: `gh pr view --json author` returns
+    /// `{"login":"app/dependabot"}` for App-authored PRs (observed
+    /// against w3-io/w3-explorer#353). The parser used to reject
+    /// the `/` byte and the binary crashed with `BinaryError` 70.
+    #[test]
+    fn github_login_accepts_app_slug_form() {
+        let l = GitHubLogin::parse("app/dependabot").expect("valid app/ form");
+        assert!(l.is_bot(), "app/* logins are bots");
+        assert_eq!(l.as_str(), "app/dependabot", "surface form preserved");
+        // Other observed app slugs.
+        assert!(GitHubLogin::parse("app/copilot-pull-request-reviewer").is_ok());
+        // The slug part is still validated against the account
+        // login charset.
+        assert!(GitHubLogin::parse("app/has space").is_err());
+        assert!(GitHubLogin::parse("app/").is_err());
+        assert!(GitHubLogin::parse("app/-leading").is_err());
     }
 
     #[test]

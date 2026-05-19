@@ -1,8 +1,8 @@
 ---
 name: gather
-description: Use background subagents to gather context in parallel. The point is to keep their exploration out of your conversation — read only what they return.
+description: Push context-gathering into the background. Read what comes back; pull on anything worth a closer look.
 ---
 
 # /gather
 
-Use background subagents to gather context in parallel. The point is to keep their exploration out of your conversation — read only what they return.
+Push context-gathering into the background. Read what comes back; pull on anything worth a closer look.

@@ -1270,6 +1270,7 @@ mod tests {
             commit: Some(sha),
             comments_visible: 0,
             comments_suppressed: 0,
+            suppressed_comments: Vec::new(),
         };
 
         // Idle is the single-emit-nothing case for this axis.

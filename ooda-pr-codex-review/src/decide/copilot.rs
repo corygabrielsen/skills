@@ -269,6 +269,7 @@ mod tests {
             commit: Some(GitCommitSha::parse(&"a".repeat(40)).unwrap()),
             comments_visible: 0,
             comments_suppressed: 0,
+            suppressed_comments: Vec::new(),
         }
     }
 

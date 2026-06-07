@@ -11,7 +11,9 @@ use crate::observe::github::pull_request_view::ReviewDecision;
 use crate::orient::ci::CiReport;
 use crate::orient::copilot::CopilotReport;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
-use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
+use crate::orient::thread::{
+    BotName, FilePath, ReviewThread, ThreadAuthor, ThreadId, ThreadLocation, ThreadState,
+};
 
 use super::action::{Action, ActionEffect, ActionKind, MidTier, NonEmpty, TargetEffect, Urgency};
 use ooda_core::{HandoffPrompt, SingleLineString, Witness};
@@ -37,11 +39,25 @@ pub(crate) fn candidates(
     let ci = &ci.summary;
     let mut out: Vec<Action> = Vec::new();
 
-    let unresolved_threads: Vec<ReviewThread> = threads
+    let mut unresolved_threads: Vec<ReviewThread> = threads
         .iter()
         .filter(|t| t.state != ThreadState::Resolved)
         .cloned()
         .collect();
+
+    // Copilot suppresses low-confidence findings from being posted as
+    // inline review threads — it only renders them as text inside a
+    // `<details>` block at the tail of the review body. The orient
+    // axis extracts those entries onto `CopilotReviewRound`; synthesise
+    // them as `ReviewThread` rows here so they flow through the same
+    // `AddressThreads` action the agent already knows how to discharge.
+    // Source only from the latest round to avoid re-firing the same
+    // entries every time the host re-renders the block across reviews.
+    if let Some(copilot) = copilot
+        && let Some(latest) = copilot.rounds.last()
+    {
+        unresolved_threads.extend(synthesise_suppressed_threads(latest));
+    }
 
     if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads) {
         let prompt = address_threads_prompt(&unresolved_threads);
@@ -206,10 +222,9 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
             "No human CHANGES_REQUESTED review observed in the reviews \
              projection (rare bot-only path or REST/GraphQL race).",
         );
-        prompt
-            .push_paragraph("Step 1 — fetch the latest CHANGES_REQUESTED review body:".to_string());
-        prompt.push_paragraph("gh pr view --json reviews".to_string());
-        prompt.push_paragraph("Step 2 — address the requested changes.".to_string());
+        prompt.push_heading(3, "Step 1 — fetch the latest CHANGES_REQUESTED review body");
+        prompt.push_code("bash", "gh pr view --json reviews");
+        prompt.push_heading(3, "Step 2 — address the requested changes");
     }
 
     prompt.push_paragraph(
@@ -270,6 +285,52 @@ fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
 /// witnesses, class-of-issue generalization directive, optional
 /// outdated-judgment directive, and the resolve-template with
 /// idempotency note.
+/// Synthesise `ReviewThread` rows from a Copilot round's suppressed
+/// low-confidence entries. The host posts these as text only and
+/// never assigns them stable node ids; this layer mints synthetic
+/// ids that are deterministic within a (PR, SHA, path, line) tuple so
+/// the stall classifier's gate identity stays stable across iterations.
+/// Entries whose path is not a valid `FilePath` (control bytes, leading
+/// slash, etc.) are dropped at this boundary rather than propagated.
+fn synthesise_suppressed_threads(
+    round: &crate::orient::copilot::CopilotReviewRound,
+) -> Vec<ReviewThread> {
+    let Some(reviewed_at) = round.reviewed_at else {
+        return Vec::new();
+    };
+    let sha_prefix = round
+        .commit
+        .as_ref()
+        .map(|c| c.as_str().chars().take(7).collect::<String>())
+        .unwrap_or_default();
+    let mut out = Vec::with_capacity(round.suppressed_comments.len());
+    for c in &round.suppressed_comments {
+        let Ok(path) = FilePath::new(c.path.clone()) else {
+            continue;
+        };
+        let id_raw = format!("copilot-suppressed:{sha_prefix}:{}:{}", c.path, c.line);
+        let Ok(id) = ThreadId::new(id_raw) else {
+            continue;
+        };
+        out.push(ReviewThread {
+            id,
+            author: ThreadAuthor::Bot(BotName::Copilot),
+            location: ThreadLocation {
+                path,
+                line: Some(c.line),
+            },
+            body: c.body.clone(),
+            // Live — actionable. The host never marks these resolved;
+            // the gate stays open until the agent pushes a fix that
+            // removes the underlying issue, after which Copilot's next
+            // review (if any) renders a smaller `<details>` block.
+            state: ThreadState::Live,
+            created_at: reviewed_at,
+        });
+    }
+    out
+}
+
 fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::HandoffPrompt {
     use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
@@ -304,7 +365,9 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
     if !by_author.is_empty() {
         let bits: Vec<String> = by_author
             .iter()
-            .map(|(author, count)| format!("{}: {}", author, crate::text::count(*count, "issue")))
+            .map(|(author, count)| {
+                format!("**{}:** {}", author, crate::text::count(*count, "issue"))
+            })
             .collect();
         prompt.push_paragraph(format!("{}.", bits.join(" · ")));
     }
@@ -341,44 +404,43 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
     });
     prompt.push_witnesses(witnesses);
 
+    prompt.push_heading(3, "Step 1 — solve the class, not the instance");
     prompt.push_paragraph(
-        "Step 1 — for each issue, think deeply about the entire class of issue, \
-         in general, and solve the general form of the issue across all relevant \
+        "For each issue, think deeply about the entire class of issue, in \
+         general, and solve the general form of the issue across all relevant \
          code. This ensures the entire category of each issue is solved in \
          general, not just the specific instance the reviewer flagged.",
     );
 
     if outdated_count > 0 {
+        prompt.push_heading(3, "Step 1a — outdated threads only");
         prompt.push_paragraph(
-            "Step 1a (outdated threads only) — GitHub's `isOutdated` flag is \
-             positional, not content-relevance: the diff hunk that anchored the \
-             thread has moved (typically due to a refactor or rebase), so the \
-             comment no longer renders inline, but the logical feedback may \
-             still apply to the current code. For each outdated thread, locate \
-             the current code that the comment is about (often near the original \
-             `path:line` after a small refactor; sometimes elsewhere) and decide \
-             whether the feedback still applies. If it does, address it as you \
-             would a live thread. If it does not, resolve the thread with a \
-             brief reply explaining why.",
+            "GitHub's `isOutdated` flag is positional, not content-relevance: \
+             the diff hunk that anchored the thread has moved (typically due \
+             to a refactor or rebase), so the comment no longer renders \
+             inline, but the logical feedback may still apply to the current \
+             code. For each outdated thread, locate the current code that the \
+             comment is about (often near the original `path:line` after a \
+             small refactor; sometimes elsewhere) and decide whether the \
+             feedback still applies. If it does, address it as you would a \
+             live thread. If it does not, resolve the thread with a brief \
+             reply explaining why.",
         );
     }
 
+    prompt.push_heading(3, "Step 2 — mark each thread resolved");
     prompt.push_paragraph(
-        "Step 2 — after addressing (or judging not-applicable) each thread, mark \
-         it resolved on GitHub by running:"
-            .to_string(),
+        "After addressing (or judging not-applicable) each thread, mark it \
+         resolved on GitHub by running:",
     );
-
-    prompt.push_paragraph(
+    prompt.push_code(
+        "bash",
         "gh api graphql -f query='mutation { resolveReviewThread(input: \
-         { threadId: \"<thread_id>\" }) { thread { id } } }'"
-            .to_string(),
+         { threadId: \"<thread_id>\" }) { thread { id } } }'",
     );
-
     prompt.push_paragraph(
         "Substitute the per-thread `thread_id` shown in each entry above. The \
-         mutation is idempotent — already-resolved threads succeed as a no-op."
-            .to_string(),
+         mutation is idempotent — already-resolved threads succeed as a no-op.",
     );
 
     prompt
@@ -480,6 +542,119 @@ mod tests {
         assert!(cands_with(&clean_reviews()).is_empty());
     }
 
+    /// Build a `CopilotReport` whose latest round carries `suppressed_comments`
+    /// and nothing else interesting. Reuses the testing helpers from this
+    /// module's own test scope.
+    fn copilot_report_with_suppressed(
+        entries: Vec<crate::orient::copilot::SuppressedComment>,
+    ) -> crate::orient::copilot::CopilotReport {
+        use crate::ids::GitCommitSha;
+        use crate::orient::bot_threads::BotThreadSummary;
+        use crate::orient::copilot::{
+            CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotReviewRound, CopilotTier,
+        };
+        let round = CopilotReviewRound {
+            round: 1,
+            requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+            ack_at: Some(Timestamp::parse("2026-04-23T10:01:00Z").unwrap()),
+            reviewed_at: Some(Timestamp::parse("2026-04-23T10:05:00Z").unwrap()),
+            commit: Some(GitCommitSha::parse(&"a".repeat(40)).unwrap()),
+            comments_visible: 0,
+            #[allow(clippy::cast_possible_truncation)]
+            comments_suppressed: entries.len() as u32,
+            suppressed_comments: entries,
+        };
+        CopilotReport {
+            config: CopilotRepoConfig {
+                enabled: true,
+                review_on_push: false,
+                review_draft_pull_requests: false,
+            },
+            activity: CopilotActivity::Reviewed {
+                latest: round.clone(),
+            },
+            rounds: vec![round],
+            threads: BotThreadSummary::default(),
+            tier: CopilotTier::Silver,
+            fresh: true,
+        }
+    }
+
+    #[test]
+    fn suppressed_low_confidence_entries_fire_address_threads_action() {
+        use crate::orient::copilot::SuppressedComment;
+        let report = copilot_report_with_suppressed(vec![
+            SuppressedComment {
+                path: "src/lib.rs".into(),
+                line: 12,
+                body: "stale doc comment".into(),
+            },
+            SuppressedComment {
+                path: "src/lib.rs".into(),
+                line: 30,
+                body: "name drift".into(),
+            },
+        ]);
+        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        let address = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }));
+        let address = address.expect("AddressThreads must fire when suppressed entries exist");
+        match &address.kind {
+            ActionKind::AddressThreads { threads } => {
+                assert_eq!(threads.len(), 2);
+                assert!(threads.iter().any(|t| t.location.line == Some(12)));
+                assert!(threads.iter().any(|t| t.location.line == Some(30)));
+                assert!(threads.iter().all(|t| matches!(t.state, ThreadState::Live)));
+                assert!(
+                    threads
+                        .iter()
+                        .all(|t| matches!(t.author, ThreadAuthor::Bot(_)))
+                );
+            }
+            other => panic!("unexpected kind {other:?}"),
+        }
+    }
+
+    #[test]
+    fn suppressed_entries_with_invalid_path_are_dropped_silently() {
+        use crate::orient::copilot::SuppressedComment;
+        // Leading `/` fails FilePath::new; entry is dropped, not raised.
+        let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            path: "/abs/path.rs".into(),
+            line: 1,
+            body: "this one is unreachable".into(),
+        }]);
+        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        assert!(
+            cs.iter()
+                .all(|a| !matches!(a.kind, ActionKind::AddressThreads { .. })),
+            "no AddressThreads when every suppressed entry is invalid",
+        );
+    }
+
+    #[test]
+    fn suppressed_entries_merge_with_inline_threads_into_single_action() {
+        use crate::orient::copilot::SuppressedComment;
+        let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            path: "src/lib.rs".into(),
+            line: 42,
+            body: "from suppressed block".into(),
+        }]);
+        let inline = vec![live_thread("src/other.rs", 5, "from real review thread")];
+        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &inline);
+        match &cs[0].kind {
+            ActionKind::AddressThreads { threads } => {
+                assert_eq!(
+                    threads.len(),
+                    2,
+                    "suppressed + inline thread merge into one payload",
+                );
+            }
+            other => panic!("unexpected kind {other:?}"),
+        }
+    }
+
     #[test]
     fn unresolved_threads_emit_address_threads() {
         let r = clean_reviews();
@@ -509,7 +684,7 @@ mod tests {
         let desc = &cs[0].rendered_payload();
         // Headline + per-author breakdown
         assert!(desc.contains("Address 2 unresolved review threads."));
-        assert!(desc.contains("Copilot: 2 issues."));
+        assert!(desc.contains("**Copilot:** 2 issues."));
         // Both witnesses inlined (location + body)
         assert!(desc.contains("Copilot @ src/foo.rs:42"));
         assert!(desc.contains("> unwrap should be ?"));

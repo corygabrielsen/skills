@@ -194,6 +194,26 @@ pub(crate) struct CopilotReviewRound {
     pub comments_visible: u32,
     /// Suppressed low-confidence finding count from review body.
     pub comments_suppressed: u32,
+    /// Per-entry payload of the low-confidence findings — file, line,
+    /// and body extracted from the `<details>` block at the tail of the
+    /// review body. The host posts these as text only (not as inline
+    /// review threads), so they need a separate surface to drive agent
+    /// work. `comments_suppressed` carries the host's stated count;
+    /// this vec carries the witnesses. The two may diverge if the
+    /// host's prose drifts or the block fails to parse — both are kept
+    /// rather than derived so the stated count survives parser failure.
+    pub suppressed_comments: Vec<SuppressedComment>,
+}
+
+/// One entry inside Copilot's "Comments suppressed due to low
+/// confidence" `<details>` block. Carries the witness (path + line +
+/// body) needed to drive an `AddressThreads` action that the host
+/// never posted as an inline review thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct SuppressedComment {
+    pub path: String,
+    pub line: u32,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -337,6 +357,77 @@ fn find_count(body: &str, prefix: &str) -> Option<u32> {
     }
 }
 
+/// Extract per-comment witnesses from Copilot's "Comments suppressed
+/// due to low confidence" `<details>` block. Each entry inside the
+/// block is a `**path:line**` header followed by a `* ` bullet line
+/// carrying the issue body.
+///
+/// Returns an empty vec when the prefix isn't present, the block
+/// isn't well-formed, or every entry inside fails to parse. The
+/// parser is lenient on whitespace and on multi-line bodies (a body
+/// run continues until the next `**…**` header or the block close)
+/// and strict on the header shape (must end in `:<digits>**`).
+pub(crate) fn extract_suppressed_comments(body: &str) -> Vec<SuppressedComment> {
+    let Some(prefix_at) = body.find("Comments suppressed due to low confidence (") else {
+        return Vec::new();
+    };
+    let Some(summary_end_rel) = body[prefix_at..].find("</summary>") else {
+        return Vec::new();
+    };
+    let block_start = prefix_at + summary_end_rel + "</summary>".len();
+    let block_end = body[block_start..]
+        .find("</details>")
+        .map_or(body.len(), |i| block_start + i);
+    parse_suppressed_block(&body[block_start..block_end])
+}
+
+fn parse_suppressed_block(block: &str) -> Vec<SuppressedComment> {
+    let mut out: Vec<SuppressedComment> = Vec::new();
+    let mut current: Option<(String, u32, Vec<String>)> = None;
+    for raw_line in block.lines() {
+        let line = raw_line.trim();
+        if let Some((path, line_no)) = parse_entry_header(line) {
+            flush_entry(&mut current, &mut out);
+            current = Some((path, line_no, Vec::new()));
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((_, _, body_parts)) = current.as_mut() {
+            let body_line = line.strip_prefix("* ").unwrap_or(line).to_string();
+            body_parts.push(body_line);
+        }
+    }
+    flush_entry(&mut current, &mut out);
+    out
+}
+
+fn flush_entry(current: &mut Option<(String, u32, Vec<String>)>, out: &mut Vec<SuppressedComment>) {
+    if let Some((path, line, body_parts)) = current.take() {
+        let body = body_parts.join("\n").trim().to_string();
+        if !body.is_empty() {
+            out.push(SuppressedComment { path, line, body });
+        }
+    }
+}
+
+/// Parse a `**path:line**` header, returning `(path, line)` on
+/// success. The line number is the trailing decimal run after the
+/// last `:` inside the bolded span. Returns `None` for any other
+/// line shape — the parser silently skips those rather than misclassify.
+fn parse_entry_header(line: &str) -> Option<(String, u32)> {
+    let inner = line.strip_prefix("**")?.strip_suffix("**")?;
+    let colon = inner.rfind(':')?;
+    let (path, line_part) = inner.split_at(colon);
+    let line_str = &line_part[1..];
+    if path.is_empty() || line_str.is_empty() {
+        return None;
+    }
+    let line_no: u32 = line_str.parse().ok()?;
+    Some((path.to_string(), line_no))
+}
+
 // ── Timeline + rounds ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,6 +506,7 @@ fn correlate_rounds(
         let (visible, suppressed) = parse_copilot_review_body(&rev.body);
         round.comments_visible = visible;
         round.comments_suppressed = suppressed;
+        round.suppressed_comments = extract_suppressed_comments(&rev.body);
     };
 
     for point in timeline {
@@ -449,6 +541,7 @@ fn correlate_rounds(
                     commit: None,
                     comments_visible: 0,
                     comments_suppressed: 0,
+                    suppressed_comments: Vec::new(),
                 });
                 paired = false;
             }
@@ -508,6 +601,7 @@ fn synthetic_round(rev: &PullRequestReview, round_no: u32) -> CopilotReviewRound
         commit: Some(rev.commit_id.clone()),
         comments_visible: counts.0,
         comments_suppressed: counts.1,
+        suppressed_comments: extract_suppressed_comments(&rev.body),
     }
 }
 
@@ -1019,6 +1113,112 @@ mod tests {
             "generated 2 comments. Comments suppressed due to low confidence (5 of 12 hidden)",
         );
         assert_eq!(s, 5);
+    }
+
+    // ── suppressed-entry extraction ──
+
+    const SAMPLE_DETAILS: &str = "\
+generated 0 comments.
+
+<details>
+<summary>Comments suppressed due to low confidence (2)</summary>
+
+**src/core/config/src/impls/consensus.rs:16**
+* This doc comment still says \"workflow consensus protocol\".
+
+**src/core/config/src/impls/consensus.rs:19**
+* `ConsensusConfig` is now a public type in `w3_config::impls::consensus`.
+
+</details>
+";
+
+    #[test]
+    fn extract_suppressed_returns_empty_when_marker_absent() {
+        assert!(extract_suppressed_comments("generated 3 comments.").is_empty());
+    }
+
+    #[test]
+    fn extract_suppressed_parses_two_entries_from_sample_block() {
+        let entries = extract_suppressed_comments(SAMPLE_DETAILS);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "src/core/config/src/impls/consensus.rs");
+        assert_eq!(entries[0].line, 16);
+        assert_eq!(
+            entries[0].body,
+            "This doc comment still says \"workflow consensus protocol\"."
+        );
+        assert_eq!(entries[1].line, 19);
+        assert!(entries[1].body.starts_with("`ConsensusConfig`"));
+    }
+
+    #[test]
+    fn extract_suppressed_drops_header_with_non_numeric_line() {
+        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+                    **src/x.rs:bogus**\n* should be skipped\n\
+                    **src/y.rs:7**\n* this one is kept\n";
+        let entries = extract_suppressed_comments(body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "src/y.rs");
+        assert_eq!(entries[0].line, 7);
+    }
+
+    #[test]
+    fn extract_suppressed_skips_empty_bodies() {
+        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+                    **src/x.rs:1**\n\n\
+                    **src/y.rs:2**\n* real body\n";
+        let entries = extract_suppressed_comments(body);
+        assert_eq!(entries.len(), 1, "header-only entry must not survive");
+        assert_eq!(entries[0].path, "src/y.rs");
+    }
+
+    #[test]
+    fn extract_suppressed_concatenates_multi_line_body() {
+        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+                    **src/x.rs:1**\n\
+                    * first line\n\
+                    continuation\n";
+        let entries = extract_suppressed_comments(body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].body, "first line\ncontinuation");
+    }
+
+    #[test]
+    fn extract_suppressed_stops_at_details_close() {
+        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+                    **src/x.rs:1**\n* before close\n\
+                    </details>\n\
+                    **src/y.rs:2**\n* outside block — must be ignored\n";
+        let entries = extract_suppressed_comments(body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "src/x.rs");
+    }
+
+    #[test]
+    fn round_populated_with_suppressed_entries_from_review_body() {
+        let events = vec![
+            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            ack_event("2026-04-23T10:01:00Z"),
+        ];
+        let revs = vec![copilot_review(
+            HEAD_SHA,
+            "2026-04-23T10:05:00Z",
+            SAMPLE_DETAILS,
+        )];
+        let r = orient_copilot_test(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
+        assert_eq!(r.rounds.len(), 1);
+        let round = &r.rounds[0];
+        assert_eq!(round.comments_suppressed, 2);
+        assert_eq!(round.suppressed_comments.len(), 2);
+        assert_eq!(round.suppressed_comments[0].line, 16);
     }
 
     // ── orient_copilot returns None when disabled ──

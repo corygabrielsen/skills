@@ -36,7 +36,7 @@ use crate::axis_impls::pull_request_metadata::{
 };
 use crate::axis_impls::reviews::{ReviewsAxis, ReviewsObservation};
 use crate::axis_impls::state::{StateAxis, StateObservation};
-use crate::decide::action::{Action, TargetEffect, rate_limit_wait_action};
+use crate::decide::action::{Action, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{CodexReasoningLevel, PullRequestNumber, Timestamp};
 use crate::observe::codex::{CodexObservations, fetch_all as fetch_codex};
@@ -121,17 +121,25 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
         pr,
     }));
     out.extend(BranchSyncAxis.candidates(&&oriented.branch_sync));
-    let has_advancement_path = out.iter().any(|a| {
-        matches!(
-            a.target_effect,
-            TargetEffect::Blocks | TargetEffect::Advances,
-        )
-    });
-    if !has_advancement_path {
-        out.extend(crate::decide::state::fallback_merge_state_blocker(
+    // Merge-eligibility closure check. Runs unconditionally — the
+    // axis pattern below trusts a positive-eligibility predicate
+    // over `mergeStateStatus`, drilled-into-cause for BLOCKED, and
+    // stale-state cross-checks for CLEAN/UNSTABLE/HAS_HOOKS. Without
+    // this, OODA's verdict-by-absence would project a still-
+    // unmergeable PR into `Decision::Halt(Success)` whenever the
+    // explaining gate sits outside the modeled axis set.
+    //
+    // Composes via urgency ordering, not via masking: other axes'
+    // `BlockingFix` candidates outrank this axis's `BlockingHuman`
+    // candidates, so concurrent firings are decided by the picker.
+    out.extend(
+        crate::decide::merge_eligibility::merge_eligibility_candidates(
             &oriented.state,
-        ));
-    }
+            &oriented.threads,
+            oriented.reviews.decision,
+            &oriented.ci,
+        ),
+    );
     out.sort_by_key(|a| a.urgency);
     out
 }

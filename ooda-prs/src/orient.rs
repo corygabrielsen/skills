@@ -133,6 +133,7 @@ pub(crate) fn orient(
         &obs.stack_root_branch,
         &obs.branch_rules,
         &obs.checks,
+        obs.branch_protection.as_ref(),
     );
     // When a PR is stacked under an unmerged parent, a mergeability
     // check pends indefinitely by design. Demoting it to advisory

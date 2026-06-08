@@ -7,7 +7,7 @@
 use crate::ids::BlockerKey;
 
 use crate::observe::github::compare::MergeBaseDelta;
-use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable};
+use crate::observe::github::pull_request_view::Mergeable;
 use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadState};
 
@@ -249,103 +249,11 @@ fn push_merge_base_delta_sections(prompt: &mut ooda_core::HandoffPrompt, delta: 
     }
 }
 
-/// Compose the human prompt for the unmodeled-merge-gate case.
-/// Headline names the upstream BLOCKED state; three optional
-/// enrichment sections append only when their backing projection
-/// is non-empty.
-fn merge_blocked_unmodeled_prompt(state: &PullRequestProjection) -> ooda_core::HandoffPrompt {
-    use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString};
-
-    let mut prompt = HandoffPrompt::new(
-        "GitHub reports BLOCKED but no modeled axis explains the blockage \
-         — likely an unmodeled merge requirement (deployment protection, signed \
-         commits, branch ruleset, etc.). Inspect the PR's Merge box on GitHub for \
-         the specific gate.",
-    );
-
-    if let Some(rule_types) = NonEmpty::try_from_vec(
-        state
-            .active_branch_rule_types
-            .iter()
-            .map(|s| SingleLineString::new(s.clone()))
-            .collect(),
-    ) {
-        prompt.push_paragraph("Active ruleset rules on this branch:".to_string());
-        prompt.push_numbered_list(rule_types);
-    }
-
-    if !state.required_check_names_per_ruleset.is_empty() {
-        prompt.push_paragraph(format!(
-            "Required check names from ruleset: {}",
-            state.required_check_names_per_ruleset.join(", "),
-        ));
-    }
-
-    if !state.missing_required_check_names_on_head.is_empty() {
-        prompt.push_paragraph(format!(
-            "Missing on HEAD: {}",
-            state.missing_required_check_names_on_head.join(", "),
-        ));
-    }
-
-    prompt
-}
-
-/// Fallback emitter for upstream-reported merge-blocked states the
-/// modeled axes do not explain.
-///
-/// Class invariant — *every non-Clean upstream merge state must be
-/// represented*. Modeled axes cover the common cases (CI, reviews,
-/// shape, conflict / behind). The remainder — unmodeled policy
-/// blocks, pending commit-hook computation, and indeterminate
-/// states — must reach a candidate here or the loop would halt
-/// Success on a still-unmergeable PR.
-///
-/// The caller invokes this only when no other axis has produced a
-/// candidate, so it is the gate's last resort, not a parallel
-/// shadow of the modeled axes.
-pub(crate) fn fallback_merge_state_blocker(state: &PullRequestProjection) -> Vec<Action> {
-    match state.merge_state_status {
-        MergeStateStatus::Blocked => vec![Action {
-            kind: ActionKind::ResolveMergePolicy,
-            effect: ActionEffect::Human {
-                prompt: merge_blocked_unmodeled_prompt(state),
-            },
-            target_effect: TargetEffect::Blocks,
-            urgency: Urgency::Mid(MidTier::BlockingHuman),
-            blocker: BlockerKey::from_static("merge_blocked_unmodeled"),
-        }],
-        MergeStateStatus::HasHooks => vec![Action {
-            kind: ActionKind::WaitForMergeability,
-            effect: ActionEffect::Wait {
-                interval: ooda_core::PollingInterval::from_secs(30),
-                log: "Commit hooks are still running — wait and re-observe".into(),
-            },
-            target_effect: TargetEffect::Blocks,
-            urgency: Urgency::Mid(MidTier::BlockingWait),
-            blocker: BlockerKey::from_static("merge_state_has_hooks"),
-        }],
-        MergeStateStatus::Unknown => vec![Action {
-            kind: ActionKind::WaitForMergeability,
-            effect: ActionEffect::Wait {
-                interval: ooda_core::PollingInterval::from_secs(30),
-                log: "GitHub is still computing merge state — wait and re-observe".into(),
-            },
-            target_effect: TargetEffect::Blocks,
-            urgency: Urgency::Mid(MidTier::BlockingWait),
-            blocker: BlockerKey::from_static("merge_state_unknown"),
-        }],
-        // The remaining upstream states are either modeled by
-        // another axis or advisory-only by definition; no
-        // fallback candidate is appropriate.
-        _ => vec![],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ids::Timestamp;
+    use crate::observe::github::pull_request_view::MergeStateStatus;
     use crate::orient::thread::{BotName, FilePath, ThreadAuthor, ThreadId, ThreadLocation};
 
     fn clean() -> PullRequestProjection {
@@ -371,6 +279,8 @@ mod tests {
             active_branch_rule_types: vec![],
             required_check_names_per_ruleset: vec![],
             missing_required_check_names_on_head: vec![],
+            conversation_resolution_required: false,
+            signatures_required: false,
         }
     }
 
@@ -540,216 +450,8 @@ mod tests {
         assert!(!rendered.contains("potential conflict surface"));
     }
 
-    // ─── fallback-coverage property ───────────────────────────────
-    //
-    // Pins the class invariant: every upstream merge-state variant
-    // is either handled by a modeled axis or by this fallback.
-    // The exhaustive match below is the contract; a new variant
-    // fails to compile until an explicit axis assignment is added.
-    // The sample list is length-sentineled so a missing sample
-    // fails loudly.
-
-    /// Contracted projection of `fallback_merge_state_blocker`'s
-    /// emission for one upstream merge state.
-    #[derive(Debug, PartialEq, Eq)]
-    enum FallbackBehavior {
-        /// Either mergeable or owned by a modeled axis; the
-        /// fallback emits nothing.
-        Empty,
-        /// Unmodeled policy gate → human handoff.
-        EmitHumanResolveMergePolicy,
-        /// Transient state → wait and re-observe.
-        EmitWaitForMergeability,
-    }
-
-    /// Exhaustive contract. The compiler enforces that every
-    /// upstream variant has an explicit axis assignment.
-    fn expected_fallback_behavior(status: MergeStateStatus) -> FallbackBehavior {
-        // Arms duplicated for spec clarity.
-        #[allow(clippy::match_same_arms)]
-        match status {
-            // Mergeable: no candidate.
-            MergeStateStatus::Clean => FallbackBehavior::Empty,
-            // Owned by a modeled axis (shape or conflict).
-            MergeStateStatus::Behind => FallbackBehavior::Empty,
-            MergeStateStatus::Dirty => FallbackBehavior::Empty,
-            MergeStateStatus::Draft => FallbackBehavior::Empty,
-            // Advisory CI surface, not a hard block.
-            MergeStateStatus::Unstable => FallbackBehavior::Empty,
-            // Unmodeled gate.
-            MergeStateStatus::Blocked => FallbackBehavior::EmitHumanResolveMergePolicy,
-            // Transient upstream state.
-            MergeStateStatus::HasHooks => FallbackBehavior::EmitWaitForMergeability,
-            MergeStateStatus::Unknown => FallbackBehavior::EmitWaitForMergeability,
-        }
-    }
-
-    fn all_merge_state_statuses() -> Vec<MergeStateStatus> {
-        vec![
-            MergeStateStatus::Behind,
-            MergeStateStatus::Blocked,
-            MergeStateStatus::Clean,
-            MergeStateStatus::Dirty,
-            MergeStateStatus::Draft,
-            MergeStateStatus::HasHooks,
-            MergeStateStatus::Unstable,
-            MergeStateStatus::Unknown,
-        ]
-    }
-
-    fn observed_fallback_behavior(state: &PullRequestProjection) -> FallbackBehavior {
-        let cs = fallback_merge_state_blocker(state);
-        match cs.as_slice() {
-            [] => FallbackBehavior::Empty,
-            [a] => match (&a.kind, &a.effect) {
-                (ActionKind::ResolveMergePolicy, ActionEffect::Human { .. }) => {
-                    FallbackBehavior::EmitHumanResolveMergePolicy
-                }
-                (ActionKind::WaitForMergeability, ActionEffect::Wait { .. }) => {
-                    FallbackBehavior::EmitWaitForMergeability
-                }
-                (kind, effect) => {
-                    panic!("fallback emitted unexpected (kind, effect): {kind:?}, {effect:?}")
-                }
-            },
-            multi => panic!(
-                "fallback emitted {} candidates; expected 0 or 1",
-                multi.len()
-            ),
-        }
-    }
-
-    #[test]
-    fn fallback_property_holds_for_every_merge_state_status() {
-        let statuses = all_merge_state_statuses();
-        assert_eq!(
-            statuses.len(),
-            8,
-            "Sample enumeration must cover every upstream merge \
-             state. A new variant requires both a sample here and \
-             an arm in the exhaustive contract above.",
-        );
-        for status in statuses {
-            let mut s = clean();
-            s.merge_state_status = status;
-            // Enrichment fields populated to confirm behaviour is
-            // determined by upstream state alone, not enrichment.
-            s.active_branch_rule_types = vec!["required_status_checks".into()];
-            s.required_check_names_per_ruleset = vec!["Mergeability Check".into()];
-            s.missing_required_check_names_on_head = vec!["Mergeability Check".into()];
-            let actual = observed_fallback_behavior(&s);
-            let expected = expected_fallback_behavior(status);
-            assert_eq!(
-                actual, expected,
-                "fallback_merge_state_blocker contract violated for {status:?}",
-            );
-        }
-    }
-
-    fn blocked_with(
-        active: Vec<String>,
-        required: Vec<String>,
-        missing: Vec<String>,
-    ) -> PullRequestProjection {
-        let mut s = clean();
-        s.merge_state_status = MergeStateStatus::Blocked;
-        s.active_branch_rule_types = active;
-        s.required_check_names_per_ruleset = required;
-        s.missing_required_check_names_on_head = missing;
-        s
-    }
-
-    fn rendered_blocked_prompt(state: &PullRequestProjection) -> String {
-        let cs = fallback_merge_state_blocker(state);
-        assert_eq!(cs.len(), 1, "Blocked must emit exactly one candidate");
-        cs[0].rendered_payload()
-    }
-
-    #[test]
-    fn fallback_includes_active_rule_types_when_present() {
-        let s = blocked_with(
-            vec!["copilot_code_review".into(), "required_signatures".into()],
-            vec![],
-            vec![],
-        );
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(
-            rendered.contains("Active ruleset rules on this branch"),
-            "header missing: {rendered}",
-        );
-        assert!(rendered.contains("1. copilot_code_review"));
-        assert!(rendered.contains("2. required_signatures"));
-    }
-
-    #[test]
-    fn fallback_omits_active_rules_section_when_empty() {
-        let s = blocked_with(vec![], vec![], vec![]);
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(
-            !rendered.contains("Active ruleset rules"),
-            "must not emit ruleset header when empty: {rendered}",
-        );
-    }
-
-    #[test]
-    fn fallback_includes_required_check_names_when_present() {
-        let s = blocked_with(
-            vec!["required_status_checks".into()],
-            vec!["Mergeability Check".into(), "Build".into()],
-            vec![],
-        );
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(
-            rendered.contains("Required check names from ruleset: Mergeability Check, Build"),
-            "required-names line missing or malformed: {rendered}",
-        );
-    }
-
-    #[test]
-    fn fallback_omits_required_check_names_when_empty() {
-        let s = blocked_with(vec!["required_signatures".into()], vec![], vec![]);
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(
-            !rendered.contains("Required check names"),
-            "must not emit required-names line when empty: {rendered}",
-        );
-    }
-
-    #[test]
-    fn fallback_includes_missing_on_head_when_present() {
-        let s = blocked_with(
-            vec!["required_status_checks".into()],
-            vec!["Mergeability Check".into(), "Build".into()],
-            vec!["Build".into()],
-        );
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(
-            rendered.contains("Missing on HEAD: Build"),
-            "missing-on-HEAD line missing or malformed: {rendered}",
-        );
-    }
-
-    #[test]
-    fn fallback_omits_missing_on_head_when_empty() {
-        let s = blocked_with(
-            vec!["required_status_checks".into()],
-            vec!["Mergeability Check".into()],
-            vec![],
-        );
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(
-            !rendered.contains("Missing on HEAD"),
-            "must not emit missing-on-HEAD line when empty: {rendered}",
-        );
-    }
-
-    #[test]
-    fn fallback_emits_generic_prompt_only_when_all_enrichment_empty() {
-        let s = blocked_with(vec![], vec![], vec![]);
-        let rendered = rendered_blocked_prompt(&s);
-        assert!(rendered.contains("GitHub reports BLOCKED"));
-        assert!(!rendered.contains("Active ruleset rules"));
-        assert!(!rendered.contains("Required check names"));
-        assert!(!rendered.contains("Missing on HEAD"));
-    }
+    // Merge-state coverage (BLOCKED / HAS_HOOKS / UNKNOWN) plus the
+    // BLOCKED-cause drill-down is owned by `decide::merge_eligibility`
+    // and pinned by that module's tests. The contract previously held
+    // here lifted into the new module's exhaustive case analysis.
 }

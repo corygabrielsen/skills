@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 
 use crate::ids::{BranchName, Timestamp};
+use crate::observe::github::branch_protection::BranchProtection;
 use crate::observe::github::branch_rules::BranchRule;
 use crate::observe::github::checks::PullRequestCheck;
 use crate::observe::github::pull_request_view::{MergeStateStatus, Mergeable, PullRequestView};
@@ -77,6 +78,18 @@ pub(crate) struct PullRequestProjection {
     /// Presence is name-equality only; conclusion is ignored —
     /// pass, fail, pending all count as present.
     pub missing_required_check_names_on_head: Vec<String>,
+    /// True iff GitHub will gate merge on review-thread resolution.
+    /// Union of legacy-protection's `required_conversation_resolution`
+    /// and any active `pull_request` ruleset rule's
+    /// `required_review_thread_resolution` parameter. Drives the
+    /// merge-eligibility decision; outdated unresolved threads still
+    /// satisfy this gate even though they're not agent-addressable.
+    pub conversation_resolution_required: bool,
+    /// True iff GitHub will gate merge on signed commits. Union of
+    /// legacy-protection's `required_signatures` and any active
+    /// `required_signatures`-typed ruleset rule. Signal only;
+    /// remediation is human-only.
+    pub signatures_required: bool,
 }
 
 /// Project a PR view + branch-rule context into the state axis.
@@ -92,6 +105,7 @@ pub(crate) fn orient_state(
     stack_root: &BranchName,
     branch_rules: &[BranchRule],
     head_checks: &[PullRequestCheck],
+    protection: Option<&BranchProtection>,
 ) -> PullRequestProjection {
     let body = pr.body.as_deref().unwrap_or_default();
     let label_names: Vec<&str> = pr.labels.iter().map(|l| l.name.as_str()).collect();
@@ -106,6 +120,9 @@ pub(crate) fn orient_state(
     let required_check_names_per_ruleset = required_check_names_per_ruleset(branch_rules);
     let missing_required_check_names_on_head =
         missing_on_head(&required_check_names_per_ruleset, head_checks);
+    let conversation_resolution_required =
+        conversation_resolution_required(branch_rules, protection);
+    let signatures_required = signatures_required(branch_rules, protection);
 
     PullRequestProjection {
         conflict: pr.mergeable,
@@ -129,7 +146,53 @@ pub(crate) fn orient_state(
         active_branch_rule_types,
         required_check_names_per_ruleset,
         missing_required_check_names_on_head,
+        conversation_resolution_required,
+        signatures_required,
     }
+}
+
+/// `true` iff GitHub will gate merge on review-thread resolution
+/// from any active source.
+///
+/// Sources, taken as a union (most-restrictive wins):
+///   - Legacy branch protection's `required_conversation_resolution`.
+///   - Any active branch ruleset's `pull_request` rule with
+///     parameter `required_review_thread_resolution == true`.
+///
+/// Reads by rule type and parameter shape only — no rule-name
+/// pattern matching, no slug-coupling.
+fn conversation_resolution_required(
+    branch_rules: &[BranchRule],
+    protection: Option<&BranchProtection>,
+) -> bool {
+    if protection.is_some_and(BranchProtection::conversation_resolution_enabled) {
+        return true;
+    }
+    branch_rules.iter().any(|r| {
+        if r.rule_type != "pull_request" {
+            return false;
+        }
+        r.parameters
+            .as_ref()
+            .and_then(|p| p.get("required_review_thread_resolution"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    })
+}
+
+/// `true` iff GitHub will gate merge on signed commits from any
+/// active source.
+///
+/// Sources, taken as a union:
+///   - Legacy branch protection's `required_signatures.enabled`.
+///   - Any active branch ruleset rule of type `required_signatures`.
+fn signatures_required(branch_rules: &[BranchRule], protection: Option<&BranchProtection>) -> bool {
+    if protection.is_some_and(BranchProtection::signatures_enabled) {
+        return true;
+    }
+    branch_rules
+        .iter()
+        .any(|r| r.rule_type == "required_signatures")
 }
 
 fn sorted_dedup_rule_types(branch_rules: &[BranchRule]) -> Vec<String> {
@@ -225,7 +288,7 @@ mod tests {
     #[test]
     fn defaults_for_minimal_open_pull_request() {
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert_eq!(s.conflict, Mergeable::Mergeable);
         assert!(!s.draft);
         assert!(!s.wip);
@@ -245,7 +308,7 @@ mod tests {
     fn title_len_includes_phantom_pull_request_suffix() {
         // "fix thing" = 9, " (#123)" = 7 → 16
         let pr = pull_request_view(|p| p.title = "fix thing".into());
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert_eq!(s.title_len, 16);
         assert!(s.title_ok);
     }
@@ -255,7 +318,7 @@ mod tests {
         // Need title_len > 50. Suffix " (#123)" is 7 chars, so a
         // 44-char title gives total 51.
         let pr = pull_request_view(|p| p.title = "a".repeat(44));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert_eq!(s.title_len, 51);
         assert!(!s.title_ok);
     }
@@ -263,7 +326,7 @@ mod tests {
     #[test]
     fn title_at_exactly_50_passes() {
         let pr = pull_request_view(|p| p.title = "a".repeat(43));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert_eq!(s.title_len, 50);
         assert!(s.title_ok);
     }
@@ -271,7 +334,7 @@ mod tests {
     #[test]
     fn empty_body_marks_body_false_and_no_sections() {
         let pr = pull_request_view(|p| p.body = Some(String::new()));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(!s.body);
         assert!(!s.summary);
         assert!(!s.test_plan);
@@ -280,7 +343,7 @@ mod tests {
     #[test]
     fn null_body_treated_as_empty() {
         let pr = pull_request_view(|p| p.body = None);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(!s.body);
     }
 
@@ -289,7 +352,7 @@ mod tests {
         let pr = pull_request_view(|p| {
             p.body = Some("## summary\nstuff\n\n## TEST PLAN\n- check it\n".into());
         });
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(s.summary);
         assert!(s.test_plan);
     }
@@ -300,21 +363,21 @@ mod tests {
         let pr = pull_request_view(|p| {
             p.body = Some("intro about ## summary in prose".into());
         });
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(!s.summary);
     }
 
     #[test]
     fn wip_label_detected_exact_match() {
         let pr = pull_request_view(|p| p.labels.push(label("work in progress")));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(s.wip);
     }
 
     #[test]
     fn merge_when_ready_label_detected() {
         let pr = pull_request_view(|p| p.labels.push(label("merge-when-ready")));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(s.merge_when_ready);
     }
 
@@ -322,23 +385,23 @@ mod tests {
     fn content_label_recognizes_bug_or_enhancement() {
         for ct in ["bug", "enhancement"] {
             let pr = pull_request_view(|p| p.labels.push(label(ct)));
-            let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+            let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
             assert!(s.content_label, "expected content_label for {ct}");
         }
         // A non-content label doesn't count.
         let pr = pull_request_view(|p| p.labels.push(label("documentation")));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(!s.content_label);
     }
 
     #[test]
     fn behind_only_when_merge_state_status_is_behind() {
         let pr = pull_request_view(|p| p.merge_state_status = MergeStateStatus::Behind);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(s.behind);
 
         let pr = pull_request_view(|p| p.merge_state_status = MergeStateStatus::Blocked);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(!s.behind);
     }
 
@@ -363,7 +426,7 @@ mod tests {
                 },
             ];
         });
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert_eq!(s.assignees, 1);
         assert_eq!(s.reviewers, 1);
         assert_eq!(s.commits, 2);
@@ -373,7 +436,7 @@ mod tests {
     fn last_commit_at_passes_through() {
         let ts = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, Some(ts), &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, Some(ts), &pr.base_ref_name, &[], &[], None);
         assert_eq!(s.last_commit_at, Some(ts));
     }
 
@@ -416,7 +479,7 @@ mod tests {
             branch_rule("copilot_code_review", None),
         ];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
         assert_eq!(
             s.active_branch_rule_types,
             vec![
@@ -430,7 +493,7 @@ mod tests {
     #[test]
     fn active_branch_rule_types_empty_when_no_rules() {
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
         assert!(s.active_branch_rule_types.is_empty());
         assert!(s.required_check_names_per_ruleset.is_empty());
         assert!(s.missing_required_check_names_on_head.is_empty());
@@ -444,7 +507,7 @@ mod tests {
             branch_rule("required_signatures", None),
         ];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
         assert_eq!(
             s.required_check_names_per_ruleset,
             vec!["Build", "Lint", "Test"],
@@ -456,7 +519,7 @@ mod tests {
         let mut rule = required_status_checks_rule(&[("Build", 1)]);
         rule.parameters = Some(serde_json::json!({"unexpected": "shape"}));
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[rule], &[]);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[rule], &[], None);
         assert!(s.required_check_names_per_ruleset.is_empty());
     }
 
@@ -466,8 +529,107 @@ mod tests {
         let rules = vec![required_status_checks_rule(&[("Build", 1), ("Lint", 1)])];
         let head = vec![check("Build", CheckState::Success)];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head, None);
         assert_eq!(s.missing_required_check_names_on_head, vec!["Lint"]);
+    }
+
+    fn protection_with(
+        conv: Option<bool>,
+        sigs: Option<bool>,
+    ) -> crate::observe::github::branch_protection::BranchProtection {
+        use crate::observe::github::branch_protection::{BranchProtection, EnabledFlag};
+        BranchProtection {
+            required_status_checks: None,
+            required_conversation_resolution: conv.map(|enabled| EnabledFlag { enabled }),
+            required_signatures: sigs.map(|enabled| EnabledFlag { enabled }),
+        }
+    }
+
+    fn pull_request_rule(required_review_thread_resolution: bool) -> BranchRule {
+        let params = serde_json::json!({
+            "required_review_thread_resolution": required_review_thread_resolution,
+        });
+        branch_rule("pull_request", Some(params))
+    }
+
+    #[test]
+    fn conversation_resolution_required_off_when_no_sources() {
+        let pr = pull_request_view(|_| {});
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        assert!(!s.conversation_resolution_required);
+    }
+
+    #[test]
+    fn conversation_resolution_required_from_legacy_protection() {
+        let pr = pull_request_view(|_| {});
+        let p = protection_with(Some(true), None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p));
+        assert!(s.conversation_resolution_required);
+    }
+
+    #[test]
+    fn conversation_resolution_required_explicit_false_in_protection_reads_as_off() {
+        let pr = pull_request_view(|_| {});
+        let p = protection_with(Some(false), None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p));
+        assert!(!s.conversation_resolution_required);
+    }
+
+    #[test]
+    fn conversation_resolution_required_from_pull_request_ruleset() {
+        let pr = pull_request_view(|_| {});
+        let rules = vec![pull_request_rule(true)];
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        assert!(s.conversation_resolution_required);
+    }
+
+    #[test]
+    fn conversation_resolution_required_pull_request_rule_param_false_reads_as_off() {
+        let pr = pull_request_view(|_| {});
+        let rules = vec![pull_request_rule(false)];
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        assert!(!s.conversation_resolution_required);
+    }
+
+    #[test]
+    fn conversation_resolution_required_union_either_source() {
+        // Either source on → on. (Union semantics.)
+        let pr = pull_request_view(|_| {});
+        let rules = vec![pull_request_rule(true)];
+        let p = protection_with(Some(false), None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], Some(&p));
+        assert!(s.conversation_resolution_required);
+    }
+
+    #[test]
+    fn signatures_required_off_when_no_sources() {
+        let pr = pull_request_view(|_| {});
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        assert!(!s.signatures_required);
+    }
+
+    #[test]
+    fn signatures_required_from_legacy_protection() {
+        let pr = pull_request_view(|_| {});
+        let p = protection_with(None, Some(true));
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p));
+        assert!(s.signatures_required);
+    }
+
+    #[test]
+    fn signatures_required_from_ruleset_rule_type() {
+        let pr = pull_request_view(|_| {});
+        let rules = vec![branch_rule("required_signatures", None)];
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        assert!(s.signatures_required);
+    }
+
+    #[test]
+    fn signatures_required_unrelated_rule_does_not_trigger() {
+        let pr = pull_request_view(|_| {});
+        let rules = vec![branch_rule("creation", None)];
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        assert!(!s.signatures_required);
     }
 
     #[test]
@@ -479,7 +641,7 @@ mod tests {
             check("Lint", CheckState::InProgress),
         ];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head, None);
         assert!(s.missing_required_check_names_on_head.is_empty());
     }
 }

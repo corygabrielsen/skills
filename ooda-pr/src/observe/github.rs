@@ -41,9 +41,7 @@ use crate::ids::{PullRequestNumber, RepoSlug};
 use ooda_core::{RateLimitBudget, RateLimitHit};
 use serde::Serialize;
 
-use branch_protection::{
-    BranchProtectionRequiredStatusChecks, fetch_branch_protection_required_checks,
-};
+use branch_protection::{BranchProtection, fetch_branch_protection};
 use branch_rules::{BranchRule, fetch_branch_rules};
 use checks::{PullRequestCheck, fetch_pull_request_checks};
 use claude_review_attest::{ClaudeReviewObservation, observe_claude_review};
@@ -94,7 +92,7 @@ pub(crate) struct GitHubObservations {
     pub requested_reviewers: RequestedReviewers,
     pub branch_rules: Vec<BranchRule>,
     /// Absent when the legacy-protection source is unconfigured.
-    pub branch_protection: Option<BranchProtectionRequiredStatusChecks>,
+    pub branch_protection: Option<BranchProtection>,
     /// Branch the rule sources were resolved against. Diverges from
     /// the PR's immediate base when the PR is mid-stack and the
     /// protected branch sits downstream.
@@ -234,7 +232,7 @@ pub(crate) fn fetch_all(
         let h_comments = s.spawn(|| fetch_issue_comments(slug, pr));
         let h_reqrev = s.spawn(|| fetch_requested_reviewers(slug, pr));
         let h_rules = s.spawn(move || fetch_branch_rules(slug, root));
-        let h_prot = s.spawn(move || fetch_branch_protection_required_checks(slug, root));
+        let h_prot = s.spawn(move || fetch_branch_protection(slug, root));
         let h_copilot_cfg = s.spawn(move || fetch_copilot_config(slug, root));
         // Quota-free endpoint; fanning in alongside the others
         // keeps the snapshot coincident with the rest of the

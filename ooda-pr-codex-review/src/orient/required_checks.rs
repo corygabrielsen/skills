@@ -16,7 +16,7 @@
 //!   preserved. Stable for human-readable rendering.
 
 use crate::ids::CheckName;
-use crate::observe::github::branch_protection::BranchProtectionRequiredStatusChecks;
+use crate::observe::github::branch_protection::BranchProtection;
 use crate::observe::github::branch_rules::BranchRule;
 use crate::observe::github::rulesets::RequiredStatusChecksParams;
 
@@ -31,7 +31,7 @@ use crate::observe::github::rulesets::RequiredStatusChecksParams;
 /// explains the merge block.
 pub(crate) fn required_check_names(
     branch_rules: &[BranchRule],
-    protection: Option<&BranchProtectionRequiredStatusChecks>,
+    protection: Option<&BranchProtection>,
 ) -> Vec<CheckName> {
     let mut seen = std::collections::HashSet::<String>::new();
     let mut out: Vec<CheckName> = Vec::new();
@@ -58,8 +58,8 @@ pub(crate) fn required_check_names(
         }
     }
 
-    if let Some(p) = protection {
-        for c in &p.checks {
+    if let Some(checks) = protection.and_then(|p| p.required_status_checks.as_ref()) {
+        for c in &checks.checks {
             push_unique(c.context.clone(), &mut out);
         }
     }
@@ -71,7 +71,7 @@ pub(crate) fn required_check_names(
 mod tests {
     use super::*;
     use crate::observe::github::branch_protection::{
-        BranchProtectionCheck, BranchProtectionRequiredStatusChecks,
+        BranchProtection, BranchProtectionCheck, BranchProtectionRequiredStatusChecks,
     };
 
     fn rule(rule_type: &str, contexts: &[(&str, u64)]) -> BranchRule {
@@ -100,15 +100,19 @@ mod tests {
         }
     }
 
-    fn protection(contexts: &[&str]) -> BranchProtectionRequiredStatusChecks {
-        BranchProtectionRequiredStatusChecks {
-            checks: contexts
-                .iter()
-                .map(|c| BranchProtectionCheck {
-                    context: CheckName::parse(c).unwrap(),
-                    app_id: None,
-                })
-                .collect(),
+    fn protection(contexts: &[&str]) -> BranchProtection {
+        BranchProtection {
+            required_status_checks: Some(BranchProtectionRequiredStatusChecks {
+                checks: contexts
+                    .iter()
+                    .map(|c| BranchProtectionCheck {
+                        context: CheckName::parse(c).unwrap(),
+                        app_id: None,
+                    })
+                    .collect(),
+            }),
+            required_conversation_resolution: None,
+            required_signatures: None,
         }
     }
 

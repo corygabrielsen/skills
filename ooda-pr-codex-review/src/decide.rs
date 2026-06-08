@@ -24,6 +24,7 @@ pub(crate) mod copilot;
 pub(crate) mod cursor;
 pub(crate) mod decision;
 pub(crate) mod doc_review;
+pub(crate) mod merge_eligibility;
 pub(crate) mod pull_request_metadata;
 pub(crate) mod reviews;
 pub(crate) mod state;

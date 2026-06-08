@@ -1661,6 +1661,8 @@ mod tests {
                 active_branch_rule_types: vec![],
                 required_check_names_per_ruleset: vec![],
                 missing_required_check_names_on_head: vec![],
+                conversation_resolution_required: false,
+                signatures_required: false,
             },
             reviews: ReviewSummary {
                 decision: None,

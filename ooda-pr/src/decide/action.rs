@@ -90,6 +90,14 @@ pub enum ActionKind {
     EscalateCiFailed {
         checks: NonEmpty<FailedCheckHandle>,
     },
+    /// Required check is missing on HEAD because its producer
+    /// workflow run has been queued past `QUEUE_TIMEOUT` without
+    /// acquiring a runner. Runner-starvation pathology — no
+    /// automation can resolve it. Payload carries the stuck run
+    /// IDs as witnesses so the human can investigate them.
+    EscalateCiStuck {
+        stuck_runs: NonEmpty<WorkflowRunId>,
+    },
 
     // ── Reviews ──
     /// Carries the unresolved review threads the actor must address.
@@ -243,6 +251,7 @@ impl ActionKindName for ActionKind {
             Self::TriageWait { .. } => "TriageWait",
             Self::ReRunWorkflow { .. } => "ReRunWorkflow",
             Self::EscalateCiFailed { .. } => "EscalateCiFailed",
+            Self::EscalateCiStuck { .. } => "EscalateCiStuck",
             Self::AddressThreads { .. } => "AddressThreads",
             Self::AddressChangeRequest => "AddressChangeRequest",
             Self::RequestApproval => "RequestApproval",

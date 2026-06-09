@@ -229,9 +229,13 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
     }
 }
 
-/// Missing-required branch: no pending names, so the shared helper
-/// runs with an empty pending list and the same gate identities
-/// fall out.
+/// Missing-required branch: when a workflow run on HEAD is stuck
+/// queued past `QUEUE_TIMEOUT` without acquiring a runner, the
+/// absence of the required check is runner-starvation pathology
+/// rather than pending work. Emit a Pathology `EscalateCiStuck`
+/// that strictly outranks the wait `triage_or_wait` would
+/// otherwise emit. Otherwise fall through to the existing
+/// triage/wait routing.
 fn triage_or_missing(
     summary: &CiSummary,
     names: &[CheckName],
@@ -239,13 +243,42 @@ fn triage_or_missing(
     out: &mut Vec<Action>,
 ) {
     let _ = names; // Identical to `summary.missing_names` by construction.
-    // Pathology branch wired in a follow-up commit (#354): when
-    // `stuck_runs` is non-empty, the missing required check is
-    // missing because its producer never started, not because it's
-    // pending. The pathology HandoffHuman outranks the wait that
-    // `triage_or_wait` would otherwise emit.
-    let _ = stuck_runs;
+    if let Some(stuck) = NonEmpty::try_from_vec(stuck_runs.to_vec()) {
+        out.push(ci_missing_stuck_pathology(stuck));
+        return;
+    }
     triage_or_wait(summary, &[], out);
+}
+
+fn ci_missing_stuck_pathology(stuck_runs: NonEmpty<WorkflowRunId>) -> Action {
+    let mut prompt = HandoffPrompt::new(
+        "CI runner-starvation pathology — a required check is \
+         missing on HEAD because its workflow run has been queued \
+         past the runner-acquisition threshold without starting. \
+         Automation cannot remediate this; inspect the GitHub \
+         Actions runner pool (concurrency, self-hosted runner \
+         availability, quota) and unstick the queued run(s).",
+    );
+    prompt.push_paragraph("Stuck workflow runs on HEAD:".to_string());
+    prompt.push_numbered_list(
+        NonEmpty::try_from_vec(
+            stuck_runs
+                .iter()
+                .map(|id| SingleLineString::new(format!("run {}", id.0)))
+                .collect::<Vec<_>>(),
+        )
+        .expect("non-empty input yields non-empty list"),
+    );
+    Action {
+        kind: ActionKind::EscalateCiStuck { stuck_runs },
+        effect: ActionEffect::Human { prompt },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Mid(MidTier::Pathology),
+        // Gate identity: "≥1 stuck-queued run on HEAD". Per-run
+        // IDs travel on the payload — embedding them in the key
+        // would violate gate stability across iterations.
+        blocker: BlockerKey::from_static("ci_missing_stuck"),
+    }
 }
 
 fn push_triage(summary: &CiSummary, blocked: NonEmpty<CheckName>, out: &mut Vec<Action>) {
@@ -558,6 +591,87 @@ mod tests {
         let cs = candidates(&report(s, activity));
         assert_eq!(cs.len(), 1);
         assert!(cs[0].blocker.as_str().starts_with("ci_missing"));
+        assert_eq!(
+            cs[0].blocker.as_str(),
+            "ci_missing",
+            "empty stuck_runs → routine wait, NOT stuck pathology"
+        );
+    }
+
+    #[test]
+    fn missing_required_with_stuck_runs_emits_pathology_escalate_ci_stuck() {
+        // #1039 shape: a required check is missing AND a workflow
+        // run is stuck queued past QUEUE_TIMEOUT. The orient layer
+        // populated stuck_runs; decide MUST emit EscalateCiStuck at
+        // Mid(Pathology) so the wait that would otherwise fire is
+        // strictly outranked.
+        let mut s = empty_summary();
+        s.missing_names = vec![cn("Mergeability Check")];
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![cn("Mergeability Check")],
+            stuck_runs: vec![WorkflowRunId(27_177_144_891)],
+        });
+        let cs = candidates(&report(s, activity));
+        assert_eq!(cs.len(), 1);
+        assert!(matches!(cs[0].kind, ActionKind::EscalateCiStuck { .. }));
+        assert_eq!(cs[0].blocker.as_str(), "ci_missing_stuck");
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
+    }
+
+    #[test]
+    fn ci_missing_stuck_outranks_any_wait_for_ci() {
+        // Sanity: the urgency invariant from ooda-core's
+        // pathology_strictly_outranks_all_blocking_tiers must hold
+        // at the candidate level too. Construct one of each and
+        // assert urgency ordering.
+        let pathology = Urgency::Mid(MidTier::Pathology);
+        let wait = Urgency::Mid(MidTier::BlockingWait);
+        let human = Urgency::Mid(MidTier::BlockingHuman);
+        assert!(pathology < wait);
+        assert!(pathology < human);
+    }
+
+    #[test]
+    fn ci_missing_stuck_prompt_lists_every_stuck_run() {
+        let mut s = empty_summary();
+        s.missing_names = vec![cn("Mergeability Check")];
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![cn("Mergeability Check")],
+            stuck_runs: vec![WorkflowRunId(111), WorkflowRunId(222), WorkflowRunId(333)],
+        });
+        let cs = candidates(&report(s, activity));
+        let body = cs[0].rendered_payload();
+        assert!(body.contains("run 111"));
+        assert!(body.contains("run 222"));
+        assert!(body.contains("run 333"));
+        assert!(
+            body.contains("runner-starvation"),
+            "prompt names the pathology class"
+        );
+    }
+
+    #[test]
+    fn ci_missing_stuck_preempts_triage_when_advisory_failed() {
+        // Closure-check precedence: even when an advisory check
+        // failed (which would normally route MissingRequired to
+        // TriageWait), the stuck-run pathology fires first because
+        // automation cannot triage what the runner pool can't
+        // start.
+        let mut s = empty_summary();
+        s.missing_names = vec![cn("Mergeability Check")];
+        s.advisory.failed = vec![failed("Lint")];
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![cn("Mergeability Check")],
+            stuck_runs: vec![WorkflowRunId(42)],
+        });
+        let cs = candidates(&report(s, activity));
+        assert_eq!(cs.len(), 1);
+        assert!(matches!(cs[0].kind, ActionKind::EscalateCiStuck { .. }));
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::TriageWait { .. }))
+        );
     }
 
     #[test]

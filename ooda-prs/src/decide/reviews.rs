@@ -1051,7 +1051,11 @@ mod tests {
         EmitAddressChangeRequest,
     }
 
-    /// Exhaustive contract over `Option<ReviewDecision>`.
+    /// Exhaustive contract over `Option<ReviewDecision>`. The
+    /// `Unknown` arm collapses to no-blocker because the reviews
+    /// axis has no actionable response to an unmodeled verdict;
+    /// downstream surfaces still render the state (see
+    /// `comment/render.rs::reviews_line`).
     fn expected_review_axis_behavior(decision: Option<ReviewDecision>) -> ReviewAxisBehavior {
         // Arms duplicated for spec clarity.
         #[allow(clippy::match_same_arms)]
@@ -1060,6 +1064,7 @@ mod tests {
             Some(ReviewDecision::Approved) => ReviewAxisBehavior::NoBlocker,
             Some(ReviewDecision::ReviewRequired) => ReviewAxisBehavior::EmitRequestApproval,
             Some(ReviewDecision::ChangesRequested) => ReviewAxisBehavior::EmitAddressChangeRequest,
+            Some(ReviewDecision::Unknown) => ReviewAxisBehavior::NoBlocker,
         }
     }
 
@@ -1069,6 +1074,7 @@ mod tests {
             Some(ReviewDecision::Approved),
             Some(ReviewDecision::ReviewRequired),
             Some(ReviewDecision::ChangesRequested),
+            Some(ReviewDecision::Unknown),
         ]
     }
 
@@ -1094,7 +1100,7 @@ mod tests {
         let decisions = all_review_decisions();
         assert_eq!(
             decisions.len(),
-            4,
+            5,
             "Sample enumeration must cover `None` plus every decision \
              variant. A new variant requires both a sample here and an \
              arm in the exhaustive contract above.",

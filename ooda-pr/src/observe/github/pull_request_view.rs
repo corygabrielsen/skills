@@ -116,11 +116,17 @@ pub(crate) enum MergeStateStatus {
     Unknown,
 }
 
+/// Review-policy verdict on a PR. `Unknown` is the catchall for
+/// host-introduced variants the modeled set doesn't yet name —
+/// decode never aborts the observe pass on a new value. Axes that
+/// pattern-match should treat `Unknown` as "policy active, verdict
+/// unknown" rather than as "no policy".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum ReviewDecision {
     Approved,
     ReviewRequired,
     ChangesRequested,
+    Unknown,
 }
 
 fn deserialize_review_decision<'de, D>(d: D) -> Result<Option<ReviewDecision>, D::Error>
@@ -128,20 +134,16 @@ where
     D: Deserializer<'de>,
 {
     // Absence shapes (null, empty string) both decode to "no
-    // decision needed" — the branch has no review policy. Unknown
-    // string values are decode errors so unmodeled future states
-    // surface explicitly.
+    // decision needed" — the branch has no review policy.
+    // Unmodeled string values decode to `Unknown` so a new
+    // upstream state surfaces to axes without crashing the fetch.
     let raw: Option<String> = Option::deserialize(d)?;
     Ok(match raw.as_deref() {
         None | Some("") => None,
         Some("APPROVED") => Some(ReviewDecision::Approved),
         Some("REVIEW_REQUIRED") => Some(ReviewDecision::ReviewRequired),
         Some("CHANGES_REQUESTED") => Some(ReviewDecision::ChangesRequested),
-        Some(other) => {
-            return Err(serde::de::Error::custom(format!(
-                "unknown reviewDecision: {other}"
-            )));
-        }
+        Some(_) => Some(ReviewDecision::Unknown),
     })
 }
 
@@ -223,10 +225,13 @@ mod tests {
     }
 
     #[test]
-    fn review_decision_unknown_string_errors() {
+    fn review_decision_unknown_string_decodes_as_unknown_variant() {
+        // Pre-fix this aborted the entire view fetch and crashed
+        // the observe pass. Post-fix the row decodes; axes that
+        // pattern-match get an explicit Unknown variant to handle.
         let json = modify_fixture("\"APPROVED\"", "\"WHO_KNOWS\"");
-        let err = serde_json::from_str::<PullRequestView>(&json).unwrap_err();
-        assert!(err.to_string().contains("unknown reviewDecision"));
+        let view: PullRequestView = serde_json::from_str(&json).unwrap();
+        assert_eq!(view.review_decision, Some(ReviewDecision::Unknown));
     }
 
     #[test]

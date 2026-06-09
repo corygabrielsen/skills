@@ -33,12 +33,18 @@ pub(crate) struct RequestedUser {
     pub user_type: UserType,
 }
 
+/// Identity class for a requested reviewer. `Unknown` is the
+/// forward-compat fallback for host-introduced variants (e.g.
+/// `Service` / `Orbot` / future identity types) — decode never
+/// aborts the observe pass on a new value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) enum UserType {
     User,
     Bot,
     Organization,
     Mannequin,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -78,9 +84,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_user_type() {
+    fn unknown_user_type_decodes_as_unknown_variant() {
+        // Pre-fix this rejected the entire fetch; post-fix the
+        // unmodeled identity class lands on `Unknown` so the
+        // observe pass survives. Future variants like `Service` /
+        // `Orbot` decode cleanly.
         let json = r#"{"users":[{"login":"x","type":"Martian"}],"teams":[]}"#;
-        let err = serde_json::from_str::<RequestedReviewers>(json).unwrap_err();
-        assert!(err.to_string().contains("Martian") || err.to_string().contains("unknown variant"));
+        let r: RequestedReviewers = serde_json::from_str(json).unwrap();
+        assert_eq!(r.users.len(), 1);
+        assert_eq!(r.users[0].user_type, UserType::Unknown);
     }
 }

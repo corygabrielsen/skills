@@ -308,6 +308,7 @@ fn reviews_line(reviews: &crate::orient::reviews::ReviewSummary) -> String {
         Some(ReviewDecision::Approved) => "✅ Approval".into(),
         Some(ReviewDecision::ChangesRequested) => "❌ Changes requested".into(),
         Some(ReviewDecision::ReviewRequired) => "👤 Approval required".into(),
+        Some(ReviewDecision::Unknown) => "❓ Approval · unmodeled state".into(),
         None => "— Approval · no review policy".into(),
     }
 }

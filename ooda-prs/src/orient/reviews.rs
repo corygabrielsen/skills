@@ -187,7 +187,12 @@ fn split_requested_reviewers(requested: &RequestedReviewers) -> RequestedReviewe
     for u in &requested.users {
         match u.user_type {
             UserType::Bot => out.bots.push(u.login.clone()),
-            UserType::User | UserType::Mannequin | UserType::Organization => {
+            // Unknown identity classes (host-introduced types the
+            // modeled set doesn't name) fall through the same
+            // login-suffix heuristic as User / Mannequin /
+            // Organization — better to classify defensively than to
+            // drop the reviewer from both columns.
+            UserType::User | UserType::Mannequin | UserType::Organization | UserType::Unknown => {
                 if u.login.is_bot() {
                     out.bots.push(u.login.clone());
                 } else {

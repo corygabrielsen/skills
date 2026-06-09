@@ -148,6 +148,7 @@ pub(crate) fn orient(
         &obs.branch_rules,
         &obs.checks,
         obs.branch_protection.as_ref(),
+        obs.unsigned_commits.clone(),
     );
     // When a PR is stacked under an unmerged parent, a mergeability
     // check pends indefinitely by design. Demoting it to advisory

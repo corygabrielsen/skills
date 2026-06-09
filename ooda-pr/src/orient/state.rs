@@ -16,7 +16,7 @@
 
 use std::collections::HashSet;
 
-use crate::ids::{BranchName, Timestamp};
+use crate::ids::{BranchName, GitCommitSha, Timestamp};
 use crate::observe::github::branch_protection::BranchProtection;
 use crate::observe::github::branch_rules::BranchRule;
 use crate::observe::github::checks::PullRequestCheck;
@@ -90,6 +90,12 @@ pub(crate) struct PullRequestProjection {
     /// `required_signatures`-typed ruleset rule. Signal only;
     /// remediation is human-only.
     pub signatures_required: bool,
+    /// Commit SHAs on the PR whose GitHub signing verification
+    /// reports `verified=false`. Empty when every commit is
+    /// verified. The `SigningEligibility` closure-check axis
+    /// gates on `signatures_required && !unsigned_commits.is_empty()`
+    /// and emits a Pathology `HandoffHuman` when both hold.
+    pub unsigned_commits: Vec<GitCommitSha>,
 }
 
 /// Project a PR view + branch-rule context into the state axis.
@@ -106,6 +112,7 @@ pub(crate) fn orient_state(
     branch_rules: &[BranchRule],
     head_checks: &[PullRequestCheck],
     protection: Option<&BranchProtection>,
+    unsigned_commits: Vec<GitCommitSha>,
 ) -> PullRequestProjection {
     let body = pr.body.as_deref().unwrap_or_default();
     let label_names: Vec<&str> = pr.labels.iter().map(|l| l.name.as_str()).collect();
@@ -148,6 +155,7 @@ pub(crate) fn orient_state(
         missing_required_check_names_on_head,
         conversation_resolution_required,
         signatures_required,
+        unsigned_commits,
     }
 }
 
@@ -288,7 +296,7 @@ mod tests {
     #[test]
     fn defaults_for_minimal_open_pull_request() {
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert_eq!(s.conflict, Mergeable::Mergeable);
         assert!(!s.draft);
         assert!(!s.wip);
@@ -308,7 +316,7 @@ mod tests {
     fn title_len_includes_phantom_pull_request_suffix() {
         // "fix thing" = 9, " (#123)" = 7 → 16
         let pr = pull_request_view(|p| p.title = "fix thing".into());
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert_eq!(s.title_len, 16);
         assert!(s.title_ok);
     }
@@ -318,7 +326,7 @@ mod tests {
         // Need title_len > 50. Suffix " (#123)" is 7 chars, so a
         // 44-char title gives total 51.
         let pr = pull_request_view(|p| p.title = "a".repeat(44));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert_eq!(s.title_len, 51);
         assert!(!s.title_ok);
     }
@@ -326,7 +334,7 @@ mod tests {
     #[test]
     fn title_at_exactly_50_passes() {
         let pr = pull_request_view(|p| p.title = "a".repeat(43));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert_eq!(s.title_len, 50);
         assert!(s.title_ok);
     }
@@ -334,7 +342,7 @@ mod tests {
     #[test]
     fn empty_body_marks_body_false_and_no_sections() {
         let pr = pull_request_view(|p| p.body = Some(String::new()));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.body);
         assert!(!s.summary);
         assert!(!s.test_plan);
@@ -343,7 +351,7 @@ mod tests {
     #[test]
     fn null_body_treated_as_empty() {
         let pr = pull_request_view(|p| p.body = None);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.body);
     }
 
@@ -352,7 +360,7 @@ mod tests {
         let pr = pull_request_view(|p| {
             p.body = Some("## summary\nstuff\n\n## TEST PLAN\n- check it\n".into());
         });
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(s.summary);
         assert!(s.test_plan);
     }
@@ -363,21 +371,21 @@ mod tests {
         let pr = pull_request_view(|p| {
             p.body = Some("intro about ## summary in prose".into());
         });
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.summary);
     }
 
     #[test]
     fn wip_label_detected_exact_match() {
         let pr = pull_request_view(|p| p.labels.push(label("work in progress")));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(s.wip);
     }
 
     #[test]
     fn merge_when_ready_label_detected() {
         let pr = pull_request_view(|p| p.labels.push(label("merge-when-ready")));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(s.merge_when_ready);
     }
 
@@ -385,23 +393,23 @@ mod tests {
     fn content_label_recognizes_bug_or_enhancement() {
         for ct in ["bug", "enhancement"] {
             let pr = pull_request_view(|p| p.labels.push(label(ct)));
-            let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+            let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
             assert!(s.content_label, "expected content_label for {ct}");
         }
         // A non-content label doesn't count.
         let pr = pull_request_view(|p| p.labels.push(label("documentation")));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.content_label);
     }
 
     #[test]
     fn behind_only_when_merge_state_status_is_behind() {
         let pr = pull_request_view(|p| p.merge_state_status = MergeStateStatus::Behind);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(s.behind);
 
         let pr = pull_request_view(|p| p.merge_state_status = MergeStateStatus::Blocked);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.behind);
     }
 
@@ -426,7 +434,7 @@ mod tests {
                 },
             ];
         });
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert_eq!(s.assignees, 1);
         assert_eq!(s.reviewers, 1);
         assert_eq!(s.commits, 2);
@@ -436,7 +444,7 @@ mod tests {
     fn last_commit_at_passes_through() {
         let ts = Timestamp::parse("2026-04-23T11:00:00Z").unwrap();
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, Some(ts), &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, Some(ts), &pr.base_ref_name, &[], &[], None, vec![]);
         assert_eq!(s.last_commit_at, Some(ts));
     }
 
@@ -479,7 +487,7 @@ mod tests {
             branch_rule("copilot_code_review", None),
         ];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert_eq!(
             s.active_branch_rule_types,
             vec![
@@ -493,7 +501,7 @@ mod tests {
     #[test]
     fn active_branch_rule_types_empty_when_no_rules() {
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(s.active_branch_rule_types.is_empty());
         assert!(s.required_check_names_per_ruleset.is_empty());
         assert!(s.missing_required_check_names_on_head.is_empty());
@@ -507,7 +515,7 @@ mod tests {
             branch_rule("required_signatures", None),
         ];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert_eq!(
             s.required_check_names_per_ruleset,
             vec!["Build", "Lint", "Test"],
@@ -519,7 +527,7 @@ mod tests {
         let mut rule = required_status_checks_rule(&[("Build", 1)]);
         rule.parameters = Some(serde_json::json!({"unexpected": "shape"}));
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[rule], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[rule], &[], None, vec![]);
         assert!(s.required_check_names_per_ruleset.is_empty());
     }
 
@@ -529,7 +537,7 @@ mod tests {
         let rules = vec![required_status_checks_rule(&[("Build", 1), ("Lint", 1)])];
         let head = vec![check("Build", CheckState::Success)];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head, None, vec![]);
         assert_eq!(s.missing_required_check_names_on_head, vec!["Lint"]);
     }
 
@@ -555,7 +563,7 @@ mod tests {
     #[test]
     fn conversation_resolution_required_off_when_no_sources() {
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.conversation_resolution_required);
     }
 
@@ -563,7 +571,7 @@ mod tests {
     fn conversation_resolution_required_from_legacy_protection() {
         let pr = pull_request_view(|_| {});
         let p = protection_with(Some(true), None);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p));
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p), vec![]);
         assert!(s.conversation_resolution_required);
     }
 
@@ -571,7 +579,7 @@ mod tests {
     fn conversation_resolution_required_explicit_false_in_protection_reads_as_off() {
         let pr = pull_request_view(|_| {});
         let p = protection_with(Some(false), None);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p));
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p), vec![]);
         assert!(!s.conversation_resolution_required);
     }
 
@@ -579,7 +587,7 @@ mod tests {
     fn conversation_resolution_required_from_pull_request_ruleset() {
         let pr = pull_request_view(|_| {});
         let rules = vec![pull_request_rule(true)];
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert!(s.conversation_resolution_required);
     }
 
@@ -587,7 +595,7 @@ mod tests {
     fn conversation_resolution_required_pull_request_rule_param_false_reads_as_off() {
         let pr = pull_request_view(|_| {});
         let rules = vec![pull_request_rule(false)];
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert!(!s.conversation_resolution_required);
     }
 
@@ -597,14 +605,14 @@ mod tests {
         let pr = pull_request_view(|_| {});
         let rules = vec![pull_request_rule(true)];
         let p = protection_with(Some(false), None);
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], Some(&p));
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], Some(&p), vec![]);
         assert!(s.conversation_resolution_required);
     }
 
     #[test]
     fn signatures_required_off_when_no_sources() {
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
         assert!(!s.signatures_required);
     }
 
@@ -612,7 +620,7 @@ mod tests {
     fn signatures_required_from_legacy_protection() {
         let pr = pull_request_view(|_| {});
         let p = protection_with(None, Some(true));
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p));
+        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], Some(&p), vec![]);
         assert!(s.signatures_required);
     }
 
@@ -620,7 +628,7 @@ mod tests {
     fn signatures_required_from_ruleset_rule_type() {
         let pr = pull_request_view(|_| {});
         let rules = vec![branch_rule("required_signatures", None)];
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert!(s.signatures_required);
     }
 
@@ -628,7 +636,7 @@ mod tests {
     fn signatures_required_unrelated_rule_does_not_trigger() {
         let pr = pull_request_view(|_| {});
         let rules = vec![branch_rule("creation", None)];
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert!(!s.signatures_required);
     }
 
@@ -641,7 +649,7 @@ mod tests {
             check("Lint", CheckState::InProgress),
         ];
         let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head, None);
+        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &head, None, vec![]);
         assert!(s.missing_required_check_names_on_head.is_empty());
     }
 }

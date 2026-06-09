@@ -25,6 +25,7 @@ pub(crate) mod cursor_status;
 pub(crate) mod doc_review_attest;
 pub(crate) mod gh;
 pub(crate) mod issue_events;
+pub(crate) mod pr_commits;
 pub(crate) mod pull_request_metadata_attestation;
 pub(crate) mod pull_request_view;
 pub(crate) mod rate_limit;
@@ -37,7 +38,7 @@ pub(crate) mod workflow_runs;
 
 use std::thread;
 
-use crate::ids::{PullRequestNumber, RepoSlug};
+use crate::ids::{GitCommitSha, PullRequestNumber, RepoSlug};
 use ooda_core::{RateLimitBudget, RateLimitHit};
 use serde::Serialize;
 
@@ -53,6 +54,7 @@ use cursor_status::{CursorStatus, fetch_cursor_status};
 use doc_review_attest::{DocReviewObservation, observe_doc_review};
 use gh::GhError;
 use issue_events::{IssueEvent, fetch_issue_events};
+use pr_commits::fetch_pr_commits;
 use pull_request_metadata_attestation::{
     PullRequestMetadataObservation, observe_pull_request_metadata,
 };
@@ -108,6 +110,12 @@ pub(crate) struct GitHubObservations {
     /// anchors and per-(name, HEAD) attempt counts. Bounded — a
     /// single HEAD typically carries 0-30 rows.
     pub workflow_runs: Vec<WorkflowRun>,
+    /// SHAs of commits on the PR whose GitHub signing verification
+    /// reports `verified=false`. Empty when every commit is signed
+    /// AND verified. Drives the `SigningEligibility` axis: when the
+    /// branch requires signed commits AND this set is non-empty,
+    /// the axis emits a Pathology `HandoffHuman`.
+    pub unsigned_commits: Vec<GitCommitSha>,
     /// Per-HEAD suite+run signal for the push-driven reviewer.
     /// Distinct source from `checks` (which aggregates by name and
     /// drops suite-level state) and from `workflow_runs` (the
@@ -242,6 +250,7 @@ pub(crate) fn fetch_all(
             let head_for_runs = head_sha.clone();
             s.spawn(move || fetch_workflow_runs_for_head(slug, &head_for_runs))
         };
+        let h_pr_commits = s.spawn(|| fetch_pr_commits(slug, pr));
         let h_cursor_status = {
             let head_for_cursor = head_sha.clone();
             s.spawn(move || fetch_cursor_status(slug, &head_for_cursor))
@@ -266,6 +275,12 @@ pub(crate) fn fetch_all(
         let copilot_config = try_fetch!(join_fetch(h_copilot_cfg, "fetch_copilot_config"));
         let rate_limit_budget = try_fetch!(join_fetch(h_rate_limit, "fetch_rate_limit"));
         let workflow_runs = try_fetch!(join_fetch(h_workflow_runs, "fetch_workflow_runs"));
+        let pr_commits = try_fetch!(join_fetch(h_pr_commits, "fetch_pr_commits"));
+        let unsigned_commits: Vec<GitCommitSha> = pr_commits
+            .iter()
+            .filter(|c| !c.commit.verification.verified)
+            .map(|c| c.sha.clone())
+            .collect();
         let cursor_status = try_fetch!(join_fetch(h_cursor_status, "fetch_cursor_status"));
         // Tolerate post-merge base-deletion race the same way the
         // legacy-protection source does (absence, not error);
@@ -305,6 +320,7 @@ pub(crate) fn fetch_all(
             stack_root_branch,
             rate_limit_budget,
             workflow_runs,
+            unsigned_commits,
             cursor_status,
             merge_base_delta,
             pull_request_metadata,
@@ -361,6 +377,7 @@ fn terminal_observations(
         copilot_config: None,
         rate_limit_budget,
         workflow_runs: vec![],
+        unsigned_commits: vec![],
         cursor_status: CursorStatus {
             suite: None,
             run: None,

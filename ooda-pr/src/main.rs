@@ -1213,6 +1213,7 @@ mod tests {
                 missing_required_check_names_on_head: vec![],
                 conversation_resolution_required: false,
                 signatures_required: false,
+                unsigned_commits: vec![],
             },
             reviews: ReviewSummary {
                 decision: None,

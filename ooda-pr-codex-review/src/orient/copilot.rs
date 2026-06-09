@@ -888,7 +888,11 @@ fn compute_in_flight_health(
             .find(|c| c.oid == *head)
             .map(|c| c.committed_date);
         return match head_committed_at {
-            Some(t) if now.at() - t.at() > THRESHOLD_START_TIMEOUT => InFlightHealth::Failed,
+            // `>=` matches the convention used by `seal()` for the
+            // same threshold — "X has timed out" iff elapsed ≥ X.
+            // Mismatched comparison (this site used `>`) produced
+            // divergent verdicts at the exact-boundary case.
+            Some(t) if now.at() - t.at() >= THRESHOLD_START_TIMEOUT => InFlightHealth::Failed,
             _ => InFlightHealth::Healthy,
         };
     }

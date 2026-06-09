@@ -174,7 +174,7 @@ fn merge_blocked_by_threads(unresolved_total: usize) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        urgency: Urgency::Mid(MidTier::Pathology),
         blocker: BlockerKey::from_static("merge_blocked_threads"),
     }
 }
@@ -196,7 +196,7 @@ fn merge_blocked_by_review(decision: Option<ReviewDecision>) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        urgency: Urgency::Mid(MidTier::Pathology),
         blocker: BlockerKey::from_static("merge_blocked_review"),
     }
 }
@@ -213,7 +213,7 @@ fn merge_blocked_by_check_failure() -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        urgency: Urgency::Mid(MidTier::Pathology),
         blocker: BlockerKey::from_static("merge_blocked_check_failure"),
     }
 }
@@ -273,7 +273,7 @@ fn merge_blocked_by_policy(state: &PullRequestProjection) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        urgency: Urgency::Mid(MidTier::Pathology),
         blocker: BlockerKey::from_static("merge_blocked_policy"),
     }
 }
@@ -292,7 +292,7 @@ fn merge_stale_threads(unresolved_total: usize) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        urgency: Urgency::Mid(MidTier::Pathology),
         blocker: BlockerKey::from_static("merge_stale_threads"),
     }
 }
@@ -316,7 +316,7 @@ fn merge_stale_checks(rollup: RequiredChecksRollup) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        urgency: Urgency::Mid(MidTier::Pathology),
         blocker: BlockerKey::from_static("merge_stale_checks"),
     }
 }

@@ -4,10 +4,39 @@
 
 A task is "ready" when: status=`pending` AND `blockedBy` is empty.
 
+## Pre-dispatch decision gate (Tier-A guard)
+
+Run BEFORE marking any task `in_progress`. Skips cleanly when no decision citations exist; never gold-plates trivial tasks.
+
+**Decision states** (from the cited memo's `decisions:` frontmatter):
+
+- `locked` — premise verified and committed. Safe to dispatch.
+- `contested` — premise challenged (by drift evidence or human review). Block.
+- `revised` — superseded by a follow-up decision (see `superseded_by`). Block until task cites the revision.
+- _(missing entry)_ — qid not found in the memo. Block as a broken citation.
+
+For each ready task:
+
+1. **Scan task description + linked memo for citations** of the form `[[decision:<memo-slug>#<qid>]]`. If none → skip the gate (Tier-B/C task; proceed to normal launch).
+2. **For each cited decision**, read the source memo's frontmatter `decisions:` list:
+   - Locate the entry with matching `qid`.
+   - If `state: locked` → continue.
+   - If `state: contested` → **BLOCK**. Surface to control/HIL_ANOMALY: "Task <id> cites contested decision <slug>#<qid>; revision required before dispatch."
+   - If `state: revised` → **BLOCK** until task description updated to cite the revision (`superseded_by`). Surface to human.
+   - If entry missing → **BLOCK**. Surface "Task <id> cites <slug>#<qid> but decision not present in memo frontmatter."
+3. **Run drift-scan on the union of cited decisions** (one Skill invocation per memo, in parallel):
+   - `Skill(skill: "drift-scan", args: "<memo-path>")` — or `--qid <qid>` to narrow.
+   - If verdict `clean` → proceed.
+   - If verdict `drifted` → **BLOCK**. Surface to control/HIL_ANOMALY with the drift report. A human flips the cited decision's `state: contested` in the memo — the gate does not auto-mutate the source of truth.
+   - If verdict `unverifiable` → soft-block; surface to human for adjudication. Do not auto-proceed.
+
+Gate output before launch: one line per task `GATE: <task-id> <pass|blocked-<reason>>`.
+
 ## Do:
 
 - Identify all ready tasks (no blockers, not in_progress, not completed)
-- For each ready task:
+- **Run the pre-dispatch decision gate** (above). Drop blocked tasks from this batch.
+- For each ready task that passed the gate:
   - Update status to `in_progress` via `TaskUpdate`
   - Launch via `Task` with `run_in_background: true`
   - Write a clear, specific prompt with full context

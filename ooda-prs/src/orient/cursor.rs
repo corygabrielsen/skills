@@ -678,6 +678,7 @@ mod tests {
             comments: ThreadComments {
                 page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
+                    database_id: None,
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse("cursor[bot]").unwrap(),
                     }),

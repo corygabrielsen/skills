@@ -295,6 +295,7 @@ mod tests {
             },
             body: body.into(),
             state: ThreadState::Live,
+            originating_comment_id: None,
             created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
         }
     }

@@ -378,11 +378,14 @@ fn synthesise_suppressed_threads(
             // review (if any) renders a smaller `<details>` block.
             state: ThreadState::Live,
             created_at: reviewed_at,
+            // Synthesised threads have no upstream comment row.
+            originating_comment_id: None,
         });
     }
     out
 }
 
+#[allow(clippy::too_many_lines)]
 fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::HandoffPrompt {
     use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
@@ -434,13 +437,18 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
             // because the caller filters it out.
             _ => "",
         };
+        let comment_id_field = t
+            .originating_comment_id
+            .map(|id| format!("    comment_id: {id}"))
+            .unwrap_or_default();
         let label = SingleLineString::new(format!(
-            "{}. {} @ {}{}    thread_id: {}",
+            "{}. {} @ {}{}    thread_id: {}{}",
             i + 1,
             t.author,
             t.location,
             tag,
             t.id,
+            comment_id_field,
         ));
         let body = t
             .body
@@ -475,8 +483,19 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
              comment is about (often near the original `path:line` after a \
              small refactor; sometimes elsewhere) and decide whether the \
              feedback still applies. If it does, address it as you would a \
-             live thread. If it does not, resolve the thread with a brief \
-             reply explaining why.",
+             live thread. If it does not, post a brief reply explaining why.",
+        );
+        prompt.push_paragraph(
+            "**Reply path for outdated / null-line threads** — the \
+             line-anchored suggestion API is unavailable, but a thread reply \
+             via the comment-replies endpoint works. The endpoint is keyed \
+             by the originating comment's REST `comment_id` (shown in each \
+             entry above when known), not by line:",
+        );
+        prompt.push_code(
+            "bash",
+            "gh api repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies \
+             -f body='<your reply text>'",
         );
     }
 
@@ -574,6 +593,7 @@ mod tests {
             body: body.into(),
             state,
             created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+            originating_comment_id: None,
         }
     }
 

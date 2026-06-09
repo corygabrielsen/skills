@@ -271,6 +271,7 @@ mod tests {
                     nodes: logins
                         .iter()
                         .map(|l| ThreadComment {
+                            database_id: None,
                             author: Some(CommentAuthor {
                                 login: GitHubLogin::parse(l).unwrap(),
                             }),

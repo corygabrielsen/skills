@@ -170,6 +170,12 @@ pub struct ReviewThread {
     pub body: String,
     pub state: ThreadState,
     pub created_at: Timestamp,
+    /// REST numeric id of the originating comment. Needed for the
+    /// line-anchored-replies API (`POST /pulls/{n}/comments/{id}/
+    /// replies`) — the only reply path that works for outdated /
+    /// null-line threads. `None` when the host doesn't surface it
+    /// (older wire fixtures) or when the comment row is malformed.
+    pub originating_comment_id: Option<u64>,
 }
 
 impl ReviewThread {
@@ -204,6 +210,7 @@ impl ReviewThread {
             body: first.body.clone(),
             state,
             created_at: first.created_at,
+            originating_comment_id: first.database_id,
         })
     }
 }
@@ -248,6 +255,7 @@ mod tests {
             comments: ThreadComments {
                 page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
+                    database_id: None,
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse(author_login).unwrap(),
                     }),
@@ -271,6 +279,28 @@ mod tests {
         .unwrap();
         assert_eq!(t.state, ThreadState::Live);
         assert_eq!(t.location.line, Some(42));
+    }
+
+    #[test]
+    fn from_wire_carries_originating_comment_database_id() {
+        // Originating comment's REST `databaseId` projects onto
+        // ReviewThread::originating_comment_id — required for the
+        // line-anchored-replies endpoint on outdated/null-line
+        // threads.
+        let mut w = wire(false, true, "src/foo.rs", None, "alice", "x");
+        w.comments.nodes[0].database_id = Some(3_377_501_272);
+        let t = ReviewThread::from_wire(&w).expect("projects");
+        assert_eq!(t.originating_comment_id, Some(3_377_501_272));
+    }
+
+    #[test]
+    fn from_wire_originating_comment_id_is_none_when_wire_absent() {
+        // Defensive: older fixtures / hosts that don't surface
+        // databaseId project to None. The action prompt's optional
+        // `comment_id:` field handles either case.
+        let w = wire(false, false, "src/foo.rs", Some(1), "alice", "x");
+        let t = ReviewThread::from_wire(&w).expect("projects");
+        assert_eq!(t.originating_comment_id, None);
     }
 
     #[test]

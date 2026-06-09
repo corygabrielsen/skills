@@ -53,7 +53,7 @@ pub(crate) fn fetch_review_threads_page(
           line
           comments(first:100) {{
             pageInfo {{ hasNextPage endCursor }}
-            nodes {{ author {{ login }} createdAt body }}
+            nodes {{ databaseId author {{ login }} createdAt body }}
           }}
         }}
       }}
@@ -87,7 +87,7 @@ fn fetch_thread_comments_page(
     ... on PullRequestReviewThread {{
       comments(first:100,after:"{cursor}") {{
         pageInfo {{ hasNextPage endCursor }}
-        nodes {{ author {{ login }} createdAt body }}
+        nodes {{ databaseId author {{ login }} createdAt body }}
       }}
     }}
   }}
@@ -180,6 +180,13 @@ pub struct ThreadComments {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComment {
+    /// Numeric REST id for this comment. The line-anchored-replies
+    /// API (`POST /pulls/{n}/comments/{id}/replies`) is keyed by
+    /// this id, NOT by line — required when replying to outdated /
+    /// null-line threads. Optional only because older fixtures
+    /// don't carry it.
+    #[serde(default)]
+    pub database_id: Option<u64>,
     /// Absent when the comment's authoring identity has been
     /// deleted.
     pub author: Option<CommentAuthor>,
@@ -383,6 +390,72 @@ mod tests {
             Some(RequestedReviewer::Mannequin { login }) if login.as_str() == "ghost"
         ));
         assert_eq!(nodes[4].requested_reviewer, None);
+    }
+
+    #[test]
+    fn thread_comment_carries_database_id_when_present() {
+        // GraphQL `databaseId` round-trips as `Option<u64>`. Needed
+        // for the line-anchored-replies endpoint on outdated/null-
+        // line threads (keyed by comment id, not line).
+        let json = r#"{
+            "data":{"repository":{"pullRequest":{
+                "reviewThreads":{
+                    "pageInfo":{"hasNextPage":false,"endCursor":null},
+                    "nodes":[{
+                        "id":"PRRT_1",
+                        "isResolved":false,
+                        "isOutdated":true,
+                        "path":"docker/Dockerfile.ci",
+                        "line":null,
+                        "comments":{
+                            "pageInfo":{"hasNextPage":false,"endCursor":null},
+                            "nodes":[{
+                                "databaseId":3377501272,
+                                "author":{"login":"cursor"},
+                                "createdAt":"2026-04-23T00:00:00Z",
+                                "body":"x"
+                            }]
+                        }
+                    }]
+                },
+                "reviewRequests":{"nodes":[]}
+            }}}
+        }"#;
+        let resp: ReviewThreadsResponse = serde_json::from_str(json).unwrap();
+        let t = &resp.data.repository.pull_request.review_threads.nodes[0];
+        assert_eq!(t.comments.nodes[0].database_id, Some(3_377_501_272));
+    }
+
+    #[test]
+    fn thread_comment_database_id_missing_decodes_as_none() {
+        // Fixtures that don't carry databaseId still decode — the
+        // field is optional and defaults to None.
+        let json = r#"{
+            "data":{"repository":{"pullRequest":{
+                "reviewThreads":{
+                    "pageInfo":{"hasNextPage":false,"endCursor":null},
+                    "nodes":[{
+                        "id":"PRRT_1",
+                        "isResolved":false,
+                        "isOutdated":false,
+                        "path":"src/foo.rs",
+                        "line":1,
+                        "comments":{
+                            "pageInfo":{"hasNextPage":false,"endCursor":null},
+                            "nodes":[{
+                                "author":{"login":"alice"},
+                                "createdAt":"2026-04-23T00:00:00Z",
+                                "body":"x"
+                            }]
+                        }
+                    }]
+                },
+                "reviewRequests":{"nodes":[]}
+            }}}
+        }"#;
+        let resp: ReviewThreadsResponse = serde_json::from_str(json).unwrap();
+        let t = &resp.data.repository.pull_request.review_threads.nodes[0];
+        assert_eq!(t.comments.nodes[0].database_id, None);
     }
 
     #[test]

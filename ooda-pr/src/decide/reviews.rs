@@ -377,12 +377,14 @@ fn synthesise_suppressed_threads(
             // removes the underlying issue, after which Copilot's next
             // review (if any) renders a smaller `<details>` block.
             state: ThreadState::Live,
+            originating_comment_id: None,
             created_at: reviewed_at,
         });
     }
     out
 }
 
+#[allow(clippy::too_many_lines)]
 fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::HandoffPrompt {
     use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
@@ -434,13 +436,18 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
             // because the caller filters it out.
             _ => "",
         };
+        let comment_id_field = t
+            .originating_comment_id
+            .map(|id| format!("    comment_id: {id}"))
+            .unwrap_or_default();
         let label = SingleLineString::new(format!(
-            "{}. {} @ {}{}    thread_id: {}",
+            "{}. {} @ {}{}    thread_id: {}{}",
             i + 1,
             t.author,
             t.location,
             tag,
             t.id,
+            comment_id_field,
         ));
         let body = t
             .body
@@ -475,8 +482,19 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
              comment is about (often near the original `path:line` after a \
              small refactor; sometimes elsewhere) and decide whether the \
              feedback still applies. If it does, address it as you would a \
-             live thread. If it does not, resolve the thread with a brief \
-             reply explaining why.",
+             live thread. If it does not, post a brief reply explaining why.",
+        );
+        prompt.push_paragraph(
+            "**Reply path for outdated / null-line threads** — the \
+             line-anchored suggestion API is unavailable, but a thread reply \
+             via the comment-replies endpoint works. The endpoint is keyed \
+             by the originating comment's REST `comment_id` (shown in each \
+             entry above when known), not by line:",
+        );
+        prompt.push_code(
+            "bash",
+            "gh api repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies \
+             -f body='<your reply text>'",
         );
     }
 
@@ -574,6 +592,7 @@ mod tests {
             body: body.into(),
             state,
             created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+            originating_comment_id: None,
         }
     }
 
@@ -744,6 +763,47 @@ mod tests {
         assert!(desc.contains("> missing error context"));
         // Generalization preamble preserved
         assert!(desc.contains("think deeply about the entire class of issue"));
+    }
+
+    #[test]
+    fn address_threads_prompt_includes_comment_id_when_present() {
+        // When the orient layer surfaces the originating comment's
+        // REST databaseId, the witness label carries `comment_id:`
+        // so the agent can hit the line-anchored-replies endpoint
+        // directly without a round-trip GraphQL fetch.
+        let r = clean_reviews();
+        let mut t = outdated_thread("src/foo.rs", 42, "review body", "T_outdated");
+        t.originating_comment_id = Some(3_377_501_272);
+        let cs = cands_with_threads(&r, &[t]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires");
+        let rendered = action.rendered_payload();
+        assert!(
+            rendered.contains("comment_id: 3377501272"),
+            "comment_id must appear in the witness label"
+        );
+        // Outdated branch also surfaces the replies endpoint recipe.
+        assert!(rendered.contains("comments/<comment_id>/replies"));
+    }
+
+    #[test]
+    fn address_threads_prompt_omits_comment_id_when_absent() {
+        // Defensive fallback when the wire doesn't carry databaseId
+        // (older fixtures): the witness label still renders, just
+        // without the comment_id field. The reply-path recipe still
+        // appears because the thread is outdated.
+        let r = clean_reviews();
+        let t = outdated_thread("src/foo.rs", 42, "review body", "T_outdated");
+        // originating_comment_id defaults to None via the helper.
+        let cs = cands_with_threads(&r, &[t]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires");
+        let rendered = action.rendered_payload();
+        assert!(!rendered.contains("comment_id:"));
     }
 
     #[test]

@@ -140,6 +140,7 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
             &oriented.ci,
         ),
     );
+    out.extend(crate::decide::signing_eligibility::signing_eligibility_candidates(&oriented.state));
     out.sort_by_key(|a| a.urgency);
     out
 }

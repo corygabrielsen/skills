@@ -62,6 +62,7 @@ STRICT_FILES=(
     "src/decide/doc_review.rs"
     "src/decide/merge_eligibility.rs"
     "src/decide/pull_request_metadata.rs"
+    "src/decide/signing_eligibility.rs"
     "src/observe/branch.rs"
     "src/observe/github/branch_protection.rs"
     "src/observe/github/branch_rules.rs"

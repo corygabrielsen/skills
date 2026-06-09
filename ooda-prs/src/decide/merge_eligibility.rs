@@ -240,13 +240,9 @@ fn merge_blocked_by_policy(state: &PullRequestProjection) -> Action {
          deployment protection, or a custom branch ruleset. Inspect the \
          PR's Merge box on GitHub for the specific gate.",
     );
-    if state.signatures_required {
-        prompt.push_paragraph(
-            "Signed commits are required on this branch — confirm every \
-             commit on HEAD is signed."
-                .to_string(),
-        );
-    }
+    // Signing requirements have their own structured axis
+    // (`signing_eligibility`) that emits a Pathology HandoffHuman
+    // directly — no soft prose diagnostic needed here.
     if let Some(rule_types) = NonEmpty::try_from_vec(
         state
             .active_branch_rule_types
@@ -604,7 +600,10 @@ mod tests {
         let cs = merge_eligibility_candidates(&s, &[], Some(ReviewDecision::Approved), &ci_clean());
         assert_blocker(&cs, "merge_blocked_policy");
         let rendered = cs[0].rendered_payload();
-        assert!(rendered.contains("Signed commits are required"));
+        // The rule-types enumeration still surfaces "required_signatures"
+        // as an active rule on the branch. The dedicated signing-axis
+        // (decide::signing_eligibility) owns the substantive signing
+        // surface — this axis only confirms the cross-check absence.
         assert!(rendered.contains("required_signatures"));
     }
 

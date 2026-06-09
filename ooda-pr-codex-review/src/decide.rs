@@ -27,6 +27,7 @@ pub(crate) mod doc_review;
 pub(crate) mod merge_eligibility;
 pub(crate) mod pull_request_metadata;
 pub(crate) mod reviews;
+pub(crate) mod signing_eligibility;
 pub(crate) mod state;
 
 #[cfg(test)]

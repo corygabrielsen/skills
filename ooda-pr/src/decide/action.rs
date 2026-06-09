@@ -7,7 +7,7 @@
 //! type-correct call cannot mix identifiers from different
 //! namespaces.
 
-use crate::ids::{BlockerKey, CheckName, GitHubLogin, Reviewer};
+use crate::ids::{BlockerKey, CheckName, GitCommitSha, GitHubLogin, Reviewer};
 use crate::observe::github::workflow_runs::WorkflowRunId;
 use crate::orient::ci::Symptom as CiSymptom;
 use crate::orient::copilot::Symptom;
@@ -97,6 +97,15 @@ pub enum ActionKind {
     /// IDs as witnesses so the human can investigate them.
     EscalateCiStuck {
         stuck_runs: NonEmpty<WorkflowRunId>,
+    },
+    /// Branch policy requires signed commits but one or more
+    /// commits on HEAD are unverified. Closure-check pathology
+    /// surfaced by [`crate::decide::signing_eligibility`].
+    /// Automation cannot rebase-and-sign on a shared branch; the
+    /// human owns the recovery. Payload carries every unverified
+    /// SHA as a witness.
+    EscalateSigningRequired {
+        unsigned_commits: NonEmpty<GitCommitSha>,
     },
 
     // ── Reviews ──
@@ -252,6 +261,7 @@ impl ActionKindName for ActionKind {
             Self::ReRunWorkflow { .. } => "ReRunWorkflow",
             Self::EscalateCiFailed { .. } => "EscalateCiFailed",
             Self::EscalateCiStuck { .. } => "EscalateCiStuck",
+            Self::EscalateSigningRequired { .. } => "EscalateSigningRequired",
             Self::AddressThreads { .. } => "AddressThreads",
             Self::AddressChangeRequest => "AddressChangeRequest",
             Self::RequestApproval => "RequestApproval",

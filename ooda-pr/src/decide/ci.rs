@@ -70,7 +70,11 @@ pub(crate) fn candidates(report: &CiReport) -> Vec<Action> {
             // fix candidates already cover the work, and the
             // agent sees advisory state in the same snapshot.
         }
-        CiActivity::Resolved(ResolvedState::MissingRequired { names, stuck_runs }) => {
+        CiActivity::Resolved(ResolvedState::MissingRequired {
+            names,
+            stuck_runs,
+            healthy_in_flight_runs: _,
+        }) => {
             // Required checks configured but absent at HEAD.
             // Triage may shadow this when an advisory failure
             // co-occurs; the helper routes either way. The
@@ -587,6 +591,7 @@ mod tests {
         let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
             names: vec![cn("Mergeability Check")],
             stuck_runs: vec![],
+            healthy_in_flight_runs: vec![],
         });
         let cs = candidates(&report(s, activity));
         assert_eq!(cs.len(), 1);
@@ -610,6 +615,7 @@ mod tests {
         let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
             names: vec![cn("Mergeability Check")],
             stuck_runs: vec![WorkflowRunId(27_177_144_891)],
+            healthy_in_flight_runs: vec![],
         });
         let cs = candidates(&report(s, activity));
         assert_eq!(cs.len(), 1);
@@ -639,6 +645,7 @@ mod tests {
         let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
             names: vec![cn("Mergeability Check")],
             stuck_runs: vec![WorkflowRunId(111), WorkflowRunId(222), WorkflowRunId(333)],
+            healthy_in_flight_runs: vec![],
         });
         let cs = candidates(&report(s, activity));
         let body = cs[0].rendered_payload();
@@ -664,6 +671,7 @@ mod tests {
         let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
             names: vec![cn("Mergeability Check")],
             stuck_runs: vec![WorkflowRunId(42)],
+            healthy_in_flight_runs: vec![],
         });
         let cs = candidates(&report(s, activity));
         assert_eq!(cs.len(), 1);
@@ -682,6 +690,7 @@ mod tests {
         let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
             names: vec![cn("Mergeability Check")],
             stuck_runs: vec![],
+            healthy_in_flight_runs: vec![],
         });
         let cs = candidates(&report(s, activity));
         let kinds: Vec<&ActionKind> = cs.iter().map(|a| &a.kind).collect();
@@ -786,6 +795,7 @@ mod tests {
                 CiActivity::Resolved(ResolvedState::MissingRequired {
                     names: vec![cn("X")],
                     stuck_runs: vec![],
+                    healthy_in_flight_runs: vec![],
                 }),
             ));
         }
@@ -994,6 +1004,7 @@ mod tests {
         let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
             names: vec![cn("Mergeability Check")],
             stuck_runs: vec![],
+            healthy_in_flight_runs: vec![],
         });
         let cs = candidates(&report(s, activity));
         let action = cs

@@ -156,9 +156,19 @@ pub(crate) enum ResolvedState {
     /// the absence of the required check is broken (runner
     /// starvation), not pending — decide emits a `Pathology`
     /// `HandoffHuman` instead of `WaitForCi(ci_missing)`.
+    ///
+    /// `healthy_in_flight_runs` carries workflow runs on HEAD that
+    /// are still in-flight and within their timeouts. Dual of
+    /// `stuck_runs`: when non-empty, a missing required check is
+    /// plausibly pending its fan-in producer (e.g., an aggregator
+    /// `needs:` a non-required workflow that hasn't completed yet)
+    /// — decide stays silent on the merge-policy pathology branch
+    /// so `WaitForCi(ci_missing)` takes the iteration instead of
+    /// over-escalating to `HumanNeeded`.
     MissingRequired {
         names: Vec<CheckName>,
         stuck_runs: Vec<WorkflowRunId>,
+        healthy_in_flight_runs: Vec<WorkflowRunId>,
     },
 }
 
@@ -221,7 +231,9 @@ pub(crate) fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisS
                 join_check_names(names),
             ),
         ),
-        CiActivity::Resolved(ResolvedState::MissingRequired { names, stuck_runs }) => {
+        CiActivity::Resolved(ResolvedState::MissingRequired {
+            names, stuck_runs, ..
+        }) => {
             let suffix = if stuck_runs.is_empty() {
                 String::new()
             } else {
@@ -406,12 +418,57 @@ fn compute_ci_activity(
     }
     if !summary.missing_names.is_empty() {
         let stuck_runs = stuck_queued_run_ids(workflow_runs, head, now);
+        let healthy_in_flight_runs = healthy_in_flight_run_ids(workflow_runs, head, now);
         return CiActivity::Resolved(ResolvedState::MissingRequired {
             names: summary.missing_names.clone(),
             stuck_runs,
+            healthy_in_flight_runs,
         });
     }
     CiActivity::Resolved(ResolvedState::AllGreen)
+}
+
+/// Workflow runs on HEAD that are still in-flight (queued or
+/// running) and within their timeout budgets. Dual of
+/// [`stuck_queued_run_ids`]: when this set is non-empty, a missing
+/// required check is plausibly waiting on a fan-in producer rather
+/// than absent because broken. Decide's merge-policy branch reads
+/// this to suppress its `Pathology` `HandoffHuman` so the routine
+/// `WaitForCi(ci_missing)` takes the iteration.
+fn healthy_in_flight_run_ids(
+    workflow_runs: &[WorkflowRun],
+    head: &GitCommitSha,
+    now: Timestamp,
+) -> Vec<WorkflowRunId> {
+    workflow_runs
+        .iter()
+        .filter(|r| {
+            if r.head_sha != *head {
+                return false;
+            }
+            // Active status set: queued-but-not-yet-started or
+            // currently running. Completed / Cancelled / etc. don't
+            // count as in-flight.
+            if !matches!(
+                r.status,
+                WorkflowRunStatus::Queued
+                    | WorkflowRunStatus::Pending
+                    | WorkflowRunStatus::Waiting
+                    | WorkflowRunStatus::Requested
+                    | WorkflowRunStatus::InProgress
+            ) {
+                return false;
+            }
+            // Within timeout: either running (start time set, age
+            // under `RUN_TIMEOUT`) or queued recently (`created_at`
+            // within `QUEUE_TIMEOUT`).
+            match r.run_started_at {
+                Some(started) => now.at() - started.at() < RUN_TIMEOUT,
+                None => now.at() - r.created_at.at() < QUEUE_TIMEOUT,
+            }
+        })
+        .map(|r| r.id.clone())
+        .collect()
 }
 
 /// Workflow runs on HEAD that have been queued past `QUEUE_TIMEOUT`
@@ -739,8 +796,8 @@ mod tests {
     fn missing_required_with_stuck_queued_run_populates_pathology_witness() {
         // Required check missing AND a workflow run on HEAD has
         // been queued past QUEUE_TIMEOUT without acquiring a runner.
-        // This is the #1039 shape: runner-starvation pathology
-        // expressed via the MissingRequired classification.
+        // Runner-starvation pathology expressed via the
+        // MissingRequired classification.
         let checks = vec![check("Build", CheckState::Success, None)];
         let req = vec![cn("Build"), cn("Mergeability Check")];
         let runs = vec![run(
@@ -854,6 +911,110 @@ mod tests {
             panic!("expected MissingRequired, got {:?}", r.activity);
         };
         assert!(stuck_runs.is_empty());
+    }
+
+    #[test]
+    fn missing_required_with_healthy_in_flight_run_populates_fan_in_witness() {
+        // Fan-in shape: a required check (`Mergeability Check`) is
+        // missing on HEAD because its non-required producer
+        // workflow (`Mergeability Workflow`) is still running
+        // normally. healthy_in_flight_runs picks up that workflow
+        // so decide's merge-policy branch can suppress its
+        // Pathology emission.
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let runs = vec![run(
+            42,
+            "Mergeability Workflow",
+            WorkflowRunStatus::InProgress,
+            "2026-04-23T09:50:00Z",
+            Some("2026-04-23T09:51:00Z"), // running for 9 min < RUN_TIMEOUT
+        )];
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &runs,
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired {
+            healthy_in_flight_runs,
+            stuck_runs,
+            ..
+        }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert_eq!(healthy_in_flight_runs, &vec![WorkflowRunId(42)]);
+        assert!(stuck_runs.is_empty());
+    }
+
+    #[test]
+    fn missing_required_with_fresh_queued_run_counts_as_healthy_in_flight() {
+        // A queued-not-yet-started run within QUEUE_TIMEOUT counts
+        // as healthy in-flight (fan-in pending), not stuck. Dual
+        // partition to stuck_runs (which fires past QUEUE_TIMEOUT).
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let runs = vec![run(
+            42,
+            "Mergeability Workflow",
+            WorkflowRunStatus::Queued,
+            "2026-04-23T09:55:00Z", // 5 min ago, within QUEUE_TIMEOUT
+            None,
+        )];
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &runs,
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired {
+            healthy_in_flight_runs,
+            stuck_runs,
+            ..
+        }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert_eq!(healthy_in_flight_runs, &vec![WorkflowRunId(42)]);
+        assert!(stuck_runs.is_empty());
+    }
+
+    #[test]
+    fn missing_required_with_completed_runs_has_no_healthy_in_flight() {
+        // A completed run on HEAD doesn't count as in-flight. The
+        // missing-required state with no active producer signals
+        // an unmodeled gate, not a pending fan-in.
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let mut completed_run = run(
+            42,
+            "Mergeability Workflow",
+            WorkflowRunStatus::Completed,
+            "2026-04-23T09:00:00Z",
+            Some("2026-04-23T09:01:00Z"),
+        );
+        completed_run.status = WorkflowRunStatus::Completed;
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &[completed_run],
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired {
+            healthy_in_flight_runs,
+            ..
+        }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert!(healthy_in_flight_runs.is_empty());
     }
 
     #[test]

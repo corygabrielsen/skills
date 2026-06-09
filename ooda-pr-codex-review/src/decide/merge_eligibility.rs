@@ -30,7 +30,7 @@
 
 use crate::ids::BlockerKey;
 use crate::observe::github::pull_request_view::{MergeStateStatus, ReviewDecision};
-use crate::orient::ci::CiReport;
+use crate::orient::ci::{CiActivity, CiReport, ResolvedState};
 use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadState};
 
@@ -74,14 +74,14 @@ pub(crate) fn merge_eligibility_candidates(
     match state.merge_state_status {
         MergeStateStatus::Unknown => vec![wait_merge_state_unknown()],
         MergeStateStatus::HasHooks => vec![wait_merge_state_has_hooks()],
-        MergeStateStatus::Blocked => {
-            vec![drill_blocked(
-                state,
-                unresolved_total,
-                review_decision,
-                rollup,
-            )]
-        }
+        MergeStateStatus::Blocked => drill_blocked(
+            state,
+            unresolved_total,
+            review_decision,
+            rollup,
+            &ci.activity,
+        )
+        .map_or(vec![], |a| vec![a]),
         MergeStateStatus::Clean | MergeStateStatus::Unstable => {
             cross_check_eligible(state, unresolved_total, rollup)
         }
@@ -95,25 +95,49 @@ pub(crate) fn merge_eligibility_candidates(
 /// Drill `mergeStateStatus = Blocked` into the most likely cause.
 /// First match wins; ordering reflects "most actionable-and-named
 /// upstream gate first."
+///
+/// Returns `None` only in the fan-in-suppression case: rollup is
+/// `Clean` (no other modeled cause) AND the CI projection carries
+/// a healthy in-flight workflow for a missing required check. In
+/// that case the policy fallback would over-escalate to Pathology
+/// when the right outcome is to wait for the producer; ci.rs's
+/// `WaitForCi(ci_missing)` at `BlockingWait` takes the iteration.
+/// All other paths return `Some(action)`.
 fn drill_blocked(
     state: &PullRequestProjection,
     unresolved_total: usize,
     review_decision: Option<ReviewDecision>,
     rollup: RequiredChecksRollup,
-) -> Action {
+    ci_activity: &CiActivity,
+) -> Option<Action> {
     if state.conversation_resolution_required && unresolved_total > 0 {
-        return merge_blocked_by_threads(unresolved_total);
+        return Some(merge_blocked_by_threads(unresolved_total));
     }
     if matches!(
         review_decision,
         Some(ReviewDecision::ReviewRequired | ReviewDecision::ChangesRequested)
     ) {
-        return merge_blocked_by_review(review_decision);
+        return Some(merge_blocked_by_review(review_decision));
     }
     match rollup {
-        RequiredChecksRollup::Failure => merge_blocked_by_check_failure(),
-        RequiredChecksRollup::Pending => merge_blocked_by_check_pending(),
-        RequiredChecksRollup::Clean => merge_blocked_by_policy(state),
+        RequiredChecksRollup::Failure => Some(merge_blocked_by_check_failure()),
+        RequiredChecksRollup::Pending => Some(merge_blocked_by_check_pending()),
+        RequiredChecksRollup::Clean => {
+            // Fan-in suppression: when a required check is missing
+            // AND a healthy in-flight workflow on HEAD exists, the
+            // absence of the required check is pending — not an
+            // unmodeled policy gate. Defer to the routine wait
+            // path.
+            if let CiActivity::Resolved(ResolvedState::MissingRequired {
+                healthy_in_flight_runs,
+                ..
+            }) = ci_activity
+                && !healthy_in_flight_runs.is_empty()
+            {
+                return None;
+            }
+            Some(merge_blocked_by_policy(state))
+        }
     }
 }
 
@@ -387,6 +411,39 @@ mod tests {
         ci
     }
 
+    /// CI in `Resolved::MissingRequired` with a healthy in-flight
+    /// producer on HEAD — the fan-in shape: a required aggregator
+    /// check is missing, but a non-required workflow it depends on
+    /// is still running normally.
+    fn ci_missing_required_with_healthy_producer() -> CiReport {
+        use crate::observe::github::workflow_runs::WorkflowRunId;
+        let mut ci = ci_clean();
+        ci.summary.missing_names =
+            vec![crate::ids::CheckName::parse("Mergeability Check").unwrap()];
+        ci.activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![crate::ids::CheckName::parse("Mergeability Check").unwrap()],
+            stuck_runs: vec![],
+            healthy_in_flight_runs: vec![WorkflowRunId(42)],
+        });
+        ci
+    }
+
+    /// CI in `Resolved::MissingRequired` with NO in-flight producers
+    /// (every workflow has completed) — the unmodeled-gate shape:
+    /// nothing is going to resolve the missing required check on
+    /// its own.
+    fn ci_missing_required_with_no_producer() -> CiReport {
+        let mut ci = ci_clean();
+        ci.summary.missing_names =
+            vec![crate::ids::CheckName::parse("Mergeability Check").unwrap()];
+        ci.activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![crate::ids::CheckName::parse("Mergeability Check").unwrap()],
+            stuck_runs: vec![],
+            healthy_in_flight_runs: vec![],
+        });
+        ci
+    }
+
     fn live_thread(id: &str) -> ReviewThread {
         ReviewThread {
             id: ThreadId::new(id.to_string()).unwrap(),
@@ -605,6 +662,68 @@ mod tests {
         // (decide::signing_eligibility) owns the substantive signing
         // surface — this axis only confirms the cross-check absence.
         assert!(rendered.contains("required_signatures"));
+    }
+
+    // ── F-F: BLOCKED + MissingRequired + healthy in-flight → silent. ──
+
+    #[test]
+    fn f_f_blocked_missing_required_with_healthy_producer_stays_silent() {
+        // Fan-in shape: required aggregator check (e.g.,
+        // `Mergeability Check`) is missing because its `needs:`
+        // dependency (a non-required workflow) is still running
+        // normally. Treating this as `merge_blocked_by_policy` at
+        // Pathology over-escalates — the right outcome is to wait
+        // for the in-flight workflow to complete. ci.rs emits
+        // `WaitForCi(ci_missing)` at BlockingWait; this axis must
+        // stay silent so that wait takes the iteration.
+        let s = state_with(MergeStateStatus::Blocked);
+        let cs = merge_eligibility_candidates(
+            &s,
+            &[],
+            Some(ReviewDecision::Approved),
+            &ci_missing_required_with_healthy_producer(),
+        );
+        assert!(
+            cs.is_empty(),
+            "fan-in case must not emit; got {} candidate(s)",
+            cs.len()
+        );
+    }
+
+    #[test]
+    fn f_f_blocked_missing_required_no_producer_still_emits_policy() {
+        // Control: same BLOCKED + MissingRequired shape but NO
+        // in-flight producer. Nothing is going to resolve the
+        // missing check on its own; this IS the unmodeled-policy
+        // gate. Axis must still emit `merge_blocked_policy` at
+        // Pathology.
+        let s = state_with(MergeStateStatus::Blocked);
+        let cs = merge_eligibility_candidates(
+            &s,
+            &[],
+            Some(ReviewDecision::Approved),
+            &ci_missing_required_with_no_producer(),
+        );
+        assert_blocker(&cs, "merge_blocked_policy");
+    }
+
+    #[test]
+    fn f_f_thread_cause_still_wins_over_fan_in_suppression() {
+        // Priority preservation: even when MissingRequired carries
+        // a healthy producer (which would suppress policy), an
+        // unresolved-threads cause is more specific and must still
+        // fire. Suppression applies only to the policy fallback —
+        // not to threads / review / check_failure.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![live_thread("T1")];
+        let cs = merge_eligibility_candidates(
+            &s,
+            &threads,
+            Some(ReviewDecision::Approved),
+            &ci_missing_required_with_healthy_producer(),
+        );
+        assert_blocker(&cs, "merge_blocked_threads");
     }
 
     // ── F-B: UNSTABLE + unresolved threads + rule on → stale_threads. ──

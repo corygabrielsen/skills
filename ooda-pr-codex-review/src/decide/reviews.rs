@@ -169,11 +169,16 @@ pub(crate) fn candidates(
     let no_pending_re_review =
         reviews.pending_reviews.bots.is_empty() && reviews.pending_reviews.humans.is_empty();
     if changes_requested && threads_clean && no_pending_re_review {
+        let bot_change_request_observed = reviews
+            .bot_reviews
+            .iter()
+            .any(|b| b.state == crate::observe::github::reviews::ReviewState::ChangesRequested);
         out.push(Action {
             kind: ActionKind::AddressChangeRequest,
             effect: ActionEffect::Agent {
                 prompt: address_change_request_prompt(
                     reviews.latest_human_changes_requested.as_ref(),
+                    bot_change_request_observed,
                 ),
             },
             target_effect: TargetEffect::Blocks,
@@ -189,10 +194,24 @@ pub(crate) fn candidates(
 /// changes-requested review is observed, inline its author,
 /// timestamp, and body as a witness so the agent reads what was
 /// asked without a round-trip to the upstream review surface.
-/// Absent that observation (bots-only path, or an upstream race
-/// between the decision feed and the reviews feed) the prompt
-/// falls back to fetch-it-yourself instructions.
-fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt {
+///
+/// Absent that observation, the prompt distinguishes two cases by
+/// the `bot_change_request_observed` flag:
+///
+/// 1. A bot review carries the `ChangesRequested` state — the
+///    summary-only decision came from a bot rather than a human.
+///    Legitimate; the agent fetches the bot's review body and
+///    addresses it.
+/// 2. No `ChangesRequested` row in any observed review (human or
+///    bot). The host's decision-feed and reviews-feed disagree;
+///    typically a transient REST/GraphQL race but persistent
+///    disagreement signals a broken reviews observation. The
+///    prompt names that explicitly so a recurring case is
+///    diagnosable rather than silently masked.
+fn address_change_request_prompt(
+    latest: Option<&HumanReview>,
+    bot_change_request_observed: bool,
+) -> HandoffPrompt {
     let mut prompt =
         HandoffPrompt::new("Address summary-only change-request review (no inline threads).");
 
@@ -217,10 +236,28 @@ fn address_change_request_prompt(latest: Option<&HumanReview>) -> HandoffPrompt 
             body: body.into(),
             url: None,
         }));
-    } else {
+    } else if bot_change_request_observed {
         prompt.push_paragraph(
-            "No human CHANGES_REQUESTED review observed in the reviews \
-             projection (rare bot-only path or REST/GraphQL race).",
+            "The CHANGES_REQUESTED decision came from a bot review (no human \
+             CHANGES_REQUESTED row observed in this snapshot). Fetch the bot \
+             review body and address it.",
+        );
+        prompt.push_heading(3, "Step 1 — fetch the bot CHANGES_REQUESTED review body");
+        prompt.push_code("bash", "gh pr view --json reviews");
+        prompt.push_heading(3, "Step 2 — address the requested changes");
+    } else {
+        // Neither a human nor a bot CHANGES_REQUESTED row in the
+        // reviews projection. The host's decision feed and reviews
+        // feed disagree on what's gating merge — most often a
+        // transient race; persistent disagreement indicates a
+        // broken reviews observation rather than a missing review.
+        prompt.push_paragraph(
+            "The host reports decision=CHANGES_REQUESTED but no matching review \
+             row (human or bot) was observed. The decision feed and reviews \
+             feed disagree — usually a transient race that resolves on the \
+             next iteration. If this iteration is one of several with the \
+             same disagreement, the reviews observation may be broken \
+             (pagination loss, endpoint failure, or projection gap).",
         );
         prompt.push_heading(3, "Step 1 — fetch the latest CHANGES_REQUESTED review body");
         prompt.push_code("bash", "gh pr view --json reviews");
@@ -1219,19 +1256,53 @@ mod tests {
     }
 
     #[test]
-    fn address_change_request_prompt_falls_back_when_no_human_review_observed() {
+    fn address_change_request_prompt_names_feed_disagreement_when_no_review_observed() {
+        // Decision says CHANGES_REQUESTED, neither a human review
+        // nor a bot review carries the matching state. The prompt
+        // explicitly names the feed disagreement so persistent
+        // recurrence is diagnosable rather than silently masked.
         let mut r = clean_reviews();
         r.decision = Some(ReviewDecision::ChangesRequested);
-        // latest_human_changes_requested intentionally None.
         let cs = cands_with(&r);
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
             .expect("AddressChangeRequest must fire");
         let rendered = action.rendered_payload();
-        assert!(rendered.contains("No human CHANGES_REQUESTED review observed"));
+        assert!(rendered.contains("decision feed and reviews feed disagree"));
+        assert!(rendered.contains("reviews observation may be broken"));
         assert!(rendered.contains("gh pr view --json reviews"));
         assert!(rendered.contains("think deeply about the entire class of issue"));
+    }
+
+    #[test]
+    fn address_change_request_prompt_names_bot_path_when_bot_review_observed() {
+        // Decision says CHANGES_REQUESTED, no human review observed,
+        // but a bot review carries the matching state. The prompt
+        // names this as the bot-only path — distinct from the
+        // feed-disagreement case — so the agent fetches the bot's
+        // body rather than chasing a phantom human review.
+        use crate::observe::github::reviews::ReviewState;
+        use crate::orient::reviews::BotReview;
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ChangesRequested);
+        r.bot_reviews = vec![BotReview {
+            user: GitHubLogin::parse("review-bot").unwrap(),
+            state: ReviewState::ChangesRequested,
+            submitted_at: None,
+        }];
+        let cs = cands_with(&r);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
+            .expect("AddressChangeRequest must fire");
+        let rendered = action.rendered_payload();
+        assert!(rendered.contains("came from a bot review"));
+        assert!(
+            !rendered.contains("decision feed and reviews feed disagree"),
+            "must NOT name feed disagreement when a bot review explains the decision"
+        );
+        assert!(rendered.contains("gh pr view --json reviews"));
     }
 
     #[test]

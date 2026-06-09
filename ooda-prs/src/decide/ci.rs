@@ -18,6 +18,7 @@ use super::action::{
     TargetEffect, Urgency,
 };
 use crate::ids::{BlockerKey, CheckName};
+use crate::observe::github::workflow_runs::WorkflowRunId;
 use crate::orient::ci::{
     CheckHealth, CiActivity, CiReport, CiSummary, FailedCheck, PendingCheck, ResolvedState, Symptom,
 };
@@ -69,11 +70,14 @@ pub(crate) fn candidates(report: &CiReport) -> Vec<Action> {
             // fix candidates already cover the work, and the
             // agent sees advisory state in the same snapshot.
         }
-        CiActivity::Resolved(ResolvedState::MissingRequired(names)) => {
+        CiActivity::Resolved(ResolvedState::MissingRequired { names, stuck_runs }) => {
             // Required checks configured but absent at HEAD.
             // Triage may shadow this when an advisory failure
-            // co-occurs; the helper routes either way.
-            triage_or_missing(summary, names, &mut out);
+            // co-occurs; the helper routes either way. The
+            // `stuck_runs` pathology branch lands in
+            // `triage_or_missing` so the Pathology HandoffHuman
+            // strictly outranks any concurrent Wait.
+            triage_or_missing(summary, names, stuck_runs, &mut out);
         }
         CiActivity::InFlight(checks) => {
             in_flight_candidates(summary, checks, &mut out);
@@ -228,8 +232,19 @@ fn triage_or_wait(summary: &CiSummary, pending_names: &[CheckName], out: &mut Ve
 /// Missing-required branch: no pending names, so the shared helper
 /// runs with an empty pending list and the same gate identities
 /// fall out.
-fn triage_or_missing(summary: &CiSummary, names: &[CheckName], out: &mut Vec<Action>) {
+fn triage_or_missing(
+    summary: &CiSummary,
+    names: &[CheckName],
+    stuck_runs: &[WorkflowRunId],
+    out: &mut Vec<Action>,
+) {
     let _ = names; // Identical to `summary.missing_names` by construction.
+    // Pathology branch wired in a follow-up commit (#354): when
+    // `stuck_runs` is non-empty, the missing required check is
+    // missing because its producer never started, not because it's
+    // pending. The pathology HandoffHuman outranks the wait that
+    // `triage_or_wait` would otherwise emit.
+    let _ = stuck_runs;
     triage_or_wait(summary, &[], out);
 }
 
@@ -536,9 +551,10 @@ mod tests {
     fn missing_required_emits_wait_for_ci_with_separate_blocker() {
         let mut s = empty_summary();
         s.missing_names = vec![cn("Mergeability Check")];
-        let activity = CiActivity::Resolved(ResolvedState::MissingRequired(vec![cn(
-            "Mergeability Check",
-        )]));
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![cn("Mergeability Check")],
+            stuck_runs: vec![],
+        });
         let cs = candidates(&report(s, activity));
         assert_eq!(cs.len(), 1);
         assert!(cs[0].blocker.as_str().starts_with("ci_missing"));
@@ -549,9 +565,10 @@ mod tests {
         let mut s = empty_summary();
         s.missing_names = vec![cn("Mergeability Check")];
         s.advisory.failed = vec![failed("Lint")];
-        let activity = CiActivity::Resolved(ResolvedState::MissingRequired(vec![cn(
-            "Mergeability Check",
-        )]));
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![cn("Mergeability Check")],
+            stuck_runs: vec![],
+        });
         let cs = candidates(&report(s, activity));
         let kinds: Vec<&ActionKind> = cs.iter().map(|a| &a.kind).collect();
         assert!(
@@ -616,7 +633,7 @@ mod tests {
             CiActivity::Idle => CiBaselineBehavior::NoCandidate,
             CiActivity::Resolved(ResolvedState::AllGreen) => CiBaselineBehavior::NoCandidate,
             CiActivity::Resolved(ResolvedState::HasFailures(_)) => CiBaselineBehavior::EmitFixCi,
-            CiActivity::Resolved(ResolvedState::MissingRequired(_)) => {
+            CiActivity::Resolved(ResolvedState::MissingRequired { .. }) => {
                 CiBaselineBehavior::EmitMissingWait
             }
             CiActivity::InFlight(checks) => match checks.first().map(|c| c.health) {
@@ -652,7 +669,10 @@ mod tests {
             s.missing_names = vec![cn("X")];
             out.push((
                 s,
-                CiActivity::Resolved(ResolvedState::MissingRequired(vec![cn("X")])),
+                CiActivity::Resolved(ResolvedState::MissingRequired {
+                    names: vec![cn("X")],
+                    stuck_runs: vec![],
+                }),
             ));
         }
         // InFlight × CheckHealth: every health variant gets a row.
@@ -857,9 +877,10 @@ mod tests {
             ),
             failed_with("Style", "0 deltas", "https://example/style"),
         ];
-        let activity = CiActivity::Resolved(ResolvedState::MissingRequired(vec![cn(
-            "Mergeability Check",
-        )]));
+        let activity = CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![cn("Mergeability Check")],
+            stuck_runs: vec![],
+        });
         let cs = candidates(&report(s, activity));
         let action = cs
             .iter()

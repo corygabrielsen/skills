@@ -1317,9 +1317,10 @@ mod tests {
         ])))
         .expect("Resolved HasFailures emits");
         assert_eq!(sig.icon, SignalIcon::Failed);
-        let sig = ci_signal(&CiActivity::Resolved(ResolvedState::MissingRequired(vec![
-            CheckName::parse("ci/build").unwrap(),
-        ])))
+        let sig = ci_signal(&CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: vec![CheckName::parse("ci/build").unwrap()],
+            stuck_runs: vec![],
+        }))
         .expect("Resolved MissingRequired emits");
         assert_eq!(sig.icon, SignalIcon::Warn);
 

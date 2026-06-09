@@ -148,7 +148,18 @@ pub(crate) enum ResolvedState {
     HasFailures(Vec<CheckName>),
     /// Required contexts configured but absent from observation
     /// after pending work resolved.
-    MissingRequired(Vec<CheckName>),
+    ///
+    /// `stuck_runs` carries workflow runs on HEAD that have been
+    /// queued past `QUEUE_TIMEOUT` without acquiring a runner
+    /// (`run_started_at.is_none()` AND status in
+    /// `{Queued, Pending, Waiting, Requested}`). When non-empty,
+    /// the absence of the required check is broken (runner
+    /// starvation), not pending — decide emits a `Pathology`
+    /// `HandoffHuman` instead of `WaitForCi(ci_missing)`.
+    MissingRequired {
+        names: Vec<CheckName>,
+        stuck_runs: Vec<WorkflowRunId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -210,14 +221,21 @@ pub(crate) fn ci_signal(activity: &CiActivity) -> Option<crate::dashboard::AxisS
                 join_check_names(names),
             ),
         ),
-        CiActivity::Resolved(ResolvedState::MissingRequired(names)) => (
-            SignalIcon::Warn,
-            format!(
-                "{} required checks missing: {}",
-                names.len(),
-                join_check_names(names),
-            ),
-        ),
+        CiActivity::Resolved(ResolvedState::MissingRequired { names, stuck_runs }) => {
+            let suffix = if stuck_runs.is_empty() {
+                String::new()
+            } else {
+                format!(" ({} stuck queued run(s))", stuck_runs.len())
+            };
+            (
+                SignalIcon::Warn,
+                format!(
+                    "{} required checks missing: {}{suffix}",
+                    names.len(),
+                    join_check_names(names),
+                ),
+            )
+        }
     };
     Some(AxisSignal {
         axis: AxisName::Ci,
@@ -387,11 +405,41 @@ fn compute_ci_activity(
         return CiActivity::Resolved(ResolvedState::HasFailures(names));
     }
     if !summary.missing_names.is_empty() {
-        return CiActivity::Resolved(ResolvedState::MissingRequired(
-            summary.missing_names.clone(),
-        ));
+        let stuck_runs = stuck_queued_run_ids(workflow_runs, head, now);
+        return CiActivity::Resolved(ResolvedState::MissingRequired {
+            names: summary.missing_names.clone(),
+            stuck_runs,
+        });
     }
     CiActivity::Resolved(ResolvedState::AllGreen)
+}
+
+/// Workflow runs on HEAD that have been queued past `QUEUE_TIMEOUT`
+/// without acquiring a runner. The closure-check predicate for the
+/// `MissingRequired` pathology branch — when non-empty, a required
+/// check is missing because its producer never started, not because
+/// it's still firing.
+fn stuck_queued_run_ids(
+    workflow_runs: &[WorkflowRun],
+    head: &GitCommitSha,
+    now: Timestamp,
+) -> Vec<WorkflowRunId> {
+    workflow_runs
+        .iter()
+        .filter(|r| {
+            r.head_sha == *head
+                && r.run_started_at.is_none()
+                && matches!(
+                    r.status,
+                    WorkflowRunStatus::Queued
+                        | WorkflowRunStatus::Pending
+                        | WorkflowRunStatus::Waiting
+                        | WorkflowRunStatus::Requested
+                )
+                && now.at() - r.created_at.at() >= QUEUE_TIMEOUT
+        })
+        .map(|r| r.id.clone())
+        .collect()
 }
 
 fn build_pending_check(
@@ -677,10 +725,135 @@ mod tests {
         assert_eq!(s.required.pending(), 0);
         assert_eq!(s.missing(), 1);
         assert_eq!(names(&s.missing_names), vec!["Mergeability Check"]);
-        assert!(matches!(
-            r.activity,
-            CiActivity::Resolved(ResolvedState::MissingRequired(_))
-        ));
+        let CiActivity::Resolved(ResolvedState::MissingRequired { stuck_runs, .. }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert!(
+            stuck_runs.is_empty(),
+            "no workflow runs observed → no pathology"
+        );
+    }
+
+    #[test]
+    fn missing_required_with_stuck_queued_run_populates_pathology_witness() {
+        // Required check missing AND a workflow run on HEAD has
+        // been queued past QUEUE_TIMEOUT without acquiring a runner.
+        // This is the #1039 shape: runner-starvation pathology
+        // expressed via the MissingRequired classification.
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let runs = vec![run(
+            42,
+            "Mergeability Workflow",
+            WorkflowRunStatus::Queued,
+            "2026-04-23T09:30:00Z", // 30 min ago > 20 min QUEUE_TIMEOUT
+            None,                   // never acquired a runner
+        )];
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &runs,
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired { stuck_runs, .. }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert_eq!(stuck_runs, &vec![WorkflowRunId(42)]);
+    }
+
+    #[test]
+    fn missing_required_with_fresh_pending_run_is_not_pathology() {
+        // Required check missing AND a workflow run on HEAD is
+        // pending — but within QUEUE_TIMEOUT. The absence is
+        // legitimately pending, not broken. `stuck_runs` stays
+        // empty so decide falls through to the normal Wait path.
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let runs = vec![run(
+            42,
+            "Mergeability Workflow",
+            WorkflowRunStatus::Queued,
+            "2026-04-23T09:55:00Z", // 5 min ago — within QUEUE_TIMEOUT
+            None,
+        )];
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &runs,
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired { stuck_runs, .. }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert!(stuck_runs.is_empty());
+    }
+
+    #[test]
+    fn missing_required_ignores_stuck_runs_on_other_head() {
+        // A stuck-queued run for a different HEAD SHA (stale
+        // pre-force-push run) must not trigger pathology on the
+        // current HEAD. Filter is per-SHA.
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let mut stale_run = run(
+            99,
+            "Mergeability Workflow",
+            WorkflowRunStatus::Queued,
+            "2026-04-23T09:30:00Z",
+            None,
+        );
+        stale_run.head_sha =
+            GitCommitSha::parse("1111111111111111111111111111111111111111").unwrap();
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &[stale_run],
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired { stuck_runs, .. }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert!(stuck_runs.is_empty());
+    }
+
+    #[test]
+    fn missing_required_ignores_runs_that_started_then_stalled() {
+        // A run with `run_started_at = Some(...)` past timeout has
+        // a different pathology (RunTimeout) handled by the
+        // InFlight::Degraded path, not MissingRequired. Don't
+        // surface it as a stuck-queue runner-starvation witness.
+        let checks = vec![check("Build", CheckState::Success, None)];
+        let req = vec![cn("Build"), cn("Mergeability Check")];
+        let runs = vec![run(
+            42,
+            "Mergeability Workflow",
+            WorkflowRunStatus::InProgress,
+            "2026-04-23T09:00:00Z",
+            Some("2026-04-23T09:05:00Z"), // started — different pathology class
+        )];
+        let r = orient_ci(
+            &checks,
+            &req,
+            false,
+            &runs,
+            &head(),
+            ts("2026-04-23T10:00:00Z"),
+        );
+        let CiActivity::Resolved(ResolvedState::MissingRequired { stuck_runs, .. }) = &r.activity
+        else {
+            panic!("expected MissingRequired, got {:?}", r.activity);
+        };
+        assert!(stuck_runs.is_empty());
     }
 
     #[test]

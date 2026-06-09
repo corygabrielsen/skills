@@ -346,7 +346,11 @@ fn merge_stale_threads(unresolved_total: usize) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::Pathology),
+        // BlockingHuman (not Pathology): the reviews axis owns the
+        // agent-fix path for unresolved threads at BlockingFix. This
+        // cross-check diagnostic informs but must not shadow the
+        // active agent work.
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("merge_stale_threads"),
     }
 }
@@ -370,7 +374,11 @@ fn merge_stale_checks(rollup: RequiredChecksRollup) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::Pathology),
+        // BlockingHuman (not Pathology): the ci axis owns the active
+        // path (FixCi / EscalateCiFailed at BlockingFix or
+        // BlockingHuman). This cross-check diagnostic must not
+        // shadow that active work.
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("merge_stale_checks"),
     }
 }
@@ -708,20 +716,24 @@ mod tests {
     }
 
     #[test]
-    fn merge_stale_threads_stays_at_pathology() {
-        // Cross-check disagreement (host says CLEAN but threads
-        // gate) is a closure-check pathology — stays at Pathology.
+    fn merge_stale_threads_fires_at_blocking_human_not_pathology() {
+        // Demoted from Pathology: the reviews axis owns the
+        // agent-fix path for unresolved threads at BlockingFix.
+        // This cross-check diagnostic informs but must not shadow.
         let mut s = state_with(MergeStateStatus::Clean);
         s.conversation_resolution_required = true;
         let threads = vec![live_human_thread("T1")];
         let cs =
             merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
         assert_blocker(&cs, "merge_stale_threads");
-        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
     }
 
     #[test]
-    fn merge_stale_checks_stays_at_pathology() {
+    fn merge_stale_checks_fires_at_blocking_human_not_pathology() {
+        // Demoted from Pathology: the ci axis owns the active path
+        // (FixCi / EscalateCiFailed) at BlockingFix or
+        // BlockingHuman. This cross-check must not shadow.
         let s = state_with(MergeStateStatus::Clean);
         let cs = merge_eligibility_candidates(
             &s,
@@ -730,7 +742,7 @@ mod tests {
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_stale_checks");
-        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
     }
 
     #[test]

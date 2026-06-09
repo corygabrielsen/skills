@@ -278,7 +278,7 @@ pub(crate) fn fetch_all(
         let pr_commits = try_fetch!(join_fetch(h_pr_commits, "fetch_pr_commits"));
         let unsigned_commits: Vec<GitCommitSha> = pr_commits
             .iter()
-            .filter(|c| !c.commit.verification.verified)
+            .filter(|c| !c.verified())
             .map(|c| c.sha.clone())
             .collect();
         let cursor_status = try_fetch!(join_fetch(h_cursor_status, "fetch_cursor_status"));

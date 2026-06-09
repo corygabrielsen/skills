@@ -652,6 +652,7 @@ fn urgency_label(u: Urgency) -> &'static str {
     match u {
         Urgency::Pre => "opening",
         Urgency::Mid(MidTier::Critical) => "critical",
+        Urgency::Mid(MidTier::Pathology) => "pathology",
         Urgency::Mid(MidTier::BlockingFix) => "blocking fix",
         Urgency::Mid(MidTier::BlockingWait) => "blocking wait",
         Urgency::Mid(MidTier::BlockingHuman) => "blocking human",

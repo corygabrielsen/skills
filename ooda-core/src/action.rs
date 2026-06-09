@@ -210,6 +210,26 @@ pub enum Urgency {
 
 /// In-cycle priority lattice. Used only inside [`Urgency::Mid`];
 /// `Pre` and `Post` are singletons.
+///
+/// # Future direction
+///
+/// Currently a flat 7-variant ordinal. As more axes emit
+/// Pathology-class actions on different signal substrates, this
+/// enum will fan out (one tier per signal-class). At ~3–4 such
+/// extensions, lift to a lexicographic product
+/// `(Class, Severity, AxisId)` — enum-bloat will exceed the
+/// migration cost.
+///
+/// Alternatives considered and deferred:
+///
+/// - **Veto / suppression algebra**: closure-check actions
+///   SUPPRESS `Wait` actions rather than outrank them.
+///   Semantically more correct but introduces a non-monotone
+///   primitive; defer until evidence the argmax-with-`Pathology`
+///   model is insufficient.
+/// - **Partial order with declared incomparability**: more honest
+///   about cross-class urgency but incompatible with the
+///   `derive(Ord)` idiom every axis uses today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum MidTier {
     /// In-loop actions that make unconditional forward progress.
@@ -217,12 +237,32 @@ pub enum MidTier {
     /// a Wait/Human halt ends the iteration with the target still
     /// gated despite progress being available.
     Critical,
+    /// Pathology surface — a closure-check axis detected that an
+    /// expected signal is *absent because broken*, not just
+    /// pending. Examples: a required CI check whose producer is
+    /// stuck without ever starting; `mergeStateStatus=BLOCKED`
+    /// with no modeled cause; an unverified commit on a branch
+    /// that requires signed commits.
+    ///
+    /// MUST outrank every `Blocking*` tier — no automated retry,
+    /// wait, or fix can resolve a pathology by definition (the
+    /// closure axis already verified the absence). Letting a
+    /// `BlockingWait` shadow a pathology emission causes the loop
+    /// to spin while the actual fault is invisible to the user.
+    ///
+    /// Sorts BELOW `Critical` because critical actions encode
+    /// unconditional forward progress — if both fire (usually
+    /// mutually exclusive), take the progress.
+    Pathology,
     /// Active fix for a blocking issue (handoff to a dispatcher
     /// that can address the blocker).
     BlockingFix,
     /// Passive wait for a blocking issue (poll-and-re-observe).
     BlockingWait,
-    /// Blocking issue only a human can resolve.
+    /// Blocking issue only a human can resolve — routine handoff
+    /// (e.g., human review requested) where waiting is legitimate
+    /// because external state may evolve before the human acts.
+    /// Pathology handoffs use [`MidTier::Pathology`] instead.
     BlockingHuman,
     /// Active advancement that does not unblock but raises the
     /// target's tier.
@@ -280,6 +320,7 @@ mod tests {
             Urgency::Mid(MidTier::Critical),
             Urgency::Mid(MidTier::BlockingHuman),
             Urgency::Mid(MidTier::BlockingFix),
+            Urgency::Mid(MidTier::Pathology),
             Urgency::Mid(MidTier::Advancing),
             Urgency::Mid(MidTier::BlockingWait),
             Urgency::Pre,
@@ -290,6 +331,7 @@ mod tests {
             [
                 Urgency::Pre,
                 Urgency::Mid(MidTier::Critical),
+                Urgency::Mid(MidTier::Pathology),
                 Urgency::Mid(MidTier::BlockingFix),
                 Urgency::Mid(MidTier::BlockingWait),
                 Urgency::Mid(MidTier::BlockingHuman),
@@ -303,6 +345,7 @@ mod tests {
     #[test]
     fn pre_is_strictly_most_urgent() {
         assert!(Urgency::Pre < Urgency::Mid(MidTier::Critical));
+        assert!(Urgency::Pre < Urgency::Mid(MidTier::Pathology));
         assert!(Urgency::Pre < Urgency::Mid(MidTier::BlockingFix));
         assert!(Urgency::Pre < Urgency::Mid(MidTier::BlockingWait));
         assert!(Urgency::Pre < Urgency::Mid(MidTier::BlockingHuman));
@@ -318,6 +361,7 @@ mod tests {
         assert!(Urgency::Mid(MidTier::BlockingHuman) < Urgency::Post);
         assert!(Urgency::Mid(MidTier::BlockingWait) < Urgency::Post);
         assert!(Urgency::Mid(MidTier::BlockingFix) < Urgency::Post);
+        assert!(Urgency::Mid(MidTier::Pathology) < Urgency::Post);
         assert!(Urgency::Mid(MidTier::Critical) < Urgency::Post);
         assert!(Urgency::Pre < Urgency::Post);
     }
@@ -329,6 +373,7 @@ mod tests {
             MidTier::Critical,
             MidTier::BlockingHuman,
             MidTier::BlockingFix,
+            MidTier::Pathology,
             MidTier::Advancing,
             MidTier::BlockingWait,
         ];
@@ -337,6 +382,7 @@ mod tests {
             tiers,
             [
                 MidTier::Critical,
+                MidTier::Pathology,
                 MidTier::BlockingFix,
                 MidTier::BlockingWait,
                 MidTier::BlockingHuman,
@@ -344,6 +390,21 @@ mod tests {
                 MidTier::Hygiene,
             ]
         );
+    }
+
+    /// Closure-check invariant: `Pathology` must strictly outrank
+    /// every `Blocking*` tier so a routine `WaitForCi` or
+    /// `HandoffHuman` never shadows a closure-check emission. If
+    /// this regresses, `MergeEligibility` / `SigningEligibility` /
+    /// CI stuck-required-check Pathology handoffs all become
+    /// silently invisible — the bug class that motivated this tier.
+    #[test]
+    fn pathology_strictly_outranks_all_blocking_tiers() {
+        assert!(Urgency::Mid(MidTier::Pathology) < Urgency::Mid(MidTier::BlockingFix));
+        assert!(Urgency::Mid(MidTier::Pathology) < Urgency::Mid(MidTier::BlockingWait));
+        assert!(Urgency::Mid(MidTier::Pathology) < Urgency::Mid(MidTier::BlockingHuman));
+        // And sorts below Critical — automated progress wins when both fire.
+        assert!(Urgency::Mid(MidTier::Critical) < Urgency::Mid(MidTier::Pathology));
     }
 
     #[test]

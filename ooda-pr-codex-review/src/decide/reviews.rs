@@ -66,9 +66,16 @@ pub(crate) fn candidates(
     // axis extracts those entries onto `CopilotReviewRound`; synthesise
     // them as `ReviewThread` rows here so they flow through the same
     // `AddressThreads` action the agent already knows how to discharge.
-    // Source only from the latest round to avoid re-firing the same
-    // entries every time the host re-renders the block across reviews.
+    //
+    // Staleness gate: only synthesise when `copilot.fresh` (latest
+    // round's review-commit equals current HEAD). When the agent has
+    // pushed fixes since the latest review, the suppressed list is
+    // keyed to the OLD commit — its entries are likely stale, and
+    // their synthetic IDs have no `resolveReviewThread` path so the
+    // loop would surface phantom threads on every iteration. Wait
+    // for Copilot's next review of HEAD before re-emitting.
     if let Some(copilot) = copilot
+        && copilot.fresh
         && let Some(latest) = copilot.rounds.last()
     {
         unresolved_threads.extend(synthesise_suppressed_threads(latest));
@@ -686,6 +693,30 @@ mod tests {
             }
             other => panic!("unexpected kind {other:?}"),
         }
+    }
+
+    #[test]
+    fn suppressed_entries_not_synthesised_when_copilot_not_fresh() {
+        // Staleness gate: when the latest Copilot round was on a
+        // commit older than HEAD (`copilot.fresh = false`), the
+        // suppressed-comment list is keyed to the stale commit.
+        // Its entries may have been fixed already; synthetic IDs
+        // have no `resolveReviewThread` path, so emitting them
+        // would trap the loop on phantom AddressThreads. Wait for
+        // Copilot's next review of HEAD before re-emitting.
+        use crate::orient::copilot::SuppressedComment;
+        let mut report = copilot_report_with_suppressed(vec![SuppressedComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "stale doc comment".into(),
+        }]);
+        report.fresh = false;
+        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
+            "AddressThreads must NOT fire on stale Copilot round; got {cs:?}"
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 /// Declared deps: own review report + CI report (for
 /// `ci_clean` gate) + bot-review-axis presence (for shadow
 /// filter) + threads.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn candidates(
     reviews: &ReviewSummary,
     ci: &CiReport,
@@ -39,9 +40,23 @@ pub(crate) fn candidates(
     let ci = &ci.summary;
     let mut out: Vec<Action> = Vec::new();
 
+    // Agent-addressable unresolved set: every unresolved thread
+    // EXCEPT outdated-human-authored ones. Rationale:
+    // - Live thread (human or bot): agent reads, fixes, resolves.
+    // - Outdated bot thread: agent evaluates on merit (line anchor
+    //   is stale but the semantic concern may still apply), fixes
+    //   if it does, replies, resolves.
+    // - Outdated human thread: agent does NOT unilaterally resolve.
+    //   The original commenter may still care about the stale
+    //   concern; only a human should clear it. These flow to
+    //   `merge_eligibility::merge_blocked_by_threads` at
+    //   `BlockingHuman`, which fires the human-handoff path.
     let mut unresolved_threads: Vec<ReviewThread> = threads
         .iter()
         .filter(|t| t.state != ThreadState::Resolved)
+        .filter(|t| {
+            !(t.state == ThreadState::Outdated && matches!(t.author, ThreadAuthor::Human(_)))
+        })
         .cloned()
         .collect();
 

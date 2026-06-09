@@ -17,11 +17,18 @@
 //!   first matching cause in priority order so the prompt names
 //!   one gate, not a list. Multiple causes manifest across
 //!   iterations as the higher-priority one clears.
-//! - **Outdated-unresolved threads count**: GitHub's conversation-
-//!   resolution gate counts every non-resolved thread, including
-//!   outdated ones. This module counts them too — the reviews
-//!   axis's `!is_outdated` filter applies to "agent-addressable",
-//!   not to "merge-gating".
+//! - **Outdated-unresolved threads count for merge-gating**:
+//!   GitHub's conversation-resolution gate counts every non-resolved
+//!   thread, including outdated ones. This module counts them all
+//!   when computing `unresolved_total`. The reviews axis's
+//!   `is_outdated` filter for `AddressThreads` is narrower: it
+//!   excludes outdated **human-authored** threads (an agent
+//!   shouldn't unilaterally resolve a human's stale concern) but
+//!   includes outdated **bot-authored** threads (the bot's
+//!   semantic feedback may still apply post-edit; the agent
+//!   evaluates on merit, fixes if applicable, replies via the
+//!   thread-comment surface, and resolves via the GraphQL
+//!   `resolveReviewThread` mutation).
 //! - **Stale-state cross-checks on green status**: when
 //!   `mergeStateStatus ∈ {CLEAN, UNSTABLE, HAS_HOOKS}` the host
 //!   says go, but the cross-checks for conversation-resolution and
@@ -32,7 +39,7 @@ use crate::ids::BlockerKey;
 use crate::observe::github::pull_request_view::{MergeStateStatus, ReviewDecision};
 use crate::orient::ci::{CiActivity, CiReport, ResolvedState};
 use crate::orient::state::PullRequestProjection;
-use crate::orient::thread::{ReviewThread, ThreadState};
+use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
 
 use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
@@ -76,6 +83,7 @@ pub(crate) fn merge_eligibility_candidates(
         MergeStateStatus::HasHooks => vec![wait_merge_state_has_hooks()],
         MergeStateStatus::Blocked => drill_blocked(
             state,
+            threads,
             unresolved_total,
             review_decision,
             rollup,
@@ -96,21 +104,42 @@ pub(crate) fn merge_eligibility_candidates(
 /// First match wins; ordering reflects "most actionable-and-named
 /// upstream gate first."
 ///
-/// Returns `None` only in the fan-in-suppression case: rollup is
-/// `Clean` (no other modeled cause) AND the CI projection carries
-/// a healthy in-flight workflow for a missing required check. In
-/// that case the policy fallback would over-escalate to Pathology
-/// when the right outcome is to wait for the producer; ci.rs's
-/// `WaitForCi(ci_missing)` at `BlockingWait` takes the iteration.
+/// Returns `None` in two suppression cases where the agent path
+/// covers the same threads/checks at a more specific tier:
+///
+/// 1. **Outdated-bot-only thread suppression**: every unresolved
+///    thread is `Outdated` and bot-authored. The reviews axis
+///    emits `AddressThreads` at `BlockingFix` for the same set;
+///    this module stays silent so the agent path takes the
+///    iteration rather than `HandoffHuman`.
+///
+/// 2. **Fan-in suppression**: rollup is `Clean` AND the CI
+///    projection carries a healthy in-flight workflow for a
+///    missing required check. `ci.rs`'s `WaitForCi(ci_missing)`
+///    at `BlockingWait` takes the iteration.
+///
 /// All other paths return `Some(action)`.
 fn drill_blocked(
     state: &PullRequestProjection,
+    threads: &[ReviewThread],
     unresolved_total: usize,
     review_decision: Option<ReviewDecision>,
     rollup: RequiredChecksRollup,
     ci_activity: &CiActivity,
 ) -> Option<Action> {
     if state.conversation_resolution_required && unresolved_total > 0 {
+        // Outdated-bot-only suppression: when every unresolved
+        // thread is `Outdated` and bot-authored, the reviews axis
+        // covers them with `AddressThreads` at `BlockingFix`.
+        // Suppressing this HandoffHuman lets the agent path win
+        // the iteration without tier inversion.
+        let all_outdated_bot = threads
+            .iter()
+            .filter(|t| t.state != ThreadState::Resolved)
+            .all(|t| t.state == ThreadState::Outdated && matches!(t.author, ThreadAuthor::Bot(_)));
+        if all_outdated_bot {
+            return None;
+        }
         return Some(merge_blocked_by_threads(unresolved_total));
     }
     if matches!(
@@ -190,15 +219,20 @@ fn merge_blocked_by_threads(unresolved_total: usize) -> Action {
         "GitHub merge blocked: branch policy requires every review \
          conversation to be resolved before merging. {unresolved_total} \
          thread(s) on this PR are still unresolved (this count includes \
-         outdated threads — outdated threads still gate merge even \
-         though they are not agent-addressable). Open the PR on GitHub \
-         and resolve the remaining conversation(s)."
+         outdated threads — the line anchor went stale but the thread \
+         is still gating). Address them on their merit (the semantic \
+         concern may still apply even when the anchor is stale): the \
+         reviews axis emits `AddressThreads` at `BlockingFix` for any \
+         agent-addressable subset. This handoff fires only when the \
+         remaining unresolved set requires a human (e.g., an outdated \
+         human-authored thread). Resolve via the PR UI or via the \
+         GraphQL `resolveReviewThread` mutation."
     ));
     Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::Pathology),
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("merge_blocked_threads"),
     }
 }
@@ -220,7 +254,7 @@ fn merge_blocked_by_review(decision: Option<ReviewDecision>) -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::Pathology),
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("merge_blocked_review"),
     }
 }
@@ -237,7 +271,7 @@ fn merge_blocked_by_check_failure() -> Action {
         kind: ActionKind::ResolveMergePolicy,
         effect: ActionEffect::Human { prompt },
         target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::Pathology),
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("merge_blocked_check_failure"),
     }
 }
@@ -465,6 +499,18 @@ mod tests {
         t
     }
 
+    fn outdated_human_thread(id: &str) -> ReviewThread {
+        let mut t = outdated_thread(id);
+        t.author = ThreadAuthor::Human(crate::ids::GitHubLogin::parse("alice").unwrap());
+        t
+    }
+
+    fn live_human_thread(id: &str) -> ReviewThread {
+        let mut t = live_thread(id);
+        t.author = ThreadAuthor::Human(crate::ids::GitHubLogin::parse("alice").unwrap());
+        t
+    }
+
     fn resolved_thread(id: &str) -> ReviewThread {
         let mut t = live_thread(id);
         t.state = ThreadState::Resolved;
@@ -558,13 +604,202 @@ mod tests {
     // ── F-E: outdated unresolved thread + BLOCKED + rule on. ──────
 
     #[test]
-    fn f_e_blocked_with_outdated_unresolved_thread_emits_threads() {
+    fn f_e_blocked_with_outdated_bot_thread_only_stays_silent() {
+        // Outdated-bot-only suppression: the reviews axis owns
+        // these via `AddressThreads` at `BlockingFix`. This axis
+        // staying silent prevents a tier inversion that would
+        // otherwise route the agent-addressable case to a human.
         let mut s = state_with(MergeStateStatus::Blocked);
         s.conversation_resolution_required = true;
         let threads = vec![outdated_thread("T1")];
         let cs =
             merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert!(
+            cs.is_empty(),
+            "outdated-bot-only must not fire merge_blocked_threads; got {cs:?}"
+        );
+    }
+
+    #[test]
+    fn f_e_blocked_with_outdated_human_thread_fires_threads() {
+        // Outdated human-authored thread: the agent must NOT
+        // unilaterally resolve a human's stale concern. Fires the
+        // human-handoff path at BlockingHuman.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![outdated_human_thread("T1")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
         assert_blocker(&cs, "merge_blocked_threads");
+    }
+
+    #[test]
+    fn blocked_with_mixed_outdated_bot_and_human_fires_threads() {
+        // Mixed: any non-(outdated-bot) unresolved entry breaks
+        // the suppression — outdated humans need a human verdict.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![outdated_thread("T1"), outdated_human_thread("T2")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert_blocker(&cs, "merge_blocked_threads");
+    }
+
+    #[test]
+    fn merge_blocked_threads_fires_at_blocking_human_not_pathology() {
+        // Tier invariant: this gate names a specific cause with an
+        // actionable agent path elsewhere (reviews axis at
+        // BlockingFix). It must NOT outrank `AddressThreads` via
+        // Pathology — that was the latent bug that put live-thread
+        // PRs in a permanent HandoffHuman loop.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![live_human_thread("T1")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
+    }
+
+    #[test]
+    fn merge_blocked_review_fires_at_blocking_human_not_pathology() {
+        // Same demotion as merge_blocked_threads: this names a
+        // specific cause (ReviewRequired / ChangesRequested) the
+        // reviews axis handles at BlockingFix. Must not outrank
+        // via Pathology.
+        let s = state_with(MergeStateStatus::Blocked);
+        let cs = merge_eligibility_candidates(
+            &s,
+            &[],
+            Some(ReviewDecision::ReviewRequired),
+            &ci_clean(),
+        );
+        assert_blocker(&cs, "merge_blocked_review");
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
+    }
+
+    #[test]
+    fn merge_blocked_check_failure_fires_at_blocking_human_not_pathology() {
+        // Same demotion: ci axis handles required-check failures
+        // at BlockingFix (via FixCi) or BlockingHuman (via
+        // EscalateCiFailed). This gate must not outrank those.
+        let s = state_with(MergeStateStatus::Blocked);
+        let cs = merge_eligibility_candidates(
+            &s,
+            &[],
+            Some(ReviewDecision::Approved),
+            &ci_with_failed_required(),
+        );
+        assert_blocker(&cs, "merge_blocked_check_failure");
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
+    }
+
+    #[test]
+    fn merge_blocked_policy_stays_at_pathology() {
+        // Pathology invariant preserved: the unmodeled-gate
+        // fallback IS a closure-check pathology and must continue
+        // to outrank Wait actions on the runner.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.signatures_required = true;
+        s.active_branch_rule_types = vec!["required_signatures".into()];
+        let cs = merge_eligibility_candidates(&s, &[], Some(ReviewDecision::Approved), &ci_clean());
+        assert_blocker(&cs, "merge_blocked_policy");
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+    }
+
+    #[test]
+    fn merge_stale_threads_stays_at_pathology() {
+        // Cross-check disagreement (host says CLEAN but threads
+        // gate) is a closure-check pathology — stays at Pathology.
+        let mut s = state_with(MergeStateStatus::Clean);
+        s.conversation_resolution_required = true;
+        let threads = vec![live_human_thread("T1")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert_blocker(&cs, "merge_stale_threads");
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+    }
+
+    #[test]
+    fn merge_stale_checks_stays_at_pathology() {
+        let s = state_with(MergeStateStatus::Clean);
+        let cs = merge_eligibility_candidates(
+            &s,
+            &[],
+            Some(ReviewDecision::Approved),
+            &ci_with_failed_required(),
+        );
+        assert_blocker(&cs, "merge_stale_checks");
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+    }
+
+    #[test]
+    fn outdated_bot_only_suppression_works_for_botname_other() {
+        // The suppression matches on `ThreadAuthor::Bot(_)` — every
+        // BotName variant qualifies, not just Copilot / Cursor.
+        // Verifies a graphite-app bot is also suppressed.
+        use crate::ids::GitHubLogin;
+        use crate::orient::thread::BotName;
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let mut t = outdated_thread("T1");
+        t.author = ThreadAuthor::Bot(BotName::Other(GitHubLogin::parse("graphite-app").unwrap()));
+        let cs =
+            merge_eligibility_candidates(&s, &[t], Some(ReviewDecision::Approved), &ci_clean());
+        assert!(cs.is_empty(), "graphite-app outdated must be suppressed");
+    }
+
+    #[test]
+    fn live_bot_plus_outdated_bot_fires_threads_not_suppressed() {
+        // Suppression requires EVERY unresolved to be outdated-bot.
+        // A live bot thread in the mix breaks the predicate; merge
+        // fires its handoff (which AddressThreads at BlockingFix
+        // will then outrank at the runner).
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![live_thread("T1"), outdated_thread("T2")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert_blocker(&cs, "merge_blocked_threads");
+    }
+
+    #[test]
+    fn live_human_plus_outdated_bot_fires_threads_not_suppressed() {
+        // Live-human in mix → not all outdated-bot → fires.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![live_human_thread("T1"), outdated_thread("T2")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert_blocker(&cs, "merge_blocked_threads");
+    }
+
+    #[test]
+    fn no_conversation_resolution_required_stays_silent_on_threads() {
+        // When the branch policy does NOT require conversation
+        // resolution, threads don't gate merge from this axis —
+        // even if they're unresolved.
+        let s = state_with(MergeStateStatus::Blocked);
+        // conversation_resolution_required defaults to false in state_with
+        let threads = vec![live_thread("T1"), outdated_human_thread("T2")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        // Falls through to policy fallback since rollup is Clean and no
+        // other cause is named.
+        assert_blocker(&cs, "merge_blocked_policy");
+    }
+
+    #[test]
+    fn empty_unresolved_set_stays_silent_on_threads_branch() {
+        // No unresolved threads → no threads-branch emission.
+        // Falls through to whatever else the drill picks; with
+        // clean state it lands on policy.
+        let mut s = state_with(MergeStateStatus::Blocked);
+        s.conversation_resolution_required = true;
+        let threads = vec![resolved_thread("T1")];
+        let cs =
+            merge_eligibility_candidates(&s, &threads, Some(ReviewDecision::Approved), &ci_clean());
+        assert_blocker(&cs, "merge_blocked_policy");
     }
 
     // ── Live unresolved + BLOCKED also fires threads (drill order). ──

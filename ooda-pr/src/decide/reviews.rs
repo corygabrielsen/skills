@@ -30,6 +30,7 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 /// Declared deps: own review report + CI report (for
 /// `ci_clean` gate) + bot-review-axis presence (for shadow
 /// filter) + threads.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn candidates(
     reviews: &ReviewSummary,
     ci: &CiReport,
@@ -39,9 +40,23 @@ pub(crate) fn candidates(
     let ci = &ci.summary;
     let mut out: Vec<Action> = Vec::new();
 
+    // Agent-addressable unresolved set: every unresolved thread
+    // EXCEPT outdated-human-authored ones. Rationale:
+    // - Live thread (human or bot): agent reads, fixes, resolves.
+    // - Outdated bot thread: agent evaluates on merit (line anchor
+    //   is stale but the semantic concern may still apply), fixes
+    //   if it does, replies, resolves.
+    // - Outdated human thread: agent does NOT unilaterally resolve.
+    //   The original commenter may still care about the stale
+    //   concern; only a human should clear it. These flow to
+    //   `merge_eligibility::merge_blocked_by_threads` at
+    //   `BlockingHuman`, which fires the human-handoff path.
     let mut unresolved_threads: Vec<ReviewThread> = threads
         .iter()
         .filter(|t| t.state != ThreadState::Resolved)
+        .filter(|t| {
+            !(t.state == ThreadState::Outdated && matches!(t.author, ThreadAuthor::Human(_)))
+        })
         .cloned()
         .collect();
 
@@ -732,10 +747,13 @@ mod tests {
     }
 
     #[test]
-    fn outdated_unresolved_threads_emit_address_threads() {
+    fn outdated_bot_threads_emit_address_threads() {
         // The upstream's outdated marker is positional only; the
-        // content may still apply. Per-thread agent judgment is
-        // still required, so the address-threads candidate fires.
+        // content may still apply. For bot-authored outdated
+        // threads, the agent can evaluate on merit, fix if the
+        // concern still applies, reply via the thread-comment
+        // surface, and resolve via GraphQL — no human verdict
+        // required. AddressThreads fires.
         let r = clean_reviews();
         let threads = vec![outdated_thread(
             "src/foo.rs",
@@ -747,8 +765,94 @@ mod tests {
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
-            .expect("AddressThreads must fire on outdated unresolved threads");
+            .expect("AddressThreads must fire on outdated bot threads");
         assert!(matches!(action.effect, ActionEffect::Agent { .. }));
+    }
+
+    #[test]
+    fn outdated_human_threads_are_excluded_from_address_threads() {
+        // Outdated human-authored threads are NOT agent-
+        // addressable: the agent should not unilaterally resolve
+        // a human's stale concern. The merge_eligibility axis
+        // handles them via `merge_blocked_threads` at
+        // BlockingHuman.
+        let r = clean_reviews();
+        let mut human_thread = outdated_thread("src/foo.rs", 42, "your concern", "T_human");
+        human_thread.author = ThreadAuthor::Human(crate::ids::GitHubLogin::parse("alice").unwrap());
+        let cs = cands_with_threads(&r, &[human_thread]);
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
+            "AddressThreads must NOT fire on outdated human threads; got {cs:?}"
+        );
+    }
+
+    #[test]
+    fn outdated_botname_other_included_in_address_threads() {
+        // The filter matches `ThreadAuthor::Bot(_)` — every BotName
+        // variant flows through, not just Copilot/Cursor. Verifies
+        // a graphite-app bot is included alongside the modeled
+        // two.
+        use crate::orient::thread::BotName;
+        let r = clean_reviews();
+        let mut t = outdated_thread("src/foo.rs", 1, "graphite says X", "T_graphite");
+        t.author = ThreadAuthor::Bot(BotName::Other(GitHubLogin::parse("graphite-app").unwrap()));
+        let cs = cands_with_threads(&r, &[t]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("graphite-app outdated must flow through AddressThreads");
+        let ActionKind::AddressThreads { threads } = &action.kind else {
+            panic!("expected AddressThreads");
+        };
+        assert_eq!(threads.len(), 1);
+    }
+
+    #[test]
+    fn live_human_plus_outdated_human_only_live_in_address_threads() {
+        // Live-human flows; outdated-human is filtered. The
+        // resulting AddressThreads payload should contain only
+        // the live-human entry — the outdated-human waits for
+        // merge_eligibility's BlockingHuman path.
+        let r = clean_reviews();
+        let mut live = live_thread("src/a.rs", 1, "live concern");
+        live.author = ThreadAuthor::Human(GitHubLogin::parse("alice").unwrap());
+        let mut outdated_h = outdated_thread("src/b.rs", 2, "stale concern", "T_outdated");
+        outdated_h.author = ThreadAuthor::Human(GitHubLogin::parse("alice").unwrap());
+        let cs = cands_with_threads(&r, &[live, outdated_h]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires for the live thread");
+        let ActionKind::AddressThreads { threads } = &action.kind else {
+            panic!("expected AddressThreads");
+        };
+        assert_eq!(threads.len(), 1);
+        assert!(
+            matches!(threads.first().author, ThreadAuthor::Human(_))
+                && threads.first().state == ThreadState::Live
+        );
+    }
+
+    #[test]
+    fn outdated_human_excluded_but_outdated_bot_included_in_mixed() {
+        // Mixed outdated set: AddressThreads fires with the bot
+        // entry only. The human's stale concern flows to
+        // merge_eligibility's human-handoff path.
+        let r = clean_reviews();
+        let mut human_thread = outdated_thread("src/a.rs", 1, "humans stale", "T_human");
+        human_thread.author = ThreadAuthor::Human(crate::ids::GitHubLogin::parse("alice").unwrap());
+        let bot_thread = outdated_thread("src/b.rs", 2, "bot stale", "T_bot");
+        let cs = cands_with_threads(&r, &[human_thread, bot_thread]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires");
+        let ActionKind::AddressThreads { threads } = &action.kind else {
+            panic!("expected AddressThreads");
+        };
+        assert_eq!(threads.len(), 1, "only the bot thread should flow through");
+        assert!(matches!(threads.first().author, ThreadAuthor::Bot(_)));
     }
 
     #[test]

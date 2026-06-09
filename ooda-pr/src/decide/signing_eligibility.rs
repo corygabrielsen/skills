@@ -133,6 +133,8 @@ mod tests {
             conversation_resolution_required: false,
             signatures_required,
             unsigned_commits,
+            required_approving_review_count: None,
+            copilot_review_required: false,
         }
     }
 

@@ -136,7 +136,8 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
         crate::decide::merge_eligibility::merge_eligibility_candidates(
             &oriented.state,
             &oriented.threads,
-            oriented.reviews.decision,
+            &oriented.reviews,
+            oriented.copilot.as_ref(),
             &oriented.ci,
         ),
     );

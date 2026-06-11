@@ -36,6 +36,7 @@ pub(crate) mod rulesets;
 pub(crate) mod stack_root;
 pub(crate) mod workflow_runs;
 
+use std::collections::HashSet;
 use std::thread;
 
 use crate::ids::{GitCommitSha, PullRequestNumber, RepoSlug};
@@ -44,7 +45,7 @@ use serde::Serialize;
 
 use branch_protection::{BranchProtection, fetch_branch_protection};
 use branch_rules::{BranchRule, fetch_branch_rules};
-use checks::{PullRequestCheck, fetch_pull_request_checks};
+use checks::{PullRequestCheck, fetch_pull_request_checks, filter_superseded_cancelled};
 use claude_review_attest::{ClaudeReviewObservation, observe_claude_review};
 use closeout_attest::{CloseoutObservation, observe_closeout};
 use comments::{IssueComment, fetch_issue_comments};
@@ -67,7 +68,10 @@ use review_threads::{
 use reviews::{PullRequestReview, fetch_pull_request_reviews};
 use rulesets::CopilotCodeReviewParams;
 use stack_root::resolve_stack_root;
-use workflow_runs::{WorkflowRun, fetch_workflow_runs_for_head};
+use workflow_runs::{
+    CancelledDisposition, WorkflowRun, WorkflowRunId, compute_cancelled_dispositions,
+    fetch_workflow_runs_for_head,
+};
 
 /// Successful observe outcome. A rate-limit hit is data (decide emits
 /// a wait); transport, spawn, and parse failures are errors that
@@ -264,7 +268,7 @@ pub(crate) fn fetch_all(
             s.spawn(move || fetch_merge_base_delta(slug, &base_for_compare, &head_for_compare))
         };
 
-        let checks = try_fetch!(join_fetch(h_checks, "fetch_pull_request_checks"));
+        let checks_raw = try_fetch!(join_fetch(h_checks, "fetch_pull_request_checks"));
         let reviews_v = try_fetch!(join_fetch(h_reviews, "fetch_pull_request_reviews"));
         let review_threads_page = try_fetch!(join_fetch(h_threads, "fetch_threads"));
         let issue_events = try_fetch!(join_fetch(h_events, "fetch_issue_events"));
@@ -275,6 +279,19 @@ pub(crate) fn fetch_all(
         let copilot_config = try_fetch!(join_fetch(h_copilot_cfg, "fetch_copilot_config"));
         let rate_limit_budget = try_fetch!(join_fetch(h_rate_limit, "fetch_rate_limit"));
         let workflow_runs = try_fetch!(join_fetch(h_workflow_runs, "fetch_workflow_runs"));
+        // Drop rollup rows whose parent run was auto-cancelled by a
+        // newer run on the same HEAD. Without this, the checks axis
+        // sees ~minutes of transient noise per cancellation event
+        // (cancelled rows linger in the rollup until eviction) and
+        // routes them as FixCi / TriageWait candidates that no
+        // human or agent can action.
+        let superseded_run_ids: HashSet<WorkflowRunId> =
+            compute_cancelled_dispositions(&workflow_runs)
+                .into_iter()
+                .filter(|(_, d)| *d == CancelledDisposition::Superseded)
+                .map(|(id, _)| id)
+                .collect();
+        let checks = filter_superseded_cancelled(checks_raw, &superseded_run_ids);
         let pr_commits = try_fetch!(join_fetch(h_pr_commits, "fetch_pr_commits"));
         let unsigned_commits: Vec<GitCommitSha> = pr_commits
             .iter()

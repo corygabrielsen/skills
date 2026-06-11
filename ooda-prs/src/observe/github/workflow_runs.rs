@@ -11,6 +11,8 @@
 //! - **No orient state**: counts are derivable from the wire shape
 //!   alone — orient stays a pure projection.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitCommitSha, RepoSlug, Timestamp};
@@ -34,11 +36,6 @@ impl std::fmt::Display for WorkflowRunId {
 /// wire value for auto-cancellation-by-concurrency and for genuine
 /// terminal cancellation; this tag disambiguates them at the observe
 /// boundary so health classification sees only the latter.
-///
-/// Variants are reserved for the disambiguation path; current
-/// consumers do not construct them. Their presence locks the wire
-/// schema against silent rename when the path comes online.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum CancelledDisposition {
     /// Auto-cancellation by concurrency — superseded by a newer run
@@ -150,6 +147,37 @@ pub(crate) fn fetch_workflow_runs_for_head(
     );
     let env: WorkflowRunsEnvelope = gh_json(&["api", &path])?;
     Ok(env.workflow_runs)
+}
+
+/// Classify each cancelled run as `Superseded` (auto-cancelled by a
+/// newer run on the same HEAD for the same workflow) or `Terminal`
+/// (explicitly cancelled with no successor). Used at the observe
+/// boundary to drop superseded-parent rollup rows that would
+/// otherwise surface as transient noise during the gap between
+/// cancellation and rollup-row eviction.
+#[must_use]
+pub(crate) fn compute_cancelled_dispositions(
+    runs: &[WorkflowRun],
+) -> HashMap<WorkflowRunId, CancelledDisposition> {
+    let mut out = HashMap::new();
+    for run in runs {
+        if run.conclusion != Some(WorkflowRunConclusion::Cancelled) {
+            continue;
+        }
+        let superseded = runs.iter().any(|other| {
+            other.id != run.id
+                && other.name == run.name
+                && other.head_sha == run.head_sha
+                && other.created_at > run.created_at
+        });
+        let disposition = if superseded {
+            CancelledDisposition::Superseded
+        } else {
+            CancelledDisposition::Terminal
+        };
+        out.insert(run.id.clone(), disposition);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -264,13 +292,6 @@ mod tests {
         );
     }
 
-    // ── reserved CancelledDisposition variants ──
-    //
-    // `Superseded` and `Terminal` are reserved for the upcoming
-    // Resolved-cancelled disambiguation path. No current code path
-    // constructs them. Lock the wire names so the JSONL contract
-    // stays stable as consumers come online.
-
     #[test]
     fn cancelled_disposition_superseded_serializes_to_pascal_case() {
         let json = serde_json::to_string(&CancelledDisposition::Superseded).unwrap();
@@ -288,6 +309,220 @@ mod tests {
         assert_ne!(
             CancelledDisposition::Superseded,
             CancelledDisposition::Terminal,
+        );
+    }
+
+    fn run(
+        id: u64,
+        name: &str,
+        head: &str,
+        created: &str,
+        conclusion: Option<WorkflowRunConclusion>,
+    ) -> WorkflowRun {
+        WorkflowRun {
+            id: WorkflowRunId(id),
+            name: name.to_string(),
+            head_sha: GitCommitSha::parse(head).unwrap(),
+            status: WorkflowRunStatus::Completed,
+            conclusion,
+            created_at: Timestamp::parse(created).unwrap(),
+            run_started_at: None,
+            run_attempt: 1,
+        }
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_marks_superseded_when_newer_run_exists() {
+        let head = &"a".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            run(
+                2,
+                "CI",
+                head,
+                "2026-06-09T12:05:00Z",
+                Some(WorkflowRunConclusion::Success),
+            ),
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Superseded),
+        );
+        assert!(!d.contains_key(&WorkflowRunId(2)));
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_marks_terminal_when_no_successor() {
+        let head = &"a".repeat(40);
+        let runs = vec![run(
+            1,
+            "CI",
+            head,
+            "2026-06-09T12:00:00Z",
+            Some(WorkflowRunConclusion::Cancelled),
+        )];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Terminal),
+        );
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_different_workflow_does_not_supersede() {
+        // Newer run with a DIFFERENT name does not supersede; the
+        // cancelled run had no successor of its own kind.
+        let head = &"a".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            run(
+                2,
+                "Lint",
+                head,
+                "2026-06-09T12:05:00Z",
+                Some(WorkflowRunConclusion::Success),
+            ),
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Terminal),
+        );
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_different_head_does_not_supersede() {
+        // A newer run on a DIFFERENT HEAD SHA cannot supersede a
+        // cancellation on this HEAD.
+        let head_a = &"a".repeat(40);
+        let head_b = &"b".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head_a,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            run(
+                2,
+                "CI",
+                head_b,
+                "2026-06-09T12:05:00Z",
+                Some(WorkflowRunConclusion::Success),
+            ),
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Terminal),
+        );
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_ignores_non_cancelled_runs() {
+        let head = &"a".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Success),
+            ),
+            run(
+                2,
+                "CI",
+                head,
+                "2026-06-09T12:05:00Z",
+                Some(WorkflowRunConclusion::Failure),
+            ),
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_multiple_cancelled_in_chain() {
+        // Two cancelled runs of the same workflow followed by an
+        // active one: both cancellations are superseded.
+        let head = &"a".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            run(
+                2,
+                "CI",
+                head,
+                "2026-06-09T12:03:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            run(
+                3,
+                "CI",
+                head,
+                "2026-06-09T12:06:00Z",
+                Some(WorkflowRunConclusion::Success),
+            ),
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Superseded),
+        );
+        assert_eq!(
+            d.get(&WorkflowRunId(2)),
+            Some(&CancelledDisposition::Superseded),
+        );
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_in_flight_successor_still_supersedes() {
+        // A later run that's still in-progress (no conclusion yet)
+        // still counts as the successor — the cancellation was
+        // triggered by its arrival.
+        let head = &"a".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            WorkflowRun {
+                id: WorkflowRunId(2),
+                name: "CI".to_string(),
+                head_sha: GitCommitSha::parse(head).unwrap(),
+                status: WorkflowRunStatus::InProgress,
+                conclusion: None,
+                created_at: Timestamp::parse("2026-06-09T12:05:00Z").unwrap(),
+                run_started_at: None,
+                run_attempt: 1,
+            },
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Superseded),
         );
     }
 }

@@ -2,11 +2,14 @@
 //! latest state. Check-runs and status-check contexts are unified
 //! into a single shape by the host CLI.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ids::{CheckName, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json_lenient};
+use super::workflow_runs::WorkflowRunId;
 
 const CHECK_FIELDS: &str = "name,state,description,link,completedAt";
 
@@ -86,6 +89,51 @@ where
             .map(Some)
             .map_err(serde::de::Error::custom),
     }
+}
+
+/// Extract the parent workflow run id from a check's `link` URL.
+/// Workflow job URLs follow the structural form
+/// `…/actions/runs/<run_id>/job/<job_id>`. The run id is not
+/// exposed as a first-class field on any of the checks or rollup
+/// endpoints; URL grammar is the platform contract. Non-Actions
+/// checks (built-in gates, third-party apps) don't match the
+/// grammar and return None.
+#[must_use]
+pub(crate) fn parse_run_id_from_link(url: &str) -> Option<WorkflowRunId> {
+    let after_runs = url.split("/actions/runs/").nth(1)?;
+    let mut segments = after_runs.split('/');
+    let run_id_str = segments.next()?;
+    if segments.next()? != "job" {
+        return None;
+    }
+    let id: u64 = run_id_str.parse().ok()?;
+    Some(WorkflowRunId(id))
+}
+
+/// Drop rollup rows whose parent workflow run was auto-cancelled by
+/// a newer run on the same HEAD. These rows linger in the rollup
+/// between cancellation and eviction and would otherwise surface as
+/// transient noise (`TriageWait` / `FixCi` candidates) for a window
+/// of ~15 minutes per cancellation event.
+///
+/// Genuinely terminal cancellations are NOT in the superseded set
+/// and pass through unfiltered so CI health classifies them as
+/// failed.
+#[must_use]
+pub(crate) fn filter_superseded_cancelled(
+    checks: Vec<PullRequestCheck>,
+    superseded_run_ids: &HashSet<WorkflowRunId>,
+) -> Vec<PullRequestCheck> {
+    if superseded_run_ids.is_empty() {
+        return checks;
+    }
+    checks
+        .into_iter()
+        .filter(|c| match parse_run_id_from_link(c.link.as_str()) {
+            Some(run_id) => !superseded_run_ids.contains(&run_id),
+            None => true,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -227,5 +275,121 @@ mod tests {
                 "{s} should parse to a typed variant"
             );
         }
+    }
+
+    fn check(name: &str, state: CheckState, link: &str) -> PullRequestCheck {
+        PullRequestCheck {
+            name: CheckName::parse(name).unwrap(),
+            state,
+            description: String::new(),
+            link: link.to_string(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn parse_run_id_from_link_well_formed_actions_url() {
+        let url = "https://github.com/w3-io/w3/actions/runs/27206702939/job/80324317269";
+        assert_eq!(
+            parse_run_id_from_link(url),
+            Some(WorkflowRunId(27_206_702_939)),
+        );
+    }
+
+    #[test]
+    fn parse_run_id_from_link_non_actions_url_returns_none() {
+        // Third-party check (Cursor Bugbot) — URL grammar doesn't
+        // match; passes through.
+        assert_eq!(
+            parse_run_id_from_link("https://cursor.com/docs/bugbot"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_run_id_from_link_empty_url_returns_none() {
+        assert_eq!(parse_run_id_from_link(""), None);
+    }
+
+    #[test]
+    fn parse_run_id_from_link_actions_url_without_job_returns_none() {
+        // `actions/runs/N` without the `/job/M` suffix is the
+        // run-summary URL, not a per-job rollup row. We only want
+        // to map per-job rows back to runs.
+        let url = "https://github.com/w3-io/w3/actions/runs/27206702939";
+        assert_eq!(parse_run_id_from_link(url), None);
+    }
+
+    #[test]
+    fn parse_run_id_from_link_non_numeric_run_id_returns_none() {
+        let url = "https://github.com/w3-io/w3/actions/runs/abc/job/123";
+        assert_eq!(parse_run_id_from_link(url), None);
+    }
+
+    #[test]
+    fn filter_superseded_cancelled_drops_superseded_parent_rows() {
+        let superseded: HashSet<WorkflowRunId> =
+            [WorkflowRunId(27_206_702_939)].into_iter().collect();
+        let checks = vec![
+            check(
+                "Cancel Orphaned Runs",
+                CheckState::Cancelled,
+                "https://github.com/o/r/actions/runs/27206702939/job/80324317269",
+            ),
+            check(
+                "Build",
+                CheckState::Success,
+                "https://github.com/o/r/actions/runs/27206692141/job/80324300000",
+            ),
+        ];
+        let filtered = filter_superseded_cancelled(checks, &superseded);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name.as_str(), "Build");
+    }
+
+    #[test]
+    fn filter_superseded_cancelled_keeps_terminal_cancelled_rows() {
+        // Terminal cancellation: parent run is NOT in the superseded
+        // set. The CANCELLED row passes through so CI health can
+        // classify it as Failed.
+        let superseded: HashSet<WorkflowRunId> = HashSet::new();
+        let checks = vec![check(
+            "User-cancelled",
+            CheckState::Cancelled,
+            "https://github.com/o/r/actions/runs/12345/job/67890",
+        )];
+        let filtered = filter_superseded_cancelled(checks, &superseded);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn filter_superseded_cancelled_keeps_non_actions_checks() {
+        // Built-in synthetic gates (Mergeability Check) and third-
+        // party app checks have URLs that don't match the actions
+        // grammar. They pass through unconditionally.
+        let superseded: HashSet<WorkflowRunId> =
+            [WorkflowRunId(27_206_702_939)].into_iter().collect();
+        let checks = vec![
+            check("Mergeability Check", CheckState::Failure, ""),
+            check(
+                "Cursor Bugbot",
+                CheckState::Success,
+                "https://cursor.com/docs/bugbot",
+            ),
+        ];
+        let filtered = filter_superseded_cancelled(checks, &superseded);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn filter_superseded_cancelled_empty_set_is_identity() {
+        // Hot path: no cancelled runs → no work.
+        let superseded: HashSet<WorkflowRunId> = HashSet::new();
+        let checks = vec![
+            check("a", CheckState::Success, "u"),
+            check("b", CheckState::Failure, "v"),
+        ];
+        let filtered = filter_superseded_cancelled(checks.clone(), &superseded);
+        assert_eq!(filtered.len(), checks.len());
     }
 }

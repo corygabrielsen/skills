@@ -14,8 +14,8 @@ args:
     description: "Configured floor for this invocation. One of low|medium|high|xhigh. Default low. Recorded on the `run_started` event's `target.floor` field; orchestrators that walk the ladder across invocations pass the current rung via `--level` each time."
   - name: --ceiling LVL
     description: User-configured upper bound of the climb (distinct from the ladder edge xhigh, which is the absolute top of the reasoning ladder). One of low|medium|high|xhigh (same token set as `--level`). All-clean at this level halts `DoneFixedPoint` directly without a Retrospective handoff. Default xhigh, set by the binary's CLI parser. Must be >= --level (UsageError otherwise). Levels are totally ordered low < medium < high < xhigh.
-  - name: -n N
-    description: Parallel review count. Default 3, must be ≥1. Loop-mode only; not part of any cross-invocation key.
+  - name: --codex-review-n N
+    description: Parallel review count. Default 3, must be ≥1. Loop-mode only; not part of any cross-invocation key. **Slash-command shorthand `-n N`** — the human-facing surface (what users type after `/ooda-codex-review`) uses `-n N`; the assistant translates it to `--codex-review-n N` when constructing the binary's argv. The binary itself does NOT accept `-n` — passing `-n` to the binary returns UsageError.
   - name: --max-iter N
     description: Loop-iteration cap. Default 50, must be ≥1. Silently ignored by side-effect invocations (NOT a UsageError — `--max-iter` is one of the loop-mode-only knobs; see Side-effect mode below).
   - name: --state-root PATH
@@ -94,6 +94,24 @@ orchestrator (the outer Claude session), not in this binary. The
 binary is a stateless step function: spawn `codex review`
 subprocesses, poll their log files, halt with structured handoffs
 when an LLM is needed (verify-and-address, retrospective synthesis).
+
+## Slash-command grammar (human → binary translation)
+
+The slash command is the human-facing surface; the binary's argv
+is the machine surface. The assistant translates between them.
+
+| User types after `/ooda-codex-review` | Binary argv the assistant constructs               |
+| ------------------------------------- | -------------------------------------------------- |
+| `-n N`                                | `--codex-review-n N`                               |
+| `[<floor>, <ceiling>]`                | `--level <floor> --ceiling <ceiling>`              |
+| `<branch-name>` (a local branch)      | `git checkout <branch-name>`, then `--base master` |
+| `--pr <num>`                          | `--pr <num>` (passes through verbatim)             |
+| `--uncommitted`                       | `--uncommitted` (passes through verbatim)          |
+
+Users never type the binary's long flags (`--codex-review-n`,
+`--level`, `--ceiling`) directly. The assistant typing `-n N`
+directly to the binary will fail with UsageError — translate
+first.
 
 > **Notation.** Throughout this document, `<NAME>` (angle brackets)
 > denotes a placeholder that the binary substitutes at runtime
@@ -752,7 +770,7 @@ each was reported via `--mark-retro-clean`, not
 ooda-codex-review --uncommitted
 
 # Loop: current branch vs master, start at medium, climb only to high
-ooda-codex-review --base master --level medium --ceiling high -n 5
+ooda-codex-review --base master --level medium --ceiling high --codex-review-n 5
 
 # Loop: a specific PR, max 20 iterations. Requires gh; reviews the
 # current worktree against the PR's resolved base branch.

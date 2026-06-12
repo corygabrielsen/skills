@@ -137,7 +137,6 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
             &oriented.state,
             &oriented.threads,
             &oriented.reviews,
-            oriented.copilot.as_ref(),
             &oriented.ci,
         ),
     );

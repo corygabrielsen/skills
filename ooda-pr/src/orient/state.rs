@@ -102,13 +102,6 @@ pub(crate) struct PullRequestProjection {
     /// `pull_request` ruleset rules; takes the maximum (most
     /// restrictive) when multiple rules layer.
     pub required_approving_review_count: Option<u32>,
-    /// `true` iff any active branch ruleset has a
-    /// `copilot_code_review` rule. Signals that Copilot must
-    /// review (and approve, per the rule's semantic) the PR before
-    /// merge. Consumed by `merge_eligibility` alongside the
-    /// actual Copilot review state to drive a named gate instead
-    /// of the unmodeled-policy Pathology fallback.
-    pub copilot_review_required: bool,
 }
 
 /// Project a PR view + branch-rule context into the state axis.
@@ -144,7 +137,6 @@ pub(crate) fn orient_state(
         conversation_resolution_required(branch_rules, protection);
     let signatures_required = signatures_required(branch_rules, protection);
     let required_approving_review_count = required_approving_review_count(branch_rules);
-    let copilot_review_required = copilot_review_required(branch_rules);
 
     PullRequestProjection {
         conflict: pr.mergeable,
@@ -172,7 +164,6 @@ pub(crate) fn orient_state(
         signatures_required,
         unsigned_commits,
         required_approving_review_count,
-        copilot_review_required,
     }
 }
 
@@ -224,15 +215,6 @@ fn required_approving_review_count(branch_rules: &[BranchRule]) -> Option<u32> {
         })
         .map(|v| u32::try_from(v).unwrap_or(u32::MAX))
         .max()
-}
-
-/// `true` iff any active branch ruleset has a `copilot_code_review`
-/// rule. Signals that Copilot must review (and approve) the PR
-/// before the merge gate clears.
-fn copilot_review_required(branch_rules: &[BranchRule]) -> bool {
-    branch_rules
-        .iter()
-        .any(|r| r.rule_type == "copilot_code_review")
 }
 
 /// `true` iff GitHub will gate merge on signed commits from any
@@ -646,29 +628,6 @@ mod tests {
         let rules = vec![pull_request_rule_with_approving_count(0)];
         let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
         assert_eq!(s.required_approving_review_count, Some(0));
-    }
-
-    #[test]
-    fn copilot_review_required_off_when_no_rule() {
-        let pr = pull_request_view(|_| {});
-        let s = orient_state(&pr, None, &pr.base_ref_name, &[], &[], None, vec![]);
-        assert!(!s.copilot_review_required);
-    }
-
-    #[test]
-    fn copilot_review_required_on_when_ruleset_has_copilot_rule() {
-        let pr = pull_request_view(|_| {});
-        let rules = vec![branch_rule("copilot_code_review", None)];
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
-        assert!(s.copilot_review_required);
-    }
-
-    #[test]
-    fn copilot_review_required_does_not_trigger_on_unrelated_rule() {
-        let pr = pull_request_view(|_| {});
-        let rules = vec![branch_rule("required_signatures", None)];
-        let s = orient_state(&pr, None, &pr.base_ref_name, &rules, &[], None, vec![]);
-        assert!(!s.copilot_review_required);
     }
 
     #[test]

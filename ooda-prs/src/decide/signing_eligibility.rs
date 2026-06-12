@@ -134,7 +134,6 @@ mod tests {
             signatures_required,
             unsigned_commits,
             required_approving_review_count: None,
-            copilot_review_required: false,
         }
     }
 

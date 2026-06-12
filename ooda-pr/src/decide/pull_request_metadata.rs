@@ -107,7 +107,6 @@ mod tests {
             signatures_required: false,
             unsigned_commits: vec![],
             required_approving_review_count: None,
-            copilot_review_required: false,
         }
     }
 

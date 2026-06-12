@@ -37,9 +37,7 @@
 
 use crate::ids::BlockerKey;
 use crate::observe::github::pull_request_view::{MergeStateStatus, ReviewDecision};
-use crate::observe::github::reviews::ReviewState;
 use crate::orient::ci::{CiActivity, CiReport, ResolvedState};
-use crate::orient::copilot::{CopilotReport, is_copilot};
 use crate::orient::reviews::ReviewSummary;
 use crate::orient::state::PullRequestProjection;
 use crate::orient::thread::{ReviewThread, ThreadAuthor, ThreadState};
@@ -73,7 +71,6 @@ pub(crate) fn merge_eligibility_candidates(
     state: &PullRequestProjection,
     threads: &[ReviewThread],
     reviews: &ReviewSummary,
-    copilot: Option<&CopilotReport>,
     ci: &CiReport,
 ) -> Vec<Action> {
     let unresolved_total = threads
@@ -90,7 +87,6 @@ pub(crate) fn merge_eligibility_candidates(
             threads,
             unresolved_total,
             reviews,
-            copilot,
             rollup,
             &ci.activity,
         )
@@ -129,7 +125,6 @@ fn drill_blocked(
     threads: &[ReviewThread],
     unresolved_total: usize,
     reviews: &ReviewSummary,
-    copilot: Option<&CopilotReport>,
     rollup: RequiredChecksRollup,
     ci_activity: &CiActivity,
 ) -> Option<Action> {
@@ -163,11 +158,6 @@ fn drill_blocked(
             required,
             reviews.approvals_on_head,
         ));
-    }
-    // Ruleset has `copilot_code_review` rule AND Copilot reviewed
-    // but didn't APPROVE.
-    if state.copilot_review_required && copilot_observed_but_not_approved(reviews, copilot) {
-        return Some(merge_blocked_copilot_approval());
     }
     match rollup {
         RequiredChecksRollup::Failure => Some(merge_blocked_by_check_failure()),
@@ -280,31 +270,6 @@ fn merge_blocked_by_review(decision: Option<ReviewDecision>) -> Action {
     }
 }
 
-/// `true` iff Copilot has produced a review AND no APPROVED row
-/// exists. Excludes the case where Copilot is still working
-/// (the Copilot axis handles that).
-fn copilot_observed_but_not_approved(
-    reviews: &ReviewSummary,
-    copilot: Option<&CopilotReport>,
-) -> bool {
-    let Some(copilot) = copilot else {
-        return false;
-    };
-    if copilot
-        .rounds
-        .last()
-        .is_none_or(|r| r.reviewed_at.is_none())
-    {
-        return false;
-    }
-    let copilot_approved = reviews
-        .bot_reviews
-        .iter()
-        .filter(|b| is_copilot(b.user.as_str()))
-        .any(|b| b.state == ReviewState::Approved);
-    !copilot_approved
-}
-
 fn merge_blocked_pending_approval(required: u32, current: usize) -> Action {
     use ooda_core::HandoffPrompt;
     let prompt = HandoffPrompt::new(format!(
@@ -321,25 +286,6 @@ fn merge_blocked_pending_approval(required: u32, current: usize) -> Action {
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingHuman),
         blocker: BlockerKey::from_static("merge_blocked_pending_approval"),
-    }
-}
-
-fn merge_blocked_copilot_approval() -> Action {
-    use ooda_core::HandoffPrompt;
-    let prompt = HandoffPrompt::new(
-        "GitHub merge blocked: branch ruleset has a `copilot_code_review` \
-         rule and Copilot's latest review on HEAD is not APPROVED \
-         (typically COMMENTED). The ruleset requires Copilot to \
-         APPROVE before merge. Re-request Copilot and wait for it to \
-         flip from COMMENTED to APPROVED — Copilot only emits APPROVED \
-         when it has no actionable feedback on the current code.",
-    );
-    Action {
-        kind: ActionKind::ResolveMergePolicy,
-        effect: ActionEffect::Human { prompt },
-        target_effect: TargetEffect::Blocks,
-        urgency: Urgency::Mid(MidTier::BlockingHuman),
-        blocker: BlockerKey::from_static("merge_blocked_copilot_approval"),
     }
 }
 
@@ -504,7 +450,6 @@ mod tests {
             signatures_required: false,
             unsigned_commits: vec![],
             required_approving_review_count: None,
-            copilot_review_required: false,
         }
     }
 
@@ -653,7 +598,6 @@ mod tests {
             &state_with(MergeStateStatus::Unknown),
             &[],
             &reviews_with(None),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_state_unknown");
@@ -666,7 +610,6 @@ mod tests {
             &state_with(MergeStateStatus::HasHooks),
             &[],
             &reviews_with(None),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_state_has_hooks");
@@ -682,7 +625,6 @@ mod tests {
                 &state_with(MergeStateStatus::Behind),
                 &[],
                 &reviews_with(None),
-                None,
                 &ci_clean(),
             )
             .is_empty()
@@ -696,7 +638,6 @@ mod tests {
                 &state_with(MergeStateStatus::Draft),
                 &[],
                 &reviews_with(None),
-                None,
                 &ci_clean(),
             )
             .is_empty()
@@ -710,7 +651,6 @@ mod tests {
                 &state_with(MergeStateStatus::Dirty),
                 &[],
                 &reviews_with(None),
-                None,
                 &ci_clean(),
             )
             .is_empty()
@@ -732,7 +672,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert!(
@@ -753,7 +692,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -770,7 +708,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -790,7 +727,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_eq!(cs.len(), 1);
@@ -808,7 +744,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::ReviewRequired)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_review");
@@ -825,7 +760,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_blocked_check_failure");
@@ -842,7 +776,7 @@ mod tests {
         s.required_approving_review_count = Some(1);
         let mut r = reviews_with(None);
         r.approvals_on_head = 0;
-        let cs = merge_eligibility_candidates(&s, &[], &r, None, &ci_clean());
+        let cs = merge_eligibility_candidates(&s, &[], &r, &ci_clean());
         assert_blocker(&cs, "merge_blocked_pending_approval");
         assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
         let rendered = cs[0].rendered_payload();
@@ -856,7 +790,7 @@ mod tests {
         s.required_approving_review_count = Some(1);
         let mut r = reviews_with(None);
         r.approvals_on_head = 1;
-        let cs = merge_eligibility_candidates(&s, &[], &r, None, &ci_clean());
+        let cs = merge_eligibility_candidates(&s, &[], &r, &ci_clean());
         // Threshold met → falls through to policy fallback (Pathology)
         // because no other modeled cause and Clean rollup.
         assert_blocker(&cs, "merge_blocked_policy");
@@ -867,7 +801,7 @@ mod tests {
         let mut s = state_with(MergeStateStatus::Blocked);
         s.required_approving_review_count = Some(0);
         let r = reviews_with(None);
-        let cs = merge_eligibility_candidates(&s, &[], &r, None, &ci_clean());
+        let cs = merge_eligibility_candidates(&s, &[], &r, &ci_clean());
         assert_blocker(&cs, "merge_blocked_policy");
     }
 
@@ -877,7 +811,7 @@ mod tests {
         // through to policy fallback.
         let s = state_with(MergeStateStatus::Blocked);
         let r = reviews_with(None);
-        let cs = merge_eligibility_candidates(&s, &[], &r, None, &ci_clean());
+        let cs = merge_eligibility_candidates(&s, &[], &r, &ci_clean());
         assert_blocker(&cs, "merge_blocked_policy");
     }
 
@@ -889,149 +823,8 @@ mod tests {
         s.required_approving_review_count = Some(1);
         let mut r = reviews_with(Some(ReviewDecision::ReviewRequired));
         r.approvals_on_head = 0;
-        let cs = merge_eligibility_candidates(&s, &[], &r, None, &ci_clean());
+        let cs = merge_eligibility_candidates(&s, &[], &r, &ci_clean());
         assert_blocker(&cs, "merge_blocked_review");
-    }
-
-    #[test]
-    fn copilot_approval_fires_when_required_and_observed_but_not_approved() {
-        use crate::ids::GitHubLogin;
-        use crate::orient::copilot::{
-            CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotReviewRound, CopilotTier,
-        };
-        use crate::orient::reviews::BotReview;
-        let mut s = state_with(MergeStateStatus::Blocked);
-        s.copilot_review_required = true;
-        let mut r = reviews_with(None);
-        r.bot_reviews = vec![BotReview {
-            user: GitHubLogin::parse("copilot-pull-request-reviewer").unwrap(),
-            state: ReviewState::Commented,
-            submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
-        }];
-        let round = CopilotReviewRound {
-            round: 1,
-            requested_at: Timestamp::parse("2026-04-23T09:00:00Z").unwrap(),
-            ack_at: None,
-            reviewed_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
-            commit: None,
-            comments_visible: 0,
-            comments_suppressed: 0,
-            suppressed_comments: vec![],
-        };
-        let copilot = CopilotReport {
-            config: CopilotRepoConfig {
-                enabled: true,
-                review_on_push: false,
-                review_draft_pull_requests: false,
-            },
-            activity: CopilotActivity::Reviewed {
-                latest: round.clone(),
-            },
-            rounds: vec![round],
-            threads: crate::orient::bot_threads::BotThreadSummary::default(),
-            tier: CopilotTier::Silver,
-            fresh: true,
-        };
-        let cs = merge_eligibility_candidates(&s, &[], &r, Some(&copilot), &ci_clean());
-        assert_blocker(&cs, "merge_blocked_copilot_approval");
-        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
-    }
-
-    #[test]
-    fn copilot_approval_silent_when_copilot_actually_approved() {
-        use crate::ids::GitHubLogin;
-        use crate::orient::copilot::{
-            CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotReviewRound, CopilotTier,
-        };
-        use crate::orient::reviews::BotReview;
-        let mut s = state_with(MergeStateStatus::Blocked);
-        s.copilot_review_required = true;
-        let mut r = reviews_with(None);
-        r.bot_reviews = vec![BotReview {
-            user: GitHubLogin::parse("copilot-pull-request-reviewer").unwrap(),
-            state: ReviewState::Approved,
-            submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
-        }];
-        let round = CopilotReviewRound {
-            round: 1,
-            requested_at: Timestamp::parse("2026-04-23T09:00:00Z").unwrap(),
-            ack_at: None,
-            reviewed_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
-            commit: None,
-            comments_visible: 0,
-            comments_suppressed: 0,
-            suppressed_comments: vec![],
-        };
-        let copilot = CopilotReport {
-            config: CopilotRepoConfig {
-                enabled: true,
-                review_on_push: false,
-                review_draft_pull_requests: false,
-            },
-            activity: CopilotActivity::Reviewed {
-                latest: round.clone(),
-            },
-            rounds: vec![round],
-            threads: crate::orient::bot_threads::BotThreadSummary::default(),
-            tier: CopilotTier::Silver,
-            fresh: true,
-        };
-        let cs = merge_eligibility_candidates(&s, &[], &r, Some(&copilot), &ci_clean());
-        // Copilot APPROVED → gate satisfied → falls through to
-        // policy fallback (Pathology).
-        assert_blocker(&cs, "merge_blocked_policy");
-    }
-
-    #[test]
-    fn copilot_approval_silent_when_copilot_still_working() {
-        // Copilot has been requested but hasn't reviewed yet. The
-        // Copilot axis owns this wait state; merge_eligibility
-        // stays silent on it.
-        use crate::orient::copilot::{
-            CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotReviewRound, CopilotTier,
-        };
-        let mut s = state_with(MergeStateStatus::Blocked);
-        s.copilot_review_required = true;
-        let r = reviews_with(None);
-        let round = CopilotReviewRound {
-            round: 1,
-            requested_at: Timestamp::parse("2026-04-23T09:00:00Z").unwrap(),
-            ack_at: None,
-            reviewed_at: None,
-            commit: None,
-            comments_visible: 0,
-            comments_suppressed: 0,
-            suppressed_comments: vec![],
-        };
-        let copilot = CopilotReport {
-            config: CopilotRepoConfig {
-                enabled: true,
-                review_on_push: false,
-                review_draft_pull_requests: false,
-            },
-            activity: CopilotActivity::Working {
-                health: crate::orient::copilot::InFlightHealth::Healthy,
-                requested_at: Timestamp::parse("2026-04-23T09:00:00Z").unwrap(),
-                ack_at: Timestamp::parse("2026-04-23T09:05:00Z").unwrap(),
-            },
-            rounds: vec![round],
-            threads: crate::orient::bot_threads::BotThreadSummary::default(),
-            tier: CopilotTier::Silver,
-            fresh: true,
-        };
-        let cs = merge_eligibility_candidates(&s, &[], &r, Some(&copilot), &ci_clean());
-        // Copilot is still working → falls through to policy.
-        assert_blocker(&cs, "merge_blocked_policy");
-    }
-
-    #[test]
-    fn copilot_approval_silent_when_rule_not_active() {
-        // copilot_review_required = false → don't check Copilot state.
-        let mut s = state_with(MergeStateStatus::Blocked);
-        s.copilot_review_required = false;
-        let r = reviews_with(None);
-        let cs = merge_eligibility_candidates(&s, &[], &r, None, &ci_clean());
-        assert_blocker(&cs, "merge_blocked_policy");
     }
 
     #[test]
@@ -1046,7 +839,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_policy");
@@ -1065,7 +857,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_stale_threads");
@@ -1082,7 +873,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_stale_checks");
@@ -1104,7 +894,6 @@ mod tests {
             &s,
             &[t],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert!(cs.is_empty(), "graphite-app outdated must be suppressed");
@@ -1123,7 +912,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -1139,7 +927,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -1157,7 +944,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         // Falls through to policy fallback since rollup is Clean and no
@@ -1177,7 +963,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_policy");
@@ -1194,7 +979,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -1211,7 +995,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         // Falls through to policy because review approved + ci clean.
@@ -1227,7 +1010,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::ReviewRequired)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_review");
@@ -1240,7 +1022,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::ChangesRequested)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_review");
@@ -1255,7 +1036,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_blocked_check_failure");
@@ -1270,7 +1050,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_with_pending_required(),
         );
         assert_blocker(&cs, "merge_blocked_check_pending");
@@ -1288,7 +1067,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_policy");
@@ -1317,7 +1095,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_missing_required_with_healthy_producer(),
         );
         assert!(
@@ -1339,7 +1116,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_missing_required_with_no_producer(),
         );
         assert_blocker(&cs, "merge_blocked_policy");
@@ -1359,7 +1135,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_missing_required_with_healthy_producer(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -1376,7 +1151,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_stale_threads");
@@ -1391,7 +1165,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_stale_checks");
@@ -1411,7 +1184,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::Approved)),
-            None,
             &ci_clean(),
         );
         assert_blocker(&cs, "merge_blocked_policy");
@@ -1429,7 +1201,6 @@ mod tests {
                 &s,
                 &[],
                 &reviews_with(Some(ReviewDecision::Approved)),
-                None,
                 &ci_clean(),
             )
             .is_empty()
@@ -1444,7 +1215,6 @@ mod tests {
                 &s,
                 &[],
                 &reviews_with(Some(ReviewDecision::Approved)),
-                None,
                 &ci_clean(),
             )
             .is_empty()
@@ -1462,7 +1232,6 @@ mod tests {
             &s,
             &threads,
             &reviews_with(Some(ReviewDecision::ReviewRequired)),
-            None,
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_blocked_threads");
@@ -1475,7 +1244,6 @@ mod tests {
             &s,
             &[],
             &reviews_with(Some(ReviewDecision::ReviewRequired)),
-            None,
             &ci_with_failed_required(),
         );
         assert_blocker(&cs, "merge_blocked_review");

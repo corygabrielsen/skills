@@ -322,11 +322,11 @@ fn merge_blocked_by_check_pending() -> Action {
 fn merge_blocked_by_policy(state: &PullRequestProjection) -> Action {
     use ooda_core::{HandoffPrompt, NonEmpty, SingleLineString};
     let mut prompt = HandoffPrompt::new(
-        "GitHub reports BLOCKED but no modeled gate (threads, review, \
-         required checks) explains the blockage — likely an unmodeled \
-         merge requirement such as signed commits, code-owner review, \
-         deployment protection, or a custom branch ruleset. Inspect the \
-         PR's Merge box on GitHub for the specific gate.",
+        "GitHub reports merge BLOCKED. No modeled gate (threads, \
+         review decision, required checks) fires on the observed \
+         state. The platform names the specific gate in the PR's \
+         Merge box on GitHub — read it there before acting; do not \
+         infer the cause from this prompt.",
     );
     // Signing requirements have their own structured axis
     // (`signing_eligibility`) that emits a Pathology HandoffHuman

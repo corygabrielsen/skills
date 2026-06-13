@@ -20,6 +20,15 @@ use crate::session::now_iso;
 const MAX_POLLS_PER_ITER: u32 = 20;
 const POST_FULL_REOBSERVE_MS: u64 = 15_000;
 
+/// 24-hour ceiling on a wait interval. Anything beyond this is operator
+/// error from a fitness skill; the upper bound also keeps the resulting
+/// `Duration` well below the saturating `u64::MAX` value that would panic
+/// `Instant + Duration` on overflow inside `interruptible_sleep`.
+const MAX_POLL_MS: u64 = 86_400_000;
+
+/// Fallback wait when `next_poll_seconds` is absent or non-finite.
+const DEFAULT_POLL_MS: u64 = 60_000;
+
 pub(crate) struct ConvergeOpts {
     pub fitness_argv: Vec<String>,
     pub max_iter: u32,
@@ -37,6 +46,33 @@ fn pick_action(actions: &[Action]) -> Option<&Action> {
 
 fn target_reached(report: &FitnessReport) -> bool {
     report.score >= report.target
+}
+
+/// Convert a fitness-skill `next_poll_seconds` to a bounded millisecond count.
+///
+/// Inputs originate in untrusted JSON. `serde_json` parses `1e400` as
+/// `f64::INFINITY` and may also produce `NaN`; both would propagate into
+/// `Instant + Duration::from_millis(u64::MAX)` and panic the binary.
+///
+/// Invariants:
+/// - Output is always in `[0, MAX_POLL_MS]`.
+/// - `None`, `NaN`, or any non-finite input yields `DEFAULT_POLL_MS`.
+/// - Negative input is floored to `0`.
+/// - Finite positive input above the 24h ceiling clamps to `MAX_POLL_MS`.
+fn clamp_poll_ms(secs: Option<f64>) -> u64 {
+    let Some(secs) = secs else {
+        return DEFAULT_POLL_MS;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let max_ms_f = MAX_POLL_MS as f64;
+    let ms_f = (secs * 1000.0).clamp(0.0, max_ms_f);
+    if ms_f.is_finite() {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ms = ms_f as u64;
+        ms
+    } else {
+        DEFAULT_POLL_MS
+    }
 }
 
 fn action_summary(action: &Action) -> ActionSummary {
@@ -387,13 +423,7 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
                 return finalize(halt, &session, &mut hook, &last_report);
             }
             Automation::Wait => {
-                let secs = action.next_poll_seconds.unwrap_or(60.0);
-                // Wait interval comes from the fitness skill as positive
-                // seconds; clamp at 0 to handle negative/NaN. The cast
-                // saturates at u64::MAX, which is unreachable for any
-                // realistic delay (centuries of milliseconds).
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let ms = (secs * 1000.0).max(0.0) as u64;
+                let ms = clamp_poll_ms(action.next_poll_seconds);
                 interruptible_sleep(ms, cancelled)?;
             }
             Automation::Human => {
@@ -682,5 +712,62 @@ mod tests {
         r2.blockers = Some(vec!["a".to_string(), "b".to_string()]);
 
         assert_eq!(iter_key(&action, &r1), iter_key(&action, &r2));
+    }
+
+    // -- clamp_poll_ms --
+
+    #[test]
+    fn clamp_poll_ms_reasonable_value_passes_through() {
+        assert_eq!(clamp_poll_ms(Some(30.0)), 30_000);
+    }
+
+    #[test]
+    fn clamp_poll_ms_none_yields_default() {
+        assert_eq!(clamp_poll_ms(None), DEFAULT_POLL_MS);
+    }
+
+    #[test]
+    fn clamp_poll_ms_zero_passes_through() {
+        assert_eq!(clamp_poll_ms(Some(0.0)), 0);
+    }
+
+    #[test]
+    fn clamp_poll_ms_negative_clamps_to_zero() {
+        // Untrusted input. A negative value must not roll over to a
+        // very large u64 via sign loss; it floors at zero.
+        assert_eq!(clamp_poll_ms(Some(-1.0)), 0);
+    }
+
+    #[test]
+    fn clamp_poll_ms_infinity_clamps_to_ceiling() {
+        // `serde_json` parses `1e400` as f64::INFINITY in non-strict mode.
+        // Without clamping, `Instant + Duration::from_millis(u64::MAX)`
+        // panics the binary instead of producing a clean Outcome.
+        assert_eq!(clamp_poll_ms(Some(f64::INFINITY)), MAX_POLL_MS);
+    }
+
+    #[test]
+    fn clamp_poll_ms_nan_falls_back_to_default() {
+        // `f64::NAN * 1000.0` is NaN; `NaN.clamp(0.0, max)` is NaN per
+        // stdlib; the helper detects the non-finite result and falls back.
+        assert_eq!(clamp_poll_ms(Some(f64::NAN)), DEFAULT_POLL_MS);
+    }
+
+    #[test]
+    fn clamp_poll_ms_above_ceiling_clamps_to_ceiling() {
+        // 48 hours in seconds — well above the 24h ceiling.
+        let two_days_secs = 48.0 * 60.0 * 60.0;
+        assert_eq!(clamp_poll_ms(Some(two_days_secs)), MAX_POLL_MS);
+    }
+
+    #[test]
+    fn clamp_poll_ms_at_ceiling_exact() {
+        let day_secs = 24.0 * 60.0 * 60.0;
+        assert_eq!(clamp_poll_ms(Some(day_secs)), MAX_POLL_MS);
+    }
+
+    #[test]
+    fn clamp_poll_ms_neg_infinity_clamps_to_zero() {
+        assert_eq!(clamp_poll_ms(Some(f64::NEG_INFINITY)), 0);
     }
 }

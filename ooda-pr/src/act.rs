@@ -31,7 +31,7 @@ use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
 use crate::orient::state::WIP_LABEL;
-use ooda_core::{FileLock, SpawnError, run_with_deadline};
+use ooda_core::{FileLock, SpawnError, SpawnLimits, run_with_limits};
 
 /// `gt sync` rebases the local stack onto the latest base and may
 /// fetch refs from the remote, so 120s gives room for a multi-PR
@@ -40,6 +40,21 @@ use ooda_core::{FileLock, SpawnError, run_with_deadline};
 /// the agent path that owns triage sees the deadline name rather
 /// than a bare io error.
 const GT_SYNC_DEADLINE: Duration = Duration::from_mins(2);
+
+/// Per-stream byte cap for `gt sync`. Graphite emits progress lines
+/// and branch summaries; 2 MiB covers the noisiest stacks observed
+/// in practice while keeping a misbehaving `gt` from growing the
+/// parent's address space without bound.
+const GT_SYNC_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Build the standard per-call limits for `gt sync`.
+fn gt_sync_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GT_SYNC_DEADLINE,
+        max_stdout_bytes: GT_SYNC_MAX_BYTES,
+        max_stderr_bytes: GT_SYNC_MAX_BYTES,
+    }
+}
 
 #[derive(Debug)]
 pub enum ActError {
@@ -158,7 +173,7 @@ fn run_full(
 /// CWD prevents a sibling-repo invocation from rewriting the wrong
 /// stack — see the module-level threading doc on [`act`].
 fn run_graphite_sync(repo_root: &Path) -> Result<(), ActError> {
-    let out = run_with_deadline(&mut build_gt_sync_command(repo_root), GT_SYNC_DEADLINE)
+    let out = run_with_limits(&mut build_gt_sync_command(repo_root), gt_sync_limits())
         .map_err(format_gt_sync_spawn_error)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -177,6 +192,14 @@ fn format_gt_sync_spawn_error(err: SpawnError) -> ActError {
         SpawnError::Timeout { deadline, killed } => format!(
             "`gt sync` timed out after {}s ({})",
             deadline.as_secs(),
+            if killed { "killed" } else { "kill failed" }
+        ),
+        SpawnError::OutputTooLarge {
+            stream,
+            limit,
+            killed,
+        } => format!(
+            "`gt sync` {stream} exceeded {limit}-byte cap ({})",
             if killed { "killed" } else { "kill failed" }
         ),
         SpawnError::Read(e) => format!("read `gt sync` output pipe: {e}"),

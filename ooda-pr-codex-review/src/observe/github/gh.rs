@@ -17,7 +17,9 @@ use std::fmt::Write as _;
 use std::process::Command;
 use std::time::Duration;
 
-use ooda_core::{PollingInterval, RateLimitHit, RateLimitScope, SpawnError, run_with_deadline};
+use ooda_core::{
+    PollingInterval, RateLimitHit, RateLimitScope, SpawnError, SpawnLimits, Stream, run_with_limits,
+};
 use serde::de::DeserializeOwned;
 
 use crate::recorder;
@@ -29,6 +31,23 @@ use crate::recorder;
 /// surfaces as [`GhError::Timeout`] so the OODA outer loop decides
 /// whether to re-poll on the next iteration.
 const GH_DEADLINE: Duration = Duration::from_mins(1);
+
+/// Per-stream byte cap for every `gh` invocation. 32 MiB tolerates
+/// the largest paginated JSON responses observed in practice
+/// (rulesets + all PR comments) while keeping a misbehaving
+/// subprocess from growing the parent's address space without
+/// bound. A flooded child surfaces as [`GhError::OutputTooLarge`].
+const GH_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// Build the standard per-call limits for `gh` invocations: the
+/// network-tolerant deadline and the 32 MiB per-stream cap.
+fn gh_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GH_DEADLINE,
+        max_stdout_bytes: GH_MAX_BYTES,
+        max_stderr_bytes: GH_MAX_BYTES,
+    }
+}
 
 #[derive(Debug)]
 pub enum GhError {
@@ -50,6 +69,10 @@ pub enum GhError {
     /// `SIGKILL`ed and reaped the child; the OODA outer loop decides
     /// whether to re-poll on the next iteration.
     Timeout,
+    /// Subprocess emitted more bytes on one pipe than [`GH_MAX_BYTES`].
+    /// The helper `SIGKILL`ed and reaped the child; the OODA outer
+    /// loop decides whether to re-poll on the next iteration.
+    OutputTooLarge { stream: Stream, limit: usize },
     /// Reading the child's stdout / stderr pipe failed.
     Pipe(std::io::Error),
     /// `wait` / `try_wait` on the child reported an OS error.
@@ -73,6 +96,9 @@ impl std::fmt::Display for GhError {
             }
             Self::Parse(e) => write!(f, "failed to parse `gh` output: {e}"),
             Self::Timeout => write!(f, "`gh` timed out after {}s", GH_DEADLINE.as_secs()),
+            Self::OutputTooLarge { stream, limit } => {
+                write!(f, "`gh` {stream} exceeded {limit}-byte cap (killed)")
+            }
             Self::Pipe(e) => write!(f, "read `gh` output pipe: {e}"),
             Self::Wait(e) => write!(f, "wait on `gh` subprocess: {e}"),
         }
@@ -83,7 +109,11 @@ impl std::error::Error for GhError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Spawn(e) | Self::Pipe(e) | Self::Wait(e) => Some(e),
-            Self::NotFound | Self::NonZero { .. } | Self::RateLimited(_) | Self::Timeout => None,
+            Self::NotFound
+            | Self::NonZero { .. }
+            | Self::RateLimited(_)
+            | Self::Timeout
+            | Self::OutputTooLarge { .. } => None,
             Self::Parse(e) => Some(e),
         }
     }
@@ -96,6 +126,9 @@ fn lift_spawn_error(err: SpawnError) -> GhError {
     match err {
         SpawnError::Spawn(e) => GhError::Spawn(e),
         SpawnError::Timeout { .. } => GhError::Timeout,
+        SpawnError::OutputTooLarge { stream, limit, .. } => {
+            GhError::OutputTooLarge { stream, limit }
+        }
         SpawnError::Read(e) => GhError::Pipe(e),
         SpawnError::Wait(e) => GhError::Wait(e),
     }
@@ -118,6 +151,14 @@ fn synth_io_error_for_recorder(err: &SpawnError) -> std::io::Error {
                 if *killed { "killed" } else { "kill failed" }
             ),
         ),
+        SpawnError::OutputTooLarge {
+            stream,
+            limit,
+            killed,
+        } => std::io::Error::other(format!(
+            "subprocess {stream} exceeded {limit}-byte cap ({})",
+            if *killed { "killed" } else { "kill failed" }
+        )),
         SpawnError::Read(e) | SpawnError::Wait(e) => std::io::Error::new(e.kind(), e.to_string()),
     }
 }
@@ -213,7 +254,7 @@ pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
     let guard = recorder::tool_call_started("gh", args);
     let mut cmd = Command::new("gh");
     cmd.args(args);
-    let output = match run_with_deadline(&mut cmd, GH_DEADLINE) {
+    let output = match run_with_limits(&mut cmd, gh_limits()) {
         Ok(output) => {
             if let Some(guard) = guard {
                 guard.finish_output(&output);
@@ -267,7 +308,7 @@ fn run_raw(args: &[&str]) -> Result<std::process::Output, GhError> {
     let guard = recorder::tool_call_started("gh", args);
     let mut cmd = Command::new("gh");
     cmd.args(args);
-    let output = match run_with_deadline(&mut cmd, GH_DEADLINE) {
+    let output = match run_with_limits(&mut cmd, gh_limits()) {
         Ok(output) => {
             if let Some(guard) = guard {
                 guard.finish_output(&output);

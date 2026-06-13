@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcessExitCode;
 use std::time::Duration;
 
-use ooda_core::{SpawnError, run_with_deadline};
+use ooda_core::{SpawnError, SpawnLimits, run_with_limits};
 
 /// Local git probe deadline: `rev-parse`, `config remote.origin.url`,
 /// and similar git operations touch only the working tree's `.git`
@@ -35,11 +35,40 @@ use ooda_core::{SpawnError, run_with_deadline};
 /// pinning the CLI boundary.
 const GIT_LOCAL_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Per-stream byte cap for local git probes. `rev-parse` and
+/// `git config` print a single line; 4 KiB tolerates long worktree
+/// paths and remote URLs while keeping a runaway probe bounded.
+const GIT_LOCAL_MAX_BYTES: usize = 4 * 1024;
+
 /// Per-call deadline for `gh pr view`. The single REST call resolves
 /// in the 1-2s range on a healthy network; 60s tolerates rate-limit
 /// jitter and network blips while keeping a wedged subprocess from
 /// stalling startup.
 const GH_DEADLINE: Duration = Duration::from_mins(1);
+
+/// Per-stream byte cap for `gh pr view`. The `--jq .baseRefName`
+/// projection yields a single-line branch name; 256 KiB tolerates
+/// noisy diagnostic preamble while keeping a malicious / wedged
+/// subprocess from growing memory unbounded.
+const GH_MAX_BYTES: usize = 256 * 1024;
+
+/// Build the standard per-call limits for local git probes.
+fn git_local_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GIT_LOCAL_DEADLINE,
+        max_stdout_bytes: GIT_LOCAL_MAX_BYTES,
+        max_stderr_bytes: GIT_LOCAL_MAX_BYTES,
+    }
+}
+
+/// Build the standard per-call limits for `gh pr view`.
+fn gh_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GH_DEADLINE,
+        max_stdout_bytes: GH_MAX_BYTES,
+        max_stderr_bytes: GH_MAX_BYTES,
+    }
+}
 
 /// Render a [`SpawnError`] into a single-line diagnostic prefixed
 /// with `context` (e.g., `"spawn `git rev-parse`"`). Used at every
@@ -51,6 +80,14 @@ fn format_spawn_error(context: &str, err: SpawnError) -> String {
         SpawnError::Timeout { deadline, killed } => format!(
             "{context} timed out after {}s ({})",
             deadline.as_secs(),
+            if killed { "killed" } else { "kill failed" }
+        ),
+        SpawnError::OutputTooLarge {
+            stream,
+            limit,
+            killed,
+        } => format!(
+            "{context} {stream} exceeded {limit}-byte cap ({})",
             if killed { "killed" } else { "kill failed" }
         ),
         SpawnError::Read(io) => format!("{context} (read output pipe): {io}"),
@@ -342,7 +379,7 @@ fn parse_args() -> Result<Args, Outcome> {
 fn discover_repo_root() -> Result<PathBuf, String> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["rev-parse", "--show-toplevel"]);
-    let out = run_with_deadline(&mut cmd, GIT_LOCAL_DEADLINE)
+    let out = run_with_limits(&mut cmd, git_local_limits())
         .map_err(|e| format_spawn_error("spawn `git rev-parse`", e))?;
     if !out.status.success() {
         return Err(format!(
@@ -377,7 +414,7 @@ fn resolve_pr_base(num: u64, repo_root: &Path) -> Result<BranchName, String> {
         ".baseRefName",
     ])
     .current_dir(repo_root);
-    let out = run_with_deadline(&mut cmd, GH_DEADLINE).map_err(|e| {
+    let out = run_with_limits(&mut cmd, gh_limits()).map_err(|e| {
         format_spawn_error(
             &format!("resolve --pr {num} base branch: spawn `gh pr view`"),
             e,
@@ -415,7 +452,7 @@ fn compute_repo_id(repo_root: &Path) -> Result<RepoId, String> {
         // id falls back to the noremote@... key. Surfacing the
         // failure here would block a perfectly usable detached
         // worktree from getting an id at all.
-        run_with_deadline(&mut cmd, GIT_LOCAL_DEADLINE)
+        run_with_limits(&mut cmd, git_local_limits())
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

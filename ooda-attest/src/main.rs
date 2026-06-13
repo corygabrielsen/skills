@@ -34,7 +34,7 @@ use ooda_core::attest::{
     AttestError, write_claude_review_atomic, write_closeout_atomic, write_doc_review_atomic,
     write_pull_request_metadata_atomic,
 };
-use ooda_core::{SpawnError, run_with_deadline};
+use ooda_core::{SpawnError, SpawnLimits, run_with_limits};
 use ooda_state::resolve_state_root as resolve_ooda_state_root;
 
 /// Per-call deadline for the two local `git rev-parse` probes
@@ -43,6 +43,20 @@ use ooda_state::resolve_state_root as resolve_ooda_state_root;
 /// still surfaces a wedged git instead of letting it stall the
 /// attestation write.
 const GIT_REV_PARSE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Per-stream byte cap for local git probes. `rev-parse HEAD` and
+/// `--show-toplevel` print a single line; 4 KiB tolerates long
+/// worktree paths while keeping a runaway probe bounded.
+const GIT_LOCAL_MAX_BYTES: usize = 4 * 1024;
+
+/// Build the standard per-call limits for local git probes.
+fn git_local_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GIT_REV_PARSE_DEADLINE,
+        max_stdout_bytes: GIT_LOCAL_MAX_BYTES,
+        max_stderr_bytes: GIT_LOCAL_MAX_BYTES,
+    }
+}
 
 const EXIT_VALIDATION: u8 = 64;
 const EXIT_GIT: u8 = 65;
@@ -280,12 +294,15 @@ fn resolve_state_root(explicit: Option<&Path>) -> Result<PathBuf, String> {
 fn read_head_sha(repo_root: &Path) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_root).args(["rev-parse", "HEAD"]);
-    let output = run_with_deadline(&mut cmd, GIT_REV_PARSE_DEADLINE).map_err(|e| match e {
+    let output = run_with_limits(&mut cmd, git_local_limits()).map_err(|e| match e {
         SpawnError::Spawn(io) => format!("failed to invoke `git rev-parse HEAD`: {io}"),
         SpawnError::Timeout { deadline, .. } => format!(
             "`git rev-parse HEAD` timed out after {}s",
             deadline.as_secs()
         ),
+        SpawnError::OutputTooLarge { stream, limit, .. } => {
+            format!("`git rev-parse HEAD` {stream} exceeded {limit}-byte cap")
+        }
         SpawnError::Read(io) => format!("read `git rev-parse HEAD` output pipe: {io}"),
         SpawnError::Wait(io) => format!("wait on `git rev-parse HEAD` subprocess: {io}"),
     })?;
@@ -334,6 +351,10 @@ enum RepoRootError {
     /// boundary diagnostic name the deadline rather than collapse
     /// into a generic spawn failure.
     GitTimeout,
+    /// `git rev-parse --show-toplevel` emitted more bytes on one
+    /// pipe than the per-stream cap. The helper `SIGKILL`ed and
+    /// reaped the child.
+    GitOutputTooLarge { stream: &'static str, limit: usize },
     /// `wait` / `try_wait` on the `git` subprocess reported an OS
     /// error.
     GitWait(std::io::Error),
@@ -370,6 +391,10 @@ impl std::fmt::Display for RepoRootError {
                 "`git rev-parse --show-toplevel` timed out after {}s",
                 GIT_REV_PARSE_DEADLINE.as_secs()
             ),
+            Self::GitOutputTooLarge { stream, limit } => write!(
+                f,
+                "`git rev-parse --show-toplevel` {stream} exceeded {limit}-byte cap",
+            ),
             Self::GitWait(e) => {
                 write!(f, "wait on `git rev-parse --show-toplevel` subprocess: {e}")
             }
@@ -401,9 +426,13 @@ fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathB
     }
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd).args(["rev-parse", "--show-toplevel"]);
-    let out = run_with_deadline(&mut cmd, GIT_REV_PARSE_DEADLINE).map_err(|e| match e {
+    let out = run_with_limits(&mut cmd, git_local_limits()).map_err(|e| match e {
         SpawnError::Spawn(io) => RepoRootError::GitSpawn(io),
         SpawnError::Timeout { .. } => RepoRootError::GitTimeout,
+        SpawnError::OutputTooLarge { stream, limit, .. } => RepoRootError::GitOutputTooLarge {
+            stream: stream.name(),
+            limit,
+        },
         SpawnError::Wait(io) => RepoRootError::GitWait(io),
         SpawnError::Read(io) => RepoRootError::GitPipe(io),
     })?;

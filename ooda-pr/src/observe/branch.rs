@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 
 use ooda_core::FileLock;
 use ooda_core::atomic_io::write_atomic;
-use ooda_core::run_with_deadline;
+use ooda_core::{SpawnLimits, run_with_limits};
 
 use crate::ids::{BranchName, GitCommitSha};
 
@@ -53,11 +53,39 @@ use crate::ids::{BranchName, GitCommitSha};
 /// the observe-stage fan-out.
 const GT_VERSION_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Per-stream byte cap for `gt --version`. Output is a single
+/// version banner line; 4 KiB tolerates a verbose build identifier
+/// while keeping a misbehaving probe from growing memory unbounded.
+const GT_VERSION_MAX_BYTES: usize = 4 * 1024;
+
 /// `gt log --stack <branch>` walks the local stack and can chase a
 /// few commits up the tree, but does not hit the network. 30s
 /// covers the longest stacks observed in practice while keeping
 /// the bound tight enough that a wedged probe is detected.
 const GT_LOG_STACK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Per-stream byte cap for `gt log --stack`. The output is a
+/// per-branch listing; 1 MiB covers the longest stacks observed
+/// while keeping a runaway probe bounded.
+const GT_LOG_STACK_MAX_BYTES: usize = 1024 * 1024;
+
+/// Build the standard per-call limits for `gt --version`.
+fn gt_version_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GT_VERSION_DEADLINE,
+        max_stdout_bytes: GT_VERSION_MAX_BYTES,
+        max_stderr_bytes: GT_VERSION_MAX_BYTES,
+    }
+}
+
+/// Build the standard per-call limits for `gt log --stack`.
+fn gt_log_stack_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GT_LOG_STACK_DEADLINE,
+        max_stdout_bytes: GT_LOG_STACK_MAX_BYTES,
+        max_stderr_bytes: GT_LOG_STACK_MAX_BYTES,
+    }
+}
 
 /// Per-PR sticky head record. The driver writes this after every
 /// successful observe and after every push-shaped action. The
@@ -176,9 +204,9 @@ pub(crate) fn gt_available(repo_root: &Path) -> bool {
     // exit) degrades to "not available". A timed-out `gt --version`
     // still routes the next iteration to `InvestigatePush` rather
     // than wedging the observe pass.
-    run_with_deadline(
+    run_with_limits(
         &mut build_gt_version_command(repo_root),
-        GT_VERSION_DEADLINE,
+        gt_version_limits(),
     )
     .is_ok_and(|o| o.status.success())
 }
@@ -199,9 +227,9 @@ pub(crate) fn branch_graphite_tracked(branch: &BranchName, repo_root: &Path) -> 
     }
     // Same best-effort discipline as `gt_available`: timeout or any
     // other failure degrades to "not tracked".
-    run_with_deadline(
+    run_with_limits(
         &mut build_gt_log_stack_command(branch, repo_root),
-        GT_LOG_STACK_DEADLINE,
+        gt_log_stack_limits(),
     )
     .is_ok_and(|o| o.status.success())
 }

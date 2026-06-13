@@ -25,7 +25,7 @@ use decide::action::{ActionEffect, rate_limit_wait_action};
 use decide::decision::{Decision, DecisionHalt};
 use ids::{PullRequestNumber, RepoSlug};
 use observe::github::{FetchOutcome, fetch_all};
-use ooda_core::{SpawnError, decide_from_candidates, run_with_deadline};
+use ooda_core::{SpawnError, SpawnLimits, decide_from_candidates, run_with_limits};
 use ooda_state::ObserveOutcome;
 use orient::orient;
 use outcome::Outcome;
@@ -260,6 +260,10 @@ enum RepoRootError {
     /// boundary diagnostic name the deadline rather than collapse
     /// into a generic spawn failure.
     GitTimeout,
+    /// `git rev-parse --show-toplevel` emitted more bytes on one
+    /// pipe than the per-stream cap. The helper `SIGKILL`ed and
+    /// reaped the child.
+    GitOutputTooLarge { stream: &'static str, limit: usize },
     /// `wait` or `try_wait` on the `git` subprocess reported an OS
     /// error.
     GitWait(std::io::Error),
@@ -296,6 +300,10 @@ impl std::fmt::Display for RepoRootError {
                 "`git rev-parse --show-toplevel` timed out after {}s",
                 GIT_REV_PARSE_DEADLINE.as_secs()
             ),
+            Self::GitOutputTooLarge { stream, limit } => write!(
+                f,
+                "`git rev-parse --show-toplevel` {stream} exceeded {limit}-byte cap",
+            ),
             Self::GitWait(e) => {
                 write!(f, "wait on `git rev-parse --show-toplevel` subprocess: {e}")
             }
@@ -309,6 +317,21 @@ impl std::fmt::Display for RepoRootError {
 /// line. 10s is a generous cap that still surfaces a wedged git
 /// instead of letting it pin the boundary.
 const GIT_REV_PARSE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Per-stream byte cap for local git probes. `rev-parse`,
+/// `--show-toplevel`, and friends print a single line; 4 KiB
+/// tolerates long worktree paths while keeping a runaway probe
+/// bounded.
+const GIT_LOCAL_MAX_BYTES: usize = 4 * 1024;
+
+/// Build the standard per-call limits for local git probes.
+fn git_local_limits() -> SpawnLimits {
+    SpawnLimits {
+        deadline: GIT_REV_PARSE_DEADLINE,
+        max_stdout_bytes: GIT_LOCAL_MAX_BYTES,
+        max_stderr_bytes: GIT_LOCAL_MAX_BYTES,
+    }
+}
 
 /// Resolve the target working tree.
 ///
@@ -338,9 +361,13 @@ fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathB
     }
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(cwd).args(["rev-parse", "--show-toplevel"]);
-    let out = run_with_deadline(&mut cmd, GIT_REV_PARSE_DEADLINE).map_err(|e| match e {
+    let out = run_with_limits(&mut cmd, git_local_limits()).map_err(|e| match e {
         SpawnError::Spawn(io) => RepoRootError::GitSpawn(io),
         SpawnError::Timeout { .. } => RepoRootError::GitTimeout,
+        SpawnError::OutputTooLarge { stream, limit, .. } => RepoRootError::GitOutputTooLarge {
+            stream: stream.name(),
+            limit,
+        },
         SpawnError::Wait(io) => RepoRootError::GitWait(io),
         SpawnError::Read(io) => RepoRootError::GitPipe(io),
     })?;

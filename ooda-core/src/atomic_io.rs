@@ -42,7 +42,7 @@
 //!   the hash; torn writes are detectable and regeneratable.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,10 +63,14 @@ pub const SECURE_FILE_MODE: u32 = 0o600;
 #[cfg(unix)]
 const SECURE_DIR_MODE: u32 = 0o700;
 
-/// Process-wide monotonic disambiguator for tmp filenames. Avoids
-/// collisions when multiple `write_atomic` calls race within the
-/// same nanosecond (or on systems where the clock has low
-/// resolution).
+/// Process-wide monotonic counter mixed into tmp filenames.
+///
+/// Kept for forensics — paired with `pid` and `nanos`, the suffix
+/// `<pid>.<nanos>.<seq>` lets an operator reconstruct the ordering
+/// of orphaned tmp files from a crashed process. Collision
+/// avoidance against co-tenants is supplied by the urandom salt in
+/// [`tmp_salt`]; `SEQ` alone is predictable and not load-bearing
+/// for that property.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Write `bytes` to `path` atomically and durably.
@@ -76,9 +80,12 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 ///
 /// **Postcondition on failure**: `path` is unchanged. A tmp sibling
 /// of `path` may persist as debris (name disambiguated by pid +
-/// nanosecond + monotonic counter, so concurrent writers do not
-/// collide); readers of `path` are unaffected. Cleanup of debris
-/// from crashed invocations is the caller's responsibility.
+/// nanosecond + monotonic counter + 8-byte urandom salt — concurrent
+/// writers do not collide, and a co-tenant local user cannot
+/// predict the tmp name in advance to pre-create it and force
+/// every `O_CREAT|O_EXCL` open to fail with `EEXIST`); readers of
+/// `path` are unaffected. Cleanup of debris from crashed
+/// invocations is the caller's responsibility.
 ///
 /// # Errors
 ///
@@ -214,9 +221,59 @@ fn tmp_sibling(path: &Path) -> std::path::PathBuf {
         .map_or(0, |d| d.as_nanos());
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let pid = process::id();
+    let salt = tmp_salt();
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".tmp.{pid}.{nanos}.{seq}"));
+    tmp.push(format!(".tmp.{pid}.{nanos}.{seq}.{salt:016x}"));
     std::path::PathBuf::from(tmp)
+}
+
+/// 64-bit unpredictable salt for tmp-sibling filenames.
+///
+/// **Threat model**: pid is observable via `/proc` and the wall
+/// clock is approximable, so a co-tenant local user can predict the
+/// `pid` + `nanos` + `seq` portion of the tmp name and pre-create
+/// it. Every subsequent `O_CREAT|O_EXCL` open of the predicted name
+/// then fails with `EEXIST`, bricking `write_atomic` (and through
+/// it, dedup snapshots, sticky pointers, attestations, blob writes
+/// — every stable read surface that goes through atomic rename).
+/// Appending 64 bits of unpredictable entropy makes pre-create
+/// computationally infeasible.
+///
+/// **Primary source**: 8 bytes from `/dev/urandom`. On Linux the
+/// device is always present and reads from the kernel CSPRNG
+/// without blocking.
+///
+/// **Fallback** (on read failure or non-unix targets): mix
+/// `SystemTime::now()` with `process::id()`. Degraded entropy
+/// — the result is predictable to an attacker with the same
+/// information they already had — but strictly no worse than the
+/// pre-salt format, so callers never lose ground if urandom is
+/// unreachable.
+fn tmp_salt() -> u64 {
+    #[cfg(unix)]
+    {
+        if let Ok(bytes) = read_urandom_8() {
+            return u64::from_ne_bytes(bytes);
+        }
+    }
+    // Degraded fallback. The wrapping_mul folds the high bits of
+    // pid into every bit of the result so the suffix at least
+    // varies between sibling processes that happen to schedule on
+    // the same nanosecond.
+    #[allow(clippy::cast_possible_truncation)]
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let pid = u64::from(process::id());
+    nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15_u64) ^ pid
+}
+
+#[cfg(unix)]
+fn read_urandom_8() -> std::io::Result<[u8; 8]> {
+    let mut f = File::open("/dev/urandom")?;
+    let mut buf = [0u8; 8];
+    f.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 #[cfg(unix)]
@@ -354,5 +411,106 @@ mod tests {
         }
         let count = fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn tmp_sibling_carries_urandom_salt_suffix() {
+        // The tmp name MUST end with `.tmp.<pid>.<nanos>.<seq>.<16
+        // hex chars>`. Without the trailing 16-hex-char salt, a
+        // co-tenant who can observe `pid` and the wall clock can
+        // pre-create the predicted file and brick every subsequent
+        // `write_atomic`.
+        let name = tmp_sibling(Path::new("/var/lib/x/data"));
+        let s = name.to_str().unwrap();
+        let suffix = s.strip_prefix("/var/lib/x/data").unwrap();
+        // Suffix starts with '.', so the first split element is "".
+        let parts: Vec<&str> = suffix.split('.').collect();
+        // Expected: ["", "tmp", "<pid>", "<nanos>", "<seq>", "<salt>"]
+        assert_eq!(parts.len(), 6, "unexpected suffix shape: {suffix}");
+        assert_eq!(parts[0], "");
+        assert_eq!(parts[1], "tmp");
+        assert!(parts[2].chars().all(|c| c.is_ascii_digit()));
+        assert!(parts[3].chars().all(|c| c.is_ascii_digit()));
+        assert!(parts[4].chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(parts[5].len(), 16, "salt must be 16 hex chars");
+        assert!(
+            parts[5].chars().all(|c| c.is_ascii_hexdigit()),
+            "salt must be hex: {}",
+            parts[5]
+        );
+    }
+
+    #[test]
+    fn tmp_sibling_salt_varies_between_calls() {
+        // Back-to-back calls MUST produce different salts. Without
+        // unpredictable entropy in the suffix the threat from M6
+        // (co-tenant pre-create) is not closed.
+        let p = Path::new("/tmp/example.json");
+        let a = tmp_sibling(p);
+        let b = tmp_sibling(p);
+        let a_salt = a.to_str().unwrap().rsplit('.').next().unwrap();
+        let b_salt = b.to_str().unwrap().rsplit('.').next().unwrap();
+        assert_eq!(a_salt.len(), 16);
+        assert_eq!(b_salt.len(), 16);
+        assert_ne!(a_salt, b_salt, "consecutive salts must differ");
+    }
+
+    #[test]
+    fn tmp_sibling_names_unique_across_10000_calls() {
+        // 10000 calls in a tight loop, all names must be unique.
+        // `SEQ` alone guarantees uniqueness; the stronger assertion
+        // — that the urandom salt component is also non-constant —
+        // is covered by [`tmp_sibling_salt_varies_between_calls`].
+        use std::collections::HashSet;
+        let p = Path::new("/tmp/x");
+        let names: HashSet<_> = (0..10_000_u32).map(|_| tmp_sibling(p)).collect();
+        assert_eq!(names.len(), 10_000, "tmp names collided");
+        // And: 10000 distinct salts (i.e., not stuck on a single
+        // fallback value).
+        let salts: HashSet<String> = (0..10_000_u32)
+            .map(|_| {
+                tmp_sibling(p)
+                    .to_str()
+                    .unwrap()
+                    .rsplit('.')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        // Allow a few duplicates from the birthday paradox at 64 bits
+        // (P(collision in 10k draws) ≈ 2.7e-12 — vanishingly small),
+        // but anything less than 9999 indicates the salt is stuck.
+        assert!(
+            salts.len() >= 9_999,
+            "salt is not non-deterministic: only {} unique values in 10000 draws",
+            salts.len()
+        );
+    }
+
+    #[test]
+    fn write_atomic_tmp_file_name_carries_salt() {
+        // `write_atomic` picks its tmp name via `tmp_sibling`, then
+        // opens it with `O_CREAT|O_EXCL`. The salt suffix on the
+        // tmp name is what defeats the pre-create race; verify it
+        // is present on the exact path `write_atomic` would use for
+        // a real destination.
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("state.json");
+        let tmp = tmp_sibling(&dest);
+        let salt = tmp
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .rsplit('.')
+            .next()
+            .unwrap();
+        assert_eq!(salt.len(), 16);
+        assert!(salt.chars().all(|c| c.is_ascii_hexdigit()));
+        // And the end-to-end write still succeeds with the salted
+        // tmp path.
+        write_atomic(&dest, b"payload").unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"payload");
     }
 }

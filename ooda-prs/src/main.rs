@@ -29,7 +29,7 @@ use decide::decision::{Decision, DecisionHalt};
 use ids::{PullRequestNumber, RepoSlug};
 use multi_outcome::{MultiOutcome, ProcessOutcome};
 use observe::github::{FetchOutcome, fetch_all};
-use ooda_core::decide_from_candidates;
+use ooda_core::{SpawnError, decide_from_candidates, run_with_deadline};
 use ooda_state::ObserveOutcome;
 use orient::orient;
 use outcome::Outcome;
@@ -327,17 +327,24 @@ fn parse_suite(
 /// non-UTF-8 stdout, malformed slug) flattens to a single-line
 /// diagnostic, preserving the `UsageError` newline-free invariant.
 fn infer_cwd_slug() -> Result<RepoSlug, String> {
-    let out = std::process::Command::new("gh")
-        .args([
-            "repo",
-            "view",
-            "--json",
-            "nameWithOwner",
-            "--jq",
-            ".nameWithOwner",
-        ])
-        .output()
-        .map_err(|e| format!("cwd slug inference: spawn `gh` failed: {e}"))?;
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args([
+        "repo",
+        "view",
+        "--json",
+        "nameWithOwner",
+        "--jq",
+        ".nameWithOwner",
+    ]);
+    let out = run_with_deadline(&mut cmd, GH_REPO_VIEW_DEADLINE).map_err(|e| match e {
+        SpawnError::Spawn(io) => format!("cwd slug inference: spawn `gh` failed: {io}"),
+        SpawnError::Timeout { deadline, .. } => format!(
+            "cwd slug inference: `gh repo view` timed out after {}s",
+            deadline.as_secs()
+        ),
+        SpawnError::Read(io) => format!("cwd slug inference: read `gh` output pipe: {io}"),
+        SpawnError::Wait(io) => format!("cwd slug inference: wait on `gh` subprocess: {io}"),
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let code = out
@@ -388,6 +395,17 @@ enum RepoRootError {
         stderr: String,
     },
     GitSpawn(std::io::Error),
+    /// `git rev-parse --show-toplevel` did not exit within the
+    /// per-call deadline. The helper `SIGKILL`ed and reaped the
+    /// child; surfacing the timeout as a distinct variant lets the
+    /// boundary diagnostic name the deadline rather than collapse
+    /// into a generic spawn failure.
+    GitTimeout,
+    /// `wait` / `try_wait` on the `git` subprocess reported an OS
+    /// error.
+    GitWait(std::io::Error),
+    /// Reading the `git` subprocess's stdout / stderr pipe failed.
+    GitPipe(std::io::Error),
 }
 
 impl std::fmt::Display for RepoRootError {
@@ -414,9 +432,29 @@ impl std::fmt::Display for RepoRootError {
                 f,
                 "spawn `git rev-parse --show-toplevel`: {e}; install git or pass --repo-root <PATH>",
             ),
+            Self::GitTimeout => write!(
+                f,
+                "`git rev-parse --show-toplevel` timed out after {}s",
+                GIT_REV_PARSE_DEADLINE.as_secs()
+            ),
+            Self::GitWait(e) => {
+                write!(f, "wait on `git rev-parse --show-toplevel` subprocess: {e}")
+            }
+            Self::GitPipe(e) => write!(f, "read `git rev-parse --show-toplevel` output pipe: {e}"),
         }
     }
 }
+
+/// Per-call deadline for `gh repo view` during cwd-slug inference.
+/// 30s tolerates the single-call network round-trip while keeping
+/// a wedged subprocess from stalling the boundary indefinitely.
+const GH_REPO_VIEW_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Local git probe: `rev-parse --show-toplevel` does no I/O beyond
+/// touching the working tree's `.git` directory and prints one
+/// line. 10s is a generous cap that still surfaces a wedged git
+/// instead of letting it pin the boundary.
+const GIT_REV_PARSE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Resolve the target working tree. See the per-binary policy in
 /// [`Args::repo_root`]: a single path covers the whole suite.
@@ -434,11 +472,14 @@ fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathB
             .canonicalize()
             .map_err(|source| RepoRootError::Canonicalize { path: p, source });
     }
-    let out = std::process::Command::new("git")
-        .current_dir(cwd)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(RepoRootError::GitSpawn)?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(cwd).args(["rev-parse", "--show-toplevel"]);
+    let out = run_with_deadline(&mut cmd, GIT_REV_PARSE_DEADLINE).map_err(|e| match e {
+        SpawnError::Spawn(io) => RepoRootError::GitSpawn(io),
+        SpawnError::Timeout { .. } => RepoRootError::GitTimeout,
+        SpawnError::Wait(io) => RepoRootError::GitWait(io),
+        SpawnError::Read(io) => RepoRootError::GitPipe(io),
+    })?;
     if !out.status.success() {
         return Err(RepoRootError::NotInGitTree {
             cwd: cwd.to_path_buf(),

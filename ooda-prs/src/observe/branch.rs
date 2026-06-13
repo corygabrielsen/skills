@@ -36,14 +36,28 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use ooda_core::FileLock;
 use ooda_core::atomic_io::write_atomic;
+use ooda_core::run_with_deadline;
 
 use crate::ids::{BranchName, GitCommitSha};
+
+/// `gt --version` is a local-only probe. Even on a slow disk the
+/// graphite binary's version banner returns sub-second; 10s gives
+/// fork/exec headroom without letting a wedged installation pin
+/// the observe-stage fan-out.
+const GT_VERSION_DEADLINE: Duration = Duration::from_secs(10);
+
+/// `gt log --stack <branch>` walks the local stack and can chase a
+/// few commits up the tree, but does not hit the network. 30s
+/// covers the longest stacks observed in practice while keeping
+/// the bound tight enough that a wedged probe is detected.
+const GT_LOG_STACK_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Per-PR sticky head record. The driver writes this after every
 /// successful observe and after every push-shaped action. The
@@ -158,9 +172,15 @@ pub(crate) fn classify_divergence(
 /// alone would discard the `repo_root` parameter, defeating the
 /// CWD-scoping guarantee the rest of this module depends on.
 pub(crate) fn gt_available(repo_root: &Path) -> bool {
-    build_gt_version_command(repo_root)
-        .output()
-        .is_ok_and(|o| o.status.success())
+    // Best-effort probe: any failure (spawn error, timeout, non-zero
+    // exit) degrades to "not available". A timed-out `gt --version`
+    // still routes the next iteration to `InvestigatePush` rather
+    // than wedging the observe pass.
+    run_with_deadline(
+        &mut build_gt_version_command(repo_root),
+        GT_VERSION_DEADLINE,
+    )
+    .is_ok_and(|o| o.status.success())
 }
 
 /// Probe `gt log --stack <branch>`. Exit code 0 ⇒ branch is
@@ -177,9 +197,13 @@ pub(crate) fn branch_graphite_tracked(branch: &BranchName, repo_root: &Path) -> 
     if !gt_available(repo_root) {
         return false;
     }
-    build_gt_log_stack_command(branch, repo_root)
-        .output()
-        .is_ok_and(|o| o.status.success())
+    // Same best-effort discipline as `gt_available`: timeout or any
+    // other failure degrades to "not tracked".
+    run_with_deadline(
+        &mut build_gt_log_stack_command(branch, repo_root),
+        GT_LOG_STACK_DEADLINE,
+    )
+    .is_ok_and(|o| o.status.success())
 }
 
 /// Construct the `gt --version` command pinned to `repo_root`. Split

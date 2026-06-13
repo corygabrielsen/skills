@@ -15,11 +15,20 @@
 
 use std::fmt::Write as _;
 use std::process::Command;
+use std::time::Duration;
 
-use ooda_core::{PollingInterval, RateLimitHit, RateLimitScope};
+use ooda_core::{PollingInterval, RateLimitHit, RateLimitScope, SpawnError, run_with_deadline};
 use serde::de::DeserializeOwned;
 
 use crate::recorder;
+
+/// Per-call deadline for every `gh` invocation. 60s tolerates the
+/// network jitter and rate-limit cool-down `gh` itself absorbs on
+/// transient errors, while keeping a wedged subprocess from
+/// stalling the observe-stage fan-out indefinitely. A hung child
+/// surfaces as [`GhError::Timeout`] so the OODA outer loop decides
+/// whether to re-poll on the next iteration.
+const GH_DEADLINE: Duration = Duration::from_mins(1);
 
 #[derive(Debug)]
 pub enum GhError {
@@ -37,6 +46,14 @@ pub enum GhError {
     NonZero { code: Option<i32>, stderr: String },
     /// Output did not parse as the expected shape.
     Parse(serde_json::Error),
+    /// Subprocess did not exit within [`GH_DEADLINE`]. The helper
+    /// `SIGKILL`ed and reaped the child; the OODA outer loop decides
+    /// whether to re-poll on the next iteration.
+    Timeout,
+    /// Reading the child's stdout / stderr pipe failed.
+    Pipe(std::io::Error),
+    /// `wait` / `try_wait` on the child reported an OS error.
+    Wait(std::io::Error),
 }
 
 impl std::fmt::Display for GhError {
@@ -55,6 +72,9 @@ impl std::fmt::Display for GhError {
                 write!(f, "`gh` exited {code}: {}", stderr.trim())
             }
             Self::Parse(e) => write!(f, "failed to parse `gh` output: {e}"),
+            Self::Timeout => write!(f, "`gh` timed out after {}s", GH_DEADLINE.as_secs()),
+            Self::Pipe(e) => write!(f, "read `gh` output pipe: {e}"),
+            Self::Wait(e) => write!(f, "wait on `gh` subprocess: {e}"),
         }
     }
 }
@@ -62,10 +82,43 @@ impl std::fmt::Display for GhError {
 impl std::error::Error for GhError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Spawn(e) => Some(e),
-            Self::NotFound | Self::NonZero { .. } | Self::RateLimited(_) => None,
+            Self::Spawn(e) | Self::Pipe(e) | Self::Wait(e) => Some(e),
+            Self::NotFound | Self::NonZero { .. } | Self::RateLimited(_) | Self::Timeout => None,
             Self::Parse(e) => Some(e),
         }
+    }
+}
+
+/// Map a [`SpawnError`] into the matching [`GhError`] variant, so
+/// every `gh` call site surfaces a typed timeout / pipe / wait
+/// failure instead of a bare io error.
+fn lift_spawn_error(err: SpawnError) -> GhError {
+    match err {
+        SpawnError::Spawn(e) => GhError::Spawn(e),
+        SpawnError::Timeout { .. } => GhError::Timeout,
+        SpawnError::Read(e) => GhError::Pipe(e),
+        SpawnError::Wait(e) => GhError::Wait(e),
+    }
+}
+
+/// Synthesize an `io::Error` from a non-spawn `gh` failure so the
+/// recorder's existing `finish_spawn_error` hook can log timeout /
+/// pipe / wait paths without changes to the per-binary recorder
+/// surface. The recorder treats the error as opaque text; what
+/// matters is that the tool-call event carries a non-empty
+/// diagnostic.
+fn synth_io_error_for_recorder(err: &SpawnError) -> std::io::Error {
+    match err {
+        SpawnError::Spawn(_) => std::io::Error::other("spawn"),
+        SpawnError::Timeout { deadline, killed } => std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "subprocess timed out after {}s ({})",
+                deadline.as_secs(),
+                if *killed { "killed" } else { "kill failed" }
+            ),
+        ),
+        SpawnError::Read(e) | SpawnError::Wait(e) => std::io::Error::new(e.kind(), e.to_string()),
     }
 }
 
@@ -158,7 +211,9 @@ pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
     empty_default: Option<(T, &str)>,
 ) -> Result<T, GhError> {
     let guard = recorder::tool_call_started("gh", args);
-    let output = match Command::new("gh").args(args).output() {
+    let mut cmd = Command::new("gh");
+    cmd.args(args);
+    let output = match run_with_deadline(&mut cmd, GH_DEADLINE) {
         Ok(output) => {
             if let Some(guard) = guard {
                 guard.finish_output(&output);
@@ -167,9 +222,9 @@ pub(crate) fn gh_json_lenient<T: DeserializeOwned>(
         }
         Err(e) => {
             if let Some(guard) = guard {
-                guard.finish_spawn_error(&e);
+                guard.finish_spawn_error(&synth_io_error_for_recorder(&e));
             }
-            return Err(GhError::Spawn(e));
+            return Err(lift_spawn_error(e));
         }
     };
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -210,7 +265,9 @@ pub(crate) fn gh_run(args: &[&str]) -> Result<(), GhError> {
 
 fn run_raw(args: &[&str]) -> Result<std::process::Output, GhError> {
     let guard = recorder::tool_call_started("gh", args);
-    let output = match Command::new("gh").args(args).output() {
+    let mut cmd = Command::new("gh");
+    cmd.args(args);
+    let output = match run_with_deadline(&mut cmd, GH_DEADLINE) {
         Ok(output) => {
             if let Some(guard) = guard {
                 guard.finish_output(&output);
@@ -219,9 +276,9 @@ fn run_raw(args: &[&str]) -> Result<std::process::Output, GhError> {
         }
         Err(e) => {
             if let Some(guard) = guard {
-                guard.finish_spawn_error(&e);
+                guard.finish_spawn_error(&synth_io_error_for_recorder(&e));
             }
-            return Err(GhError::Spawn(e));
+            return Err(lift_spawn_error(e));
         }
     };
 
@@ -332,5 +389,35 @@ mod tests {
         let err = GhError::RateLimited(hit);
         let s = err.to_string();
         assert!(s.contains("github/graphql/primary"), "display: {s}");
+    }
+
+    #[test]
+    fn timeout_error_display_includes_deadline_seconds() {
+        // Pin the surface so a hung `gh` reports a typed timeout
+        // rather than a bare io error. Without this, the OODA
+        // outer loop cannot tell a timeout from a generic transport
+        // failure — the two paths take different retry strategies.
+        let s = GhError::Timeout.to_string();
+        assert!(
+            s.contains(&GH_DEADLINE.as_secs().to_string()),
+            "display: {s}"
+        );
+        assert!(s.contains("timed out"), "display: {s}");
+    }
+
+    #[test]
+    fn lift_spawn_error_maps_timeout() {
+        let err = lift_spawn_error(SpawnError::Timeout {
+            deadline: GH_DEADLINE,
+            killed: true,
+        });
+        assert!(matches!(err, GhError::Timeout), "got {err:?}");
+    }
+
+    #[test]
+    fn lift_spawn_error_maps_spawn_io_error() {
+        let io = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let err = lift_spawn_error(SpawnError::Spawn(io));
+        assert!(matches!(err, GhError::Spawn(_)), "got {err:?}");
     }
 }

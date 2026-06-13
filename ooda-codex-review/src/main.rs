@@ -25,6 +25,38 @@ use std::path::{Path, PathBuf};
 // is the typed family-wide enum; `ProcessExitCode` is the OS-facing
 // `std::process::ExitCode` that `main` returns.
 use std::process::ExitCode as ProcessExitCode;
+use std::time::Duration;
+
+use ooda_core::{SpawnError, run_with_deadline};
+
+/// Local git probe deadline: `rev-parse`, `config remote.origin.url`,
+/// and similar git operations touch only the working tree's `.git`
+/// directory and print one line. 10s caps a wedged git without
+/// pinning the CLI boundary.
+const GIT_LOCAL_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Per-call deadline for `gh pr view`. The single REST call resolves
+/// in the 1-2s range on a healthy network; 60s tolerates rate-limit
+/// jitter and network blips while keeping a wedged subprocess from
+/// stalling startup.
+const GH_DEADLINE: Duration = Duration::from_mins(1);
+
+/// Render a [`SpawnError`] into a single-line diagnostic prefixed
+/// with `context` (e.g., `"spawn `git rev-parse`"`). Used at every
+/// top-level CLI subprocess site so timeout / pipe / wait failures
+/// surface a typed deadline marker rather than a bare io error.
+fn format_spawn_error(context: &str, err: SpawnError) -> String {
+    match err {
+        SpawnError::Spawn(io) => format!("{context}: {io}"),
+        SpawnError::Timeout { deadline, killed } => format!(
+            "{context} timed out after {}s ({})",
+            deadline.as_secs(),
+            if killed { "killed" } else { "kill failed" }
+        ),
+        SpawnError::Read(io) => format!("{context} (read output pipe): {io}"),
+        SpawnError::Wait(io) => format!("{context} (wait on subprocess): {io}"),
+    }
+}
 
 mod act;
 mod decide;
@@ -308,10 +340,10 @@ fn parse_args() -> Result<Args, Outcome> {
 // ----- repo discovery --------------------------------------------------
 
 fn discover_repo_root() -> Result<PathBuf, String> {
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| format!("spawn `git rev-parse`: {e}"))?;
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["rev-parse", "--show-toplevel"]);
+    let out = run_with_deadline(&mut cmd, GIT_LOCAL_DEADLINE)
+        .map_err(|e| format_spawn_error("spawn `git rev-parse`", e))?;
     if !out.status.success() {
         return Err(format!(
             "`git rev-parse --show-toplevel` failed: {}",
@@ -334,19 +366,23 @@ fn resolve_codex_target(target: &ReviewTarget, repo_root: &Path) -> Result<Revie
 
 fn resolve_pr_base(num: u64, repo_root: &Path) -> Result<BranchName, String> {
     let num_s = num.to_string();
-    let out = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &num_s,
-            "--json",
-            "baseRefName",
-            "--jq",
-            ".baseRefName",
-        ])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|e| format!("resolve --pr {num} base branch: spawn `gh pr view`: {e}"))?;
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args([
+        "pr",
+        "view",
+        &num_s,
+        "--json",
+        "baseRefName",
+        "--jq",
+        ".baseRefName",
+    ])
+    .current_dir(repo_root);
+    let out = run_with_deadline(&mut cmd, GH_DEADLINE).map_err(|e| {
+        format_spawn_error(
+            &format!("resolve --pr {num} base branch: spawn `gh pr view`"),
+            e,
+        )
+    })?;
     if !out.status.success() {
         return Err(format!(
             "resolve --pr {num} base branch: `gh pr view` failed: {}",
@@ -370,14 +406,21 @@ fn compute_repo_id(repo_root: &Path) -> Result<RepoId, String> {
         .unwrap_or("repo")
         .to_string();
 
-    let url = std::process::Command::new("git")
-        .args(["config", "remote.origin.url"])
-        .current_dir(repo_root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
+    let url = {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["config", "remote.origin.url"])
+            .current_dir(repo_root);
+        // Best-effort probe: a missing / timed-out / errored
+        // `git config` degrades to "no remote URL" so the repo
+        // id falls back to the noremote@... key. Surfacing the
+        // failure here would block a perfectly usable detached
+        // worktree from getting an id at all.
+        run_with_deadline(&mut cmd, GIT_LOCAL_DEADLINE)
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
 
     // Mix the canonical worktree path into the hash so parallel
     // worktrees of one repo hash distinct; same-worktree sequential

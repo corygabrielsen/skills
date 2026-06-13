@@ -27,13 +27,22 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use ooda_core::attest::{
     AttestError, write_claude_review_atomic, write_closeout_atomic, write_doc_review_atomic,
     write_pull_request_metadata_atomic,
 };
+use ooda_core::{SpawnError, run_with_deadline};
 use ooda_state::resolve_state_root as resolve_ooda_state_root;
+
+/// Per-call deadline for the two local `git rev-parse` probes
+/// (`HEAD` and `--show-toplevel`). Both are zero-network local
+/// operations that print one line; 10s is a generous cap that
+/// still surfaces a wedged git instead of letting it stall the
+/// attestation write.
+const GIT_REV_PARSE_DEADLINE: Duration = Duration::from_secs(10);
 
 const EXIT_VALIDATION: u8 = 64;
 const EXIT_GIT: u8 = 65;
@@ -269,11 +278,17 @@ fn resolve_state_root(explicit: Option<&Path>) -> Result<PathBuf, String> {
 }
 
 fn read_head_sha(repo_root: &Path) -> Result<String, String> {
-    let output = Command::new("git")
-        .current_dir(repo_root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|e| format!("failed to invoke `git rev-parse HEAD`: {e}"))?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_root).args(["rev-parse", "HEAD"]);
+    let output = run_with_deadline(&mut cmd, GIT_REV_PARSE_DEADLINE).map_err(|e| match e {
+        SpawnError::Spawn(io) => format!("failed to invoke `git rev-parse HEAD`: {io}"),
+        SpawnError::Timeout { deadline, .. } => format!(
+            "`git rev-parse HEAD` timed out after {}s",
+            deadline.as_secs()
+        ),
+        SpawnError::Read(io) => format!("read `git rev-parse HEAD` output pipe: {io}"),
+        SpawnError::Wait(io) => format!("wait on `git rev-parse HEAD` subprocess: {io}"),
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
@@ -313,6 +328,17 @@ enum RepoRootError {
     /// The `git` subprocess could not be spawned at all (typically:
     /// `git` is not on `$PATH`).
     GitSpawn(std::io::Error),
+    /// `git rev-parse --show-toplevel` did not exit within the
+    /// per-call deadline. The helper `SIGKILL`ed and reaped the
+    /// child; surfacing the timeout as a distinct variant lets the
+    /// boundary diagnostic name the deadline rather than collapse
+    /// into a generic spawn failure.
+    GitTimeout,
+    /// `wait` / `try_wait` on the `git` subprocess reported an OS
+    /// error.
+    GitWait(std::io::Error),
+    /// Reading the `git` subprocess's stdout / stderr pipe failed.
+    GitPipe(std::io::Error),
 }
 
 impl std::fmt::Display for RepoRootError {
@@ -339,6 +365,15 @@ impl std::fmt::Display for RepoRootError {
                 f,
                 "spawn `git rev-parse --show-toplevel`: {e}; install git or pass --repo-root <PATH>",
             ),
+            Self::GitTimeout => write!(
+                f,
+                "`git rev-parse --show-toplevel` timed out after {}s",
+                GIT_REV_PARSE_DEADLINE.as_secs()
+            ),
+            Self::GitWait(e) => {
+                write!(f, "wait on `git rev-parse --show-toplevel` subprocess: {e}")
+            }
+            Self::GitPipe(e) => write!(f, "read `git rev-parse --show-toplevel` output pipe: {e}"),
         }
     }
 }
@@ -364,11 +399,14 @@ fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathB
             .canonicalize()
             .map_err(|source| RepoRootError::Canonicalize { path: p, source });
     }
-    let out = Command::new("git")
-        .current_dir(cwd)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(RepoRootError::GitSpawn)?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd).args(["rev-parse", "--show-toplevel"]);
+    let out = run_with_deadline(&mut cmd, GIT_REV_PARSE_DEADLINE).map_err(|e| match e {
+        SpawnError::Spawn(io) => RepoRootError::GitSpawn(io),
+        SpawnError::Timeout { .. } => RepoRootError::GitTimeout,
+        SpawnError::Wait(io) => RepoRootError::GitWait(io),
+        SpawnError::Read(io) => RepoRootError::GitPipe(io),
+    })?;
     if !out.status.success() {
         return Err(RepoRootError::NotInGitTree {
             cwd: cwd.to_path_buf(),

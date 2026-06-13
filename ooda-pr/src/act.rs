@@ -25,12 +25,21 @@ pub(crate) mod sync_pull_request_metadata;
 use std::path::Path;
 use std::process::Command;
 use std::thread;
+use std::time::Duration;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
 use crate::orient::state::WIP_LABEL;
-use ooda_core::FileLock;
+use ooda_core::{FileLock, SpawnError, run_with_deadline};
+
+/// `gt sync` rebases the local stack onto the latest base and may
+/// fetch refs from the remote, so 120s gives room for a multi-PR
+/// stack on a slow upstream. A wedged `gt sync` surfaces as
+/// [`ActError::GraphiteSync`] with an explicit timeout marker so
+/// the agent path that owns triage sees the deadline name rather
+/// than a bare io error.
+const GT_SYNC_DEADLINE: Duration = Duration::from_mins(2);
 
 #[derive(Debug)]
 pub enum ActError {
@@ -149,14 +158,31 @@ fn run_full(
 /// CWD prevents a sibling-repo invocation from rewriting the wrong
 /// stack — see the module-level threading doc on [`act`].
 fn run_graphite_sync(repo_root: &Path) -> Result<(), ActError> {
-    let out = build_gt_sync_command(repo_root)
-        .output()
-        .map_err(|e| ActError::GraphiteSync(format!("spawn `gt sync`: {e}")))?;
+    let out = run_with_deadline(&mut build_gt_sync_command(repo_root), GT_SYNC_DEADLINE)
+        .map_err(format_gt_sync_spawn_error)?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(ActError::GraphiteSync(stderr));
     }
     Ok(())
+}
+
+/// Render a [`SpawnError`] into the [`ActError::GraphiteSync`]
+/// payload. The agent-handoff prose includes a timeout marker so
+/// triage prompts surface the deadline name rather than a bare io
+/// error.
+fn format_gt_sync_spawn_error(err: SpawnError) -> ActError {
+    let msg = match err {
+        SpawnError::Spawn(e) => format!("spawn `gt sync`: {e}"),
+        SpawnError::Timeout { deadline, killed } => format!(
+            "`gt sync` timed out after {}s ({})",
+            deadline.as_secs(),
+            if killed { "killed" } else { "kill failed" }
+        ),
+        SpawnError::Read(e) => format!("read `gt sync` output pipe: {e}"),
+        SpawnError::Wait(e) => format!("wait on `gt sync` subprocess: {e}"),
+    };
+    ActError::GraphiteSync(msg)
 }
 
 /// Construct the `gt sync` command pinned to `repo_root`. Split for

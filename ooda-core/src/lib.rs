@@ -48,6 +48,7 @@ pub mod rate_limit;
 pub mod safe_body;
 pub mod safe_url;
 pub mod single_line_string;
+pub mod spawn;
 pub mod stall_key;
 
 pub use action::{
@@ -71,4 +72,5 @@ pub use rate_limit::{BucketState, RateLimitBudget, RateLimitHit, RateLimitScope}
 pub use safe_body::SafeBody;
 pub use safe_url::{SafeUrl, SafeUrlError};
 pub use single_line_string::SingleLineString;
+pub use spawn::{SpawnError, run_with_deadline};
 pub use stall_key::StallKey;

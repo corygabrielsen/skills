@@ -6,6 +6,14 @@
 //! - **Approval freshness keyed on HEAD-SHA**: an approval counts as
 //!   on-head iff its review-commit equals the current HEAD; otherwise
 //!   it counts as stale. The partition is total over all approvals.
+//! - **On-head approvals counted as distinct humans, not rows**: the
+//!   on-head count is the cardinality of `{login : login is human,
+//!   login submitted at least one Approved review on HEAD}`. Bot rows
+//!   are excluded (host's `required_approving_review_count` counts
+//!   only humans) and same-login duplicates collapse (the REST review-
+//!   submit endpoint accepts repeated approvals from one reviewer).
+//!   Closure-check soundness: this gate must not green-light a state
+//!   the host still blocks.
 //! - **Actor class drives the split**: pending reviewers and bot
 //!   reviews partition by actor class (bot vs human) at the boundary,
 //!   so downstream prompts never need to re-classify identities.
@@ -23,6 +31,7 @@ use crate::observe::github::requested_reviewers::{RequestedReviewers, UserType};
 use crate::observe::github::review_threads::{RequestedReviewer, ReviewThreadsResponse};
 use crate::observe::github::reviews::{PullRequestReview, ReviewState};
 use serde::Serialize;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ReviewSummary {
@@ -218,19 +227,52 @@ fn split_requested_reviewers(requested: &RequestedReviewers) -> RequestedReviewe
 }
 
 fn partition_approvals(reviews: &[PullRequestReview], head: &GitCommitSha) -> (usize, usize) {
-    let mut on_head = 0;
+    let on_head = distinct_human_approvers_on_head(reviews, head).len();
     let mut stale = 0;
     for r in reviews {
         if r.state != ReviewState::Approved {
             continue;
         }
-        if &r.commit_id == head {
-            on_head += 1;
-        } else {
+        if &r.commit_id != head {
             stale += 1;
         }
     }
     (on_head, stale)
+}
+
+/// Set of distinct human logins that submitted at least one
+/// `Approved` review whose commit-id equals `head`.
+///
+/// Bot exclusion is structural: `GitHubLogin::is_bot` keys on the
+/// `[bot]` suffix and `app/` prefix the host stamps on bot identities.
+/// No login allowlist — the closure-check stays sound for novel bot
+/// reviewer apps.
+///
+/// Same-login dedup matters because the host's REST review-submit
+/// endpoint accepts repeated `APPROVED` submissions from one reviewer
+/// and emits a fresh row per submit; counting rows would let a single
+/// human satisfy `required_approving_review_count >= 2`.
+fn distinct_human_approvers_on_head(
+    reviews: &[PullRequestReview],
+    head: &GitCommitSha,
+) -> HashSet<GitHubLogin> {
+    let mut out = HashSet::new();
+    for r in reviews {
+        if r.state != ReviewState::Approved {
+            continue;
+        }
+        if &r.commit_id != head {
+            continue;
+        }
+        let Some(user) = r.user.as_ref() else {
+            continue;
+        };
+        if user.login.is_bot() {
+            continue;
+        }
+        out.insert(user.login.clone());
+    }
+    out
 }
 
 /// Partition the GraphQL-typed reviewer set by actor class.
@@ -457,6 +499,102 @@ mod tests {
             &RequestedReviewers::default(),
         );
         assert_eq!(s.approvals_on_head, 2);
+        assert_eq!(s.approvals_stale, 1);
+    }
+
+    #[test]
+    fn duplicate_reviewer_counts_as_one_distinct_approver() {
+        // Single human with two `Approved` rows on HEAD (REST review-
+        // submit accepts repeats). Required=2 must still block — the
+        // closure-check counts distinct humans, not rows.
+        let revs = vec![
+            review(ReviewState::Approved, "alice", HEAD),
+            review(ReviewState::Approved, "alice", HEAD),
+        ];
+        let s = orient_reviews(
+            &pr(),
+            &threads(vec![], vec![]),
+            &[],
+            &revs,
+            &RequestedReviewers::default(),
+        );
+        assert_eq!(s.approvals_on_head, 1);
+        assert_eq!(s.approvals_stale, 0);
+    }
+
+    #[test]
+    fn bot_approvals_excluded_from_on_head_count() {
+        // One human + one bot, both `Approved` on HEAD. Gate counts
+        // only the human (host's `required_approving_review_count`
+        // counts humans). Required=2 must still block.
+        let revs = vec![
+            review(ReviewState::Approved, "alice", HEAD),
+            review(ReviewState::Approved, "copilot[bot]", HEAD),
+        ];
+        let s = orient_reviews(
+            &pr(),
+            &threads(vec![], vec![]),
+            &[],
+            &revs,
+            &RequestedReviewers::default(),
+        );
+        assert_eq!(s.approvals_on_head, 1);
+        assert_eq!(s.approvals_stale, 0);
+    }
+
+    #[test]
+    fn two_distinct_humans_satisfy_required_two() {
+        // Two distinct humans, each one `Approved` row on HEAD.
+        // Count is 2 — the gate is satisfied for required=2.
+        let revs = vec![
+            review(ReviewState::Approved, "alice", HEAD),
+            review(ReviewState::Approved, "bob", HEAD),
+        ];
+        let s = orient_reviews(
+            &pr(),
+            &threads(vec![], vec![]),
+            &[],
+            &revs,
+            &RequestedReviewers::default(),
+        );
+        assert_eq!(s.approvals_on_head, 2);
+        assert_eq!(s.approvals_stale, 0);
+    }
+
+    #[test]
+    fn dismissed_then_reapproved_counts_as_one_distinct_approver() {
+        // A `Dismissed` row plus a fresh `Approved` row on HEAD from
+        // the same reviewer — the reviewer is one distinct approver.
+        // Regression guard for pre-existing dismissed/stale semantics.
+        let revs = vec![
+            review(ReviewState::Dismissed, "alice", OLD),
+            review(ReviewState::Approved, "alice", HEAD),
+        ];
+        let s = orient_reviews(
+            &pr(),
+            &threads(vec![], vec![]),
+            &[],
+            &revs,
+            &RequestedReviewers::default(),
+        );
+        assert_eq!(s.approvals_on_head, 1);
+        assert_eq!(s.approvals_stale, 0);
+    }
+
+    #[test]
+    fn off_head_approval_does_not_count_on_head() {
+        // Reviewer approved on a prior commit only — the on-head
+        // count is 0 (gate blocks for any required>0). The stale
+        // count surfaces the prior row.
+        let revs = vec![review(ReviewState::Approved, "alice", OLD)];
+        let s = orient_reviews(
+            &pr(),
+            &threads(vec![], vec![]),
+            &[],
+            &revs,
+            &RequestedReviewers::default(),
+        );
+        assert_eq!(s.approvals_on_head, 0);
         assert_eq!(s.approvals_stale, 1);
     }
 

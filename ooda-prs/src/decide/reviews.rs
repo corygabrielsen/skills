@@ -1034,7 +1034,8 @@ mod tests {
         // Baseline: no copilot axis active → Copilot in pending_bots
         // flows through unfiltered.
         let mut r = clean_reviews();
-        r.pending_reviews.bots = vec![GitHubLogin::parse("copilot-pull-request-reviewer").unwrap()];
+        r.pending_reviews.bots =
+            vec![GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap()];
         let cs = cands_with_copilot(&r, None);
         assert!(
             cs.iter()
@@ -1050,7 +1051,8 @@ mod tests {
         // pending Copilot login is filtered out, no WaitForBotReview
         // emission (because Copilot was the only pending bot).
         let mut r = clean_reviews();
-        r.pending_reviews.bots = vec![GitHubLogin::parse("copilot-pull-request-reviewer").unwrap()];
+        r.pending_reviews.bots =
+            vec![GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap()];
         let cs = cands_with_copilot(&r, Some(&copilot_active_report()));
         assert!(
             !cs.iter()
@@ -1067,7 +1069,7 @@ mod tests {
         // bot reviewers.
         let mut r = clean_reviews();
         r.pending_reviews.bots = vec![
-            GitHubLogin::parse("copilot-pull-request-reviewer").unwrap(),
+            GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
             GitHubLogin::parse("renovate[bot]").unwrap(),
         ];
         let cs = cands_with_copilot(&r, Some(&copilot_active_report()));

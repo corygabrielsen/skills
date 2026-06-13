@@ -476,7 +476,10 @@ mod tests {
     fn inline_threads_counted_only_when_claude_authored_a_comment() {
         let claude_thread = vec!["alice", "claude[bot]"];
         let other_thread = vec!["alice", "bob"];
-        let only_claude = vec!["claude"];
+        // Bare `claude` login is intentionally rejected: a plain-user
+        // account can register it, so only the `[bot]`-suffixed form
+        // is trusted as the reviewer's identity.
+        let only_claude = vec!["claude[bot]"];
         let threads = threads_with(&[claude_thread, other_thread, only_claude]);
         let obs = observe_claude_review(None, pr(), &head(), &[], &[], &threads);
         assert_eq!(obs.inline_thread_count, 2);

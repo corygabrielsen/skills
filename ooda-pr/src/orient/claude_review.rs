@@ -20,14 +20,20 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::ids::GitHubLogin;
 use crate::observe::github::claude_review_attest::ClaudeReviewObservation;
 
 // ── Identity ─────────────────────────────────────────────────────────
 
-const CLAUDE_LOGINS: &[&str] = &["claude[bot]", "claude"];
+/// Recognized bot-form logins for the Claude reviewer. Bare-string
+/// variants are intentionally absent: the predicate gates on the
+/// structural [`GitHubLogin::is_bot`] check first, so a bare login
+/// (which any plain-user account can register) cannot impersonate the
+/// reviewer regardless of allowlist contents.
+const CLAUDE_LOGINS: &[&str] = &["claude[bot]"];
 
 pub(crate) fn is_claude(login: &str) -> bool {
-    CLAUDE_LOGINS.contains(&login)
+    GitHubLogin::parse(login).is_ok_and(|l| l.is_bot()) && CLAUDE_LOGINS.contains(&login)
 }
 
 // ── Axis projection ──────────────────────────────────────────────────
@@ -97,12 +103,25 @@ mod tests {
     }
 
     #[test]
-    fn is_claude_matches_both_login_forms() {
+    fn is_claude_requires_bot_form_login() {
+        // Proper bot form: passes structural is_bot() and allowlist.
         assert!(is_claude("claude[bot]"));
-        assert!(is_claude("claude"));
+        // Bare login: rejected by is_bot() structural gate. A plain-
+        // user account registering this handle cannot impersonate.
+        assert!(!is_claude("claude"));
         assert!(!is_claude("Claude"));
         assert!(!is_claude("claude-bot"));
+        // Wrong bot: passes is_bot() but allowlist rejects.
         assert!(!is_claude("copilot[bot]"));
+        assert!(!is_claude("random[bot]"));
+    }
+
+    #[test]
+    fn is_claude_rejects_malformed_and_empty() {
+        assert!(!is_claude(""));
+        assert!(!is_claude("[bot]"));
+        assert!(!is_claude("claude\n"));
+        assert!(!is_claude("claude bot"));
     }
 
     #[test]

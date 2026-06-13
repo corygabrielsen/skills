@@ -22,7 +22,7 @@
 //!   into exactly one tier; the rules are evaluated first-match-
 //!   wins.
 
-use crate::ids::{GitCommitSha, Timestamp};
+use crate::ids::{GitCommitSha, GitHubLogin, Timestamp};
 use crate::observe::github::issue_events::IssueEvent;
 use crate::observe::github::pull_request_view::Commit;
 use crate::observe::github::requested_reviewers::RequestedReviewers;
@@ -39,17 +39,18 @@ use super::bot_threads::{BotThreadSummary, count_bot_threads};
 /// only this form; read-side surfaces emit several aliases.
 pub(crate) const COPILOT_REVIEWER_LOGIN: &str = "copilot-pull-request-reviewer[bot]";
 
-/// Read-side identity aliases. The host emits different forms on
-/// different surfaces; the predicate accepts every variant so the
-/// axis classifies the reviewer consistently regardless of surface.
-const COPILOT_LOGINS: &[&str] = &[
-    COPILOT_REVIEWER_LOGIN,
-    "Copilot",
-    "copilot-pull-request-reviewer",
-];
+/// Recognized bot-form logins for the Copilot reviewer. Bare-string
+/// surface forms (`"Copilot"`, `"copilot-pull-request-reviewer"`) are
+/// intentionally absent: the predicate gates on the structural
+/// [`GitHubLogin::is_bot`] check first, so a bare login (which any
+/// plain-user account can register) cannot impersonate the reviewer
+/// regardless of allowlist contents. Surfaces that previously emitted
+/// the bare forms must now emit the `[bot]`-suffixed or `app/`-prefixed
+/// canonical form to be classified as Copilot.
+const COPILOT_LOGINS: &[&str] = &[COPILOT_REVIEWER_LOGIN, "app/copilot-pull-request-reviewer"];
 
 pub(crate) fn is_copilot(login: &str) -> bool {
-    COPILOT_LOGINS.contains(&login)
+    GitHubLogin::parse(login).is_ok_and(|l| l.is_bot()) && COPILOT_LOGINS.contains(&login)
 }
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -1070,12 +1071,27 @@ mod tests {
     // ── identity ──
 
     #[test]
-    fn is_copilot_recognizes_all_known_variants() {
+    fn is_copilot_requires_bot_form_login() {
+        // Proper bot forms: pass structural is_bot() and allowlist.
         assert!(is_copilot("copilot-pull-request-reviewer[bot]"));
-        assert!(is_copilot("Copilot"));
-        assert!(is_copilot("copilot-pull-request-reviewer"));
+        assert!(is_copilot("app/copilot-pull-request-reviewer"));
+        // Bare logins: rejected by is_bot() structural gate. A plain-
+        // user account registering these handles cannot impersonate.
+        assert!(!is_copilot("Copilot"));
+        assert!(!is_copilot("copilot-pull-request-reviewer"));
         assert!(!is_copilot("Cursor"));
         assert!(!is_copilot("alice"));
+        // Wrong bot: passes is_bot() but allowlist rejects.
+        assert!(!is_copilot("cursor[bot]"));
+        assert!(!is_copilot("random[bot]"));
+    }
+
+    #[test]
+    fn is_copilot_rejects_malformed_and_empty() {
+        assert!(!is_copilot(""));
+        assert!(!is_copilot("[bot]"));
+        assert!(!is_copilot("copilot\n"));
+        assert!(!is_copilot("copilot bot"));
     }
 
     // ── body parsing ──
@@ -1201,7 +1217,7 @@ generated 0 comments.
     #[test]
     fn round_populated_with_suppressed_entries_from_review_body() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![copilot_review(
@@ -1260,12 +1276,15 @@ generated 0 comments.
     fn requested_when_pending_in_requested_reviewers_and_no_rounds() {
         let reqs = RequestedReviewers {
             users: vec![RequestedUser {
-                login: GitHubLogin::parse("Copilot").unwrap(),
+                login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: UserType::Bot,
             }],
             teams: vec![],
         };
-        let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T10:00:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let r =
             orient_copilot_test(enabled(), &events, &[], &empty_threads(), &reqs, &head()).unwrap();
         assert!(matches!(r.activity, CopilotActivity::Requested { .. }));
@@ -1274,14 +1293,14 @@ generated 0 comments.
     #[test]
     fn working_when_acked_but_no_review_yet() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         // Copilot must still be in requested_reviewers for Working
         // to fire — represents a live in-flight review.
         let reqs = RequestedReviewers {
             users: vec![RequestedUser {
-                login: GitHubLogin::parse("Copilot").unwrap(),
+                login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: UserType::Bot,
             }],
             teams: vec![],
@@ -1305,7 +1324,7 @@ generated 0 comments.
         // Success). Now: the orphan Ack (timestamp not paired to
         // any round) triggers Working.
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
             // Auto-review starts later, with no preceding request.
             ack_event("2026-04-23T11:00:00Z"),
@@ -1340,7 +1359,7 @@ generated 0 comments.
         // Copilot review was pending. Now: synthetic Requested.
         let reqs = RequestedReviewers {
             users: vec![RequestedUser {
-                login: GitHubLogin::parse("Copilot").unwrap(),
+                login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: UserType::Bot,
             }],
             teams: vec![],
@@ -1388,7 +1407,7 @@ generated 0 comments.
         // (repeated Full action). Now: returns Requested so decide
         // emits WaitForCopilotAck instead.
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let reviews = vec![copilot_review(
@@ -1398,7 +1417,7 @@ generated 0 comments.
         )];
         let reqs = RequestedReviewers {
             users: vec![RequestedUser {
-                login: GitHubLogin::parse("Copilot").unwrap(),
+                login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: UserType::Bot,
             }],
             teams: vec![],
@@ -1428,7 +1447,7 @@ generated 0 comments.
         // With the currently_pending guard, a removed request
         // collapses to Idle so the loop can advance other axes.
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let r = orient_copilot_test(
@@ -1450,7 +1469,7 @@ generated 0 comments.
     #[test]
     fn reviewed_when_review_submitted_in_window() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![copilot_review(
@@ -1512,7 +1531,7 @@ generated 0 comments.
         // because the inner while broke after pairing t=15. Now:
         // 2 rounds — paired (with ack) and synthetic.
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![
@@ -1559,7 +1578,10 @@ generated 0 comments.
         // second review at t=20 (review_on_push after the only
         // manual request, no further request event). Post-loop
         // drain catches it.
-        let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T10:00:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let revs = vec![
             copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "generated 0 comments."),
             copilot_review(HEAD_SHA, "2026-04-23T10:10:00Z", "generated 0 comments."),
@@ -1599,12 +1621,12 @@ generated 0 comments.
             "generated 1 comment.",
         )];
         let events = vec![
-            req_event("2026-04-23T11:00:00Z", "Copilot"),
+            req_event("2026-04-23T11:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T11:01:00Z"),
         ];
         let reqs = RequestedReviewers {
             users: vec![RequestedUser {
-                login: GitHubLogin::parse("Copilot").unwrap(),
+                login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: UserType::Bot,
             }],
             teams: vec![],
@@ -1630,7 +1652,7 @@ generated 0 comments.
     #[test]
     fn tier_platinum_when_reviewed_at_head_clean() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![copilot_review(
@@ -1654,7 +1676,7 @@ generated 0 comments.
     #[test]
     fn tier_gold_when_reviewed_at_non_head() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![copilot_review(
@@ -1678,7 +1700,7 @@ generated 0 comments.
     #[test]
     fn tier_silver_when_low_confidence_findings_present() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![copilot_review(
@@ -1701,7 +1723,7 @@ generated 0 comments.
     #[test]
     fn tier_bronze_when_unresolved_threads_exist() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![copilot_review(
@@ -1730,7 +1752,7 @@ generated 0 comments.
                                         database_id: None,
                                         author: Some(CommentAuthor {
                                             login: GitHubLogin::parse(
-                                                "copilot-pull-request-reviewer",
+                                                "copilot-pull-request-reviewer[bot]",
                                             )
                                             .unwrap(),
                                         }),
@@ -1756,9 +1778,9 @@ generated 0 comments.
     #[test]
     fn two_rounds_correlate_correctly_to_two_reviews() {
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
-            req_event("2026-04-23T11:00:00Z", "Copilot"),
+            req_event("2026-04-23T11:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T11:01:00Z"),
         ];
         let revs = vec![
@@ -1813,7 +1835,7 @@ generated 0 comments.
     fn pending_copilot() -> RequestedReviewers {
         RequestedReviewers {
             users: vec![RequestedUser {
-                login: GitHubLogin::parse("Copilot").unwrap(),
+                login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: UserType::Bot,
             }],
             teams: vec![],
@@ -1822,7 +1844,10 @@ generated 0 comments.
 
     #[test]
     fn requested_healthy_within_start_window() {
-        let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T10:00:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
         let r = orient_copilot(
             enabled(),
@@ -1850,7 +1875,10 @@ generated 0 comments.
         // minutes elapsed, past the 10-minute start threshold. Only
         // one round at HEAD → degraded_run = 1 < BUDGET = 2 →
         // Degraded, not Failed.
-        let events = vec![req_event("2026-04-23T10:00:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T10:00:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
         let r = orient_copilot(
             enabled(),
@@ -1880,8 +1908,8 @@ generated 0 comments.
         // second request, also past the threshold. degraded_run = 2,
         // BUDGET = 2 → Failed.
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
-            req_event("2026-04-23T10:20:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
+            req_event("2026-04-23T10:20:00Z", "copilot-pull-request-reviewer[bot]"),
         ];
         let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
         let r = orient_copilot(
@@ -1913,7 +1941,7 @@ generated 0 comments.
         // Ack landed at 10:01; no review by 10:35 — 34 minutes past
         // ack, over the 30-minute review threshold.
         let events = vec![
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let commits = vec![commit_at(HEAD_SHA, "2026-04-23T09:50:00Z")];
@@ -1952,7 +1980,10 @@ generated 0 comments.
         // a no-op against pending state, so escalate directly to
         // Failed (→ EscalateCopilotFailed → HandoffHuman).
         const PRE_PUSH_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let events = vec![req_event("2026-04-23T09:15:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T09:15:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let commits = vec![
             commit_at(PRE_PUSH_SHA, "2026-04-23T09:00:00Z"),
             commit_at(HEAD_SHA, "2026-04-23T09:30:00Z"),
@@ -1988,7 +2019,10 @@ generated 0 comments.
         // events feed may still deliver a fresh request event;
         // respect the ack window.
         const PRE_PUSH_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let events = vec![req_event("2026-04-23T09:15:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T09:15:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let commits = vec![
             commit_at(PRE_PUSH_SHA, "2026-04-23T09:00:00Z"),
             commit_at(HEAD_SHA, "2026-04-23T09:30:00Z"),
@@ -2023,7 +2057,10 @@ generated 0 comments.
         // observation-invariant violation). Don't escalate spuriously;
         // fall back to Healthy.
         const PRE_PUSH_SHA: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let events = vec![req_event("2026-04-23T09:15:00Z", "Copilot")];
+        let events = vec![req_event(
+            "2026-04-23T09:15:00Z",
+            "copilot-pull-request-reviewer[bot]",
+        )];
         let commits = vec![commit_at(PRE_PUSH_SHA, "2026-04-23T09:00:00Z")];
         let r = orient_copilot(
             enabled(),
@@ -2056,7 +2093,7 @@ generated 0 comments.
         // on the reviewer axis. Without the filter, a coding-agent
         // event would flip the reviewer state to Working.
         use crate::observe::github::issue_events::GitHubAppRef;
-        let req = req_event("2026-04-23T10:00:00Z", "Copilot");
+        let req = req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]");
         let swe_ack = IssueEvent {
             event: "copilot_work_started".into(),
             actor: None,
@@ -2097,8 +2134,8 @@ generated 0 comments.
         // Degraded (not Failed) even if the OLD round was also
         // timed out — the budget is per-HEAD.
         let events = vec![
-            req_event("2026-04-23T09:00:00Z", "Copilot"),
-            req_event("2026-04-23T10:00:00Z", "Copilot"),
+            req_event("2026-04-23T09:00:00Z", "copilot-pull-request-reviewer[bot]"),
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
         ];
         let commits = vec![
             commit_at(OLD_SHA, "2026-04-23T08:50:00Z"),

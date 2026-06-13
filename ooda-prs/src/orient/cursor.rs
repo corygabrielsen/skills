@@ -19,7 +19,7 @@
 //!   request-driven reviewer axes by design — when domains diverge,
 //!   accept divergence rather than force a meta-structure.
 
-use crate::ids::{GitCommitSha, Timestamp};
+use crate::ids::{GitCommitSha, GitHubLogin, Timestamp};
 use crate::observe::github::cursor_status::{
     CheckRunConclusion, CheckRunStatus, CheckSuiteStatus, CursorCheckSuite, CursorStatus,
 };
@@ -32,10 +32,15 @@ use super::bot_threads::{BotThreadSummary, count_bot_threads};
 
 // ── Identity ─────────────────────────────────────────────────────────
 
-const CURSOR_LOGINS: &[&str] = &["cursor[bot]", "cursor"];
+/// Recognized bot-form logins for the Cursor reviewer. Bare-string
+/// variants are intentionally absent: the predicate gates on the
+/// structural [`GitHubLogin::is_bot`] check first, so a bare login
+/// (which any plain-user account can register) cannot impersonate the
+/// reviewer regardless of allowlist contents.
+const CURSOR_LOGINS: &[&str] = &["cursor[bot]"];
 
 pub(crate) fn is_cursor(login: &str) -> bool {
-    CURSOR_LOGINS.contains(&login)
+    GitHubLogin::parse(login).is_ok_and(|l| l.is_bot()) && CURSOR_LOGINS.contains(&login)
 }
 
 /// Login slugs the reviewer's server-side filter declines on author
@@ -710,11 +715,25 @@ mod tests {
     // ── identity ──
 
     #[test]
-    fn identity_recognizes_known_logins() {
+    fn identity_requires_bot_form_login() {
+        // Proper bot form: passes structural is_bot() and allowlist.
         assert!(is_cursor("cursor[bot]"));
-        assert!(is_cursor("cursor"));
+        // Bare login: rejected by is_bot() structural gate. A plain-
+        // user account registering this handle cannot impersonate.
+        assert!(!is_cursor("cursor"));
         assert!(!is_cursor("Cursor"));
         assert!(!is_cursor("alice"));
+        // Wrong bot: passes is_bot() but allowlist rejects.
+        assert!(!is_cursor("random[bot]"));
+        assert!(!is_cursor("claude[bot]"));
+    }
+
+    #[test]
+    fn identity_rejects_malformed_and_empty() {
+        assert!(!is_cursor(""));
+        assert!(!is_cursor("[bot]"));
+        assert!(!is_cursor("cursor\n"));
+        assert!(!is_cursor("cursor bot"));
     }
 
     #[test]

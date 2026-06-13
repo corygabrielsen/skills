@@ -37,8 +37,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use ooda_state::{
-    BlobRef, DecisionKind, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunWriter,
-    StateRoot, domain_specific, resolve_state_root, terminal_event,
+    BlobRef, DecisionKind, Domain, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain,
+    RunWriter, StateRoot, domain_specific, resolve_state_root, terminal_event,
 };
 
 use crate::dashboard::Dashboard;
@@ -218,7 +218,7 @@ impl Recorder {
             "status_comment": cfg.status_comment,
         });
         writer.start(EventBody::RunStarted {
-            domain: "pr".to_string(),
+            domain: PrDomain.name().to_string(),
             target,
         })?;
 

@@ -34,8 +34,8 @@ use serde::Serialize;
 use serde_json::json;
 
 use ooda_state::{
-    BlobRef, DecisionKind, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunId,
-    RunWriter, StateError, StateRoot, domain_specific, resolve_state_root, terminal_event,
+    BlobRef, DecisionKind, Domain, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain,
+    RunId, RunWriter, StateError, StateRoot, domain_specific, resolve_state_root, terminal_event,
 };
 
 use crate::dashboard::Dashboard;
@@ -205,7 +205,7 @@ impl Recorder {
             "argv": std::env::args().collect::<Vec<_>>(),
         });
         writer.start(EventBody::RunStarted {
-            domain: "pr".into(),
+            domain: PrDomain.name().into(),
             target,
         })?;
 
@@ -1065,6 +1065,11 @@ mod tests {
         let events_path = runs.join(&run_ids[0]).join("events.jsonl");
         let body = fs::read_to_string(&events_path).unwrap();
         assert!(body.contains(r#""kind":"run_started""#), "{body}");
+        // Wire-shape: `domain` field routes through `PrDomain::name()`.
+        // A typo at the construction site (`"PR"`, `"prs"`, etc.) would
+        // silently drift the on-disk schema; the literal assertion here
+        // is the integration-side guard for that drift.
+        assert!(body.contains(r#""domain":"pr""#), "{body}");
         assert!(body.contains(r#""kind":"run_halted""#), "{body}");
         assert!(body.contains(r#""outcome":"Paused""#), "{body}");
 

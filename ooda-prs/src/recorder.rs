@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ooda_state::{
-    BlobRef, DecisionKind, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain,
+    BlobRef, DecisionKind, Domain, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain,
     Result as StateResult, RunId, RunWriter, StateError, StateRoot, domain_specific,
     terminal_event,
 };
@@ -190,7 +190,7 @@ impl Recorder {
         let run_id = RunId::generate();
         let mut writer = state_root.create_run(run_id.clone())?;
         writer.start(EventBody::RunStarted {
-            domain: "pr".to_string(),
+            domain: PrDomain.name().to_string(),
             target: json!({
                 "forge": "github.com",
                 "slug": cfg.slug.to_string(),

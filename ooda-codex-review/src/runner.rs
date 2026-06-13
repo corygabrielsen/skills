@@ -296,7 +296,7 @@ mod tests {
     use crate::ids::{BranchName, RepoId};
     use crate::observe::codex::VerdictClass;
     use crate::observe::codex::batch::{BatchState, VerdictRecord};
-    use ooda_state::{RunId, StateRoot};
+    use ooda_state::{CodexReviewDomain, Domain, RunId, StateRoot};
     use std::cell::RefCell;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -387,7 +387,7 @@ mod tests {
         let mut writer = state.create_run(RunId::generate()).unwrap();
         writer
             .start(EventBody::RunStarted {
-                domain: "codex-review".into(),
+                domain: CodexReviewDomain.name().into(),
                 target: serde_json::Value::Null,
             })
             .unwrap();
@@ -615,7 +615,7 @@ mod tests {
         let mut writer = state.create_run(run_id.clone()).unwrap();
         writer
             .start(EventBody::RunStarted {
-                domain: "codex-review".into(),
+                domain: CodexReviewDomain.name().into(),
                 target: serde_json::Value::Null,
             })
             .unwrap();
@@ -702,7 +702,7 @@ mod tests {
         let mut writer = state.create_run(run_id.clone()).unwrap();
         writer
             .start(EventBody::RunStarted {
-                domain: "codex-review".into(),
+                domain: CodexReviewDomain.name().into(),
                 target: serde_json::Value::Null,
             })
             .unwrap();
@@ -731,6 +731,15 @@ mod tests {
         assert!(
             !body.contains(r#""decision_kind":"Halt::Terminal::"#),
             "regression: double-colon Halt::Terminal:: drift reappeared in events.jsonl:\n{body}",
+        );
+        // Wire-shape: `domain` field routes through
+        // `CodexReviewDomain::name()`. A typo at the construction site
+        // (`"codex_review"`, `"CodexReview"`, etc.) would silently drift
+        // the on-disk schema; the literal assertion is the
+        // integration-side guard for that drift.
+        assert!(
+            body.contains(r#""domain":"codex-review""#),
+            "expected `\"domain\":\"codex-review\"` in events.jsonl, got:\n{body}",
         );
     }
 

@@ -109,7 +109,7 @@ use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
 use ooda_state::{
-    CodexReviewDomain, EventBody, OutcomeKind, RunId, RunWriter, StateRoot, terminal_event,
+    CodexReviewDomain, Domain, EventBody, OutcomeKind, RunId, RunWriter, StateRoot, terminal_event,
 };
 use outcome::Outcome;
 use runner::{EventSink, LoopConfig, LoopExit, run_loop};
@@ -654,7 +654,7 @@ fn run_session(args: &Args) -> Outcome {
         Err(e) => return Outcome::binary_error(format!("create run: {e}")),
     };
     if let Err(e) = writer.start(EventBody::RunStarted {
-        domain: "codex-review".into(),
+        domain: CodexReviewDomain.name().into(),
         target: build_target_payload(args.target.as_ref(), args.level, args.ceiling),
     }) {
         return Outcome::binary_error(format!("emit run_started: {e}"));

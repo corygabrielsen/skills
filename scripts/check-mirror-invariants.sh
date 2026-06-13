@@ -358,6 +358,35 @@ check_decision_kind_drift "ooda-prs" "$ROOT/ooda-prs/src/recorder.rs"
 check_decision_kind_drift "ooda-pr-codex-review" "$ROOT/ooda-pr-codex-review/src/recorder.rs"
 check_decision_kind_drift "ooda-codex-review" "$ROOT/ooda-codex-review/src/runner.rs"
 
+# `domain:` wire-token drift. The literal `domain:` field on
+# `EventBody::RunStarted` MUST route through `PrDomain::name()` or
+# `CodexReviewDomain::name()`; a hardcoded `domain: "pr"` /
+# `domain: "codex-review"` in any recorder source silently drifts the
+# on-disk schema (`domain: "PR"`, `domain: "prs"`, `domain:
+# "codex_review"` were all on-the-table typos before the lift). Pattern
+# matches the struct-literal form `domain: "..."` only; docstring
+# mentions and `"domain":"..."` assertion strings in test bodies are
+# unaffected.
+check_domain_literal_drift() {
+    local binary="$1"
+    local recorder_path="$2"
+    if [ ! -f "$recorder_path" ]; then
+        report_fail "domain_literal: $binary recorder source missing at $recorder_path"
+        return
+    fi
+    local hits
+    hits=$(grep -nE '^[[:space:]]*domain: "[^"]+"' "$recorder_path" || true)
+    if [ -n "$hits" ]; then
+        report_fail "domain_literal: $binary hardcodes a domain string in $recorder_path — route through PrDomain::name() / CodexReviewDomain::name() instead"
+        printf '%s\n' "$hits" >&2
+    fi
+}
+check_domain_literal_drift "ooda-pr" "$ROOT/ooda-pr/src/recorder.rs"
+check_domain_literal_drift "ooda-prs" "$ROOT/ooda-prs/src/recorder.rs"
+check_domain_literal_drift "ooda-pr-codex-review" "$ROOT/ooda-pr-codex-review/src/recorder.rs"
+check_domain_literal_drift "ooda-codex-review-main" "$ROOT/ooda-codex-review/src/main.rs"
+check_domain_literal_drift "ooda-codex-review-runner" "$ROOT/ooda-codex-review/src/runner.rs"
+
 # Each binary's SKILL.md must invoke its OWN `run` wrapper, never a
 # sibling's. A copy-paste from one SKILL.md to another silently drops
 # the caller onto the wrong binary — for `ooda-pr-codex-review`, that

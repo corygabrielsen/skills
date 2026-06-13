@@ -388,17 +388,33 @@ fn run_mode(mode: Mode) -> RunMode {
 
 fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     let code = outcome.exit_code();
+    // `write_handoff_md` propagates the IterationHandoff append
+    // failure rather than swallowing it; here we're already in the
+    // terminal halt path, so the most useful response is to log the
+    // failure to stderr (audit trail will be incomplete) and
+    // continue with `None` so `render_outcome` still emits the
+    // prompt inline.
     let handoff_path = match (outcome, recorder.as_ref()) {
-        (Outcome::HandoffAgent(h), Some(r)) => r.write_handoff_md(
-            &h.prompt.to_string(),
-            ooda_state::OutcomeKind::HandoffAgent,
-            ooda_core::ActionKindName::name(&h.kind),
-        ),
-        (Outcome::HandoffHuman(h), Some(r)) => r.write_handoff_md(
-            &h.prompt.to_string(),
-            ooda_state::OutcomeKind::HandoffHuman,
-            ooda_core::ActionKindName::name(&h.kind),
-        ),
+        (Outcome::HandoffAgent(h), Some(r)) => r
+            .write_handoff_md(
+                &h.prompt.to_string(),
+                ooda_state::OutcomeKind::HandoffAgent,
+                ooda_core::ActionKindName::name(&h.kind),
+            )
+            .map_err(|e| {
+                eprintln!("ooda-pr: handoff audit-trail write failed: {e}");
+            })
+            .ok(),
+        (Outcome::HandoffHuman(h), Some(r)) => r
+            .write_handoff_md(
+                &h.prompt.to_string(),
+                ooda_state::OutcomeKind::HandoffHuman,
+                ooda_core::ActionKindName::name(&h.kind),
+            )
+            .map_err(|e| {
+                eprintln!("ooda-pr: handoff audit-trail write failed: {e}");
+            })
+            .ok(),
         _ => None,
     };
     render_outcome(&mut std::io::stderr(), outcome, handoff_path.as_deref());
@@ -417,10 +433,17 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     ProcessExitCode::from(code)
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
-    let sticky_path = recorder.last_seen_head_path();
+    let sticky_path = match recorder.last_seen_head_path() {
+        Ok(p) => p,
+        Err(e) => {
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
+            return Outcome::binary_error(format!("recorder: {e}"));
+        }
+    };
     let obs = match fetch_all(
         &args.slug,
         args.pr,

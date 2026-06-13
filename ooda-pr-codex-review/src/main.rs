@@ -491,17 +491,33 @@ fn run_mode(mode: Mode) -> RunMode {
 
 fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     let code = outcome.exit_code();
+    // `write_handoff_md` propagates the IterationHandoff append
+    // failure rather than swallowing it; here we're already in the
+    // terminal halt path, so the most useful response is to log the
+    // failure to stderr (audit trail will be incomplete) and
+    // continue with `None` so `render_outcome` still emits the
+    // prompt inline.
     let handoff_path = match (outcome, recorder.as_ref()) {
-        (Outcome::HandoffAgent(h), Some(r)) => r.write_handoff_md(
-            &h.prompt.to_string(),
-            ooda_state::OutcomeKind::HandoffAgent,
-            ooda_core::ActionKindName::name(&h.kind),
-        ),
-        (Outcome::HandoffHuman(h), Some(r)) => r.write_handoff_md(
-            &h.prompt.to_string(),
-            ooda_state::OutcomeKind::HandoffHuman,
-            ooda_core::ActionKindName::name(&h.kind),
-        ),
+        (Outcome::HandoffAgent(h), Some(r)) => r
+            .write_handoff_md(
+                &h.prompt.to_string(),
+                ooda_state::OutcomeKind::HandoffAgent,
+                ooda_core::ActionKindName::name(&h.kind),
+            )
+            .map_err(|e| {
+                eprintln!("ooda-pr-codex-review: handoff audit-trail write failed: {e}");
+            })
+            .ok(),
+        (Outcome::HandoffHuman(h), Some(r)) => r
+            .write_handoff_md(
+                &h.prompt.to_string(),
+                ooda_state::OutcomeKind::HandoffHuman,
+                ooda_core::ActionKindName::name(&h.kind),
+            )
+            .map_err(|e| {
+                eprintln!("ooda-pr-codex-review: handoff audit-trail write failed: {e}");
+            })
+            .ok(),
         _ => None,
     };
     render_outcome(&mut std::io::stderr(), outcome, handoff_path.as_deref());
@@ -530,10 +546,17 @@ fn record_observed_head(sticky_path: &std::path::Path, obs: &observe::github::Gi
     let _ = crate::observe::branch::write_sticky(sticky_path, head, false);
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
-    let sticky_path = recorder.last_seen_head_path();
+    let sticky_path = match recorder.last_seen_head_path() {
+        Ok(p) => p,
+        Err(e) => {
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
+            return Outcome::binary_error(format!("recorder: {e}"));
+        }
+    };
     let obs = match fetch_all(
         &args.slug,
         args.pr,
@@ -654,10 +677,14 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
             ceiling,
         }),
     };
+    let action_lock_path = match recorder.action_lock_path() {
+        Ok(p) => p,
+        Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
+    };
     let ctx = ActContext {
         slug: args.slug.clone(),
         pr: args.pr,
-        action_lock_path: recorder.action_lock_path(),
+        action_lock_path,
         repo_root: repo_root.to_path_buf(),
         codex: codex_act,
     };
@@ -740,7 +767,10 @@ fn maybe_fetch_codex(
     let Some(ceiling) = args.codex_review_ceiling else {
         return Ok(None);
     };
-    let codex_pr_root = recorder.pr_workspace_root().join("codex");
+    let codex_pr_root = recorder
+        .pr_workspace_root()
+        .map_err(|e| Outcome::binary_error(format!("recorder: {e}")))?
+        .join("codex");
     match fetch_codex(
         &codex_pr_root,
         args.codex_review_floor,
@@ -782,7 +812,10 @@ fn build_codex_act_context(
     if args.codex_review_ceiling.is_none() {
         return Ok(None);
     }
-    let codex_pr_root = recorder.pr_workspace_root().join("codex");
+    let codex_pr_root = recorder
+        .pr_workspace_root()
+        .map_err(|e| Outcome::binary_error(format!("recorder: {e}")))?
+        .join("codex");
     if let Err(e) = std::fs::create_dir_all(&codex_pr_root) {
         return Err(Outcome::binary_error(format!(
             "create codex pr_root {}: {e}",

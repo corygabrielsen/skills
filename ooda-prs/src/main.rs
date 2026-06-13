@@ -578,17 +578,33 @@ fn drive_one_pull_request(
         Mode::Loop => run_full(slug, pr, args, repo_root, &recorder),
     };
     let code = outcome.exit_code();
+    // `write_handoff_md` propagates the IterationHandoff append
+    // failure rather than swallowing it; here we're already in the
+    // terminal halt path, so the most useful response is to log the
+    // failure to stderr (audit trail will be incomplete) and
+    // continue with `None` so `render_outcome` still emits the
+    // prompt inline.
     let handoff_path = match &outcome {
-        Outcome::HandoffAgent(h) => recorder.write_handoff_md(
-            &h.prompt.to_string(),
-            ooda_state::OutcomeKind::HandoffAgent,
-            ooda_core::ActionKindName::name(&h.kind),
-        ),
-        Outcome::HandoffHuman(h) => recorder.write_handoff_md(
-            &h.prompt.to_string(),
-            ooda_state::OutcomeKind::HandoffHuman,
-            ooda_core::ActionKindName::name(&h.kind),
-        ),
+        Outcome::HandoffAgent(h) => recorder
+            .write_handoff_md(
+                &h.prompt.to_string(),
+                ooda_state::OutcomeKind::HandoffAgent,
+                ooda_core::ActionKindName::name(&h.kind),
+            )
+            .map_err(|e| {
+                eprintln!("ooda-prs: handoff audit-trail write failed: {e}");
+            })
+            .ok(),
+        Outcome::HandoffHuman(h) => recorder
+            .write_handoff_md(
+                &h.prompt.to_string(),
+                ooda_state::OutcomeKind::HandoffHuman,
+                ooda_core::ActionKindName::name(&h.kind),
+            )
+            .map_err(|e| {
+                eprintln!("ooda-prs: handoff audit-trail write failed: {e}");
+            })
+            .ok(),
         _ => None,
     };
     render_outcome(&mut std::io::stderr(), &outcome, handoff_path.as_deref());
@@ -626,7 +642,13 @@ fn run_inspect(
 ) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
-    let sticky_path = recorder.last_seen_head_path();
+    let sticky_path = match recorder.last_seen_head_path() {
+        Ok(p) => p,
+        Err(e) => {
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
+            return Outcome::binary_error(format!("recorder: {e}"));
+        }
+    };
     let obs = match fetch_all(
         slug,
         pr,

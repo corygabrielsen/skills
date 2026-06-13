@@ -21,6 +21,12 @@ use super::render::Rendered;
 pub(crate) enum PostError {
     Gh(GhError),
     Hash(io::Error),
+    /// Recorder could not resolve the per-PR dedup path (mutex
+    /// poison, `create_dir_all` failure on the per-PR index dir).
+    /// Surfaced explicitly so a fallback to a cwd-relative path
+    /// cannot silently collapse distinct PRs onto a shared dedup
+    /// file.
+    Recorder(crate::recorder::RecorderError),
 }
 
 impl std::fmt::Display for PostError {
@@ -28,6 +34,7 @@ impl std::fmt::Display for PostError {
         match self {
             Self::Gh(e) => write!(f, "{e}"),
             Self::Hash(e) => write!(f, "hash file: {e}"),
+            Self::Recorder(e) => write!(f, "recorder: {e}"),
         }
     }
 }
@@ -37,6 +44,12 @@ impl std::error::Error for PostError {}
 impl From<GhError> for PostError {
     fn from(e: GhError) -> Self {
         Self::Gh(e)
+    }
+}
+
+impl From<crate::recorder::RecorderError> for PostError {
+    fn from(e: crate::recorder::RecorderError) -> Self {
+        Self::Recorder(e)
     }
 }
 
@@ -94,7 +107,7 @@ fn post_if_changed_with<F>(
 where
     F: FnOnce() -> Result<(), GhError>,
 {
-    let key_path = recorder.dedup_path();
+    let key_path = recorder.dedup_path()?;
     if let Some(parent) = key_path.parent() {
         fs::create_dir_all(parent).map_err(PostError::Hash)?;
     }
@@ -336,7 +349,7 @@ mod tests {
             updated_at: "prior".to_string(),
             posted: true,
         };
-        let dedup_path = recorder.dedup_path();
+        let dedup_path = recorder.dedup_path().unwrap();
         if let Some(parent) = dedup_path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
@@ -360,7 +373,7 @@ mod tests {
         let root = temp_root("post");
         let recorder = open_recorder(&root);
         let rendered = sample_rendered();
-        let dedup_path = recorder.dedup_path();
+        let dedup_path = recorder.dedup_path().unwrap();
         // No prior file present → dedup miss.
         assert!(!dedup_path.exists());
 
@@ -395,7 +408,7 @@ mod tests {
         let recorder = open_recorder(&root);
         let rendered = sample_rendered();
         let key = hash_str(&rendered.dedup_key);
-        let dedup_path = recorder.dedup_path();
+        let dedup_path = recorder.dedup_path().unwrap();
         if let Some(parent) = dedup_path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
@@ -433,7 +446,7 @@ mod tests {
         let root = temp_root("err");
         let recorder = open_recorder(&root);
         let rendered = sample_rendered();
-        let dedup_path = recorder.dedup_path();
+        let dedup_path = recorder.dedup_path().unwrap();
         assert!(!dedup_path.exists());
 
         let err = post_if_changed_with(&rendered, &recorder, Some(1), || {

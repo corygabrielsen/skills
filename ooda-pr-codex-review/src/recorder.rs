@@ -107,7 +107,7 @@ impl<'a> From<&'a crate::orient::OrientedState> for RecorderInputs<'a> {
 static PROCESS_RECORDER: OnceLock<Mutex<Option<Recorder>>> = OnceLock::new();
 
 #[derive(Debug)]
-pub(crate) enum RecorderError {
+pub enum RecorderError {
     Io(io::Error),
     State(ooda_state::StateError),
     Json(serde_json::Error),
@@ -266,15 +266,35 @@ impl Recorder {
     /// pr-codex-review/<slug>/<pr>/`. Act-side state (codex spawn
     /// directories, comment dedup file) lives under this path,
     /// outside the run-opaque `runs/` tree.
-    pub(crate) fn pr_workspace_root(&self) -> PathBuf {
-        self.with_inner(|inner| pr_workspace_root(inner.state_root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when the recorder mutex is
+    /// poisoned. A silent fallback to an empty `PathBuf` would let
+    /// downstream callers join sentinel filenames onto a
+    /// cwd-relative path and collide across distinct PRs.
+    pub(crate) fn pr_workspace_root(&self) -> Result<PathBuf, RecorderError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| RecorderError::Io(io::Error::other("recorder mutex poisoned")))?;
+        Ok(pr_workspace_root(
+            inner.state_root.path(),
+            &inner.slug,
+            inner.pr,
+        ))
     }
 
     /// Path of the status-comment dedup file. Cross-run, PR-keyed —
     /// lives under the workspace root, not inside a per-run dir.
-    pub(crate) fn dedup_path(&self) -> PathBuf {
-        self.pr_workspace_root().join("status-comment.json")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when [`Self::pr_workspace_root`]
+    /// fails. A cwd-relative fallback would silently collapse
+    /// distinct PRs onto a shared dedup file.
+    pub(crate) fn dedup_path(&self) -> Result<PathBuf, RecorderError> {
+        Ok(self.pr_workspace_root()?.join("status-comment.json"))
     }
 
     /// Per-PR advisory-lock sidecar target. Acquiring an
@@ -289,8 +309,15 @@ impl Recorder {
     /// excludes concurrent invocations from sharing the spawn
     /// directories; this lock serialises the act-stage dispatch
     /// itself.
-    pub(crate) fn action_lock_path(&self) -> PathBuf {
-        self.pr_workspace_root().join(".action.lock")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when [`Self::pr_workspace_root`]
+    /// fails. A cwd-relative fallback would have all concurrent
+    /// OODA invocations from the same cwd share one lock
+    /// regardless of PR.
+    pub(crate) fn action_lock_path(&self) -> Result<PathBuf, RecorderError> {
+        Ok(self.pr_workspace_root()?.join(".action.lock"))
     }
 
     /// Per-PR sticky file recording the last remote head SHA the
@@ -299,8 +326,14 @@ impl Recorder {
     /// unequal pair (with `pending = false`) is divergence (an
     /// out-of-band push). Path is per-`(slug, pr)`, parallel to
     /// [`Self::dedup_path`] and [`Self::action_lock_path`].
-    pub(crate) fn last_seen_head_path(&self) -> PathBuf {
-        self.pr_workspace_root().join("last_seen_head.json")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when [`Self::pr_workspace_root`]
+    /// fails. A cwd-relative fallback would cross-pollinate drift
+    /// signals between PRs.
+    pub(crate) fn last_seen_head_path(&self) -> Result<PathBuf, RecorderError> {
+        Ok(self.pr_workspace_root()?.join("last_seen_head.json"))
     }
 
     /// Persist a handoff prompt body as a content-addressed blob and
@@ -314,27 +347,44 @@ impl Recorder {
     /// the emitted [`EventBody::IterationHandoff`] carries the
     /// outcome's wire variant name so the reader can pivot on the
     /// same token the stderr header uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] on blob-write or event-append
+    /// failure. A failed append IS surfaced: readers tailing
+    /// `events.jsonl` (cockpit, projection, run reconciler) depend
+    /// on the event landing to observe the handoff. Silently
+    /// discarding it would break the SKILL.md §Surface-to-user
+    /// contract — the run would go quiet without recording why it
+    /// stopped.
     pub(crate) fn write_handoff_md(
         &self,
         prompt: &str,
         outcome: OutcomeKind,
         action_kind: &str,
-    ) -> Option<PathBuf> {
-        let mut inner = self.inner.lock().ok()?;
-        let iteration = inner.current_iteration?;
-        let blob = inner.writer.write_blob(prompt.as_bytes(), "md").ok()?;
+    ) -> Result<PathBuf, RecorderError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| RecorderError::Io(io::Error::other("recorder mutex poisoned")))?;
+        let iteration = inner.current_iteration.ok_or_else(|| {
+            RecorderError::Io(io::Error::other(
+                "write_handoff_md called without a current iteration",
+            ))
+        })?;
+        let blob = inner.writer.write_blob(prompt.as_bytes(), "md")?;
         let path = blob_path(
             inner.state_root.path(),
             inner.writer.run_id().as_str(),
             &blob,
         );
-        let _ = inner.writer.append(EventBody::IterationHandoff {
+        inner.writer.append(EventBody::IterationHandoff {
             iteration,
             variant: outcome.variant_name().to_string(),
             action_kind: action_kind.to_string(),
             blob,
-        });
-        Some(path)
+        })?;
+        Ok(path)
     }
 
     pub(crate) fn write_trace_line(&self, line: &str) {
@@ -621,10 +671,6 @@ impl Recorder {
                 eprintln!("ooda recorder: mutex poisoned; event dropped");
             }
         }
-    }
-
-    fn with_inner<T>(&self, f: impl FnOnce(&Inner) -> T) -> Option<T> {
-        self.inner.lock().ok().map(|inner| f(&inner))
     }
 }
 
@@ -992,6 +1038,20 @@ mod tests {
     }
 
     #[test]
+    fn write_handoff_md_returns_err_when_append_fails() {
+        // Site 5 invariant: failed `IterationHandoff` append
+        // surfaces as Err rather than silently dropping the event.
+        let root = temp_root("handoff-err");
+        let recorder = open_recorder(&root);
+        recorder.set_iteration(Some(1));
+        let runs_dir = root.join("runs");
+        std::fs::remove_dir_all(&runs_dir).unwrap();
+        let result = recorder.write_handoff_md("body", OutcomeKind::HandoffHuman, "Rebase");
+        assert!(result.is_err(), "got {result:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn record_action_end_emits_iteration_executed_on_success() {
         let root = temp_root("exec");
         let recorder = open_recorder(&root);
@@ -1057,6 +1117,37 @@ mod tests {
             events_text.contains(r#""kind":"run_stalled""#),
             "{events_text}"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn action_lock_path_returns_err_on_mutex_poison() {
+        // Site 1 invariant: when the recorder's mutex is poisoned,
+        // the path-resolving methods MUST return Err rather than
+        // degrading to an empty `PathBuf` (which `unwrap_or_default`
+        // produced and which then joined to a cwd-relative sentinel
+        // filename, silently collapsing distinct PRs onto a shared
+        // lock / dedup / sticky file).
+        //
+        // Poison the recorder's internal mutex by holding it while
+        // a thread panics.
+        let root = temp_root("action-lock-poison");
+        let recorder = open_recorder(&root);
+        let handle = {
+            let recorder = recorder.clone();
+            std::thread::spawn(move || {
+                let _guard = recorder.inner.lock().unwrap();
+                panic!("intentionally poison mutex");
+            })
+        };
+        let _ = handle.join();
+        assert!(
+            recorder.action_lock_path().is_err(),
+            "action_lock_path must surface mutex poison",
+        );
+        assert!(recorder.dedup_path().is_err());
+        assert!(recorder.last_seen_head_path().is_err());
+        assert!(recorder.pr_workspace_root().is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -31,12 +31,24 @@ impl Session {
 
         let lock_path = dir.join("lock");
         // Atomic lock via O_CREAT|O_EXCL — no TOCTOU race.
-        // Retry once on AlreadyExists if the prior owner PID is dead
-        // (covers SIGKILL / panic paths that bypass Drop).
+        // Retry once on AlreadyExists if the prior owner PID is dead,
+        // OR if the prior owner's PID could not be read (empty/garbage
+        // body from a crashed prior `Session::open` between create
+        // and PID write). Both shapes indicate no live PID lifeline
+        // exists; reclaiming preserves liveness.
         for attempt in 0..2 {
             match ooda_core::atomic_io::open_secure_create_new(&lock_path) {
                 Ok(mut f) => {
-                    let _ = write!(f, "{}", std::process::id());
+                    // PID write failure leaves an empty lockfile that
+                    // looks `AlreadyExists` to every future
+                    // `Session::open` and parses to no PID — the
+                    // stale-lock recovery branch never fires and the
+                    // file is leaked forever. Best-effort cleanup +
+                    // surface the error so the caller can decide.
+                    if let Err(e) = write!(f, "{}", std::process::id()) {
+                        let _ = fs::remove_file(&lock_path);
+                        return Err(format!("cannot write lock pid: {e}"));
+                    }
                     let history = load_history(&dir);
                     return Ok(Self {
                         dir,
@@ -47,8 +59,14 @@ impl Session {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     let content = fs::read_to_string(&lock_path).unwrap_or_default();
                     let prior_pid = content.trim().parse::<u32>().ok();
-                    if attempt == 0 && prior_pid.is_some_and(|p| !is_pid_alive(p)) {
-                        // Stale lock — owner is dead. Unlink and retry.
+                    let pid_dead = prior_pid.is_some_and(|p| !is_pid_alive(p));
+                    // Empty / unparseable body = crashed prior open
+                    // between create_new and PID write. No PID
+                    // lifeline exists; reclaim is sound.
+                    let no_pid_lifeline = content.trim().is_empty() || prior_pid.is_none();
+                    if attempt == 0 && (pid_dead || no_pid_lifeline) {
+                        // Stale lock — owner is dead or never wrote
+                        // a PID. Unlink and retry.
                         let _ = fs::remove_file(&lock_path);
                         continue;
                     }
@@ -204,6 +222,52 @@ fn epoch_to_iso(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_session_id(label: &str) -> String {
+        format!("converge-test-{label}-{}", std::process::id())
+    }
+
+    #[test]
+    fn session_open_reclaims_lockfile_with_empty_body() {
+        // Regression for Site 2: a prior `Session::open` that
+        // created the lockfile but failed to write its PID leaves
+        // the file with an empty body. The next `Session::open`
+        // would have parsed empty → None → stale-lock retry
+        // skipped (legacy code), and the file leaked forever.
+        // The fix treats "lockfile exists but no PID lifeline" as
+        // a recoverable corruption: reclaim and retry.
+        let id = unique_session_id("empty-lock");
+        let dir = PathBuf::from(BASE_DIR).join(&id);
+        let _ = fs::remove_dir_all(&dir);
+        ooda_core::atomic_io::secure_create_dir_all(&dir).unwrap();
+        // Simulate a crashed prior open: lockfile exists, body is
+        // empty.
+        let lock_path = dir.join("lock");
+        ooda_core::atomic_io::open_secure_create_new(&lock_path).unwrap();
+        assert!(lock_path.exists());
+
+        let session = Session::open(&id).expect("empty lockfile must be reclaimable");
+        session.release();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_open_reclaims_lockfile_with_garbage_body() {
+        // A non-numeric body parses to no PID — same shape as the
+        // empty case. Reclaim is sound.
+        let id = unique_session_id("garbage-lock");
+        let dir = PathBuf::from(BASE_DIR).join(&id);
+        let _ = fs::remove_dir_all(&dir);
+        ooda_core::atomic_io::secure_create_dir_all(&dir).unwrap();
+        let lock_path = dir.join("lock");
+        let mut f = ooda_core::atomic_io::open_secure_create_new(&lock_path).unwrap();
+        write!(f, "not-a-pid").unwrap();
+        drop(f);
+
+        let session = Session::open(&id).expect("garbage lockfile must be reclaimable");
+        session.release();
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn now_iso_format_matches_iso8601() {

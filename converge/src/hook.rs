@@ -25,7 +25,12 @@ const FINISH_TIMEOUT: Duration = Duration::from_secs(5);
 const FINISH_POLL: Duration = Duration::from_millis(50);
 
 pub(crate) struct Hook {
-    child: Child,
+    /// `None` once [`Self::finish`] has consumed the child;
+    /// [`Drop`] becomes a no-op past that point. Belt-and-braces
+    /// against cancellation paths that drop the [`Hook`] without
+    /// calling [`Self::finish`] — the child is killed and reaped
+    /// rather than left as a zombie.
+    child: Option<Child>,
 }
 
 impl Hook {
@@ -37,7 +42,7 @@ impl Hook {
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()?;
-        Ok(Self { child })
+        Ok(Self { child: Some(child) })
     }
 
     /// Send an iteration event. Non-blocking, best-effort.
@@ -57,7 +62,10 @@ impl Hook {
     }
 
     fn send(&mut self, event: &HookEvent) {
-        if let Some(stdin) = self.child.stdin.as_mut()
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if let Some(stdin) = child.stdin.as_mut()
             && let Ok(line) = serde_json::to_string(event)
         {
             let _ = writeln!(stdin, "{line}");
@@ -69,13 +77,19 @@ impl Hook {
     /// [`FINISH_TIMEOUT`]. A hook that fails to exit within the
     /// budget is killed; failures (kill, reap) are swallowed because
     /// converge is itself shutting down and has no recovery channel.
+    ///
+    /// Consumes the child handle so [`Drop`]'s belt-and-braces
+    /// kill+reap becomes a no-op past this call.
     pub(crate) fn finish(mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
         // Drop stdin to signal EOF. A well-behaved hook drains its
         // input and exits cleanly within FINISH_TIMEOUT.
-        drop(self.child.stdin.take());
+        drop(child.stdin.take());
         let deadline = Instant::now() + FINISH_TIMEOUT;
         loop {
-            match self.child.try_wait() {
+            match child.try_wait() {
                 // Child reaped (clean exit or signal). Done.
                 Ok(Some(_)) | Err(_) => return,
                 Ok(None) => {
@@ -84,13 +98,26 @@ impl Hook {
                         // converge's own shutdown can proceed. Both
                         // kill and the post-kill wait are best-
                         // effort; the parent has no recovery path.
-                        let _ = self.child.kill();
-                        let _ = self.child.wait();
+                        let _ = child.kill();
+                        let _ = child.wait();
                         return;
                     }
                     std::thread::sleep(FINISH_POLL);
                 }
             }
+        }
+    }
+}
+
+impl Drop for Hook {
+    /// Belt-and-braces against cancellation paths that drop the
+    /// [`Hook`] without calling [`Self::finish`]: kill+reap the
+    /// child so it cannot linger as a zombie. Skipped when
+    /// `finish` already consumed the child handle.
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

@@ -214,6 +214,14 @@ pub enum ActionKind {
         level: crate::ids::CodexReasoningLevel,
         count: u32,
     },
+    /// Stale codex-review batch state at this level (e.g. stray
+    /// log file from a prior batch). No safe auto-recovery; routes
+    /// to a human resolver. The carried `reason` text is surfaced
+    /// in the prompt.
+    CodexReviewBatchInconsistent {
+        level: crate::ids::CodexReasoningLevel,
+        reason: String,
+    },
 
     // ── PR metadata attestation ──
     /// PR metadata attestation drifted from HEAD or has never been
@@ -311,6 +319,7 @@ impl ActionKindName for ActionKind {
             Self::RunCodexReviewBatch { .. } => "RunCodexReviewBatch",
             Self::AwaitCodexReviewBatch { .. } => "AwaitCodexReviewBatch",
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
+            Self::CodexReviewBatchInconsistent { .. } => "CodexReviewBatchInconsistent",
             Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
             Self::ReviewDocs { .. } => "ReviewDocs",
             Self::AddressClaudeReview { .. } => "AddressClaudeReview",

@@ -44,6 +44,13 @@ pub(crate) enum CodexReviewStatus {
         level: CodexReasoningLevel,
         verdicts: Vec<VerdictRecord>,
     },
+    /// Stale state observed at `level` (more completed slots than
+    /// expected — stray log file or mismatched caller `n`). No safe
+    /// auto-recovery; surface for human resolution.
+    Inconsistent {
+        level: CodexReasoningLevel,
+        reason: String,
+    },
     /// Every level in `[floor, ceiling]` is `Complete { all-clean }`.
     LadderSatisfied,
 }
@@ -108,6 +115,10 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
                 BatchState::Complete { verdicts } => CodexReviewStatus::Address {
                     level: lvl_obs.level,
                     verdicts: verdicts.clone(),
+                },
+                BatchState::InconsistentState { reason, .. } => CodexReviewStatus::Inconsistent {
+                    level: lvl_obs.level,
+                    reason: reason.clone(),
                 },
             };
             CodexReviewReport {

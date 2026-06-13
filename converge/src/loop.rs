@@ -297,10 +297,17 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
                 iter,
                 Some(report.score),
             );
+            // `Terminal` is a closed struct of `String` fields; the
+            // derived serde impl is infallible. `.expect` makes the
+            // invariant load-bearing: a future field that breaks it
+            // (non-finite f64, non-string-keyed map) fails loudly
+            // rather than silently nulling the terminal payload —
+            // which would collapse "terminal: <reason>" and "no
+            // terminal" into one indistinguishable on-disk shape.
             halt.terminal = report
                 .terminal
                 .as_ref()
-                .map(|t| serde_json::to_value(t).unwrap_or_default());
+                .map(|t| serde_json::to_value(t).expect("Terminal struct must serialize"));
             return finalize(halt, &session, &mut hook, &last_report);
         }
 
@@ -359,7 +366,13 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
         match action.automation {
             Automation::Full => {
                 if !is_new {
-                    interruptible_sleep(POST_FULL_REOBSERVE_MS, cancelled)?;
+                    if interruptible_sleep(POST_FULL_REOBSERVE_MS, cancelled)
+                        == SleepOutcome::Cancelled
+                    {
+                        let halt =
+                            make_halt(HaltStatus::Cancelled, &session, opts, iter, last_score);
+                        return finalize(halt, &session, &mut hook, &last_report);
+                    }
                     continue;
                 }
                 let execute = action.execute.as_deref().unwrap_or_default();
@@ -424,7 +437,10 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
             }
             Automation::Wait => {
                 let ms = clamp_poll_ms(action.next_poll_seconds);
-                interruptible_sleep(ms, cancelled)?;
+                if interruptible_sleep(ms, cancelled) == SleepOutcome::Cancelled {
+                    let halt = make_halt(HaltStatus::Cancelled, &session, opts, iter, last_score);
+                    return finalize(halt, &session, &mut hook, &last_report);
+                }
             }
             Automation::Human => {
                 let mut halt = make_halt(HaltStatus::Hil, &session, opts, iter, Some(report.score));
@@ -439,21 +455,34 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
     finalize(halt, &session, &mut hook, &last_report)
 }
 
-fn interruptible_sleep(ms: u64, cancelled: &AtomicBool) -> Result<(), String> {
+/// Discriminated result of [`interruptible_sleep`]. The typed
+/// `Cancelled` variant forces callers to dispatch cancellation
+/// explicitly into [`finalize`]; the prior `?`-propagating `String`
+/// return tunnelled past the finalize step and left exit.json on
+/// the `in_progress` stub plus a leaked hook child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SleepOutcome {
+    Completed,
+    Cancelled,
+}
+
+fn interruptible_sleep(ms: u64, cancelled: &AtomicBool) -> SleepOutcome {
     let deadline = std::time::Instant::now() + Duration::from_millis(ms);
     while std::time::Instant::now() < deadline {
         if cancelled.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
+            return SleepOutcome::Cancelled;
         }
         thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+    SleepOutcome::Completed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
+    use std::path::PathBuf;
 
     fn make_action(kind: &str, effect: TargetEffect) -> Action {
         Action {
@@ -488,6 +517,96 @@ mod tests {
             activity_state: None,
             terminal: None,
         }
+    }
+
+    // -- interruptible_sleep --
+
+    #[test]
+    fn interruptible_sleep_returns_cancelled_when_flag_is_set() {
+        // Site 4 invariant: cancellation surfaces as a typed sentinel
+        // the caller must dispatch explicitly (into `finalize`). The
+        // prior `Err("cancelled")` propagated via `?` past the
+        // finalize step, leaving exit.json on `in_progress` and the
+        // hook child unreaped.
+        let cancelled = AtomicBool::new(true);
+        let outcome = interruptible_sleep(5_000, &cancelled);
+        assert_eq!(outcome, SleepOutcome::Cancelled);
+    }
+
+    #[test]
+    fn interruptible_sleep_returns_completed_when_not_cancelled() {
+        let cancelled = AtomicBool::new(false);
+        let outcome = interruptible_sleep(0, &cancelled);
+        assert_eq!(outcome, SleepOutcome::Completed);
+    }
+
+    #[test]
+    #[allow(clippy::items_after_statements, clippy::similar_names)]
+    fn converge_with_mid_sleep_cancellation_writes_halt_json() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Arc;
+        use std::thread;
+
+        // End-to-end: a Wait action that begins sleeping is
+        // interrupted by `cancelled = true`. The loop must dispatch
+        // through `finalize`, which writes exit.json with a
+        // `cancelled` halt — NOT leave the `in_progress` stub.
+        let dir = std::env::temp_dir().join(format!("converge-cancel-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session_id = format!("cancel-mid-sleep-{}", std::process::id());
+
+        // Fitness skill that always returns a Wait action with a long
+        // `next_poll_seconds`. The loop enters interruptible_sleep
+        // immediately; cancelling mid-sleep is the test.
+        let fitness_script = dir.join("fitness.sh");
+        let exit_dir = PathBuf::from("/tmp/converge").join(&session_id);
+        fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &fitness_script,
+            r#"#!/bin/sh
+cat <<'EOF'
+{"score":0.5,"target":1.0,"actions":[{"kind":"wait","description":"poll","automation":"wait","target_effect":"advances","next_poll_seconds":3600.0}]}
+EOF
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&fitness_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fitness_script, perms).unwrap();
+
+        let opts = ConvergeOpts {
+            fitness_argv: vec![fitness_script.display().to_string()],
+            max_iter: 1,
+            session_id: session_id.clone(),
+            resume_cmd: vec!["converge".into()],
+            hook_cmd: None,
+            verbose: false,
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_writer = Arc::clone(&cancelled);
+        // Flip the cancellation flag after the loop has entered
+        // its sleep.
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            cancel_writer.store(true, Ordering::Relaxed);
+        });
+
+        let halt = converge(&opts, &cancelled).expect("loop returns Ok with cancelled halt");
+        canceller.join().unwrap();
+
+        assert_eq!(halt.status, HaltStatus::Cancelled);
+        // finalize wrote exit.json with the cancelled status — not
+        // the `in_progress` stub.
+        let exit_path = exit_dir.join("exit.json");
+        let body = fs::read_to_string(&exit_path).expect("exit.json present");
+        assert!(body.contains(r#""status": "cancelled""#), "body: {body}");
+        assert!(
+            !body.contains(r#""stage": "in_progress""#),
+            "in_progress stub must have been replaced by cancelled halt; body: {body}",
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&exit_dir);
     }
 
     // -- pick_action --

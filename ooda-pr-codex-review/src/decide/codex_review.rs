@@ -56,6 +56,9 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
             let count = u32::try_from(issues.len()).expect("codex issue count fits in u32");
             vec![mk_address(*level, count, &issues)]
         }
+        CodexReviewStatus::Inconsistent { level, reason } => {
+            vec![mk_inconsistent(*level, reason)]
+        }
     }
 }
 
@@ -90,6 +93,28 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingWait),
         blocker: BlockerKey::typed("codex_review_await", &level),
+    }
+}
+
+fn mk_inconsistent(level: CodexReasoningLevel, reason: &str) -> Action {
+    use ooda_core::HandoffPrompt;
+    Action {
+        kind: ActionKind::CodexReviewBatchInconsistent {
+            level,
+            reason: reason.to_string(),
+        },
+        effect: ActionEffect::Human {
+            prompt: HandoffPrompt::new(format!(
+                "Stale codex-review batch state at level {}: {reason}. \
+                 The auto-loop has no safe recovery: inspect the batch \
+                 directory, clear stray log/exit files (or remove \
+                 `head_sha.txt` to force a fresh batch), then re-run.",
+                level.as_str(),
+            )),
+        },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Mid(MidTier::Pathology),
+        blocker: BlockerKey::typed("codex_review_inconsistent", &level),
     }
 }
 
@@ -227,6 +252,31 @@ mod tests {
     }
 
     #[test]
+    fn inconsistent_emits_human_handoff() {
+        // Site 7 (Site C from F7) regression: a stale-state
+        // observation (completed > expected) used to project to
+        // `AwaitCodexReviewBatch { pending: 0 }` — a Wait the
+        // loop honours forever. The new path emits a Human
+        // handoff at the Pathology tier so a resolver can clear
+        // the stale state.
+        let r = report(CodexReviewStatus::Inconsistent {
+            level: CodexReasoningLevel::High,
+            reason: "stray log file from prior batch".into(),
+        });
+        let cs = candidates(&r);
+        assert_eq!(cs.len(), 1);
+        match &cs[0].kind {
+            ActionKind::CodexReviewBatchInconsistent { level, reason } => {
+                assert_eq!(*level, CodexReasoningLevel::High);
+                assert!(reason.contains("stray log"), "reason: {reason}");
+            }
+            other => panic!("expected CodexReviewBatchInconsistent, got {other:?}"),
+        }
+        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::Pathology));
+    }
+
+    #[test]
     fn ladder_satisfied_emits_no_candidates() {
         let r = report(CodexReviewStatus::LadderSatisfied);
         assert!(candidates(&r).is_empty());
@@ -245,6 +295,7 @@ mod tests {
         EmitRunBatch,
         EmitAwaitBatch,
         EmitAddressBatch,
+        EmitInconsistent,
     }
 
     fn expected_codex_review_axis_behavior(status: &CodexReviewStatus) -> CodexReviewAxisBehavior {
@@ -253,6 +304,7 @@ mod tests {
             CodexReviewStatus::Spawn { .. } => CodexReviewAxisBehavior::EmitRunBatch,
             CodexReviewStatus::Await { .. } => CodexReviewAxisBehavior::EmitAwaitBatch,
             CodexReviewStatus::Address { .. } => CodexReviewAxisBehavior::EmitAddressBatch,
+            CodexReviewStatus::Inconsistent { .. } => CodexReviewAxisBehavior::EmitInconsistent,
         }
     }
 
@@ -275,6 +327,10 @@ mod tests {
                     class: VerdictClass::HasIssues,
                 }],
             },
+            CodexReviewStatus::Inconsistent {
+                level: CodexReasoningLevel::High,
+                reason: "stray log".into(),
+            },
         ]
     }
 
@@ -290,6 +346,9 @@ mod tests {
                 }
                 (ActionKind::AddressCodexReviewBatch { .. }, ActionEffect::Agent { .. }) => {
                     CodexReviewAxisBehavior::EmitAddressBatch
+                }
+                (ActionKind::CodexReviewBatchInconsistent { .. }, ActionEffect::Human { .. }) => {
+                    CodexReviewAxisBehavior::EmitInconsistent
                 }
                 (kind, effect) => panic!(
                     "codex-review axis emitted unexpected (kind, effect): \
@@ -308,7 +367,7 @@ mod tests {
         let statuses = all_codex_review_statuses();
         assert_eq!(
             statuses.len(),
-            4,
+            5,
             "`all_codex_review_statuses` must include one sample per \
              `CodexReviewStatus` variant; adding a new variant requires \
              adding both an arm in `expected_codex_review_axis_behavior` \

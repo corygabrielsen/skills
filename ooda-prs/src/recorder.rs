@@ -36,6 +36,13 @@ use ooda_state::{
     BlobRef, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, Result as StateResult,
     RunId, RunWriter, StateError, StateRoot, domain_specific, terminal_event,
 };
+
+/// Error type returned by recorder path-resolving methods.
+/// Aliased to [`StateError`] so the byte-identical
+/// `comment/post.rs` mirror file can refer to a single
+/// `crate::recorder::RecorderError` symbol that resolves to the
+/// per-crate concrete error.
+pub(crate) use ooda_state::StateError as RecorderError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -235,10 +242,15 @@ impl Recorder {
     /// Per-PR dedup file for status comments. Lives outside the
     /// per-run tree because dedup is a cross-run invariant: a fresh
     /// run must observe prior runs' posted hashes.
-    pub(crate) fn dedup_path(&self) -> PathBuf {
-        self.with_inner(|inner| pr_index_path(inner.state_root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
-            .join("status-comment-dedup.json")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError`] when the per-PR index directory
+    /// cannot be created or the recorder mutex is poisoned. A
+    /// silent fallback to a cwd-relative path would collapse
+    /// distinct PRs onto a shared dedup file — fail loud instead.
+    pub(crate) fn dedup_path(&self) -> StateResult<PathBuf> {
+        Ok(self.pr_index_dir()?.join("status-comment-dedup.json"))
     }
 
     /// Per-PR advisory-lock sidecar target. Acquiring an
@@ -247,10 +259,17 @@ impl Recorder {
     /// two drivers cannot dispatch a side-effecting action
     /// simultaneously. The path is per-`(slug, pr)`, not per-run, so
     /// drivers in distinct processes see the same lock.
-    pub(crate) fn action_lock_path(&self) -> PathBuf {
-        self.with_inner(|inner| pr_index_path(inner.state_root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
-            .join(".action.lock")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError`] when the per-PR index directory
+    /// cannot be created or the recorder mutex is poisoned. A
+    /// silent fallback to a cwd-relative `.action.lock` would have
+    /// all concurrent OODA invocations from the same cwd share one
+    /// lock regardless of PR — the act-stage serialisation
+    /// invariant would silently break.
+    pub(crate) fn action_lock_path(&self) -> StateResult<PathBuf> {
+        Ok(self.pr_index_dir()?.join(".action.lock"))
     }
 
     /// Per-PR sticky file recording the last remote head SHA the
@@ -259,10 +278,28 @@ impl Recorder {
     /// unequal pair (with `pending = false`) is divergence (an
     /// out-of-band push). Path is per-`(slug, pr)`, parallel to
     /// [`Self::dedup_path`] and [`Self::action_lock_path`].
-    pub(crate) fn last_seen_head_path(&self) -> PathBuf {
-        self.with_inner(|inner| pr_index_path(inner.state_root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
-            .join("last_seen_head.json")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError`] when the per-PR index directory
+    /// cannot be created or the recorder mutex is poisoned. A
+    /// silent fallback to a cwd-relative path would cross-pollinate
+    /// drift signals between PRs — fail loud instead.
+    pub(crate) fn last_seen_head_path(&self) -> StateResult<PathBuf> {
+        Ok(self.pr_index_dir()?.join("last_seen_head.json"))
+    }
+
+    /// Resolve the per-PR index directory, creating it if needed.
+    /// Shared core for [`Self::dedup_path`],
+    /// [`Self::action_lock_path`], and [`Self::last_seen_head_path`].
+    /// Each failure mode (mutex poison, `create_dir_all`) propagates
+    /// as a typed error.
+    fn pr_index_dir(&self) -> StateResult<PathBuf> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| StateError::Io(io::Error::other("recorder mutex poisoned")))?;
+        pr_index_path(inner.state_root.path(), &inner.slug, inner.pr)
     }
 
     /// Persist a handoff prompt body as a content-addressed blob
@@ -270,31 +307,42 @@ impl Recorder {
     ///
     /// # Postcondition
     ///
-    /// On `Some(path)`: bytes are durable inside the run's blob
-    /// store at `runs/<run-id>/blobs/<sha>.md`. The stderr handoff
-    /// pointer (`see: <path>`) targets this file directly.
+    /// On `Ok(path)`: bytes are durable inside the run's blob
+    /// store at `runs/<run-id>/blobs/<sha>.md` AND the
+    /// `IterationHandoff` event referencing the blob is on disk
+    /// in `events.jsonl`. The stderr handoff pointer (`see:
+    /// <path>`) targets this file directly.
     ///
-    /// # Failure modes
+    /// # Errors
     ///
-    /// Returns `None` when the write fails or no iteration is set.
-    /// Caller must fall back to inline stderr emission so the
-    /// prompt is never lost.
+    /// Returns [`StateError`] on blob-write or event-append failure
+    /// (disk full, mutex poison, no iteration set). Failed appends
+    /// ARE surfaced: readers tailing `events.jsonl` depend on the
+    /// event landing to observe the handoff. Silently discarding it
+    /// would let the run go quiet without recording why it stopped.
     pub(crate) fn write_handoff_md(
         &self,
         prompt: &str,
         outcome: OutcomeKind,
         action_kind: &str,
-    ) -> Option<PathBuf> {
-        let mut inner = self.inner.lock().ok()?;
-        let iteration = inner.current_iteration?;
-        let blob = inner.writer.write_blob(prompt.as_bytes(), "md").ok()?;
-        let _ = inner.writer.append(EventBody::IterationHandoff {
+    ) -> StateResult<PathBuf> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| StateError::Io(io::Error::other("recorder mutex poisoned")))?;
+        let iteration = inner.current_iteration.ok_or_else(|| {
+            StateError::Io(io::Error::other(
+                "write_handoff_md called without a current iteration",
+            ))
+        })?;
+        let blob = inner.writer.write_blob(prompt.as_bytes(), "md")?;
+        inner.writer.append(EventBody::IterationHandoff {
             iteration,
             variant: outcome.variant_name().to_string(),
             action_kind: action_kind.to_string(),
             blob: blob.clone(),
-        });
-        Some(blob_path(&inner, &blob))
+        })?;
+        Ok(blob_path(&inner, &blob))
     }
 
     pub(crate) fn write_trace_line(&self, line: &str) {
@@ -724,15 +772,23 @@ fn stall_action_kind(outcome: &Outcome) -> Option<String> {
 /// cross-run state (e.g. status-comment dedup). Lives under
 /// `<state-root>/index/pr/<owner>/<repo>/<pr>/`, parallel to the
 /// run tree at `<state-root>/runs/`.
-fn pr_index_path(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf {
+///
+/// Surfaces `create_dir_all` failures: the prior best-effort
+/// `let _ = fs::create_dir_all(...)` swallowed perms / disk-full
+/// errors and returned a non-existent directory; downstream
+/// callers that joined a sentinel filename onto it (lock,
+/// dedup, sticky) ended up with paths that could not be created
+/// and the caller saw a confusing "permission denied" on a path
+/// that looked correct.
+fn pr_index_path(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> StateResult<PathBuf> {
     let dir = root
         .join("index")
         .join("pr")
         .join(slug.owner().as_str())
         .join(slug.repo().as_str())
         .join(pr.to_string());
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 // ── Tool-call guard ──────────────────────────────────────────────────
@@ -1007,6 +1063,42 @@ mod tests {
         assert!(s.contains("/blobs/"), "got {s}");
         assert!(s.ends_with(".md"), "got {s}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_handoff_md_returns_err_when_append_fails() {
+        // Site 5 invariant: failed `IterationHandoff` append
+        // surfaces as Err rather than silently dropping the event.
+        let root = temp_root("handoff_err");
+        let _ = std::fs::remove_dir_all(&root);
+        let recorder = open_recorder(&root);
+        recorder.set_iteration(Some(1));
+        // Force the blob/append step to fail by unlinking the run
+        // tree between `set_iteration` and the call.
+        let runs_dir = root.join("runs");
+        std::fs::remove_dir_all(&runs_dir).unwrap();
+        let result = recorder.write_handoff_md("body", OutcomeKind::HandoffHuman, "Rebase");
+        assert!(result.is_err(), "got {result:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn action_lock_path_returns_err_when_index_dir_uncreatable() {
+        // Site 1 invariant: when the per-PR index directory cannot
+        // be created, `action_lock_path` MUST return Err rather
+        // than degrading to a cwd-relative `.action.lock`.
+        let root = temp_root("action_lock_err");
+        let _ = std::fs::remove_dir_all(&root);
+        let recorder = open_recorder(&root);
+        // Place a regular file where the index directory needs to
+        // be — `create_dir_all` will return Err.
+        let blocker = root.join("index").join("pr").join("example");
+        std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+        std::fs::write(&blocker, b"not-a-directory").unwrap();
+        assert!(recorder.action_lock_path().is_err());
+        assert!(recorder.dedup_path().is_err());
+        assert!(recorder.last_seen_head_path().is_err());
         let _ = std::fs::remove_dir_all(root);
     }
 }

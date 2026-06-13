@@ -185,6 +185,11 @@ pub enum LoopError {
     Observe(GhError),
     CodexObserve(std::io::Error),
     Act(ActError),
+    /// Recorder-owned PR-scoped path could not be resolved (mutex
+    /// poison). Surfaced explicitly rather than degrading to a
+    /// cwd-relative fallback path that would silently collapse
+    /// distinct PRs onto a shared lock / dedup / sticky file.
+    Recorder(crate::recorder::RecorderError),
 }
 
 impl std::fmt::Display for LoopError {
@@ -193,6 +198,7 @@ impl std::fmt::Display for LoopError {
             Self::Observe(e) => write!(f, "observe: {e}"),
             Self::CodexObserve(e) => write!(f, "observe (codex review): {e}"),
             Self::Act(e) => write!(f, "act: {e}"),
+            Self::Recorder(e) => write!(f, "recorder: {e}"),
         }
     }
 }
@@ -350,7 +356,9 @@ fn run_iter(
 
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
-    let sticky_path = recorder.last_seen_head_path();
+    let sticky_path = recorder
+        .last_seen_head_path()
+        .map_err(LoopError::Recorder)?;
     let obs = match fetch_all(&slug, pr, state_root, Some(&sticky_path), &ctx.repo_root) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, ObserveOutcome::Ok);

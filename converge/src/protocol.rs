@@ -107,6 +107,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terminal_roundtrips_through_serde_json_value() {
+        // Site 3 invariant: `Terminal` must serialize losslessly so
+        // the `serde_json::to_value(t).expect(...)` site in
+        // `converge::loop::converge` can rely on the infallibility.
+        // Adding a field that breaks this (a non-finite f64, a
+        // non-string-keyed map) trips this test before the
+        // `.expect` panics in production.
+        let t = Terminal {
+            kind: "merged".into(),
+        };
+        let value = serde_json::to_value(&t).expect("Terminal serializes");
+        assert_eq!(value, serde_json::json!({"kind": "merged"}));
+        let back: Terminal = serde_json::from_value(value).expect("Terminal round-trips");
+        assert_eq!(back.kind, "merged");
+    }
+
+    #[test]
     fn deserialize_full_fitness_report() {
         let json = r#"{
             "score": 0.75,

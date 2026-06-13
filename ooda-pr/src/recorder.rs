@@ -58,7 +58,7 @@ use ooda_core::ExitCode;
 static PROCESS_RECORDER: OnceLock<Mutex<Option<Recorder>>> = OnceLock::new();
 
 #[derive(Debug)]
-pub(crate) enum RecorderError {
+pub enum RecorderError {
     State(StateError),
     Io(io::Error),
 }
@@ -236,10 +236,15 @@ impl Recorder {
     /// Per-PR dedup file for status comments. Lives outside the
     /// per-run tree because dedup is a cross-run invariant: a fresh
     /// run must observe prior runs' posted hashes.
-    pub(crate) fn dedup_path(&self) -> PathBuf {
-        self.with_inner(|inner| pr_index_path(inner.root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
-            .join("status-comment-dedup.json")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when the per-PR index directory
+    /// cannot be created or the recorder mutex is poisoned. A
+    /// silent fallback to a cwd-relative path would collapse
+    /// distinct PRs onto a shared dedup file — fail loud instead.
+    pub(crate) fn dedup_path(&self) -> Result<PathBuf, RecorderError> {
+        Ok(self.pr_index_dir()?.join("status-comment-dedup.json"))
     }
 
     /// Per-PR advisory-lock sidecar target. Acquiring an
@@ -248,10 +253,17 @@ impl Recorder {
     /// two drivers cannot dispatch a side-effecting action
     /// simultaneously. The path is per-`(slug, pr)`, not per-run, so
     /// drivers in distinct processes see the same lock.
-    pub(crate) fn action_lock_path(&self) -> PathBuf {
-        self.with_inner(|inner| pr_index_path(inner.root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
-            .join(".action.lock")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when the per-PR index directory
+    /// cannot be created or the recorder mutex is poisoned. A
+    /// silent fallback to a cwd-relative `.action.lock` would have
+    /// all concurrent OODA invocations from the same cwd share one
+    /// lock regardless of PR — the act-stage serialisation
+    /// invariant would silently break.
+    pub(crate) fn action_lock_path(&self) -> Result<PathBuf, RecorderError> {
+        Ok(self.pr_index_dir()?.join(".action.lock"))
     }
 
     /// Per-PR sticky file recording the last remote head SHA the
@@ -260,10 +272,28 @@ impl Recorder {
     /// unequal pair (with `pending = false`) is divergence (an
     /// out-of-band push). Path is per-`(slug, pr)`, parallel to
     /// [`Self::dedup_path`] and [`Self::action_lock_path`].
-    pub(crate) fn last_seen_head_path(&self) -> PathBuf {
-        self.with_inner(|inner| pr_index_path(inner.root.path(), &inner.slug, inner.pr))
-            .unwrap_or_default()
-            .join("last_seen_head.json")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when the per-PR index directory
+    /// cannot be created or the recorder mutex is poisoned. A
+    /// silent fallback to a cwd-relative path would cross-pollinate
+    /// drift signals between PRs — fail loud instead.
+    pub(crate) fn last_seen_head_path(&self) -> Result<PathBuf, RecorderError> {
+        Ok(self.pr_index_dir()?.join("last_seen_head.json"))
+    }
+
+    /// Resolve the per-PR index directory, creating it if needed.
+    /// Shared core for [`Self::dedup_path`],
+    /// [`Self::action_lock_path`], and [`Self::last_seen_head_path`].
+    /// Each failure mode (mutex poison, `create_dir_all`) propagates
+    /// as a typed error.
+    fn pr_index_dir(&self) -> Result<PathBuf, RecorderError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| RecorderError::Io(io::Error::other("recorder mutex poisoned")))?;
+        pr_index_path(inner.root.path(), &inner.slug, inner.pr)
     }
 
     /// Persist a handoff prompt body as a content-addressed blob and
@@ -275,26 +305,40 @@ impl Recorder {
     /// the emitted [`EventBody::IterationHandoff`] carries the
     /// outcome's wire variant name so the reader can pivot on the
     /// same token the stderr header uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderError`] when the underlying blob write or
+    /// the announcing `IterationHandoff` append fails. A failed
+    /// append IS surfaced: readers tailing `events.jsonl` (cockpit,
+    /// projection, run reconciler) depend on the event landing to
+    /// observe the handoff. Silently discarding it would break the
+    /// SKILL.md §Surface-to-user contract — the run would go quiet
+    /// without recording why it stopped.
     pub(crate) fn write_handoff_md(
         &self,
         prompt: &str,
         outcome: OutcomeKind,
         action_kind: &str,
-    ) -> Option<PathBuf> {
-        let mut inner = self.inner.lock().ok()?;
-        let blob = inner.writer.write_blob(prompt.as_bytes(), "md").ok()?;
+    ) -> Result<PathBuf, RecorderError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| RecorderError::Io(io::Error::other("recorder mutex poisoned")))?;
+        let iteration = inner.current_iteration.ok_or_else(|| {
+            RecorderError::Io(io::Error::other(
+                "write_handoff_md called without a current iteration",
+            ))
+        })?;
+        let blob = inner.writer.write_blob(prompt.as_bytes(), "md")?;
         let path = ooda_state::blob_path(inner.root.path(), inner.writer.run_id().as_str(), &blob);
-        let iteration = inner.current_iteration?;
-        // Best-effort: announce the handoff via an event referencing
-        // the blob. The path is also derivable from (run_id, sha) so
-        // even a failed append leaves the file reachable.
-        let _ = inner.writer.append(EventBody::IterationHandoff {
+        inner.writer.append(EventBody::IterationHandoff {
             iteration,
             variant: outcome.variant_name().to_string(),
             action_kind: action_kind.to_string(),
             blob,
-        });
-        Some(path)
+        })?;
+        Ok(path)
     }
 
     pub(crate) fn write_trace_line(&self, line: &str) {
@@ -610,10 +654,6 @@ impl Recorder {
             }
         }
     }
-
-    fn with_inner<T>(&self, f: impl FnOnce(&Inner) -> T) -> Option<T> {
-        self.inner.lock().ok().map(|inner| f(&inner))
-    }
 }
 
 impl Inner {
@@ -751,15 +791,27 @@ fn open_append(path: &Path) -> Result<File, io::Error> {
 /// cross-run state (e.g. status-comment dedup). Lives under
 /// `<state-root>/index/pr/<owner>/<repo>/<pr>/`, parallel to the
 /// run tree at `<state-root>/runs/`.
-fn pr_index_path(root: &Path, slug: &RepoSlug, pr: PullRequestNumber) -> PathBuf {
+///
+/// Surfaces `create_dir_all` failures: the prior best-effort
+/// `let _ = fs::create_dir_all(...)` swallowed perms / disk-full
+/// errors and returned a non-existent directory; downstream
+/// callers that joined a sentinel filename onto it (lock,
+/// dedup, sticky) ended up with paths that could not be created
+/// and the caller saw a confusing "permission denied" on a path
+/// that looked correct.
+fn pr_index_path(
+    root: &Path,
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+) -> Result<PathBuf, RecorderError> {
     let dir = root
         .join("index")
         .join("pr")
         .join(slug.owner().as_str())
         .join(slug.repo().as_str())
         .join(pr.to_string());
-    let _ = fs::create_dir_all(&dir);
-    dir
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 /// Single-token rendering for the `IterationDecided` event's
@@ -1078,10 +1130,76 @@ mod tests {
     }
 
     #[test]
+    fn action_lock_path_returns_err_when_index_dir_uncreatable() {
+        // Site 1 invariant: when the per-PR index directory cannot
+        // be created, `action_lock_path` MUST return Err rather
+        // than degrading to a cwd-relative `.action.lock`. The
+        // silent fallback would have every concurrent OODA
+        // invocation from the same cwd share one lock regardless
+        // of PR — the act-stage serialisation invariant would
+        // silently break.
+        let root = temp_root("action-lock-err");
+        let recorder = open_recorder(&root);
+        // Block `create_dir_all` for the per-PR index path by
+        // placing a regular file where the index directory needs
+        // to be. This is the simplest robust simulation of an
+        // unwritable filesystem state.
+        let blocker = root.join("index").join("pr").join("example");
+        fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+        fs::write(&blocker, b"not-a-directory").unwrap();
+        let result = recorder.action_lock_path();
+        assert!(
+            result.is_err(),
+            "action_lock_path must surface index-dir failure, got {result:?}",
+        );
+        // Same shape for the sibling paths.
+        assert!(recorder.dedup_path().is_err());
+        assert!(recorder.last_seen_head_path().is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_handoff_md_returns_err_when_append_fails() {
+        // Site 5 invariant: if the IterationHandoff append fails,
+        // `write_handoff_md` surfaces the error rather than
+        // returning Some(path) with a missing event. Readers
+        // tailing `events.jsonl` would otherwise never observe the
+        // handoff and the run would go quiet without recording why
+        // it stopped.
+        let root = temp_root("handoff-err");
+        let recorder = open_recorder(&root);
+        recorder.set_iteration(Some(1));
+        // Force the blob/append step to fail by unlinking the run
+        // tree between `set_iteration` and the call.
+        let runs_dir = root.join("runs");
+        fs::remove_dir_all(&runs_dir).unwrap();
+        let result =
+            recorder.write_handoff_md("Rebase onto base", OutcomeKind::HandoffHuman, "Rebase");
+        assert!(
+            result.is_err(),
+            "write_handoff_md must surface the failure, got {result:?}",
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_handoff_md_returns_err_when_iteration_unset() {
+        let root = temp_root("handoff-no-iter");
+        let recorder = open_recorder(&root);
+        // No set_iteration call — iteration stays None.
+        let result = recorder.write_handoff_md("Body", OutcomeKind::HandoffHuman, "Rebase");
+        assert!(
+            result.is_err(),
+            "write_handoff_md must surface missing iteration"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn dedup_path_is_per_pr_and_cross_run() {
         let root = temp_root("dedup");
-        let a = open_recorder(&root).dedup_path();
-        let b = open_recorder(&root).dedup_path();
+        let a = open_recorder(&root).dedup_path().unwrap();
+        let b = open_recorder(&root).dedup_path().unwrap();
         // Two distinct runs on the same (slug, pr) share the dedup
         // file: dedup is a cross-run invariant.
         assert_eq!(a, b);

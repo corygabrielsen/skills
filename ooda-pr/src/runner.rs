@@ -175,6 +175,12 @@ pub(crate) fn current_timestamp() -> Timestamp {
 pub enum LoopError {
     Observe(GhError),
     Act(ActError),
+    /// Per-PR index directory or other recorder-owned path could
+    /// not be resolved (mutex poison, `create_dir_all` failure).
+    /// Surfaced explicitly rather than degrading to a cwd-relative
+    /// fallback path that would silently collapse distinct PRs
+    /// onto a shared lock / dedup / sticky file.
+    Recorder(crate::recorder::RecorderError),
 }
 
 impl std::fmt::Display for LoopError {
@@ -182,6 +188,7 @@ impl std::fmt::Display for LoopError {
         match self {
             Self::Observe(e) => write!(f, "observe: {e}"),
             Self::Act(e) => write!(f, "act: {e}"),
+            Self::Recorder(e) => write!(f, "recorder: {e}"),
         }
     }
 }
@@ -332,7 +339,9 @@ fn run_iter(
 ) -> Result<IterStep, LoopError> {
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
-    let sticky_path = recorder.last_seen_head_path();
+    let sticky_path = recorder
+        .last_seen_head_path()
+        .map_err(LoopError::Recorder)?;
     let obs = match fetch_all(slug, pr, state_root, Some(&sticky_path), repo_root) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, ObserveOutcome::Ok);
@@ -364,7 +373,7 @@ fn run_iter(
             let action = rate_limit_wait_action(hit);
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
-            let lock_path = recorder.action_lock_path();
+            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             let act_result = act(&action, slug, pr, &lock_path, repo_root);
             if act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
@@ -405,7 +414,7 @@ fn run_iter(
             if is_wait {
                 recorder.record_wait_start(iter, &action);
             }
-            let lock_path = recorder.action_lock_path();
+            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             let act_result = act(&action, slug, pr, &lock_path, repo_root);
             if is_wait && act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);

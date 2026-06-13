@@ -1005,18 +1005,55 @@ impl Drop for RunWriter {
     /// `process::exit` paths and panic unwinds. Hard kills (SIGKILL,
     /// OOM) skip Drop; readers reconcile those via PID-liveness in
     /// [`StateRoot::live_runs`].
+    ///
+    /// Append-first ordering: the synthetic `DroppedWithoutHalt`
+    /// terminal event must land on disk before the marker is
+    /// cleared. The reader-side invariant is "absent live marker ⇒
+    /// terminal event in the log"; an append that failed before the
+    /// marker was cleared would break it.
+    ///
+    /// # Worst case: catastrophic append failure at drop-time
+    ///
+    /// If the synthetic-event append fails (disk full, fs read-only,
+    /// run dir unlinked), Drop cannot return an error. The fallback
+    /// discipline is:
+    ///
+    /// 1. Emit a clearly-tagged warning to stderr so a human running
+    ///    interactively sees the corruption.
+    /// 2. Leave the live marker in place so readers observe "marker
+    ///    present + no terminal event" — the same shape a SIGKILL'd
+    ///    writer produces. PID-liveness sweep then reclaims the
+    ///    marker once the writer process exits.
+    ///
+    /// Net result: the on-disk run is indistinguishable from a hard
+    /// kill, which is the strongest signal we can give without a
+    /// return channel.
     fn drop(&mut self) {
         if !self.started || self.halted {
             return;
         }
-        let marker = self.root.live_marker(&self.id);
-        let _ = fs::remove_file(&marker);
         // Best-effort terminal event so readers can distinguish
         // "writer crashed cleanly" from "writer SIGKILLed mid-run".
-        let _ = self.append_event(Event::now(EventBody::RunHalted {
+        // Append first; clear the marker only if the append landed.
+        match self.append_event(Event::now(EventBody::RunHalted {
             outcome: "DroppedWithoutHalt".to_string(),
             exit_code: -1,
-        }));
+        })) {
+            Ok(()) => {
+                let marker = self.root.live_marker(&self.id);
+                let _ = fs::remove_file(&marker);
+            }
+            Err(e) => {
+                // Append failed at drop-time (disk full, fs
+                // read-only, run dir unlinked). Surface to stderr
+                // and leave the marker in place so readers see the
+                // same shape as a SIGKILL'd writer.
+                eprintln!(
+                    "ooda-state: run {} dropped without halt and synthetic terminal event failed: {e}",
+                    self.id.as_str()
+                );
+            }
+        }
     }
 }
 
@@ -1790,6 +1827,41 @@ mod tests {
             }
             other => panic!("expected synthetic RunHalted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn drop_with_failed_append_leaves_marker_present() {
+        // Catastrophic case: at drop-time the synthetic
+        // `DroppedWithoutHalt` event cannot be written (disk full,
+        // fs read-only, run dir unlinked). Drop cannot return an
+        // error, so the discipline is: surface to stderr and leave
+        // the marker present so readers see "marker + no terminal
+        // event" — indistinguishable from a SIGKILL'd writer.
+        // PID-liveness sweep reclaims the marker once the writer
+        // process exits.
+        let (_tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        assert!(root.live_runs_unfiltered().unwrap().contains(&id));
+        // Force the synthetic append to fail by unlinking the run
+        // directory between start and drop. The next
+        // `OpenOptions::new().create(true).append(true).open(&path)`
+        // cannot create events.jsonl because its parent is gone.
+        let run_dir = root.path().join("runs").join(id.as_str());
+        fs::remove_dir_all(&run_dir).unwrap();
+        drop(writer);
+        // Marker is still in place because Drop's append failed.
+        assert!(
+            root.live_runs_unfiltered().unwrap().contains(&id),
+            "marker must remain when Drop's synthetic-event append \
+             fails so readers cannot mistake the run for a clean halt",
+        );
     }
 
     #[test]

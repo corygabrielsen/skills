@@ -44,23 +44,28 @@ pub(crate) fn is_cursor(login: &str) -> bool {
 }
 
 /// Login slugs the reviewer's server-side filter declines on author
-/// class. Covers both the bare and bot-suffixed forms because the
-/// host's GraphQL and REST surfaces emit different shapes for the
-/// same identity.
+/// class. Bare-string surface forms (`"dependabot"`, `"renovate"`,
+/// `"github-actions"`) are intentionally absent: the predicate gates
+/// on the structural [`GitHubLogin::is_bot`] check first, so a bare
+/// login (which any plain-user account can register) cannot
+/// impersonate one of these author bots regardless of allowlist
+/// contents. Both the `[bot]`-suffixed and `app/`-prefixed canonical
+/// forms are listed because the host's GraphQL and REST surfaces emit
+/// different shapes for the same identity.
 const BOT_AUTHOR_SLUGS: &[&str] = &[
     "dependabot[bot]",
-    "dependabot",
+    "app/dependabot",
     "renovate[bot]",
-    "renovate",
+    "app/renovate",
     "github-actions[bot]",
-    "github-actions",
+    "app/github-actions",
 ];
 
 fn is_bot_author(author: &PullRequestAuthor) -> bool {
     author
         .login
         .as_ref()
-        .is_some_and(|l| BOT_AUTHOR_SLUGS.contains(&l.as_str()))
+        .is_some_and(|l| l.is_bot() && BOT_AUTHOR_SLUGS.contains(&l.as_str()))
 }
 
 // ── Stall threshold ──────────────────────────────────────────────────
@@ -737,22 +742,59 @@ mod tests {
     }
 
     #[test]
-    fn bot_author_recognises_dependabot_renovate_actions() {
+    fn bot_author_recognises_canonical_bot_forms() {
+        // Proper bot forms: pass structural is_bot() and allowlist.
         for login in [
             "dependabot[bot]",
+            "app/dependabot",
             "renovate[bot]",
+            "app/renovate",
             "github-actions[bot]",
-            "dependabot",
+            "app/github-actions",
         ] {
             let a = PullRequestAuthor {
                 login: Some(GitHubLogin::parse(login).unwrap()),
             };
             assert!(is_bot_author(&a), "should match: {login}");
         }
+    }
+
+    #[test]
+    fn bot_author_rejects_bare_login_impersonation() {
+        // Bare logins: rejected by is_bot() structural gate. A plain-
+        // user account registering one of these handles cannot
+        // impersonate the bot-author class regardless of allowlist
+        // contents.
+        for login in ["dependabot", "renovate", "github-actions"] {
+            let a = PullRequestAuthor {
+                login: Some(GitHubLogin::parse(login).unwrap()),
+            };
+            assert!(!is_bot_author(&a), "must reject bare: {login}");
+        }
+    }
+
+    #[test]
+    fn bot_author_rejects_wrong_bot() {
+        // Wrong bot: passes is_bot() but allowlist rejects.
+        let a = PullRequestAuthor {
+            login: Some(GitHubLogin::parse("malicious[bot]").unwrap()),
+        };
+        assert!(!is_bot_author(&a));
+    }
+
+    #[test]
+    fn bot_author_rejects_human() {
         let alice = PullRequestAuthor {
             login: Some(GitHubLogin::parse("alice").unwrap()),
         };
         assert!(!is_bot_author(&alice));
+    }
+
+    #[test]
+    fn bot_author_handles_absent_login() {
+        // Missing author login (rare GraphQL edge) must not crash.
+        let a = PullRequestAuthor { login: None };
+        assert!(!is_bot_author(&a));
     }
 
     // ── early-return Option ──

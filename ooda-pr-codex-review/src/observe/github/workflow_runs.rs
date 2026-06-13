@@ -150,11 +150,28 @@ pub(crate) fn fetch_workflow_runs_for_head(
 }
 
 /// Classify each cancelled run as `Superseded` (auto-cancelled by a
-/// newer run on the same HEAD for the same workflow) or `Terminal`
-/// (explicitly cancelled with no successor). Used at the observe
-/// boundary to drop superseded-parent rollup rows that would
-/// otherwise surface as transient noise during the gap between
-/// cancellation and rollup-row eviction.
+/// later run on the same HEAD) or `Terminal` (explicitly cancelled
+/// with no successor). Used at the observe boundary to drop
+/// superseded-parent rollup rows that would otherwise surface as
+/// transient noise during the gap between cancellation and rollup-
+/// row eviction.
+///
+/// Sibling identity is `(head_sha, ordered_by (created_at, id))` —
+/// NOT `name`. GitHub Actions `concurrency.group` is commonly shared
+/// across distinct workflow files (a single `pr-${number}` group used
+/// by `CI.yml` and `Lint.yml`), so a cross-workflow concurrency-driven
+/// cancel produces siblings with different `name`. Keying on name
+/// would mis-classify those as Terminal and surface stale cancelled
+/// rollup rows as failed required checks. The `(created_at, id)`
+/// tuple breaks the rare-but-observed tie of two cancelled siblings
+/// sharing the exact same `created_at`: `id` is monotonically
+/// increasing in the platform's API.
+///
+/// Trade-off: a genuinely user-cancelled run on a HEAD that also
+/// has any unrelated later workflow may now classify as Superseded.
+/// This is the cheaper failure mode — Superseded only suppresses
+/// noise, while a false-positive Terminal triggers user-facing
+/// escalation.
 #[must_use]
 pub(crate) fn compute_cancelled_dispositions(
     runs: &[WorkflowRun],
@@ -166,9 +183,8 @@ pub(crate) fn compute_cancelled_dispositions(
         }
         let superseded = runs.iter().any(|other| {
             other.id != run.id
-                && other.name == run.name
                 && other.head_sha == run.head_sha
-                && other.created_at > run.created_at
+                && (other.created_at, &other.id) > (run.created_at, &run.id)
         });
         let disposition = if superseded {
             CancelledDisposition::Superseded
@@ -376,9 +392,11 @@ mod tests {
     }
 
     #[test]
-    fn compute_cancelled_dispositions_different_workflow_does_not_supersede() {
-        // Newer run with a DIFFERENT name does not supersede; the
-        // cancelled run had no successor of its own kind.
+    fn compute_cancelled_dispositions_different_workflow_still_supersedes() {
+        // Cross-workflow concurrency: `concurrency.group` is commonly
+        // shared between workflow files, so the newer run that
+        // triggered the cancel has a different `name`. The classifier
+        // must accept any same-HEAD newer sibling as the successor.
         let head = &"a".repeat(40);
         let runs = vec![
             run(
@@ -399,6 +417,43 @@ mod tests {
         let d = compute_cancelled_dispositions(&runs);
         assert_eq!(
             d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Superseded),
+        );
+    }
+
+    #[test]
+    fn compute_cancelled_dispositions_tie_break_on_id_when_created_at_equal() {
+        // Two cancelled siblings on the same HEAD share an exact
+        // `created_at` (rare-but-observed concurrent dispatch). The
+        // strict `>` check on timestamps alone would classify BOTH
+        // as Terminal — a double-count of one logical cancellation.
+        // Tuple ordering on `(created_at, id)` breaks the tie via
+        // the monotonically-increasing platform id: the lower-id row
+        // is Superseded by the higher-id row.
+        let head = &"a".repeat(40);
+        let runs = vec![
+            run(
+                1,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+            run(
+                2,
+                "CI",
+                head,
+                "2026-06-09T12:00:00Z",
+                Some(WorkflowRunConclusion::Cancelled),
+            ),
+        ];
+        let d = compute_cancelled_dispositions(&runs);
+        assert_eq!(
+            d.get(&WorkflowRunId(1)),
+            Some(&CancelledDisposition::Superseded),
+        );
+        assert_eq!(
+            d.get(&WorkflowRunId(2)),
             Some(&CancelledDisposition::Terminal),
         );
     }

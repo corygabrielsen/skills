@@ -92,22 +92,36 @@ where
 }
 
 /// Extract the parent workflow run id from a check's `link` URL.
-/// Workflow job URLs follow the structural form
-/// `…/actions/runs/<run_id>/job/<job_id>`. The run id is not
-/// exposed as a first-class field on any of the checks or rollup
-/// endpoints; URL grammar is the platform contract. Non-Actions
-/// checks (built-in gates, third-party apps) don't match the
-/// grammar and return None.
+///
+/// Workflow job URLs appear in three structural forms, all sharing
+/// the same `<run_id>`:
+///
+/// - `…/actions/runs/<run_id>/job/<job_id>` — first-attempt rows
+/// - `…/actions/runs/<run_id>/attempts/<n>/job/<job_id>` — re-attempts
+/// - `…/actions/runs/<run_id>/attempts/<n>/jobs/<job_id>` — re-attempts (plural)
+///
+/// The run id is not exposed as a first-class field on any of the
+/// checks or rollup endpoints; URL grammar is the platform contract.
+/// Non-Actions checks (built-in gates, third-party apps) don't match
+/// the grammar and return None.
 #[must_use]
 pub(crate) fn parse_run_id_from_link(url: &str) -> Option<WorkflowRunId> {
     let after_runs = url.split("/actions/runs/").nth(1)?;
     let mut segments = after_runs.split('/');
     let run_id_str = segments.next()?;
-    if segments.next()? != "job" {
-        return None;
-    }
     let id: u64 = run_id_str.parse().ok()?;
-    Some(WorkflowRunId(id))
+    match segments.next()? {
+        "job" => Some(WorkflowRunId(id)),
+        "attempts" => {
+            // Skip the attempt number, then accept `job` or `jobs`.
+            segments.next()?;
+            match segments.next()? {
+                "job" | "jobs" => Some(WorkflowRunId(id)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Drop rollup rows whose parent workflow run was auto-cancelled by
@@ -324,6 +338,32 @@ mod tests {
     #[test]
     fn parse_run_id_from_link_non_numeric_run_id_returns_none() {
         let url = "https://github.com/example-org/example-repo/actions/runs/abc/job/123";
+        assert_eq!(parse_run_id_from_link(url), None);
+    }
+
+    #[test]
+    fn parse_run_id_from_link_attempt_form_singular_job() {
+        // GitHub re-attempt URL: …/actions/runs/<id>/attempts/<n>/job/<job_id>.
+        // The run id is unchanged across attempts.
+        let url =
+            "https://github.com/example-org/example-repo/actions/runs/12345/attempts/2/job/67890";
+        assert_eq!(parse_run_id_from_link(url), Some(WorkflowRunId(12_345)));
+    }
+
+    #[test]
+    fn parse_run_id_from_link_attempt_form_plural_jobs() {
+        // Alternate re-attempt URL grammar seen in the wild:
+        // …/actions/runs/<id>/attempts/<n>/jobs/<job_id>.
+        let url =
+            "https://github.com/example-org/example-repo/actions/runs/12345/attempts/2/jobs/67890";
+        assert_eq!(parse_run_id_from_link(url), Some(WorkflowRunId(12_345)));
+    }
+
+    #[test]
+    fn parse_run_id_from_link_attempts_without_job_suffix_returns_none() {
+        // `…/attempts/<n>` alone is the attempt summary page, not a
+        // per-job rollup row.
+        let url = "https://github.com/example-org/example-repo/actions/runs/12345/attempts/2";
         assert_eq!(parse_run_id_from_link(url), None);
     }
 

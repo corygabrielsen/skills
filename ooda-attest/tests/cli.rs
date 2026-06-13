@@ -13,14 +13,18 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 fn init_git_repo(dir: &Path) -> String {
+    init_git_repo_with_content(dir, b"hello\n", "init")
+}
+
+fn init_git_repo_with_content(dir: &Path, content: &[u8], message: &str) -> String {
     run(dir, "git", &["init", "-q", "-b", "main"]);
     run(dir, "git", &["config", "user.email", "test@example.com"]);
     run(dir, "git", &["config", "user.name", "Test"]);
     run(dir, "git", &["config", "commit.gpgsign", "false"]);
-    fs::write(dir.join("README.md"), b"hello\n").unwrap();
+    fs::write(dir.join("README.md"), content).unwrap();
     run(dir, "git", &["add", "README.md"]);
-    run(dir, "git", &["commit", "-q", "-m", "init"]);
-    let output = Command::new("git")
+    run(dir, "git", &["commit", "-q", "-m", message]);
+    let output = scrub_git_env(Command::new("git"))
         .args(["rev-parse", "HEAD"])
         .current_dir(dir)
         .output()
@@ -30,7 +34,7 @@ fn init_git_repo(dir: &Path) -> String {
 }
 
 fn run(dir: &Path, program: &str, args: &[&str]) {
-    let status = Command::new(program)
+    let status = scrub_git_env(Command::new(program))
         .args(args)
         .current_dir(dir)
         .status()
@@ -38,8 +42,33 @@ fn run(dir: &Path, program: &str, args: &[&str]) {
     assert!(status.success(), "{program} {args:?} failed");
 }
 
+/// Drop git env vars that pre-commit (and similar git-hook
+/// runners) export to subprocesses. Without this, `git init` and
+/// `git config` inside test tempdirs target the OUTER repo's
+/// `.git/config` via `GIT_DIR`, causing lock contention when tests
+/// run in parallel and silently corrupting state on success.
+fn scrub_git_env(mut cmd: Command) -> Command {
+    for var in [
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_CONFIG",
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 fn bin() -> Command {
-    Command::cargo_bin("ooda-attest").unwrap()
+    // ooda-attest spawns `git rev-parse` internally; scrub git env
+    // vars so they don't leak into those subprocesses.
+    scrub_git_env(Command::cargo_bin("ooda-attest").unwrap())
 }
 
 fn read_attestation(path: &Path) -> serde_json::Value {
@@ -129,7 +158,11 @@ fn missing_state_root_exits_64() {
 }
 
 #[test]
-fn not_a_git_repo_exits_65() {
+fn not_a_git_repo_exits_64() {
+    // Repo-root resolution runs at startup and returns
+    // EXIT_VALIDATION (64) when no `--repo-root` is supplied and
+    // CWD is not inside a git working tree. The wrong-tree case
+    // is caught before the `git rev-parse HEAD` subprocess.
     let non_repo = TempDir::new().unwrap();
     let state_root = TempDir::new().unwrap();
 
@@ -139,7 +172,8 @@ fn not_a_git_repo_exits_65() {
         .arg(state_root.path())
         .assert()
         .failure()
-        .code(65);
+        .code(64)
+        .stderr(contains("not inside a git working tree"));
 }
 
 #[test]
@@ -272,7 +306,8 @@ fn doc_review_invalid_pull_request_id_exits_64() {
 }
 
 #[test]
-fn doc_review_not_a_git_repo_exits_65() {
+fn doc_review_not_a_git_repo_exits_64() {
+    // See `not_a_git_repo_exits_64` — same reasoning.
     let non_repo = TempDir::new().unwrap();
     let state_root = TempDir::new().unwrap();
 
@@ -282,7 +317,8 @@ fn doc_review_not_a_git_repo_exits_65() {
         .arg(state_root.path())
         .assert()
         .failure()
-        .code(65);
+        .code(64)
+        .stderr(contains("not inside a git working tree"));
 }
 
 #[test]
@@ -454,7 +490,8 @@ fn closeout_invalid_pull_request_id_exits_64() {
 }
 
 #[test]
-fn closeout_not_a_git_repo_exits_65() {
+fn closeout_not_a_git_repo_exits_64() {
+    // See `not_a_git_repo_exits_64` — same reasoning.
     let non_repo = TempDir::new().unwrap();
     let state_root = TempDir::new().unwrap();
 
@@ -464,7 +501,8 @@ fn closeout_not_a_git_repo_exits_65() {
         .arg(state_root.path())
         .assert()
         .failure()
-        .code(65);
+        .code(64)
+        .stderr(contains("not inside a git working tree"));
 }
 
 #[test]
@@ -514,6 +552,96 @@ fn closeout_home_fallback_supplies_default_state_root_when_no_env_overrides() {
     assert!(path.exists(), "attestation not at {}", path.display());
     let json = read_attestation(&path);
     assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+}
+
+// ── --repo-root: spoofing regression (F6 saturation) ──────────────
+
+#[test]
+fn repo_root_flag_pins_head_sha_against_cwd_spoof() {
+    // Regression: without `current_dir()` on the `git rev-parse
+    // HEAD` subprocess, invoking ooda-attest from sibling repo A
+    // with --pr-id N would write A's HEAD SHA into the attestation
+    // file under <state-root>/N/, even though the operator
+    // intended the attestation to bind repo B. Two repos with
+    // overlapping PR numbers could clobber each other with
+    // spoofed SHAs — defeating the integrity property the binary
+    // exists to provide.
+    let repo_a = TempDir::new().unwrap();
+    let head_a = init_git_repo_with_content(repo_a.path(), b"repo-a\n", "repo-a init");
+
+    let repo_b = TempDir::new().unwrap();
+    let head_b = init_git_repo_with_content(repo_b.path(), b"repo-b\n", "repo-b init");
+
+    assert_ne!(head_a, head_b, "test premise: HEAD SHAs must differ");
+
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo_a.path())
+        .args(["pr-meta", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .args(["--repo-root"])
+        .arg(repo_b.path())
+        .assert()
+        .success();
+
+    let path = expected_path(state_root.path(), "42");
+    let json = read_attestation(&path);
+    let attested = json["attested_sha"].as_str().unwrap();
+    assert_eq!(
+        attested, head_b,
+        "--repo-root must pin SHA to repo_b's HEAD, not the CWD repo_a"
+    );
+    assert_ne!(
+        attested, head_a,
+        "spoof path: CWD's HEAD must NOT have leaked through"
+    );
+}
+
+#[test]
+fn repo_root_flag_canonicalizes_relative_indirection() {
+    // `--repo-root <path>/./` should canonicalize to `<path>`;
+    // the SHA captured must be the repo's HEAD regardless of
+    // surface form.
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let other = TempDir::new().unwrap();
+    init_git_repo_with_content(other.path(), b"other\n", "other init");
+    let state_root = TempDir::new().unwrap();
+
+    let indirect = repo.path().join(".");
+
+    bin()
+        .current_dir(other.path())
+        .args(["pr-meta", "--pr-id", "1", "--state-root"])
+        .arg(state_root.path())
+        .args(["--repo-root"])
+        .arg(&indirect)
+        .assert()
+        .success();
+
+    let path = expected_path(state_root.path(), "1");
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+}
+
+#[test]
+fn repo_root_flag_nonexistent_path_exits_64() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+    let bogus = repo.path().join("nope-not-a-repo");
+
+    bin()
+        .current_dir(repo.path())
+        .args(["pr-meta", "--pr-id", "1", "--state-root"])
+        .arg(state_root.path())
+        .args(["--repo-root"])
+        .arg(&bogus)
+        .assert()
+        .failure()
+        .code(64)
+        .stderr(contains("--repo-root"));
 }
 
 #[test]

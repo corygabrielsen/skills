@@ -85,20 +85,24 @@ impl From<GhError> for ActError {
 /// Codex-axis attachment for [`ActContext`].
 ///
 /// Static-per-invocation fields name the side-effect surface (binary,
-/// repo root, batch tree root). `head_sha` and `base_branch` refresh
-/// each iteration from observe so the side-effects continue to anchor
-/// on the PR's current head and base — without that the batch tree
-/// and the spawned argv would silently desynchronise.
+/// batch tree root). `head_sha` and `base_branch` refresh each
+/// iteration from observe so the side-effects continue to anchor on
+/// the PR's current head and base — without that the batch tree and
+/// the spawned argv would silently desynchronise.
 ///
 /// `_lock` is an advisory file lock held FD-tied for the invocation's
 /// lifetime; concurrent drivers against the same PR would otherwise
 /// race on batch directory writes. The lock releases on process exit
 /// by any path (including SIGKILL), so a crashed process never leaves
 /// a stale lock that blocks subsequent invocations.
+///
+/// The codex spawn's working directory is taken from
+/// [`ActContext::repo_root`] (the same field that pins `gt sync`);
+/// there is no per-codex `repo_root` field — one resolved working
+/// tree per invocation.
 #[derive(Debug)]
 pub(crate) struct CodexActContext {
     pub codex_bin: PathBuf,
-    pub repo_root: PathBuf,
     /// Root of the per-PR codex batch tree.
     pub codex_pr_root: PathBuf,
     /// Configured spawn count per batch.
@@ -123,11 +127,17 @@ pub(crate) struct CodexActContext {
 /// concurrent OODA invocations against the same PR — distinct from
 /// the codex sub-context's `_lock`, which excludes concurrent
 /// invocations from sharing the codex spawn directory.
+///
+/// `repo_root` is the resolved working tree the driver targets; it
+/// pins every `gt` subprocess (sync) and the codex subprocess to the
+/// same path. See [`crate::resolve_repo_root`] for the resolution
+/// policy.
 #[derive(Debug)]
 pub(crate) struct ActContext {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
     pub action_lock_path: PathBuf,
+    pub repo_root: PathBuf,
     pub codex: Option<CodexActContext>,
 }
 
@@ -179,21 +189,22 @@ fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
         }
         ActionKind::RunCodexReviewBatch { level, n } => {
             let codex = ctx.codex.as_ref().ok_or(ActError::CodexDisabled)?;
-            spawn_codex_review_batch(codex, *level, *n)?;
+            spawn_codex_review_batch(codex, &ctx.repo_root, *level, *n)?;
         }
-        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync()?,
+        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync(&ctx.repo_root)?,
         _ => return Err(ActError::UnsupportedAutomation),
     }
     Ok(())
 }
 
-/// Invoke `gt sync` in the current working directory. Graphite
-/// rebases the local stack onto the latest base; the next observe
-/// pass picks up the resulting SHA and the post-observe sticky
-/// write normalises the divergence signal.
-fn run_graphite_sync() -> Result<(), ActError> {
-    let out = Command::new("gt")
-        .arg("sync")
+/// Invoke `gt sync` inside `repo_root`. Graphite rebases the local
+/// stack onto the latest base; the next observe pass picks up the
+/// resulting SHA and the post-observe sticky write normalises the
+/// divergence signal. Pinning to `repo_root` rather than process
+/// CWD prevents a sibling-repo invocation from rewriting the wrong
+/// stack — see the [`ActContext`] docs on the threading rationale.
+fn run_graphite_sync(repo_root: &Path) -> Result<(), ActError> {
+    let out = build_gt_sync_command(repo_root)
         .output()
         .map_err(|e| ActError::GraphiteSync(format!("spawn `gt sync`: {e}")))?;
     if !out.status.success() {
@@ -203,8 +214,17 @@ fn run_graphite_sync() -> Result<(), ActError> {
     Ok(())
 }
 
+/// Construct the `gt sync` command pinned to `repo_root`. Split for
+/// the same CWD-scoping smoke test as the observe-side `gt` probes.
+fn build_gt_sync_command(repo_root: &Path) -> Command {
+    let mut cmd = Command::new("gt");
+    cmd.current_dir(repo_root).arg("sync");
+    cmd
+}
+
 fn spawn_codex_review_batch(
     codex: &CodexActContext,
+    repo_root: &Path,
     level: CodexReasoningLevel,
     n: u32,
 ) -> Result<(), ActError> {
@@ -249,7 +269,7 @@ fn spawn_codex_review_batch(
 
         let mut cmd =
             build_logged_codex_command(&codex.codex_bin, &codex_args, &log_path, &exit_path);
-        cmd.current_dir(&codex.repo_root)
+        cmd.current_dir(repo_root)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .stdin(Stdio::null());
@@ -331,5 +351,20 @@ mod tests {
         assert_eq!(s, "model_reasoning_effort=\"xhigh\"");
         let base_pos = args.iter().position(|a| a == "--base").unwrap();
         assert_eq!(args[base_pos + 1], "feature/release");
+    }
+
+    #[test]
+    fn gt_sync_command_targets_repo_root() {
+        // `Command`'s `Debug` impl prefixes the rendered argv with
+        // `cd "<path>" && ` when `current_dir` is set. Pin the
+        // CWD-scoping invariant without spawning a real `gt`.
+        let dir = std::env::temp_dir();
+        let cmd = build_gt_sync_command(&dir);
+        let rendered = format!("{cmd:?}");
+        let needle = format!("cd {dir:?}");
+        assert!(
+            rendered.contains(&needle),
+            "expected {needle:?} in {rendered:?}",
+        );
     }
 }

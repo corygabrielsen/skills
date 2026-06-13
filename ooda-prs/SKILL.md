@@ -14,6 +14,8 @@ args:
     description: Post a status comment to each PR every iteration. Per-run deduped via the always-on state root.
   - name: --state-root PATH
     description: Override the always-on local state root for this invocation.
+  - name: --repo-root PATH
+    description: Target working tree for every `gt`/`git` subprocess. Default derived from CWD via `git rev-parse --show-toplevel`; invocations from outside any git tree are rejected as UsageError unless this flag is supplied. One path covers the whole suite.
   - name: -h, --help
     description: Print usage to stdout and exit 0. Only invocation that writes structured stdout other than the JSONL stream.
 ---
@@ -297,10 +299,11 @@ in real use (see "Calling discipline" above).
 | `--concurrency K`   | Maximum simultaneously-active PRs (workers). Default is the suite size (no cap). Must be ≥ 1; `K = 0` is rejected at the parser. `K > suite size` is silently clamped to the suite size. With `K < suite size`, `K` worker threads pull PRs from an atomic counter — a worker may handle multiple PRs sequentially while another is on its first PR.                                                                                                                                                                                                                                                                                                   |
 | `--status-comment`  | Post status comments to each PR every iteration. Per-run dedup at `<state-root>/runs/<run-id>/status_comment_dedup.json`. Dedup is scoped to a single run — re-invoking the binary opens a fresh run with no prior dedup memory.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `--state-root PATH` | Override the always-on state root. Resolution chain (first that yields a value wins): (1) `--state-root PATH` if given, (2) `$OODA_STATE_HOME` if set and **non-empty**, (3) `$XDG_STATE_HOME/ooda` if `$XDG_STATE_HOME` is set and non-empty, (4) `$HOME/.local/state/ooda` if `$HOME` is set and non-empty, (5) `std::env::temp_dir().join("ooda")` (e.g. `/tmp/ooda` on Linux). Empty env vars are treated as **unset** (a `=""` value falls through). The state root is **domain-agnostic** — one root per machine, shared by every OODA agent. PR identity lives only inside event records (`target.{forge,slug,pr}`), never in the on-disk path. |
+| `--repo-root PATH`  | Target working tree for every `gt` / `git` subprocess. Default: derive from CWD via `git rev-parse --show-toplevel`. Invocations from outside any git tree are rejected as `UsageError` unless `--repo-root` is supplied. One path covers the whole suite — `ooda-prs` drives many PRs but only one local working tree at a time. Pinning is required so `gt sync` cannot rewrite a sibling repo's stack when the binary is invoked from elsewhere on disk.                                                                                                                                                                                            |
 | `-h`, `--help`      | Print usage to stdout, exit 0. Pre-scan short-circuits all other validation including flag-repetition checks (`--help --help` exits 0).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 **Repeating a flag** (`--max-iter`, `--concurrency`,
-`--status-comment`, `--state-root`) is a `UsageError`, **except**
+`--status-comment`, `--state-root`, `--repo-root`) is a `UsageError`, **except**
 `-h` / `--help`, whose pre-scan short-circuits all parser
 validation.
 

@@ -14,6 +14,8 @@ args:
     description: Post a status comment to the PR each iteration. Deduped per-PR via the always-on state root.
   - name: --state-root PATH
     description: Override the always-on local state root for this invocation.
+  - name: --repo-root PATH
+    description: Target working tree for every `gt`/`git` subprocess. Default derived from CWD via `git rev-parse --show-toplevel`; invocations from outside any git tree are rejected as UsageError unless this flag is supplied.
   - name: --trace PATH
     description: Also append the compact trace to PATH. Always-on state is written even when this is omitted.
   - name: -h, --help
@@ -253,13 +255,14 @@ exit code (typically 101 for compile error) and ooda-pr does
 not execute — treat such codes as `BinaryError`-equivalent
 (see catch-all).
 
-| Flag                | Meaning                                                                                                                                                                                                                                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--max-iter N`      | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                          |
-| `--status-comment`  | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `index/pr/<owner>/<repo>/<pr>/status-comment-dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                                    |
-| `--state-root PATH` | Override the always-on state root. Default resolution is `$OODA_STATE_HOME`, then `$XDG_STATE_HOME/ooda`, then `~/.local/state/ooda`, then `$TMPDIR/ooda`. One root per machine, shared by every OODA agent regardless of domain; domain identity (`pr`, `codex-review`, …) lives in events, not in the path. |
-| `--trace PATH`      | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 70). Later trace writes are best-effort and do not change the Outcome.  |
-| `-h`, `--help`      | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                         |
+| Flag                | Meaning                                                                                                                                                                                                                                                                                                                                             |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--max-iter N`      | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                                                                |
+| `--status-comment`  | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `index/pr/<owner>/<repo>/<pr>/status-comment-dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                                                                          |
+| `--state-root PATH` | Override the always-on state root. Default resolution is `$OODA_STATE_HOME`, then `$XDG_STATE_HOME/ooda`, then `~/.local/state/ooda`, then `$TMPDIR/ooda`. One root per machine, shared by every OODA agent regardless of domain; domain identity (`pr`, `codex-review`, …) lives in events, not in the path.                                       |
+| `--repo-root PATH`  | Target working tree for every `gt` / `git` subprocess. Default: derive from CWD via `git rev-parse --show-toplevel`. Invocations from outside any git tree are rejected as `UsageError` unless `--repo-root` is supplied. Pinning is required so `gt sync` cannot rewrite a sibling repo's stack when the binary is invoked from elsewhere on disk. |
+| `--trace PATH`      | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 70). Later trace writes are best-effort and do not change the Outcome.                                        |
+| `-h`, `--help`      | Print usage to stdout, exit 0. The only invocation that writes to stdout. Short-circuits all other validation via a pre-scan: appears anywhere in argv → exit 0 immediately, bypassing the Outcome construction path.                                                                                                                               |
 
 ## Always-On State
 

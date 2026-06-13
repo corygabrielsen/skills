@@ -520,10 +520,20 @@ fn state_root_records_even_when_observe_fails() {
     let state_root = temp_path("state-root");
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
+    // `--repo-root <tempdir>` short-circuits the resolver to
+    // canonicalize (which needs no external binary). Without it,
+    // the empty PATH below would also block `git rev-parse` and
+    // surface as `UsageError` before observe runs — defeating
+    // this test's purpose, which is the recorder-on-observe-fail
+    // path.
+    let repo_root = temp_path("repo-root");
+    std::fs::create_dir_all(&repo_root).unwrap();
 
     let out = command(&[
         "--state-root",
         state_root.to_str().unwrap(),
+        "--repo-root",
+        repo_root.to_str().unwrap(),
         "inspect",
         "owner/repo",
         "1",

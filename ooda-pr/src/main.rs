@@ -39,7 +39,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Usage:\n  ooda-pr [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr inspect [options] <owner/repo> <pr>   one pass; print Outcome; exit\n\
          \n\
-         Options:\n  --max-iter N        loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment    post a status comment on the PR each iteration (deduped)\n  --state-root PATH   write always-on harness state under PATH\n  --trace PATH        also append the compact trace to PATH\n  -h, --help          show this help and exit\n\
+         Options:\n  --max-iter N        loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment    post a status comment on the PR each iteration (deduped)\n  --state-root PATH   write always-on harness state under PATH\n  --repo-root PATH    target working tree for all `gt`/`git` invocations\n                      (default: derive from CWD via `git rev-parse --show-toplevel`)\n  --trace PATH        also append the compact trace to PATH\n  -h, --help          show this help and exit\n\
          \n\
          Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneMerged       1 Paused             2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent     5 DoneClosed         6 StuckRepeated     7 StuckCapReached\n  64 UsageError      70 BinaryError       (130 SIGINT, 143 SIGTERM reserved)"
     );
@@ -58,6 +58,13 @@ struct Args {
     max_iter: std::num::NonZeroU32,
     status_comment: bool,
     state_root: Option<PathBuf>,
+    /// Optional explicit override for the target working tree. When
+    /// `None`, [`resolve_repo_root`] derives it from the process CWD
+    /// via `git rev-parse --show-toplevel`. The resolved path is the
+    /// CWD pin for every `gt` subprocess (sync, log-stack, version);
+    /// without it, an invocation from a sibling repo can mutate the
+    /// wrong stack.
+    repo_root: Option<PathBuf>,
     trace: Option<PathBuf>,
 }
 
@@ -89,12 +96,14 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
+    let mut repo_root: Option<PathBuf> = None;
     let mut trace: Option<PathBuf> = None;
     let mut positional: Vec<String> = Vec::new();
     let mut saw_subcommand = false;
     let mut saw_max_iter = false;
     let mut saw_status_comment = false;
     let mut saw_state_root = false;
+    let mut saw_repo_root = false;
     let mut saw_trace = false;
 
     let mut iter = std::env::args().skip(1);
@@ -165,6 +174,16 @@ fn parse_args() -> Result<Args, Outcome> {
                 };
                 state_root = Some(PathBuf::from(v));
             }
+            "--repo-root" => {
+                if saw_repo_root {
+                    return Err(usage("--repo-root repeated"));
+                }
+                saw_repo_root = true;
+                let Some(v) = iter.next() else {
+                    return Err(usage("--repo-root requires a value"));
+                };
+                repo_root = Some(PathBuf::from(v));
+            }
             "inspect" if !saw_subcommand && positional.is_empty() => {
                 mode = Mode::Inspect;
                 saw_subcommand = true;
@@ -192,6 +211,7 @@ fn parse_args() -> Result<Args, Outcome> {
         max_iter,
         status_comment,
         state_root,
+        repo_root,
         trace,
     })
 }
@@ -201,6 +221,114 @@ fn usage(msg: &str) -> Outcome {
     // structurally enforcing the single-line-header invariant on
     // every UsageError diagnostic.
     Outcome::usage_error(msg)
+}
+
+/// Typed failures from [`resolve_repo_root`]. Every variant flattens
+/// to a single-line `UsageError` diagnostic at the boundary.
+///
+/// The boundary deliberately stops short of remote-URL verification
+/// against the supplied slug — `origin` vs `upstream`, HTTPS vs SSH,
+/// fork remotes, and mirror clones all read as legitimate
+/// configurations and a slug-mismatch heuristic would block them.
+/// The user is trusted to invoke the binary from the right working
+/// tree; this layer only guarantees the resolved path IS a working
+/// tree (or an explicit override that canonicalizes).
+#[derive(Debug)]
+enum RepoRootError {
+    /// `--repo-root <PATH>` was supplied but the path could not be
+    /// canonicalized (typically: does not exist, or no read
+    /// permission on a path component).
+    Canonicalize {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// `std::env::current_dir()` failed before CWD-derivation could
+    /// proceed. Rare — usually a deleted-CWD or permission edge
+    /// case.
+    CwdUnavailable(std::io::Error),
+    /// `git rev-parse --show-toplevel` exited non-zero inside the
+    /// resolved CWD: the directory is not part of a git working
+    /// tree. Carries the CWD and `git`'s own stderr so the operator
+    /// can distinguish "not a repo" from "permission denied".
+    NotInGitTree { cwd: PathBuf, stderr: String },
+    /// The `git` subprocess could not be spawned at all (typically:
+    /// `git` is not on `$PATH`).
+    GitSpawn(std::io::Error),
+}
+
+impl std::fmt::Display for RepoRootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Canonicalize { path, source } => {
+                write!(f, "--repo-root {}: {source}", path.display())
+            }
+            Self::CwdUnavailable(e) => write!(f, "current working directory unavailable: {e}"),
+            Self::NotInGitTree { cwd, stderr } => {
+                let stderr = stderr.replace('\n', " ");
+                let suffix = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({stderr})")
+                };
+                write!(
+                    f,
+                    "{} is not inside a git working tree; invoke ooda-pr from the target repo's checkout or pass --repo-root <PATH>{suffix}",
+                    cwd.display(),
+                )
+            }
+            Self::GitSpawn(e) => write!(
+                f,
+                "spawn `git rev-parse --show-toplevel`: {e}; install git or pass --repo-root <PATH>",
+            ),
+        }
+    }
+}
+
+/// Resolve the target working tree.
+///
+/// Policy:
+///   1. `Some(path)` → canonicalize (lifts symlinks + relative paths
+///      to absolute; fails if the path does not exist).
+///   2. `None` → derive from `std::env::current_dir()` via
+///      `git -C <cwd> rev-parse --show-toplevel`.
+///
+/// Deliberately does NOT verify the resolved path matches the
+/// supplied `--slug` argument's remote: remote-URL comparison is
+/// brittle (origin / upstream / HTTPS / SSH / fork remotes), and
+/// false rejections would break valid setups. See [`RepoRootError`].
+fn resolve_repo_root(flag: Option<PathBuf>) -> Result<PathBuf, RepoRootError> {
+    let cwd = std::env::current_dir().map_err(RepoRootError::CwdUnavailable)?;
+    resolve_repo_root_with_cwd(flag, &cwd)
+}
+
+/// Test-facing variant of [`resolve_repo_root`] with the CWD injected
+/// so cases (2) and (3) of the resolver's test matrix are reachable
+/// without mutating process state.
+fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, RepoRootError> {
+    if let Some(p) = flag {
+        return p
+            .canonicalize()
+            .map_err(|source| RepoRootError::Canonicalize { path: p, source });
+    }
+    let out = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(RepoRootError::GitSpawn)?;
+    if !out.status.success() {
+        return Err(RepoRootError::NotInGitTree {
+            cwd: cwd.to_path_buf(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        return Err(RepoRootError::NotInGitTree {
+            cwd: cwd.to_path_buf(),
+            stderr: "`git rev-parse --show-toplevel` returned empty stdout".into(),
+        });
+    }
+    Ok(PathBuf::from(s))
 }
 
 fn main() -> ProcessExitCode {
@@ -217,6 +345,14 @@ fn main() -> ProcessExitCode {
     }
     let outcome = match parse_args() {
         Ok(args) => {
+            // Resolve repo_root before opening the recorder so a
+            // misconfigured invocation surfaces as `UsageError`
+            // rather than booking a run that would mutate the
+            // wrong working tree.
+            let repo_root = match resolve_repo_root(args.repo_root.clone()) {
+                Ok(p) => p,
+                Err(e) => return finish(&usage(&e.to_string()), None),
+            };
             let recorder = match Recorder::open(RecorderConfig {
                 slug: args.slug.clone(),
                 pr: args.pr,
@@ -233,8 +369,8 @@ fn main() -> ProcessExitCode {
             };
             recorder.install_process_recorder();
             let outcome = match args.mode {
-                Mode::Inspect => run_inspect(&args, &recorder),
-                Mode::Loop => run_full(&args, &recorder),
+                Mode::Inspect => run_inspect(&args, &repo_root, &recorder),
+                Mode::Loop => run_full(&args, &repo_root, &recorder),
             };
             return finish(&outcome, Some(recorder));
         }
@@ -281,7 +417,7 @@ fn finish(outcome: &Outcome, recorder: Option<Recorder>) -> ProcessExitCode {
     ProcessExitCode::from(code)
 }
 
-fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
+fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
     let sticky_path = recorder.last_seen_head_path();
@@ -290,6 +426,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         args.pr,
         args.state_root.as_deref(),
         Some(&sticky_path),
+        repo_root,
     ) {
         Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, ObserveOutcome::Ok);
@@ -396,7 +533,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     )
 }
 
-fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
+fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
@@ -459,6 +596,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
         &args.slug,
         args.pr,
         args.state_root.as_deref(),
+        repo_root,
         cfg,
         recorder,
         on_state,
@@ -1500,5 +1638,93 @@ mod tests {
             String::from_utf8(buf).unwrap(),
             "WouldAdvance: Rebase:Wait(30s)\n"
         );
+    }
+
+    // ── repo_root resolver ────────────────────────────────────────
+
+    #[test]
+    fn resolve_repo_root_explicit_flag_canonicalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pass the path through a `./` indirection to prove
+        // canonicalize is doing the work. `/some/path/./` resolves
+        // to `/some/path` only after canonicalize touches it.
+        let indirect = dir.path().join(".");
+        let resolved = resolve_repo_root_with_cwd(
+            Some(indirect),
+            // CWD irrelevant when the flag is supplied; pass `/`
+            // to prove the flag branch never falls back to git.
+            Path::new("/"),
+        )
+        .unwrap();
+        assert_eq!(resolved, dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn resolve_repo_root_explicit_flag_nonexistent_errors() {
+        let bogus = std::env::temp_dir().join("ooda-pr-resolve-nonexistent-XYZZY");
+        let _ = std::fs::remove_dir_all(&bogus);
+        let err = resolve_repo_root_with_cwd(Some(bogus.clone()), Path::new("/")).unwrap_err();
+        match err {
+            RepoRootError::Canonicalize { path, .. } => assert_eq!(path, bogus),
+            other => panic!("expected Canonicalize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_repo_root_cwd_in_git_tree_returns_toplevel() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "--quiet"])
+            .output()
+            .expect("spawn git init");
+        assert!(
+            out.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let resolved = resolve_repo_root_with_cwd(None, dir.path()).unwrap();
+        // `git rev-parse --show-toplevel` returns the canonicalized
+        // working tree, so compare against the canonicalized
+        // tempdir.
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap(),
+        );
+    }
+
+    #[test]
+    fn resolve_repo_root_cwd_outside_git_tree_errors() {
+        // tempdir under the system temp_dir is not normally inside
+        // a git working tree; `git rev-parse` should exit non-zero.
+        // `GitSpawn` is also acceptable: when the test env lacks
+        // `git`, the resolver still surfaces a typed error rather
+        // than panicking.
+        //
+        // Defensive premise check: if the test environment's
+        // `temp_dir()` happens to BE inside a git tree (some CI
+        // sandboxes, dev-loop setups where a `.git` lingers under
+        // TMPDIR), the assertion would misfire. Skip cleanly
+        // rather than panic — the other resolver tests cover the
+        // success paths.
+        let dir = tempfile::tempdir().unwrap();
+        let probe = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "--show-toplevel"])
+            .output();
+        if let Ok(out) = probe.as_ref()
+            && out.status.success()
+        {
+            eprintln!(
+                "skipping: tempdir {} is unexpectedly inside a git tree (env quirk)",
+                dir.path().display(),
+            );
+            return;
+        }
+        let result = resolve_repo_root_with_cwd(None, dir.path());
+        match result {
+            Err(RepoRootError::NotInGitTree { .. } | RepoRootError::GitSpawn(_)) => {}
+            other => panic!("expected NotInGitTree or GitSpawn, got {other:?}"),
+        }
     }
 }

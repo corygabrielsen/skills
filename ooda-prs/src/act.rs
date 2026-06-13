@@ -79,16 +79,23 @@ impl From<GhError> for ActError {
 /// [`crate::recorder::Recorder::action_lock_path`]; an advisory
 /// [`FileLock`] is acquired on it before any side-effecting work
 /// runs and released when this function returns.
+///
+/// `repo_root` is the resolved working tree the driver targets.
+/// Every `gt` subprocess pins to it so a caller invoking the binary
+/// from a sibling repo cannot have `gt sync` rewrite that sibling's
+/// stack. See [`crate::resolve_repo_root`] for the resolution
+/// policy.
 pub(crate) fn act(
     action: &Action,
     slug: &RepoSlug,
     pr: PullRequestNumber,
     action_lock_path: &Path,
+    repo_root: &Path,
 ) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => {
             let _lock = FileLock::acquire(action_lock_path).map_err(ActError::Lock)?;
-            run_full(&action.kind, slug, pr)
+            run_full(&action.kind, slug, pr, repo_root)
         }
         ActionEffect::Wait { interval, .. } => {
             thread::sleep(interval.as_duration());
@@ -100,7 +107,12 @@ pub(crate) fn act(
     }
 }
 
-fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result<(), ActError> {
+fn run_full(
+    kind: &ActionKind,
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    repo_root: &Path,
+) -> Result<(), ActError> {
     // Borrow targets for the subprocess's borrowed argv must
     // outlive the call.
     let pr_s = pr.to_string();
@@ -124,19 +136,20 @@ fn run_full(kind: &ActionKind, slug: &RepoSlug, pr: PullRequestNumber) -> Result
                 ci::rerun_workflow(slug, &c.run_id)?;
             }
         }
-        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync()?,
+        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync(repo_root)?,
         _ => return Err(ActError::UnsupportedAutomation),
     }
     Ok(())
 }
 
-/// Invoke `gt sync` in the current working directory. Graphite
-/// rebases the local stack onto the latest base; the next observe
-/// pass picks up the resulting SHA and the post-observe sticky
-/// write normalises the divergence signal.
-fn run_graphite_sync() -> Result<(), ActError> {
-    let out = Command::new("gt")
-        .arg("sync")
+/// Invoke `gt sync` inside `repo_root`. Graphite rebases the local
+/// stack onto the latest base; the next observe pass picks up the
+/// resulting SHA and the post-observe sticky write normalises the
+/// divergence signal. Pinning to `repo_root` rather than process
+/// CWD prevents a sibling-repo invocation from rewriting the wrong
+/// stack — see the module-level threading doc on [`act`].
+fn run_graphite_sync(repo_root: &Path) -> Result<(), ActError> {
+    let out = build_gt_sync_command(repo_root)
         .output()
         .map_err(|e| ActError::GraphiteSync(format!("spawn `gt sync`: {e}")))?;
     if !out.status.success() {
@@ -144,4 +157,32 @@ fn run_graphite_sync() -> Result<(), ActError> {
         return Err(ActError::GraphiteSync(stderr));
     }
     Ok(())
+}
+
+/// Construct the `gt sync` command pinned to `repo_root`. Split for
+/// the same CWD-scoping smoke test as the observe-side `gt` probes.
+fn build_gt_sync_command(repo_root: &Path) -> Command {
+    let mut cmd = Command::new("gt");
+    cmd.current_dir(repo_root).arg("sync");
+    cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gt_sync_command_targets_repo_root() {
+        // `Command`'s `Debug` impl prefixes the rendered argv with
+        // `cd "<path>" && ` when `current_dir` is set. Pin the
+        // CWD-scoping invariant without spawning a real `gt`.
+        let dir = std::env::temp_dir();
+        let cmd = build_gt_sync_command(&dir);
+        let rendered = format!("{cmd:?}");
+        let needle = format!("cd {dir:?}");
+        assert!(
+            rendered.contains(&needle),
+            "expected {needle:?} in {rendered:?}",
+        );
+    }
 }

@@ -36,7 +36,6 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -146,16 +145,19 @@ pub(crate) fn classify_divergence(
     })
 }
 
-/// Probe `which gt`. Result is cached for the process lifetime;
-/// graphite installation does not change mid-run.
-pub(crate) fn gt_available() -> bool {
-    static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        Command::new("gt")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
+/// Probe `gt --version` inside `repo_root`. Probes are scoped to
+/// the target repo so a graphite installation that lives elsewhere
+/// on `$PATH` is still detected, but the spawn never inherits the
+/// caller's CWD — that would otherwise let a graphite-tracked
+/// sibling repo answer for the target.
+///
+/// Result is NOT cached across calls. Caching by binary presence
+/// alone would discard the `repo_root` parameter, defeating the
+/// CWD-scoping guarantee the rest of this module depends on.
+pub(crate) fn gt_available(repo_root: &Path) -> bool {
+    build_gt_version_command(repo_root)
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Probe `gt log --stack <branch>`. Exit code 0 ⇒ branch is
@@ -163,14 +165,37 @@ pub(crate) fn gt_available() -> bool {
 /// Failures are silent — graphite-status is informational; a
 /// failed probe degrades to "not tracked" so the axis routes to
 /// `InvestigatePush` instead of trying to drive `gt sync`.
-pub(crate) fn branch_graphite_tracked(branch: &BranchName) -> bool {
-    if !gt_available() {
+///
+/// `repo_root` pins the probe to the resolved target repo; without
+/// it, a sibling repo on disk whose checkout happens to share the
+/// branch name would answer `true` and route the next iteration to
+/// `gt sync` against the wrong stack.
+pub(crate) fn branch_graphite_tracked(branch: &BranchName, repo_root: &Path) -> bool {
+    if !gt_available(repo_root) {
         return false;
     }
-    Command::new("gt")
-        .args(["log", "--stack", branch.as_str()])
+    build_gt_log_stack_command(branch, repo_root)
         .output()
         .is_ok_and(|o| o.status.success())
+}
+
+/// Construct the `gt --version` command pinned to `repo_root`. Split
+/// from [`gt_available`] so the `current_dir` invariant has a
+/// dedicated test target without spawning a real `gt` binary.
+fn build_gt_version_command(repo_root: &Path) -> Command {
+    let mut cmd = Command::new("gt");
+    cmd.current_dir(repo_root).arg("--version");
+    cmd
+}
+
+/// Construct the `gt log --stack <branch>` command pinned to
+/// `repo_root`. Split from [`branch_graphite_tracked`] for the
+/// same reason as [`build_gt_version_command`].
+fn build_gt_log_stack_command(branch: &BranchName, repo_root: &Path) -> Command {
+    let mut cmd = Command::new("gt");
+    cmd.current_dir(repo_root)
+        .args(["log", "--stack", branch.as_str()]);
+    cmd
 }
 
 #[cfg(test)]
@@ -271,5 +296,38 @@ mod tests {
         assert!(read_sticky(&path).unwrap().pending);
         write_sticky(&path, SHA_A, false).unwrap();
         assert!(!read_sticky(&path).unwrap().pending);
+    }
+
+    /// `Command`'s `Debug` impl prefixes the rendered argv with
+    /// `cd "<path>" && ` when `current_dir` is set. We assert on
+    /// that rendering to pin the CWD-scoping invariant without
+    /// requiring a real `gt` on the test host.
+    #[test]
+    fn gt_version_command_targets_repo_root() {
+        let dir = tempdir().unwrap();
+        let cmd = build_gt_version_command(dir.path());
+        let rendered = format!("{cmd:?}");
+        let needle = format!("cd {:?}", dir.path());
+        assert!(
+            rendered.contains(&needle),
+            "expected {needle:?} in {rendered:?}",
+        );
+    }
+
+    #[test]
+    fn gt_log_stack_command_targets_repo_root_and_branch() {
+        let dir = tempdir().unwrap();
+        let branch = BranchName::parse("feature/x").unwrap();
+        let cmd = build_gt_log_stack_command(&branch, dir.path());
+        let rendered = format!("{cmd:?}");
+        let needle_dir = format!("cd {:?}", dir.path());
+        assert!(
+            rendered.contains(&needle_dir),
+            "expected {needle_dir:?} in {rendered:?}",
+        );
+        assert!(
+            rendered.contains("\"feature/x\""),
+            "expected branch in {rendered:?}",
+        );
     }
 }

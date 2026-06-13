@@ -328,10 +328,20 @@ fn state_root_records_even_when_observe_fails() {
     let state_root = temp_path("state-root");
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
+    // `--repo-root <tempdir>` short-circuits the resolver to
+    // canonicalize (which needs no external binary). Without it,
+    // the empty PATH below would also block `git rev-parse` and
+    // surface as `UsageError` before observe runs — defeating
+    // this test's purpose, which is the recorder-on-observe-fail
+    // path.
+    let repo_root = temp_path("repo-root");
+    std::fs::create_dir_all(&repo_root).unwrap();
 
     let out = command(&[
         "--state-root",
         state_root.to_str().unwrap(),
+        "--repo-root",
+        repo_root.to_str().unwrap(),
         "inspect",
         "owner/repo",
         "1",
@@ -381,10 +391,23 @@ fn state_root_records_even_when_observe_fails() {
 /// gives us a deterministic per-PR `BinaryError` outcome and lets
 /// us assert on stdout JSONL shape, `$?` aggregation, and run-dir
 /// layout — without needing live GitHub access.
+///
+/// `--repo-root <tempdir>` is injected so the startup resolver
+/// short-circuits to canonicalize rather than spawning `git`
+/// (which is also unavailable under empty `PATH`). Without it, the
+/// helper would surface `UsageError` before observe runs.
 fn run_with_failing_gh(args: &[&str], state_root: &std::path::Path) -> (i32, String, String) {
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
-    let out = command(args)
+    let repo_root = temp_path("repo-root");
+    std::fs::create_dir_all(&repo_root).unwrap();
+    let mut extended: Vec<String> = vec![
+        "--repo-root".into(),
+        repo_root.to_str().unwrap().to_string(),
+    ];
+    extended.extend(args.iter().map(|a| (*a).to_string()));
+    let extended_refs: Vec<&str> = extended.iter().map(String::as_str).collect();
+    let out = command(&extended_refs)
         .env("PATH", &empty_path)
         .env("OODA_STATE_HOME", state_root)
         .output()

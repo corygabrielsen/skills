@@ -45,7 +45,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Suite grammar:\n  <suite>      ::= <group> ( ',' <group> )*\n  <group>      ::= <owner/repo>? <pr>+\n  <owner/repo>  — explicit slug for this group; if omitted, inherit from the prior\n                  group, else infer from cwd (`gh repo view --json nameWithOwner`).\n  <pr>          — positive integer.\n  Examples:\n    ooda-prs 42 45                              # cwd-slug, two PRs\n    ooda-prs acme/widget 42 43, acme/infra 100  # multi-slug; comma separates groups\n    ooda-prs acme/widget 42, 43                 # group 2 inherits acme/widget\n\
          \n\
-         Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  -h, --help           show this help and exit\n\
+         Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  --repo-root PATH     target working tree for all `gt`/`git` invocations\n                       (default: derive from CWD via `git rev-parse --show-toplevel`)\n  -h, --help           show this help and exit\n\
          \n\
          Exit codes — aggregate priority projection over per-PR Outcomes:\n   0 all DoneMerged/Paused (no further action)\n   1 (unused at suite level — Paused folds into 0)\n   2 any WouldAdvance\n   3 any HandoffHuman\n   4 any HandoffAgent\n   5 any DoneClosed (closed without merge — distinct from merged)\n   6 any StuckRepeated\n   7 any StuckCapReached\n  64 UsageError\n  70 any BinaryError\n  (130 SIGINT, 143 SIGTERM reserved)\n\
          Priority order (highest first): UsageError > BinaryError > HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated > WouldAdvance > DoneClosed > DoneMerged/Paused."
@@ -67,6 +67,14 @@ struct Args {
     max_iter: std::num::NonZeroU32,
     status_comment: bool,
     state_root: Option<PathBuf>,
+    /// Optional explicit override for the target working tree. When
+    /// `None`, [`resolve_repo_root`] derives it from the process CWD
+    /// via `git rev-parse --show-toplevel`. The resolved path is the
+    /// CWD pin for every `gt` subprocess (sync, log-stack, version);
+    /// without it, an invocation from a sibling repo can mutate the
+    /// wrong stack. A single path covers the whole suite — `ooda-prs`
+    /// drives many PRs but only one local working tree at a time.
+    repo_root: Option<PathBuf>,
     /// Optional cap on concurrent in-flight PRs. `None` resolves
     /// to `|suite|` at the spawn loop (no cap). Enforced by
     /// `suite::drive_suite` via an `AtomicUsize` work index.
@@ -101,12 +109,14 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
     let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
+    let mut repo_root: Option<PathBuf> = None;
     let mut concurrency: Option<u32> = None;
     let mut positional: Vec<String> = Vec::new();
     let mut saw_subcommand = false;
     let mut saw_max_iter = false;
     let mut saw_status_comment = false;
     let mut saw_state_root = false;
+    let mut saw_repo_root = false;
     let mut saw_concurrency = false;
 
     let mut iter = std::env::args().skip(1);
@@ -167,6 +177,16 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
                 };
                 state_root = Some(PathBuf::from(v));
             }
+            "--repo-root" => {
+                if saw_repo_root {
+                    return Err(usage("--repo-root repeated"));
+                }
+                saw_repo_root = true;
+                let Some(v) = iter.next() else {
+                    return Err(usage("--repo-root requires a value"));
+                };
+                repo_root = Some(PathBuf::from(v));
+            }
             "--concurrency" => {
                 if saw_concurrency {
                     return Err(usage("--concurrency repeated"));
@@ -212,6 +232,7 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
         max_iter,
         status_comment,
         state_root,
+        repo_root,
         concurrency,
     })
 }
@@ -345,6 +366,95 @@ fn usage(msg: &str) -> ooda_core::SingleLineString {
     msg.into()
 }
 
+/// Typed failures from [`resolve_repo_root`]. Every variant flattens
+/// to a single-line `UsageError` diagnostic at the boundary.
+///
+/// The boundary deliberately stops short of remote-URL verification
+/// against the suite's slugs — `origin` vs `upstream`, HTTPS vs SSH,
+/// fork remotes, and mirror clones all read as legitimate
+/// configurations and a slug-mismatch heuristic would block them.
+/// The user is trusted to invoke the binary from the right working
+/// tree; this layer only guarantees the resolved path IS a working
+/// tree (or an explicit override that canonicalizes).
+#[derive(Debug)]
+enum RepoRootError {
+    Canonicalize {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    CwdUnavailable(std::io::Error),
+    NotInGitTree {
+        cwd: PathBuf,
+        stderr: String,
+    },
+    GitSpawn(std::io::Error),
+}
+
+impl std::fmt::Display for RepoRootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Canonicalize { path, source } => {
+                write!(f, "--repo-root {}: {source}", path.display())
+            }
+            Self::CwdUnavailable(e) => write!(f, "current working directory unavailable: {e}"),
+            Self::NotInGitTree { cwd, stderr } => {
+                let stderr = stderr.replace('\n', " ");
+                let suffix = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({stderr})")
+                };
+                write!(
+                    f,
+                    "{} is not inside a git working tree; invoke ooda-prs from the target repo's checkout or pass --repo-root <PATH>{suffix}",
+                    cwd.display(),
+                )
+            }
+            Self::GitSpawn(e) => write!(
+                f,
+                "spawn `git rev-parse --show-toplevel`: {e}; install git or pass --repo-root <PATH>",
+            ),
+        }
+    }
+}
+
+/// Resolve the target working tree. See the per-binary policy in
+/// [`Args::repo_root`]: a single path covers the whole suite.
+fn resolve_repo_root(flag: Option<PathBuf>) -> Result<PathBuf, RepoRootError> {
+    let cwd = std::env::current_dir().map_err(RepoRootError::CwdUnavailable)?;
+    resolve_repo_root_with_cwd(flag, &cwd)
+}
+
+/// Test-facing variant of [`resolve_repo_root`] with the CWD injected
+/// so cases (2) and (3) of the resolver's test matrix are reachable
+/// without mutating process state.
+fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, RepoRootError> {
+    if let Some(p) = flag {
+        return p
+            .canonicalize()
+            .map_err(|source| RepoRootError::Canonicalize { path: p, source });
+    }
+    let out = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(RepoRootError::GitSpawn)?;
+    if !out.status.success() {
+        return Err(RepoRootError::NotInGitTree {
+            cwd: cwd.to_path_buf(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        return Err(RepoRootError::NotInGitTree {
+            cwd: cwd.to_path_buf(),
+            stderr: "`git rev-parse --show-toplevel` returned empty stdout".into(),
+        });
+    }
+    Ok(PathBuf::from(s))
+}
+
 fn main() -> ProcessExitCode {
     // Install signal handlers before any worker spawns: every
     // per-PR loop polls the same atomic, so a `SIGTERM` lands on
@@ -359,6 +469,19 @@ fn main() -> ProcessExitCode {
     }
     let multi = match parse_args() {
         Ok(args) => {
+            // Resolve repo_root before fanning out workers so a
+            // misconfigured invocation surfaces as `UsageError`
+            // exactly once at the boundary instead of once per
+            // worker.
+            let repo_root = match resolve_repo_root(args.repo_root.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    let msg = usage(&e.to_string());
+                    let outcome: Outcome = Outcome::UsageError(msg.clone());
+                    render_outcome(&mut std::io::stderr(), &outcome, None);
+                    return ProcessExitCode::from(MultiOutcome::UsageError(msg).exit_code());
+                }
+            };
             // Parallel per-PR dispatch under `thread::scope`. Each
             // worker drives one PR through the full pipeline; the
             // aggregate exit code is the typed priority projection
@@ -376,7 +499,7 @@ fn main() -> ProcessExitCode {
             // - **Stall detection**: state lives on the worker
             //   stack frame; no shared cell.
             let process_outcomes = suite::drive_suite(&args.suite, args.concurrency, |slug, pr| {
-                drive_one_pull_request(slug, pr, &args)
+                drive_one_pull_request(slug, pr, &args, &repo_root)
             });
             let multi = MultiOutcome::Bundle(process_outcomes);
             // Output-channel partitioning: stdout carries the
@@ -417,7 +540,12 @@ fn main() -> ProcessExitCode {
 /// Returns the per-PR [`ProcessOutcome`] carrying the worker's
 /// `run_id` so the suite-level JSONL projection can join back to
 /// the per-run audit trail.
-fn drive_one_pull_request(slug: &RepoSlug, pr: PullRequestNumber, args: &Args) -> ProcessOutcome {
+fn drive_one_pull_request(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    args: &Args,
+    repo_root: &Path,
+) -> ProcessOutcome {
     let recorder = match Recorder::open(RecorderConfig {
         slug: slug.clone(),
         pr,
@@ -446,8 +574,8 @@ fn drive_one_pull_request(slug: &RepoSlug, pr: PullRequestNumber, args: &Args) -
     recorder.install_process_recorder();
     let run_id = recorder.run_id();
     let outcome = match args.mode {
-        Mode::Inspect => run_inspect(slug, pr, args, &recorder),
-        Mode::Loop => run_full(slug, pr, args, &recorder),
+        Mode::Inspect => run_inspect(slug, pr, args, repo_root, &recorder),
+        Mode::Loop => run_full(slug, pr, args, repo_root, &recorder),
     };
     let code = outcome.exit_code();
     let handoff_path = match &outcome {
@@ -493,12 +621,19 @@ fn run_inspect(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     args: &Args,
+    repo_root: &Path,
     recorder: &Recorder,
 ) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
     let sticky_path = recorder.last_seen_head_path();
-    let obs = match fetch_all(slug, pr, args.state_root.as_deref(), Some(&sticky_path)) {
+    let obs = match fetch_all(
+        slug,
+        pr,
+        args.state_root.as_deref(),
+        Some(&sticky_path),
+        repo_root,
+    ) {
         Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, ObserveOutcome::Ok);
             // Post-observe sticky update — same write site as
@@ -599,7 +734,13 @@ fn run_inspect(
     decorate_handoff_human(Outcome::from(decision), slug, pr, Some(&snapshot))
 }
 
-fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Recorder) -> Outcome {
+fn run_full(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
+    args: &Args,
+    repo_root: &Path,
+    recorder: &Recorder,
+) -> Outcome {
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
@@ -661,6 +802,7 @@ fn run_full(slug: &RepoSlug, pr: PullRequestNumber, args: &Args, recorder: &Reco
         slug,
         pr,
         args.state_root.as_deref(),
+        repo_root,
         cfg,
         recorder,
         on_state,
@@ -1897,5 +2039,75 @@ mod tests {
         let mut buf = Vec::new();
         render_multi_jsonl(&mut buf, &multi);
         assert!(buf.is_empty(), "UsageError must not write to stdout");
+    }
+
+    // ── repo_root resolver ────────────────────────────────────────
+
+    #[test]
+    fn resolve_repo_root_explicit_flag_canonicalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let indirect = dir.path().join(".");
+        let resolved = resolve_repo_root_with_cwd(Some(indirect), Path::new("/")).unwrap();
+        assert_eq!(resolved, dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn resolve_repo_root_explicit_flag_nonexistent_errors() {
+        let bogus = std::env::temp_dir().join("ooda-prs-resolve-nonexistent-XYZZY");
+        let _ = std::fs::remove_dir_all(&bogus);
+        let err = resolve_repo_root_with_cwd(Some(bogus.clone()), Path::new("/")).unwrap_err();
+        match err {
+            RepoRootError::Canonicalize { path, .. } => assert_eq!(path, bogus),
+            other => panic!("expected Canonicalize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_repo_root_cwd_in_git_tree_returns_toplevel() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "--quiet"])
+            .output()
+            .expect("spawn git init");
+        assert!(
+            out.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let resolved = resolve_repo_root_with_cwd(None, dir.path()).unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap(),
+        );
+    }
+
+    #[test]
+    fn resolve_repo_root_cwd_outside_git_tree_errors() {
+        // Defensive premise check: if the test environment's
+        // `temp_dir()` happens to BE inside a git tree (some CI
+        // sandboxes, dev-loop setups where a `.git` lingers under
+        // TMPDIR), the assertion would misfire. Skip cleanly
+        // rather than panic — the other resolver tests cover the
+        // success paths.
+        let dir = tempfile::tempdir().unwrap();
+        let probe = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "--show-toplevel"])
+            .output();
+        if let Ok(out) = probe.as_ref()
+            && out.status.success()
+        {
+            eprintln!(
+                "skipping: tempdir {} is unexpectedly inside a git tree (env quirk)",
+                dir.path().display(),
+            );
+            return;
+        }
+        let result = resolve_repo_root_with_cwd(None, dir.path());
+        match result {
+            Err(RepoRootError::NotInGitTree { .. } | RepoRootError::GitSpawn(_)) => {}
+            other => panic!("expected NotInGitTree or GitSpawn, got {other:?}"),
+        }
     }
 }

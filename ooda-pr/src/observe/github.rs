@@ -170,6 +170,7 @@ pub(crate) fn fetch_all(
     pr: PullRequestNumber,
     state_root: Option<&std::path::Path>,
     sticky_path: Option<&std::path::Path>,
+    repo_root: &std::path::Path,
 ) -> Result<FetchOutcome, GhError> {
     /// Lift rate-limit hits into an early `Ok` return so they reach
     /// decide as typed data; non-rate-limit errors propagate.
@@ -320,8 +321,12 @@ pub(crate) fn fetch_all(
             &review_threads_page,
         );
 
-        let branch_sync =
-            observe_branch_sync(sticky_path, &head_sha, &pull_request_view.head_ref_name);
+        let branch_sync = observe_branch_sync(
+            sticky_path,
+            &head_sha,
+            &pull_request_view.head_ref_name,
+            repo_root,
+        );
 
         Ok(FetchOutcome::Observations(Box::new(GitHubObservations {
             pull_request_view,
@@ -352,13 +357,19 @@ pub(crate) fn fetch_all(
 /// Compose the branch-sync observation: probe `gt` availability,
 /// probe whether the PR branch is graphite-tracked, and classify
 /// the sticky-vs-current head delta.
+///
+/// `repo_root` pins both `gt` probes to the resolved target repo so
+/// a graphite-tracked sibling on the caller's CWD cannot answer for
+/// this PR's branch.
 fn observe_branch_sync(
     sticky_path: Option<&std::path::Path>,
     current_head: &crate::ids::GitCommitSha,
     branch: &crate::ids::BranchName,
+    repo_root: &std::path::Path,
 ) -> BranchSyncObservation {
-    let gt_available = super::branch::gt_available();
-    let branch_graphite_tracked = gt_available && super::branch::branch_graphite_tracked(branch);
+    let gt_available = super::branch::gt_available(repo_root);
+    let branch_graphite_tracked =
+        gt_available && super::branch::branch_graphite_tracked(branch, repo_root);
     let divergence = sticky_path
         .and_then(super::branch::read_sticky)
         .as_ref()

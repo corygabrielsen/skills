@@ -41,7 +41,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Usage:\n  ooda-pr-codex-review [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr-codex-review inspect [options] <owner/repo> <pr>   one pass; print Outcome; exit\n\
          \n\
-         Options:\n  --max-iter N                  loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment              post a status comment on the PR each iteration (deduped)\n  --state-root PATH             write always-on harness state under PATH\n  --codex-review-ceiling LVL    enable codex review with ceiling LVL: off|low|medium|high|xhigh (default off — codex review disabled)\n  --codex-review-floor LVL      codex review starting rung: low|medium|high|xhigh (default low; must be ≤ ceiling)\n  --codex-review-n N            codex review parallel reviewers per level (default 3, must be ≥ 1)\n  --codex-review-bin PATH       path to the codex binary (default codex, PATH lookup)\n  -h, --help                    show this help and exit\n\
+         Options:\n  --max-iter N                  loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment              post a status comment on the PR each iteration (deduped)\n  --state-root PATH             write always-on harness state under PATH\n  --repo-root PATH              target working tree for all `gt`/`git`/codex invocations\n                                (default: derive from CWD via `git rev-parse --show-toplevel`)\n  --codex-review-ceiling LVL    enable codex review with ceiling LVL: off|low|medium|high|xhigh (default off — codex review disabled)\n  --codex-review-floor LVL      codex review starting rung: low|medium|high|xhigh (default low; must be ≤ ceiling)\n  --codex-review-n N            codex review parallel reviewers per level (default 3, must be ≥ 1)\n  --codex-review-bin PATH       path to the codex binary (default codex, PATH lookup)\n  -h, --help                    show this help and exit\n\
          \n\
          Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneMerged       1 Paused             2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent     5 DoneClosed         6 StuckRepeated     7 StuckCapReached\n  64 UsageError      70 BinaryError       (130 SIGINT, 143 SIGTERM reserved)"
     );
@@ -60,6 +60,14 @@ struct Args {
     max_iter: std::num::NonZeroU32,
     status_comment: bool,
     state_root: Option<PathBuf>,
+    /// Optional explicit override for the target working tree. When
+    /// `None`, [`resolve_repo_root`] derives it from the process CWD
+    /// via `git rev-parse --show-toplevel`. The resolved path is the
+    /// CWD pin for every `gt` subprocess (sync, log-stack, version)
+    /// AND for the codex subprocess; without it, an invocation from
+    /// a sibling repo can mutate the wrong stack or diff against the
+    /// wrong base.
+    repo_root: Option<PathBuf>,
     /// Discriminant for the codex-review axis. `None` disables it
     /// (axis-disabled behavior is observationally identical to the
     /// no-codex sibling binary); `Some(level)` enables with that
@@ -127,6 +135,7 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
     let mut status_comment = false;
     let mut state_root: Option<PathBuf> = None;
+    let mut repo_root: Option<PathBuf> = None;
     let mut codex_review_ceiling: Option<CodexReasoningLevel> = None;
     let mut codex_review_floor: CodexReasoningLevel = CodexReasoningLevel::Low;
     let mut codex_review_n: u32 = 3;
@@ -136,6 +145,7 @@ fn parse_args() -> Result<Args, Outcome> {
     let mut saw_max_iter = false;
     let mut saw_status_comment = false;
     let mut saw_state_root = false;
+    let mut saw_repo_root = false;
     let mut saw_codex_review_ceiling = false;
     let mut saw_codex_review_floor = false;
     let mut saw_codex_review_n = false;
@@ -198,6 +208,16 @@ fn parse_args() -> Result<Args, Outcome> {
                     return Err(usage("--state-root requires a value"));
                 };
                 state_root = Some(PathBuf::from(v));
+            }
+            "--repo-root" => {
+                if saw_repo_root {
+                    return Err(usage("--repo-root repeated"));
+                }
+                saw_repo_root = true;
+                let Some(v) = iter.next() else {
+                    return Err(usage("--repo-root requires a value"));
+                };
+                repo_root = Some(PathBuf::from(v));
             }
             "--codex-review-ceiling" => {
                 if saw_codex_review_ceiling {
@@ -305,6 +325,7 @@ fn parse_args() -> Result<Args, Outcome> {
         max_iter,
         status_comment,
         state_root,
+        repo_root,
         codex_review_ceiling,
         codex_review_floor,
         codex_review_n,
@@ -314,6 +335,95 @@ fn parse_args() -> Result<Args, Outcome> {
 
 fn usage(msg: &str) -> Outcome {
     Outcome::usage_error(msg)
+}
+
+/// Typed failures from [`resolve_repo_root`]. Every variant flattens
+/// to a single-line `UsageError` diagnostic at the boundary.
+///
+/// The boundary deliberately stops short of remote-URL verification
+/// against the supplied slug — `origin` vs `upstream`, HTTPS vs SSH,
+/// fork remotes, and mirror clones all read as legitimate
+/// configurations and a slug-mismatch heuristic would block them.
+/// The user is trusted to invoke the binary from the right working
+/// tree; this layer only guarantees the resolved path IS a working
+/// tree (or an explicit override that canonicalizes).
+#[derive(Debug)]
+enum RepoRootError {
+    Canonicalize {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    CwdUnavailable(std::io::Error),
+    NotInGitTree {
+        cwd: PathBuf,
+        stderr: String,
+    },
+    GitSpawn(std::io::Error),
+}
+
+impl std::fmt::Display for RepoRootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Canonicalize { path, source } => {
+                write!(f, "--repo-root {}: {source}", path.display())
+            }
+            Self::CwdUnavailable(e) => write!(f, "current working directory unavailable: {e}"),
+            Self::NotInGitTree { cwd, stderr } => {
+                let stderr = stderr.replace('\n', " ");
+                let suffix = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({stderr})")
+                };
+                write!(
+                    f,
+                    "{} is not inside a git working tree; invoke ooda-pr-codex-review from the target repo's checkout or pass --repo-root <PATH>{suffix}",
+                    cwd.display(),
+                )
+            }
+            Self::GitSpawn(e) => write!(
+                f,
+                "spawn `git rev-parse --show-toplevel`: {e}; install git or pass --repo-root <PATH>",
+            ),
+        }
+    }
+}
+
+/// Resolve the target working tree. Used by both the `gt`-pinning
+/// threading and the codex subprocess `current_dir`.
+fn resolve_repo_root(flag: Option<PathBuf>) -> Result<PathBuf, RepoRootError> {
+    let cwd = std::env::current_dir().map_err(RepoRootError::CwdUnavailable)?;
+    resolve_repo_root_with_cwd(flag, &cwd)
+}
+
+/// Test-facing variant of [`resolve_repo_root`] with the CWD injected
+/// so cases (2) and (3) of the resolver's test matrix are reachable
+/// without mutating process state.
+fn resolve_repo_root_with_cwd(flag: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, RepoRootError> {
+    if let Some(p) = flag {
+        return p
+            .canonicalize()
+            .map_err(|source| RepoRootError::Canonicalize { path: p, source });
+    }
+    let out = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(RepoRootError::GitSpawn)?;
+    if !out.status.success() {
+        return Err(RepoRootError::NotInGitTree {
+            cwd: cwd.to_path_buf(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        });
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        return Err(RepoRootError::NotInGitTree {
+            cwd: cwd.to_path_buf(),
+            stderr: "`git rev-parse --show-toplevel` returned empty stdout".into(),
+        });
+    }
+    Ok(PathBuf::from(s))
 }
 
 fn main() -> ProcessExitCode {
@@ -330,6 +440,14 @@ fn main() -> ProcessExitCode {
     }
     let outcome = match parse_args() {
         Ok(args) => {
+            // Resolve repo_root before opening the recorder so a
+            // misconfigured invocation surfaces as `UsageError`
+            // rather than booking a run that would mutate the
+            // wrong working tree.
+            let repo_root = match resolve_repo_root(args.repo_root.clone()) {
+                Ok(p) => p,
+                Err(e) => return finish(&usage(&e.to_string()), None),
+            };
             let recorder = match Recorder::open(RecorderConfig {
                 slug: args.slug.clone(),
                 pr: args.pr,
@@ -354,8 +472,8 @@ fn main() -> ProcessExitCode {
                     });
             recorder.record_codex_review_config(codex_review_snapshot.as_ref());
             let outcome = match args.mode {
-                Mode::Inspect => run_inspect(&args, &recorder),
-                Mode::Loop => run_full(&args, &recorder),
+                Mode::Inspect => run_inspect(&args, &repo_root, &recorder),
+                Mode::Loop => run_full(&args, &repo_root, &recorder),
             };
             return finish(&outcome, Some(recorder));
         }
@@ -412,7 +530,7 @@ fn record_observed_head(sticky_path: &std::path::Path, obs: &observe::github::Gi
     let _ = crate::observe::branch::write_sticky(sticky_path, head, false);
 }
 
-fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
+fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     recorder.set_iteration(Some(1));
     recorder.record_observe_start(1);
     let sticky_path = recorder.last_seen_head_path();
@@ -421,6 +539,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
         args.pr,
         args.state_root.as_deref(),
         Some(&sticky_path),
+        repo_root,
     ) {
         Ok(FetchOutcome::Observations(o)) => {
             recorder.record_observe_end(1, ObserveOutcome::Ok);
@@ -523,7 +642,7 @@ fn run_inspect(args: &Args, recorder: &Recorder) -> Outcome {
     )
 }
 
-fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
+fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     let codex_act = match build_codex_act_context(args, recorder) {
         Ok(c) => c,
         Err(e) => return e,
@@ -539,6 +658,7 @@ fn run_full(args: &Args, recorder: &Recorder) -> Outcome {
         slug: args.slug.clone(),
         pr: args.pr,
         action_lock_path: recorder.action_lock_path(),
+        repo_root: repo_root.to_path_buf(),
         codex: codex_act,
     };
     let mut snapshot: Option<HandoffSnapshot> = None;
@@ -639,7 +759,6 @@ fn maybe_fetch_codex(
 ///
 /// # Postcondition on `Ok(Some(_))`
 ///
-/// - Repo root is resolved (via the VCS CLI).
 /// - The codex PR-root directory exists.
 /// - An advisory `flock` on `<codex_pr_root>/.lock` is held for
 ///   the context's lifetime, establishing the
@@ -647,6 +766,11 @@ fn maybe_fetch_codex(
 ///   state.
 /// - Per-iteration fields (`head_sha`, `base_branch`) hold
 ///   placeholders the runner refreshes per iteration.
+///
+/// The codex subprocess's working directory comes from
+/// [`ActContext::repo_root`] (resolved by [`resolve_repo_root`] at
+/// the binary entrypoint), not from this builder — the codex
+/// sub-context no longer carries a separate copy.
 ///
 /// # Postcondition on `Ok(None)`
 ///
@@ -658,10 +782,6 @@ fn build_codex_act_context(
     if args.codex_review_ceiling.is_none() {
         return Ok(None);
     }
-    let repo_root = match discover_repo_root() {
-        Ok(p) => p,
-        Err(e) => return Err(Outcome::binary_error(format!("repo root: {e}"))),
-    };
     let codex_pr_root = recorder.pr_workspace_root().join("codex");
     if let Err(e) = std::fs::create_dir_all(&codex_pr_root) {
         return Err(Outcome::binary_error(format!(
@@ -692,7 +812,6 @@ fn build_codex_act_context(
     }
     Ok(Some(CodexActContext {
         codex_bin: args.codex_review_bin.clone(),
-        repo_root,
         codex_pr_root,
         n: args.codex_review_n,
         // Per-iteration fields use non-`Option` placeholders; the
@@ -704,24 +823,6 @@ fn build_codex_act_context(
         base_branch: String::new(),
         _lock: lock,
     }))
-}
-
-fn discover_repo_root() -> Result<PathBuf, String> {
-    let out = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| format!("spawn `git rev-parse`: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "`git rev-parse --show-toplevel` failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        return Err("`git rev-parse --show-toplevel` returned empty".into());
-    }
-    Ok(PathBuf::from(s))
 }
 
 fn log_post_result(
@@ -1636,5 +1737,75 @@ mod tests {
             String::from_utf8(buf).unwrap(),
             "WouldAdvance: Rebase:Wait(30s)\n"
         );
+    }
+
+    // ── repo_root resolver ────────────────────────────────────────
+
+    #[test]
+    fn resolve_repo_root_explicit_flag_canonicalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let indirect = dir.path().join(".");
+        let resolved = resolve_repo_root_with_cwd(Some(indirect), Path::new("/")).unwrap();
+        assert_eq!(resolved, dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn resolve_repo_root_explicit_flag_nonexistent_errors() {
+        let bogus = std::env::temp_dir().join("ooda-pr-codex-review-resolve-nonexistent-XYZZY");
+        let _ = std::fs::remove_dir_all(&bogus);
+        let err = resolve_repo_root_with_cwd(Some(bogus.clone()), Path::new("/")).unwrap_err();
+        match err {
+            RepoRootError::Canonicalize { path, .. } => assert_eq!(path, bogus),
+            other => panic!("expected Canonicalize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_repo_root_cwd_in_git_tree_returns_toplevel() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["init", "--quiet"])
+            .output()
+            .expect("spawn git init");
+        assert!(
+            out.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let resolved = resolve_repo_root_with_cwd(None, dir.path()).unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap(),
+        );
+    }
+
+    #[test]
+    fn resolve_repo_root_cwd_outside_git_tree_errors() {
+        // Defensive premise check: if the test environment's
+        // `temp_dir()` happens to BE inside a git tree (some CI
+        // sandboxes, dev-loop setups where a `.git` lingers under
+        // TMPDIR), the assertion would misfire. Skip cleanly
+        // rather than panic — the other resolver tests cover the
+        // success paths.
+        let dir = tempfile::tempdir().unwrap();
+        let probe = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "--show-toplevel"])
+            .output();
+        if let Ok(out) = probe.as_ref()
+            && out.status.success()
+        {
+            eprintln!(
+                "skipping: tempdir {} is unexpectedly inside a git tree (env quirk)",
+                dir.path().display(),
+            );
+            return;
+        }
+        let result = resolve_repo_root_with_cwd(None, dir.path());
+        match result {
+            Err(RepoRootError::NotInGitTree { .. } | RepoRootError::GitSpawn(_)) => {}
+            other => panic!("expected NotInGitTree or GitSpawn, got {other:?}"),
+        }
     }
 }

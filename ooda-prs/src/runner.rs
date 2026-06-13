@@ -239,6 +239,7 @@ pub(crate) fn run_loop(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     state_root: Option<&std::path::Path>,
+    repo_root: &std::path::Path,
     config: LoopConfig,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
@@ -248,6 +249,7 @@ pub(crate) fn run_loop(
             slug,
             pr,
             state_root,
+            repo_root,
             recorder,
             &mut on_state,
             iter,
@@ -317,10 +319,12 @@ where
 /// One observe → orient → decide → act cycle. Returns an early-halt
 /// reason or the action that just executed; observation failures
 /// bubble as `LoopError`.
+#[allow(clippy::too_many_arguments)]
 fn run_iter(
     slug: &RepoSlug,
     pr: PullRequestNumber,
     state_root: Option<&std::path::Path>,
+    repo_root: &std::path::Path,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
     iter: u32,
@@ -329,7 +333,7 @@ fn run_iter(
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
     let sticky_path = recorder.last_seen_head_path();
-    let obs = match fetch_all(slug, pr, state_root, Some(&sticky_path)) {
+    let obs = match fetch_all(slug, pr, state_root, Some(&sticky_path), repo_root) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, ObserveOutcome::Ok);
             // Post-observe sticky update: record the current
@@ -361,7 +365,7 @@ fn run_iter(
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
             let lock_path = recorder.action_lock_path();
-            let act_result = act(&action, slug, pr, &lock_path);
+            let act_result = act(&action, slug, pr, &lock_path, repo_root);
             if act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
             }
@@ -402,7 +406,7 @@ fn run_iter(
                 recorder.record_wait_start(iter, &action);
             }
             let lock_path = recorder.action_lock_path();
-            let act_result = act(&action, slug, pr, &lock_path);
+            let act_result = act(&action, slug, pr, &lock_path, repo_root);
             if is_wait && act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
             }

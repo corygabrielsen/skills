@@ -351,7 +351,7 @@ fn run_iter(
     recorder.set_iteration(Some(iter));
     recorder.record_observe_start(iter);
     let sticky_path = recorder.last_seen_head_path();
-    let obs = match fetch_all(&slug, pr, state_root, Some(&sticky_path)) {
+    let obs = match fetch_all(&slug, pr, state_root, Some(&sticky_path), &ctx.repo_root) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, ObserveOutcome::Ok);
             // Post-observe sticky update: record the current

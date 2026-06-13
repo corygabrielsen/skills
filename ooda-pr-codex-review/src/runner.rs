@@ -36,7 +36,7 @@ use crate::axis_impls::pull_request_metadata::{
 };
 use crate::axis_impls::reviews::{ReviewsAxis, ReviewsObservation};
 use crate::axis_impls::state::{StateAxis, StateObservation};
-use crate::decide::action::{Action, rate_limit_wait_action};
+use crate::decide::action::{Action, Urgency, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{CodexReasoningLevel, PullRequestNumber, Timestamp};
 use crate::observe::codex::{CodexObservations, fetch_all as fetch_codex};
@@ -45,7 +45,7 @@ use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
-use ooda_core::{Axis, decide_from_candidates};
+use ooda_core::{Axis, MidTier, decide_from_candidates};
 use ooda_state::ObserveOutcome;
 
 /// Driver-level orchestration: invoke each axis's `candidates()` via
@@ -68,9 +68,11 @@ use ooda_state::ObserveOutcome;
 /// Class invariant — *advancement preempts passivity*: an active
 /// candidate the system can drive must outrank a candidate that
 /// only waits on an external signal. The fallback merge-state
-/// blocker fires only when no axis produced an advancement path;
-/// `out.sort_by_key(|a| a.urgency)` performs the merge step
-/// (stable: axis order within a tier is preserved).
+/// blocker (`merge_blocked_policy`) fires only when no axis
+/// produced an actionable advancement path; if any candidate at
+/// `BlockingFix` exists, the policy fallback is dropped before
+/// `out.sort_by_key(|a| a.urgency)` so the actionable wins. The
+/// sort is stable: axis order within a tier is preserved.
 pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     out.extend(StateAxis.candidates(&StateObservation {
@@ -141,8 +143,30 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
         ),
     );
     out.extend(crate::decide::signing_eligibility::signing_eligibility_candidates(&oriented.state));
+    yield_policy_to_actionable(&mut out);
     out.sort_by_key(|a| a.urgency);
     out
+}
+
+/// Verdict-by-absence: `merge_blocked_policy` is the closure-check
+/// fallback that fires when GitHub reports `BLOCKED` and no modeled
+/// gate explains the block. When an agent-actionable candidate
+/// (`BlockingFix`) is also in the set, the agent path is strictly
+/// more informative than the fallback's "no modeled gate fires"
+/// handoff — drop the fallback so the actionable wins the iteration.
+///
+/// The yield is one-way: actionable wins over fallback. The
+/// `Pathology > BlockingWait` relationship the fallback originally
+/// claimed (so Wait actions don't shadow real pathologies) is
+/// preserved — a `BlockingWait`-only candidate set leaves the
+/// fallback in place.
+fn yield_policy_to_actionable(candidates: &mut Vec<Action>) {
+    let has_actionable = candidates
+        .iter()
+        .any(|a| matches!(a.urgency, Urgency::Mid(MidTier::BlockingFix)));
+    if has_actionable {
+        candidates.retain(|a| a.blocker.as_str() != "merge_blocked_policy");
+    }
 }
 
 /// Wall-clock for one iteration's worth of orient work.

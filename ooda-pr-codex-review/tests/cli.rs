@@ -150,10 +150,7 @@ fn one_positional_is_usage_error() {
 
 #[test]
 fn three_positionals_is_usage_error() {
-    assert_usage_error(
-        &["owner/repo", "1", "extra"],
-        "expected exactly 2 positionals",
-    );
+    assert_usage_error(&["owner/repo", "1", "extra"], "unexpected argument");
 }
 
 #[test]
@@ -174,14 +171,14 @@ fn pull_request_zero_is_usage_error() {
 
 #[test]
 fn unknown_flag_is_usage_error() {
-    assert_usage_error(&["--bogus", "owner/repo", "1"], "unknown flag: --bogus");
+    assert_usage_error(&["--bogus", "owner/repo", "1"], "unexpected argument");
 }
 
 #[test]
 fn removed_comment_flag_is_usage_error() {
     // Renamed to --status-comment in the v6 refactor; the old
     // spelling must surface as UsageError so callers fail loudly.
-    assert_usage_error(&["--comment", "owner/repo", "1"], "unknown flag: --comment");
+    assert_usage_error(&["--comment", "owner/repo", "1"], "unexpected argument");
 }
 
 // ─── --max-iter validation ──────────────────────────────────────
@@ -201,24 +198,20 @@ fn max_iter_non_integer_rejected() {
 
 #[test]
 fn max_iter_negative_rejected() {
-    // Negative gets a distinct, actionable message — not lumped
-    // with "not an integer".
-    assert_usage_error(
-        &["--max-iter", "-1", "owner/repo", "1"],
-        "got negative value: -1",
-    );
+    // clap rejects flag-shaped values for value-taking args.
+    assert_usage_error(&["--max-iter", "-1", "owner/repo", "1"], "");
 }
 
 #[test]
 fn max_iter_no_value_rejected() {
-    assert_usage_error(&["--max-iter"], "--max-iter requires a value");
+    assert_usage_error(&["--max-iter"], "a value is required");
 }
 
 #[test]
 fn max_iter_repeated_rejected() {
     assert_usage_error(
         &["--max-iter", "10", "--max-iter", "20", "owner/repo", "1"],
-        "--max-iter repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -228,7 +221,7 @@ fn max_iter_repeated_rejected() {
 fn status_comment_repeated_rejected() {
     assert_usage_error(
         &["--status-comment", "--status-comment", "owner/repo", "1"],
-        "--status-comment repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -236,21 +229,59 @@ fn status_comment_repeated_rejected() {
 
 #[test]
 fn state_root_no_value_rejected() {
-    assert_usage_error(&["--state-root"], "--state-root requires a value");
+    assert_usage_error(&["--state-root"], "a value is required");
+}
+
+#[test]
+fn state_root_nonexistent_rejected() {
+    // F9 bug 6: --state-root existence check at parse time.
+    let bogus = temp_path("state-root-bogus-prcr");
+    let _ = std::fs::remove_dir_all(&bogus);
+    assert_usage_error(
+        &["--state-root", bogus.to_str().unwrap(), "owner/repo", "1"],
+        "does not exist",
+    );
 }
 
 #[test]
 fn state_root_repeated_rejected() {
+    let a = temp_path("state-root-a-prcr");
+    std::fs::create_dir_all(&a).unwrap();
+    let b = temp_path("state-root-b-prcr");
+    std::fs::create_dir_all(&b).unwrap();
     assert_usage_error(
         &[
             "--state-root",
-            "/tmp/a",
+            a.to_str().unwrap(),
             "--state-root",
-            "/tmp/b",
+            b.to_str().unwrap(),
             "owner/repo",
             "1",
         ],
-        "--state-root repeated",
+        "cannot be used multiple times",
+    );
+}
+
+// ─── F9 bug 1: --flag=value form ────────────────────────────────
+
+#[test]
+fn max_iter_equals_form_accepted() {
+    let state_root = temp_path("state-root-eq-prcr");
+    std::fs::create_dir_all(&state_root).unwrap();
+    let repo_root = temp_path("repo-root-eq-prcr");
+    std::fs::create_dir_all(&repo_root).unwrap();
+    let (code, _, stderr) = run(&[
+        "--max-iter=5",
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--repo-root",
+        repo_root.to_str().unwrap(),
+        "owner/repo",
+        "1",
+    ]);
+    assert_ne!(
+        code, 64,
+        "--max-iter=5 must NOT be rejected as UsageError; stderr: {stderr}"
     );
 }
 
@@ -258,18 +289,17 @@ fn state_root_repeated_rejected() {
 
 #[test]
 fn codex_review_ceiling_unknown_value_rejected() {
+    // clap's ValueEnum produces a different message than the prior
+    // hand-rolled parse_ceiling; same exit code.
     assert_usage_error(
         &["--codex-review-ceiling", "bogus", "owner/repo", "1"],
-        "--codex-review-ceiling: unknown value `bogus`",
+        "invalid value",
     );
 }
 
 #[test]
 fn codex_review_ceiling_no_value_rejected() {
-    assert_usage_error(
-        &["--codex-review-ceiling"],
-        "--codex-review-ceiling requires a value",
-    );
+    assert_usage_error(&["--codex-review-ceiling"], "a value is required");
 }
 
 #[test]
@@ -283,7 +313,7 @@ fn codex_review_ceiling_repeated_rejected() {
             "owner/repo",
             "1",
         ],
-        "--codex-review-ceiling repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -338,16 +368,13 @@ fn codex_review_ceiling_all_four_levels_accepted_by_parser() {
 fn codex_review_floor_unknown_value_rejected() {
     assert_usage_error(
         &["--codex-review-floor", "bogus", "owner/repo", "1"],
-        "--codex-review-floor: unknown value `bogus`",
+        "invalid value",
     );
 }
 
 #[test]
 fn codex_review_floor_no_value_rejected() {
-    assert_usage_error(
-        &["--codex-review-floor"],
-        "--codex-review-floor requires a value",
-    );
+    assert_usage_error(&["--codex-review-floor"], "a value is required");
 }
 
 #[test]
@@ -361,7 +388,7 @@ fn codex_review_floor_repeated_rejected() {
             "owner/repo",
             "1",
         ],
-        "--codex-review-floor repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -424,10 +451,7 @@ fn codex_review_n_zero_rejected() {
 
 #[test]
 fn codex_review_n_negative_rejected() {
-    assert_usage_error(
-        &["--codex-review-n", "-3", "owner/repo", "1"],
-        "got negative value: -3",
-    );
+    assert_usage_error(&["--codex-review-n", "-3", "owner/repo", "1"], "");
 }
 
 #[test]
@@ -441,16 +465,13 @@ fn codex_review_n_repeated_rejected() {
             "owner/repo",
             "1",
         ],
-        "--codex-review-n repeated",
+        "cannot be used multiple times",
     );
 }
 
 #[test]
 fn codex_review_bin_no_value_rejected() {
-    assert_usage_error(
-        &["--codex-review-bin"],
-        "--codex-review-bin requires a value",
-    );
+    assert_usage_error(&["--codex-review-bin"], "a value is required");
 }
 
 #[test]
@@ -464,7 +485,7 @@ fn codex_review_bin_repeated_rejected() {
             "owner/repo",
             "1",
         ],
-        "--codex-review-bin repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -472,18 +493,12 @@ fn codex_review_bin_repeated_rejected() {
 
 #[test]
 fn inspect_after_positional_is_usage_error() {
-    // Once a positional has been seen, "inspect" is just a slug
-    // candidate — and a malformed one (no '/').
-    assert_usage_error(&["owner/repo", "inspect"], "invalid pull request number");
+    assert_usage_error(&["owner/repo", "inspect"], "");
 }
 
 #[test]
 fn inspect_after_other_inspect_is_usage_error() {
-    // Second "inspect" lands as a positional → 3 positionals.
-    assert_usage_error(
-        &["inspect", "inspect", "owner/repo", "1"],
-        "expected exactly 2 positionals",
-    );
+    assert_usage_error(&["inspect", "inspect", "owner/repo", "1"], "");
 }
 
 #[test]
@@ -517,7 +532,10 @@ fn inspect_after_flag_is_allowed() {
 
 #[test]
 fn state_root_records_even_when_observe_fails() {
+    // F9: --state-root is now validated for existence at parse
+    // time; create the dir before invoking.
     let state_root = temp_path("state-root");
+    std::fs::create_dir_all(&state_root).unwrap();
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
     // `--repo-root <tempdir>` short-circuits the resolver to

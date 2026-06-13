@@ -82,219 +82,67 @@ struct Args {
     codex_review_bin: PathBuf,
 }
 
-fn parse_ceiling(s: &str) -> Result<Option<CodexReasoningLevel>, String> {
-    match s {
-        "off" => Ok(None),
-        "low" => Ok(Some(CodexReasoningLevel::Low)),
-        "medium" => Ok(Some(CodexReasoningLevel::Medium)),
-        "high" => Ok(Some(CodexReasoningLevel::High)),
-        "xhigh" => Ok(Some(CodexReasoningLevel::Xhigh)),
-        _ => Err(format!(
-            "--codex-review-ceiling: unknown value `{s}` (expected: off|low|medium|high|xhigh)"
-        )),
-    }
-}
-
-fn parse_level(s: &str, flag: &str) -> Result<CodexReasoningLevel, String> {
-    match s {
-        "low" => Ok(CodexReasoningLevel::Low),
-        "medium" => Ok(CodexReasoningLevel::Medium),
-        "high" => Ok(CodexReasoningLevel::High),
-        "xhigh" => Ok(CodexReasoningLevel::Xhigh),
-        _ => Err(format!(
-            "{flag}: unknown value `{s}` (expected: low|medium|high|xhigh)"
-        )),
-    }
-}
+// `parse_ceiling` / `parse_level` superseded by the clap
+// `ValueEnum` derives on `CeilingArg` / `FloorArg` below (F9).
 
 /// Parse CLI args into `Args` or a synthetic `Outcome::UsageError`.
 ///
-/// # Invariants
-///
-/// - **Totality over argv**: every reachable input yields either
-///   `Ok(Args)` or `Err(Outcome::UsageError(_))`; no panic, no
-///   exception path. The boundary speaks `Outcome` exclusively.
-/// - **Help dominates parse failure**: presence of `-h`/`--help`
-///   anywhere in argv triggers usage-to-stdout and `exit 0`,
-///   regardless of any neighboring malformed flag. Established by
-///   a pre-scan that precedes per-token parsing.
-//
-// One arm per known flag is intentional: length is the spec.
-// Extracting helpers would scatter the flag contract.
-#[allow(clippy::too_many_lines)]
+/// Backed by clap; see `ooda-pr::parse_args` for the F9 migration
+/// rationale and the seven bugs it closes.
 fn parse_args() -> Result<Args, Outcome> {
-    // Help-pre-scan establishes the help-dominates-parse-failure
-    // invariant; without it, a malformed earlier flag would shadow a
-    // later `--help`.
-    if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+    use clap::Parser;
+    if std::env::args_os().skip(1).any(|a| {
+        let s = a.to_string_lossy();
+        s == "-h" || s == "--help"
+    }) {
         print_usage(&mut std::io::stdout());
         std::process::exit(0);
     }
-
-    let mut mode = Mode::Loop;
-    let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
-    let mut status_comment = false;
-    let mut state_root: Option<PathBuf> = None;
-    let mut repo_root: Option<PathBuf> = None;
-    let mut codex_review_ceiling: Option<CodexReasoningLevel> = None;
-    let mut codex_review_floor: CodexReasoningLevel = CodexReasoningLevel::Low;
-    let mut codex_review_n: u32 = 3;
-    let mut codex_review_bin: PathBuf = PathBuf::from("codex");
-    let mut positional: Vec<String> = Vec::new();
-    let mut saw_subcommand = false;
-    let mut saw_max_iter = false;
-    let mut saw_status_comment = false;
-    let mut saw_state_root = false;
-    let mut saw_repo_root = false;
-    let mut saw_codex_review_ceiling = false;
-    let mut saw_codex_review_floor = false;
-    let mut saw_codex_review_n = false;
-    let mut saw_codex_review_bin = false;
-
-    let mut iter = std::env::args().skip(1);
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                // Unreachable under the help-pre-scan invariant.
-                // Retained as a structural backstop: if the pre-scan
-                // is ever removed, this arm preserves the
-                // help-dominates-parse-failure contract.
+    let raw = match CliRaw::try_parse_from(std::env::args_os()) {
+        Ok(r) => r,
+        Err(e) => {
+            if matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayVersion
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
                 print_usage(&mut std::io::stdout());
                 std::process::exit(0);
             }
-            "--status-comment" => {
-                if saw_status_comment {
-                    return Err(usage("--status-comment repeated"));
-                }
-                saw_status_comment = true;
-                status_comment = true;
-            }
-            "--max-iter" => {
-                if saw_max_iter {
-                    return Err(usage("--max-iter repeated"));
-                }
-                saw_max_iter = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--max-iter requires a value"));
-                };
-                // Three rejection classes — negative / non-numeric /
-                // zero — each yields a distinct diagnostic so the
-                // operator can correct without inspecting source.
-                // The validated value is `NonZeroU32`, lifting the
-                // "≥ 1" precondition from a runtime check into the
-                // type system.
-                if v.starts_with('-') {
-                    return Err(usage(&format!(
-                        "--max-iter must be ≥ 1; got negative value: {v}"
-                    )));
-                }
-                if v.starts_with('+') {
-                    return Err(usage(&format!("--max-iter: leading `+` not accepted: {v}")));
-                }
-                let Ok(n) = v.parse::<u32>() else {
-                    return Err(usage(&format!("--max-iter: not an integer: {v}")));
-                };
-                let Some(n) = std::num::NonZeroU32::new(n) else {
-                    return Err(usage("--max-iter must be ≥ 1; got 0"));
-                };
-                max_iter = n;
-            }
-            "--state-root" => {
-                if saw_state_root {
-                    return Err(usage("--state-root repeated"));
-                }
-                saw_state_root = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--state-root requires a value"));
-                };
-                state_root = Some(PathBuf::from(v));
-            }
-            "--repo-root" => {
-                if saw_repo_root {
-                    return Err(usage("--repo-root repeated"));
-                }
-                saw_repo_root = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--repo-root requires a value"));
-                };
-                repo_root = Some(PathBuf::from(v));
-            }
-            "--codex-review-ceiling" => {
-                if saw_codex_review_ceiling {
-                    return Err(usage("--codex-review-ceiling repeated"));
-                }
-                saw_codex_review_ceiling = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--codex-review-ceiling requires a value"));
-                };
-                codex_review_ceiling = parse_ceiling(&v).map_err(|e| usage(&e))?;
-            }
-            "--codex-review-floor" => {
-                if saw_codex_review_floor {
-                    return Err(usage("--codex-review-floor repeated"));
-                }
-                saw_codex_review_floor = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--codex-review-floor requires a value"));
-                };
-                codex_review_floor =
-                    parse_level(&v, "--codex-review-floor").map_err(|e| usage(&e))?;
-            }
-            "--codex-review-n" => {
-                if saw_codex_review_n {
-                    return Err(usage("--codex-review-n repeated"));
-                }
-                saw_codex_review_n = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--codex-review-n requires a value"));
-                };
-                if v.starts_with('-') {
-                    return Err(usage(&format!(
-                        "--codex-review-n must be ≥ 1; got negative value: {v}"
-                    )));
-                }
-                if v.starts_with('+') {
-                    return Err(usage(&format!(
-                        "--codex-review-n: leading `+` not accepted: {v}"
-                    )));
-                }
-                let Ok(n) = v.parse::<u32>() else {
-                    return Err(usage(&format!("--codex-review-n: not an integer: {v}")));
-                };
-                if n == 0 {
-                    return Err(usage("--codex-review-n must be ≥ 1; got 0"));
-                }
-                codex_review_n = n;
-            }
-            "--codex-review-bin" => {
-                if saw_codex_review_bin {
-                    return Err(usage("--codex-review-bin repeated"));
-                }
-                saw_codex_review_bin = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--codex-review-bin requires a value"));
-                };
-                codex_review_bin = PathBuf::from(v);
-            }
-            "inspect" if !saw_subcommand && positional.is_empty() => {
-                mode = Mode::Inspect;
-                saw_subcommand = true;
-            }
-            _ if arg.starts_with("--") => {
-                return Err(usage(&format!("unknown flag: {arg}")));
-            }
-            _ => positional.push(arg),
+            return Err(usage(&format_clap_error(&e)));
         }
-    }
+    };
 
-    if positional.len() != 2 {
-        return Err(usage(&format!(
-            "expected exactly 2 positionals (owner/repo, pr); got {}",
-            positional.len()
-        )));
-    }
-    let slug = RepoSlug::parse(&positional[0]).map_err(|e| usage(&e.to_string()))?;
-    let pr = PullRequestNumber::parse(&positional[1]).map_err(|e| usage(&e.to_string()))?;
+    let (mode, slug_raw, pr_raw) = match raw.sub {
+        Some(SubCmd::Inspect { slug, pr }) => (Mode::Inspect, slug, pr),
+        None => match (raw.slug, raw.pr) {
+            (Some(s), Some(p)) => (Mode::Loop, s, p),
+            _ => {
+                return Err(usage(
+                    "expected exactly 2 positionals (owner/repo, pr); got fewer",
+                ));
+            }
+        },
+    };
+
+    let slug = RepoSlug::parse(&slug_raw).map_err(|e| usage(&e.to_string()))?;
+    let pr = PullRequestNumber::parse(&pr_raw).map_err(|e| usage(&e.to_string()))?;
+
+    // Disjunctive parse: ceiling / floor / n carry None when their
+    // own flag is unset, so the "axis disabled" branch can detect
+    // the no-ceiling case without inheriting silent defaults.
+    let codex_review_ceiling = raw.codex_review_ceiling.and_then(CeilingArg::into_level);
+    let saw_bin = raw.codex_review_bin.is_some();
+    let saw_floor = raw.codex_review_floor.is_some();
+    let saw_n = raw.codex_review_n.is_some();
+    let codex_review_floor = raw
+        .codex_review_floor
+        .map_or(CodexReasoningLevel::Low, FloorArg::into_level);
+    let codex_review_n = raw.codex_review_n.unwrap_or(3);
+    let codex_review_bin = raw
+        .codex_review_bin
+        .unwrap_or_else(|| PathBuf::from("codex"));
 
     if let Some(ceiling) = codex_review_ceiling
         && codex_review_floor > ceiling
@@ -307,12 +155,9 @@ fn parse_args() -> Result<Args, Outcome> {
     }
     // Cross-flag dependency: --codex-review-{bin,floor,n} all tune
     // the codex-review axis. With --codex-review-ceiling unset, the
-    // axis is disabled and the tuning flags are silently ignored —
-    // reject the inconsistent invocation at the boundary instead of
-    // accepting it and dropping the values on the floor.
-    if codex_review_ceiling.is_none()
-        && (saw_codex_review_bin || saw_codex_review_floor || saw_codex_review_n)
-    {
+    // axis is disabled and the tuning flags would be silently
+    // ignored — reject the inconsistent invocation at the boundary.
+    if codex_review_ceiling.is_none() && (saw_bin || saw_floor || saw_n) {
         return Err(usage(
             "--codex-review-{bin|floor|n} requires --codex-review-ceiling",
         ));
@@ -322,15 +167,179 @@ fn parse_args() -> Result<Args, Outcome> {
         mode,
         slug,
         pr,
-        max_iter,
-        status_comment,
-        state_root,
-        repo_root,
+        max_iter: raw.max_iter,
+        status_comment: raw.status_comment,
+        state_root: raw.state_root,
+        repo_root: raw.repo_root,
         codex_review_ceiling,
         codex_review_floor,
         codex_review_n,
         codex_review_bin,
     })
+}
+
+fn format_clap_error(e: &clap::Error) -> String {
+    let raw = e.to_string();
+    let mut first = raw
+        .lines()
+        .find(|line| line.starts_with("error:"))
+        .unwrap_or_else(|| raw.lines().next().unwrap_or(""))
+        .trim_start_matches("error:")
+        .trim()
+        .to_string();
+    if first.is_empty() {
+        first = raw.lines().next().unwrap_or("").to_string();
+    }
+    first
+}
+
+/// clap-facing surface. Maps onto [`Args`] via the small adapter in
+/// [`parse_args`]. Sub-enums for `--codex-review-ceiling` /
+/// `--codex-review-floor` exist so the parser carries
+/// `Option<EnumVariant>` — used by the disabled-axis detection.
+#[derive(clap::Parser, Debug)]
+#[command(
+    name = "ooda-pr-codex-review",
+    about = "drive a PR through observe → orient → decide → act with optional codex review",
+    disable_help_flag = false,
+    disable_version_flag = true,
+    arg_required_else_help = false
+)]
+struct CliRaw {
+    /// loop iteration cap (must be ≥ 1; ignored by inspect)
+    #[arg(long, value_parser = parse_max_iter_value, default_value_t = std::num::NonZeroU32::new(50).expect("50 is non-zero"))]
+    max_iter: std::num::NonZeroU32,
+
+    /// post a status comment on the PR each iteration (deduped)
+    #[arg(long)]
+    status_comment: bool,
+
+    /// always-on harness state root
+    #[arg(long, value_parser = parse_existing_state_root)]
+    state_root: Option<PathBuf>,
+
+    /// target working tree for all `gt`/`git`/codex invocations
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
+
+    /// codex review ceiling: off|low|medium|high|xhigh
+    #[arg(long, value_enum)]
+    codex_review_ceiling: Option<CeilingArg>,
+
+    /// codex review starting rung: low|medium|high|xhigh
+    #[arg(long, value_enum)]
+    codex_review_floor: Option<FloorArg>,
+
+    /// codex review parallel reviewers per level
+    #[arg(long, value_parser = parse_codex_review_n)]
+    codex_review_n: Option<u32>,
+
+    /// path to the codex binary (default `codex`)
+    #[arg(long)]
+    codex_review_bin: Option<PathBuf>,
+
+    /// optional `inspect` subcommand; absent → loop mode
+    #[command(subcommand)]
+    sub: Option<SubCmd>,
+
+    /// owner/repo (loop mode only)
+    slug: Option<String>,
+
+    /// PR number (loop mode only)
+    pr: Option<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum SubCmd {
+    /// run one observe/orient/decide pass and print Outcome
+    Inspect {
+        /// owner/repo
+        slug: String,
+        /// PR number
+        pr: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CeilingArg {
+    Off,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl CeilingArg {
+    fn into_level(self) -> Option<CodexReasoningLevel> {
+        match self {
+            Self::Off => None,
+            Self::Low => Some(CodexReasoningLevel::Low),
+            Self::Medium => Some(CodexReasoningLevel::Medium),
+            Self::High => Some(CodexReasoningLevel::High),
+            Self::Xhigh => Some(CodexReasoningLevel::Xhigh),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum FloorArg {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl FloorArg {
+    fn into_level(self) -> CodexReasoningLevel {
+        match self {
+            Self::Low => CodexReasoningLevel::Low,
+            Self::Medium => CodexReasoningLevel::Medium,
+            Self::High => CodexReasoningLevel::High,
+            Self::Xhigh => CodexReasoningLevel::Xhigh,
+        }
+    }
+}
+
+fn parse_max_iter_value(raw: &str) -> Result<std::num::NonZeroU32, String> {
+    if raw.starts_with('-') {
+        return Err(format!("--max-iter must be ≥ 1; got negative value: {raw}"));
+    }
+    if raw.starts_with('+') {
+        return Err(format!("--max-iter: leading `+` not accepted: {raw}"));
+    }
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("--max-iter: not an integer: {raw}"))?;
+    std::num::NonZeroU32::new(n).ok_or_else(|| "--max-iter must be ≥ 1; got 0".to_string())
+}
+
+fn parse_codex_review_n(raw: &str) -> Result<u32, String> {
+    if raw.starts_with('-') {
+        return Err(format!(
+            "--codex-review-n must be ≥ 1; got negative value: {raw}"
+        ));
+    }
+    if raw.starts_with('+') {
+        return Err(format!("--codex-review-n: leading `+` not accepted: {raw}"));
+    }
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("--codex-review-n: not an integer: {raw}"))?;
+    if n == 0 {
+        return Err("--codex-review-n must be ≥ 1; got 0".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_existing_state_root(raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.exists() {
+        return Err(format!("--state-root does not exist: {raw}"));
+    }
+    if !path.is_dir() {
+        return Err(format!("--state-root is not a directory: {raw}"));
+    }
+    Ok(path)
 }
 
 fn usage(msg: &str) -> Outcome {

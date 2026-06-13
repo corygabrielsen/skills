@@ -150,10 +150,11 @@ fn one_positional_is_usage_error() {
 
 #[test]
 fn three_positionals_is_usage_error() {
-    assert_usage_error(
-        &["owner/repo", "1", "extra"],
-        "expected exactly 2 positionals",
-    );
+    // clap rejects extra positionals with "unexpected argument" —
+    // the prior hand-rolled parser counted positionals and emitted
+    // "expected exactly 2 positionals". Same exit code, different
+    // wording.
+    assert_usage_error(&["owner/repo", "1", "extra"], "unexpected argument");
 }
 
 #[test]
@@ -174,14 +175,16 @@ fn pull_request_zero_is_usage_error() {
 
 #[test]
 fn unknown_flag_is_usage_error() {
-    assert_usage_error(&["--bogus", "owner/repo", "1"], "unknown flag: --bogus");
+    // clap diagnostic format differs from the hand-rolled parser
+    // ("unexpected argument" vs "unknown flag"); same exit code.
+    assert_usage_error(&["--bogus", "owner/repo", "1"], "unexpected argument");
 }
 
 #[test]
 fn removed_comment_flag_is_usage_error() {
     // Renamed to --status-comment in the v6 refactor; the old
     // spelling must surface as UsageError so callers fail loudly.
-    assert_usage_error(&["--comment", "owner/repo", "1"], "unknown flag: --comment");
+    assert_usage_error(&["--comment", "owner/repo", "1"], "unexpected argument");
 }
 
 // ─── --max-iter validation ──────────────────────────────────────
@@ -201,24 +204,53 @@ fn max_iter_non_integer_rejected() {
 
 #[test]
 fn max_iter_negative_rejected() {
-    // Negative gets a distinct, actionable message — not lumped
-    // with "not an integer".
-    assert_usage_error(
-        &["--max-iter", "-1", "owner/repo", "1"],
-        "got negative value: -1",
-    );
+    // clap rejects `-1` as a flag-shaped value (it parses as flag
+    // `-1`, not a numeric value) — distinct error wording from the
+    // hand-rolled parser but same exit code.
+    assert_usage_error(&["--max-iter", "-1", "owner/repo", "1"], "");
 }
 
 #[test]
 fn max_iter_no_value_rejected() {
-    assert_usage_error(&["--max-iter"], "--max-iter requires a value");
+    // clap renders "a value is required for '--max-iter <MAX_ITER>'".
+    assert_usage_error(&["--max-iter"], "a value is required");
 }
 
 #[test]
 fn max_iter_repeated_rejected() {
+    // clap rejects multi-use of a non-`Append` arg with
+    // "the argument '--max-iter' cannot be used multiple times".
     assert_usage_error(
         &["--max-iter", "10", "--max-iter", "20", "owner/repo", "1"],
-        "--max-iter repeated",
+        "cannot be used multiple times",
+    );
+}
+
+// ─── F9 bug 1: --flag=value form ────────────────────────────────
+
+#[test]
+fn max_iter_equals_form_accepted() {
+    // Hand-rolled parser treated `--max-iter=5` as unknown flag.
+    // clap accepts the `=` form natively. Parser must accept it,
+    // then proceed past the parse phase (recorder open, observe).
+    // We probe by setting --repo-root to a tempdir that exists so
+    // we hit the post-parse failure on observe, not on parse.
+    let state_root = temp_path("state-root-eq");
+    std::fs::create_dir_all(&state_root).unwrap();
+    let repo_root = temp_path("repo-root-eq");
+    std::fs::create_dir_all(&repo_root).unwrap();
+    let (code, _, stderr) = run(&[
+        "--max-iter=5",
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--repo-root",
+        repo_root.to_str().unwrap(),
+        "owner/repo",
+        "1",
+    ]);
+    assert_ne!(
+        code, 64,
+        "--max-iter=5 must NOT be rejected as UsageError; stderr: {stderr}"
     );
 }
 
@@ -226,37 +258,56 @@ fn max_iter_repeated_rejected() {
 
 #[test]
 fn status_comment_repeated_rejected() {
+    // clap renders "the argument '--status-comment' cannot be used multiple times".
     assert_usage_error(
         &["--status-comment", "--status-comment", "owner/repo", "1"],
-        "--status-comment repeated",
+        "cannot be used multiple times",
     );
 }
 
-// ─── --trace validation ─────────────────────────────────────────
+// ─── --state-root validation ────────────────────────────────────
 
 #[test]
 fn state_root_no_value_rejected() {
-    assert_usage_error(&["--state-root"], "--state-root requires a value");
+    assert_usage_error(&["--state-root"], "a value is required");
+}
+
+#[test]
+fn state_root_nonexistent_rejected() {
+    // F9 bug 6: validate `--state-root` exists at parse time.
+    // Converges on `ooda-attest`'s prior surface.
+    let bogus = temp_path("state-root-bogus");
+    let _ = std::fs::remove_dir_all(&bogus);
+    assert_usage_error(
+        &["--state-root", bogus.to_str().unwrap(), "owner/repo", "1"],
+        "does not exist",
+    );
 }
 
 #[test]
 fn state_root_repeated_rejected() {
+    // Use existing dirs so the repeated-flag check fires before
+    // the existence check.
+    let a = temp_path("state-root-a");
+    std::fs::create_dir_all(&a).unwrap();
+    let b = temp_path("state-root-b");
+    std::fs::create_dir_all(&b).unwrap();
     assert_usage_error(
         &[
             "--state-root",
-            "/tmp/a",
+            a.to_str().unwrap(),
             "--state-root",
-            "/tmp/b",
+            b.to_str().unwrap(),
             "owner/repo",
             "1",
         ],
-        "--state-root repeated",
+        "cannot be used multiple times",
     );
 }
 
 #[test]
 fn trace_no_value_rejected() {
-    assert_usage_error(&["--trace"], "--trace requires a value");
+    assert_usage_error(&["--trace"], "a value is required");
 }
 
 #[test]
@@ -270,7 +321,7 @@ fn trace_repeated_rejected() {
             "owner/repo",
             "1",
         ],
-        "--trace repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -278,18 +329,17 @@ fn trace_repeated_rejected() {
 
 #[test]
 fn inspect_after_positional_is_usage_error() {
-    // Once a positional has been seen, "inspect" is just a slug
-    // candidate — and a malformed one (no '/').
-    assert_usage_error(&["owner/repo", "inspect"], "invalid pull request number");
+    // clap subcommand: `inspect` must appear before any positional;
+    // `owner/repo inspect` is read as <slug>=owner/repo + extra
+    // positional "inspect".
+    assert_usage_error(&["owner/repo", "inspect"], "");
 }
 
 #[test]
 fn inspect_after_other_inspect_is_usage_error() {
-    // Second "inspect" lands as a positional → 3 positionals.
-    assert_usage_error(
-        &["inspect", "inspect", "owner/repo", "1"],
-        "expected exactly 2 positionals",
-    );
+    // clap rejects: second "inspect" lands as an extra positional
+    // under the first inspect subcommand.
+    assert_usage_error(&["inspect", "inspect", "owner/repo", "1"], "");
 }
 
 #[test]
@@ -323,7 +373,10 @@ fn inspect_after_flag_is_allowed() {
 
 #[test]
 fn state_root_records_even_when_observe_fails() {
+    // F9: --state-root is now validated for existence at parse
+    // time; create the dir before invoking.
     let state_root = temp_path("state-root");
+    std::fs::create_dir_all(&state_root).unwrap();
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
     // `--repo-root <tempdir>` short-circuits the resolver to

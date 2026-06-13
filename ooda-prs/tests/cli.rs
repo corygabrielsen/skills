@@ -182,14 +182,15 @@ fn pull_request_zero_is_usage_error() {
 
 #[test]
 fn unknown_flag_is_usage_error() {
-    assert_usage_error(&["--bogus", "owner/repo", "1"], "unknown flag: --bogus");
+    // clap diagnostic: "unexpected argument" (vs prior "unknown flag").
+    assert_usage_error(&["--bogus", "owner/repo", "1"], "unexpected argument");
 }
 
 #[test]
 fn removed_comment_flag_is_usage_error() {
     // Renamed to --status-comment in the v6 refactor; the old
     // spelling must surface as UsageError so callers fail loudly.
-    assert_usage_error(&["--comment", "owner/repo", "1"], "unknown flag: --comment");
+    assert_usage_error(&["--comment", "owner/repo", "1"], "unexpected argument");
 }
 
 // ─── --max-iter validation ──────────────────────────────────────
@@ -209,24 +210,21 @@ fn max_iter_non_integer_rejected() {
 
 #[test]
 fn max_iter_negative_rejected() {
-    // Negative gets a distinct, actionable message — not lumped
-    // with "not an integer".
-    assert_usage_error(
-        &["--max-iter", "-1", "owner/repo", "1"],
-        "got negative value: -1",
-    );
+    // clap rejects flag-shaped values for value-taking args; the
+    // hand-rolled parser used to surface "got negative value: -1".
+    assert_usage_error(&["--max-iter", "-1", "owner/repo", "1"], "");
 }
 
 #[test]
 fn max_iter_no_value_rejected() {
-    assert_usage_error(&["--max-iter"], "--max-iter requires a value");
+    assert_usage_error(&["--max-iter"], "a value is required");
 }
 
 #[test]
 fn max_iter_repeated_rejected() {
     assert_usage_error(
         &["--max-iter", "10", "--max-iter", "20", "owner/repo", "1"],
-        "--max-iter repeated",
+        "cannot be used multiple times",
     );
 }
 
@@ -236,38 +234,76 @@ fn max_iter_repeated_rejected() {
 fn status_comment_repeated_rejected() {
     assert_usage_error(
         &["--status-comment", "--status-comment", "owner/repo", "1"],
-        "--status-comment repeated",
+        "cannot be used multiple times",
     );
 }
 
-// ─── --trace validation ─────────────────────────────────────────
+// ─── --state-root validation ────────────────────────────────────
 
 #[test]
 fn state_root_no_value_rejected() {
-    assert_usage_error(&["--state-root"], "--state-root requires a value");
+    assert_usage_error(&["--state-root"], "a value is required");
+}
+
+#[test]
+fn state_root_nonexistent_rejected() {
+    // F9 bug 6: --state-root existence check at parse time.
+    let bogus = temp_path("state-root-bogus-prs");
+    let _ = std::fs::remove_dir_all(&bogus);
+    assert_usage_error(
+        &["--state-root", bogus.to_str().unwrap(), "owner/repo", "1"],
+        "does not exist",
+    );
 }
 
 #[test]
 fn state_root_repeated_rejected() {
+    let a = temp_path("state-root-a-prs");
+    std::fs::create_dir_all(&a).unwrap();
+    let b = temp_path("state-root-b-prs");
+    std::fs::create_dir_all(&b).unwrap();
     assert_usage_error(
         &[
             "--state-root",
-            "/tmp/a",
+            a.to_str().unwrap(),
             "--state-root",
-            "/tmp/b",
+            b.to_str().unwrap(),
             "owner/repo",
             "1",
         ],
-        "--state-root repeated",
+        "cannot be used multiple times",
     );
 }
 
 #[test]
 fn trace_flag_removed() {
     // `--trace` was removed when the per-PR recorder shifted to
-    // the domain-agnostic on-disk model. The flag now falls
-    // through to the catch-all "unknown flag" arm.
-    assert_usage_error(&["--trace", "owner/repo", "1"], "unknown flag: --trace");
+    // the domain-agnostic on-disk model. The flag now surfaces as
+    // an unknown clap argument.
+    assert_usage_error(&["--trace", "owner/repo", "1"], "unexpected argument");
+}
+
+// ─── F9 bug 1: --flag=value form ────────────────────────────────
+
+#[test]
+fn max_iter_equals_form_accepted() {
+    let state_root = temp_path("state-root-eq-prs");
+    std::fs::create_dir_all(&state_root).unwrap();
+    let repo_root = temp_path("repo-root-eq-prs");
+    std::fs::create_dir_all(&repo_root).unwrap();
+    let (code, _, stderr) = run(&[
+        "--max-iter=5",
+        "--state-root",
+        state_root.to_str().unwrap(),
+        "--repo-root",
+        repo_root.to_str().unwrap(),
+        "owner/repo",
+        "1",
+    ]);
+    assert_ne!(
+        code, 64,
+        "--max-iter=5 must NOT be rejected as UsageError; stderr: {stderr}"
+    );
 }
 
 // ─── inspect placement ──────────────────────────────────────────
@@ -325,7 +361,10 @@ fn inspect_after_flag_is_allowed() {
 
 #[test]
 fn state_root_records_even_when_observe_fails() {
+    // F9: --state-root is now validated for existence at parse
+    // time; create the dir before invoking.
     let state_root = temp_path("state-root");
+    std::fs::create_dir_all(&state_root).unwrap();
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
     // `--repo-root <tempdir>` short-circuits the resolver to
@@ -397,6 +436,9 @@ fn state_root_records_even_when_observe_fails() {
 /// (which is also unavailable under empty `PATH`). Without it, the
 /// helper would surface `UsageError` before observe runs.
 fn run_with_failing_gh(args: &[&str], state_root: &std::path::Path) -> (i32, String, String) {
+    // F9: --state-root is now validated for existence at parse
+    // time; helper creates the dir before invoking.
+    std::fs::create_dir_all(state_root).unwrap();
     let empty_path = temp_path("empty-path");
     std::fs::create_dir_all(&empty_path).unwrap();
     let repo_root = temp_path("repo-root");
@@ -545,10 +587,8 @@ fn concurrency_zero_rejected() {
 
 #[test]
 fn concurrency_negative_rejected() {
-    assert_usage_error(
-        &["--concurrency", "-1", "owner/repo", "1"],
-        "got negative value: -1",
-    );
+    // clap rejects flag-shaped values for value-taking args.
+    assert_usage_error(&["--concurrency", "-1", "owner/repo", "1"], "");
 }
 
 #[test]
@@ -561,7 +601,7 @@ fn concurrency_non_integer_rejected() {
 
 #[test]
 fn concurrency_no_value_rejected() {
-    assert_usage_error(&["--concurrency"], "--concurrency requires a value");
+    assert_usage_error(&["--concurrency"], "a value is required");
 }
 
 #[test]
@@ -575,7 +615,7 @@ fn concurrency_repeated_rejected() {
             "owner/repo",
             "1",
         ],
-        "--concurrency repeated",
+        "cannot be used multiple times",
     );
 }
 

@@ -160,6 +160,9 @@ fn missing_codex_binary_surfaces_as_binary_error() {
     let state_root =
         std::env::temp_dir().join(format!("ooda-codex-review-cli-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state_root);
+    // F9: --state-root is now validated for existence at parse
+    // time; create the dir before invoking.
+    std::fs::create_dir_all(&state_root).unwrap();
 
     let (code, _, stderr) = run(&[
         "--uncommitted",
@@ -587,6 +590,10 @@ fn sigterm_during_loop_writes_run_halted_signal_interrupted_and_clears_marker() 
 fn fresh_state_root(label: &str) -> std::path::PathBuf {
     let p = std::env::temp_dir().join(format!("ooda-codex-review-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
+    // F9: --state-root is now validated for existence at parse
+    // time; the helper now creates the dir so callers can pass it
+    // straight to the binary.
+    std::fs::create_dir_all(&p).unwrap();
     p
 }
 
@@ -761,6 +768,9 @@ fn each_invocation_creates_a_fresh_run() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&state_root);
+    // F9: --state-root is now validated for existence at parse
+    // time; create the dir before invoking.
+    std::fs::create_dir_all(&state_root).unwrap();
 
     let common: Vec<&str> = vec![
         "--uncommitted",

@@ -15,7 +15,7 @@ args:
   - name: --ceiling LVL
     description: User-configured upper bound of the climb (distinct from the ladder edge xhigh, which is the absolute top of the reasoning ladder). One of low|medium|high|xhigh (same token set as `--level`). All-clean at this level halts `DoneFixedPoint` directly without a Retrospective handoff. Default xhigh, set by the binary's CLI parser. Must be >= --level (UsageError otherwise). Levels are totally ordered low < medium < high < xhigh.
   - name: --codex-review-n N
-    description: Parallel review count. Default 3, must be ≥1. Loop-mode only; not part of any cross-invocation key. **Slash-command shorthand `-n N`** — the human-facing surface (what users type after `/ooda-codex-review`) uses `-n N`; the assistant translates it to `--codex-review-n N` when constructing the binary's argv. The binary itself does NOT accept `-n` — passing `-n` to the binary returns UsageError.
+    description: Parallel review count. Default 3, must be ≥1. Loop-mode only; not part of any cross-invocation key. Accepts the `-n N` shorthand directly at the binary (F9 clap migration aligned the surface with `ooda-pr-codex-review`'s prior expectation); slash-command callers may write either form.
   - name: --max-iter N
     description: Loop-iteration cap. Default 50, must be ≥1. Silently ignored by side-effect invocations (NOT a UsageError — `--max-iter` is one of the loop-mode-only knobs; see Side-effect mode below).
   - name: --state-root PATH

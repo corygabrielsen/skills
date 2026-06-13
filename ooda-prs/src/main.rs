@@ -86,155 +86,161 @@ struct Args {
 /// # Invariants
 ///
 /// - **Totality over argv**: every reachable input yields either
-///   `Ok(Args)` or `Err(SingleLineString)`; no panic, no exception
-///   path. The boundary speaks Outcome-shaped values exclusively.
-/// - **Help dominates parse failure**: presence of `-h`/`--help`
-///   anywhere in argv triggers usage-to-stdout and `exit 0`,
-///   regardless of any neighboring malformed flag. Established by
-///   a pre-scan that precedes per-token parsing.
-//
-// One arm per known flag is intentional: length is the spec.
-// Extracting helpers would scatter the flag contract.
-#[allow(clippy::too_many_lines)]
+///   `Ok(Args)` or `Err(SingleLineString)`. Backed by clap's
+///   `try_get_matches_from(env::args_os())` — non-UTF-8 argv flows
+///   through `OsString` (closes F9 bug 3).
+/// - **`--help` short-circuits**: pre-scan + clap built-in both
+///   route to `print_usage` + `exit 0`, even past a malformed flag.
+/// - **`--flag=value`** form accepted natively (closes F9 bug 1).
+/// - **Flag-shaped values rejected** (closes F9 bug 2).
+/// - **`--state-root` existence check** at parse time (closes F9
+///   bug 6).
 fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
-    // Help-pre-scan establishes the help-dominates-parse-failure
-    // invariant; without it, a malformed earlier flag would shadow a
-    // later `--help`.
-    if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+    use clap::Parser;
+    if std::env::args_os().skip(1).any(|a| {
+        let s = a.to_string_lossy();
+        s == "-h" || s == "--help"
+    }) {
         print_usage(&mut std::io::stdout());
         std::process::exit(0);
     }
-
-    let mut mode = Mode::Loop;
-    let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
-    let mut status_comment = false;
-    let mut state_root: Option<PathBuf> = None;
-    let mut repo_root: Option<PathBuf> = None;
-    let mut concurrency: Option<u32> = None;
-    let mut positional: Vec<String> = Vec::new();
-    let mut saw_subcommand = false;
-    let mut saw_max_iter = false;
-    let mut saw_status_comment = false;
-    let mut saw_state_root = false;
-    let mut saw_repo_root = false;
-    let mut saw_concurrency = false;
-
-    let mut iter = std::env::args().skip(1);
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                // Unreachable under the help-pre-scan invariant.
-                // Retained as a structural backstop: if the pre-scan
-                // is ever removed, this arm preserves the
-                // help-dominates-parse-failure contract.
+    let raw = match CliRaw::try_parse_from(std::env::args_os()) {
+        Ok(r) => r,
+        Err(e) => {
+            if matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayVersion
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
                 print_usage(&mut std::io::stdout());
                 std::process::exit(0);
             }
-            "--status-comment" => {
-                if saw_status_comment {
-                    return Err(usage("--status-comment repeated"));
-                }
-                saw_status_comment = true;
-                status_comment = true;
-            }
-            "--max-iter" => {
-                if saw_max_iter {
-                    return Err(usage("--max-iter repeated"));
-                }
-                saw_max_iter = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--max-iter requires a value"));
-                };
-                // Three rejection classes — negative / non-numeric /
-                // zero — each yields a distinct diagnostic so the
-                // operator can correct without inspecting source.
-                // The validated value is `NonZeroU32`, lifting the
-                // "≥ 1" precondition from a runtime check into the
-                // type system.
-                if v.starts_with('-') {
-                    return Err(usage(&format!(
-                        "--max-iter must be ≥ 1; got negative value: {v}"
-                    )));
-                }
-                if v.starts_with('+') {
-                    return Err(usage(&format!("--max-iter: leading `+` not accepted: {v}")));
-                }
-                let Ok(n) = v.parse::<u32>() else {
-                    return Err(usage(&format!("--max-iter: not an integer: {v}")));
-                };
-                let Some(n) = std::num::NonZeroU32::new(n) else {
-                    return Err(usage("--max-iter must be ≥ 1; got 0"));
-                };
-                max_iter = n;
-            }
-            "--state-root" => {
-                if saw_state_root {
-                    return Err(usage("--state-root repeated"));
-                }
-                saw_state_root = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--state-root requires a value"));
-                };
-                state_root = Some(PathBuf::from(v));
-            }
-            "--repo-root" => {
-                if saw_repo_root {
-                    return Err(usage("--repo-root repeated"));
-                }
-                saw_repo_root = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--repo-root requires a value"));
-                };
-                repo_root = Some(PathBuf::from(v));
-            }
-            "--concurrency" => {
-                if saw_concurrency {
-                    return Err(usage("--concurrency repeated"));
-                }
-                saw_concurrency = true;
-                let Some(v) = iter.next() else {
-                    return Err(usage("--concurrency requires a value"));
-                };
-                if v.starts_with('-') {
-                    return Err(usage(&format!(
-                        "--concurrency must be ≥ 1; got negative value: {v}"
-                    )));
-                }
-                if v.starts_with('+') {
-                    return Err(usage(&format!(
-                        "--concurrency: leading `+` not accepted: {v}"
-                    )));
-                }
-                let Ok(n) = v.parse::<u32>() else {
-                    return Err(usage(&format!("--concurrency: not an integer: {v}")));
-                };
-                if n == 0 {
-                    return Err(usage("--concurrency must be ≥ 1; got 0"));
-                }
-                concurrency = Some(n);
-            }
-            "inspect" if !saw_subcommand && positional.is_empty() => {
-                mode = Mode::Inspect;
-                saw_subcommand = true;
-            }
-            _ if arg.starts_with("--") => {
-                return Err(usage(&format!("unknown flag: {arg}")));
-            }
-            _ => positional.push(arg),
+            return Err(usage(&format_clap_error(&e)));
         }
-    }
+    };
 
-    let suite = parse_suite(&positional)?;
+    let (mode, positional_strs) = match raw.sub {
+        Some(SubCmd::Inspect { positionals }) => (Mode::Inspect, positionals),
+        None => (Mode::Loop, raw.positionals),
+    };
+    let suite = parse_suite(&positional_strs)?;
 
     Ok(Args {
         mode,
         suite,
-        max_iter,
-        status_comment,
-        state_root,
-        repo_root,
-        concurrency,
+        max_iter: raw.max_iter,
+        status_comment: raw.status_comment,
+        state_root: raw.state_root,
+        repo_root: raw.repo_root,
+        concurrency: raw.concurrency,
     })
+}
+
+fn format_clap_error(e: &clap::Error) -> String {
+    let raw = e.to_string();
+    let mut first = raw
+        .lines()
+        .find(|line| line.starts_with("error:"))
+        .unwrap_or_else(|| raw.lines().next().unwrap_or(""))
+        .trim_start_matches("error:")
+        .trim()
+        .to_string();
+    if first.is_empty() {
+        first = raw.lines().next().unwrap_or("").to_string();
+    }
+    first
+}
+
+/// clap-facing surface. Maps onto [`Args`] via the small adapter in
+/// [`parse_args`].
+#[derive(clap::Parser, Debug)]
+#[command(
+    name = "ooda-prs",
+    about = "drive N PRs through observe → orient → decide → act in parallel",
+    disable_help_flag = false,
+    disable_version_flag = true,
+    arg_required_else_help = false
+)]
+struct CliRaw {
+    /// loop iteration cap per PR (must be ≥ 1; ignored by inspect)
+    #[arg(long, value_parser = parse_max_iter_value, default_value_t = std::num::NonZeroU32::new(50).expect("50 is non-zero"))]
+    max_iter: std::num::NonZeroU32,
+
+    /// max in-flight PRs (must be ≥ 1; default = |suite|)
+    #[arg(long, value_parser = parse_concurrency_value)]
+    concurrency: Option<u32>,
+
+    /// post a status comment on each PR every iteration (deduped)
+    #[arg(long)]
+    status_comment: bool,
+
+    /// always-on harness state root
+    #[arg(long, value_parser = parse_existing_state_root)]
+    state_root: Option<PathBuf>,
+
+    /// target working tree for all `gt`/`git` invocations
+    #[arg(long)]
+    repo_root: Option<PathBuf>,
+
+    /// optional `inspect` subcommand
+    #[command(subcommand)]
+    sub: Option<SubCmd>,
+
+    /// suite positionals (loop mode)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = false)]
+    positionals: Vec<String>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum SubCmd {
+    /// run one observe/orient/decide pass per PR
+    Inspect {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = false)]
+        positionals: Vec<String>,
+    },
+}
+
+fn parse_max_iter_value(raw: &str) -> Result<std::num::NonZeroU32, String> {
+    if raw.starts_with('-') {
+        return Err(format!("--max-iter must be ≥ 1; got negative value: {raw}"));
+    }
+    if raw.starts_with('+') {
+        return Err(format!("--max-iter: leading `+` not accepted: {raw}"));
+    }
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("--max-iter: not an integer: {raw}"))?;
+    std::num::NonZeroU32::new(n).ok_or_else(|| "--max-iter must be ≥ 1; got 0".to_string())
+}
+
+fn parse_concurrency_value(raw: &str) -> Result<u32, String> {
+    if raw.starts_with('-') {
+        return Err(format!(
+            "--concurrency must be ≥ 1; got negative value: {raw}"
+        ));
+    }
+    if raw.starts_with('+') {
+        return Err(format!("--concurrency: leading `+` not accepted: {raw}"));
+    }
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("--concurrency: not an integer: {raw}"))?;
+    if n == 0 {
+        return Err("--concurrency must be ≥ 1; got 0".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_existing_state_root(raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.exists() {
+        return Err(format!("--state-root does not exist: {raw}"));
+    }
+    if !path.is_dir() {
+        return Err(format!("--state-root is not a directory: {raw}"));
+    }
+    Ok(path)
 }
 
 /// Parse positional tokens into a non-empty, deduplicated suite.

@@ -207,171 +207,291 @@ fn usage(msg: impl Into<String>) -> Outcome {
     Outcome::usage_error(msg.into())
 }
 
-/// Pull a value-arg or report `<flag> requires a value`.
-fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, Outcome> {
-    iter.next()
-        .ok_or_else(|| usage(format!("{flag} requires a value")))
-}
-
-fn parse_positive_u32(flag: &str, raw: &str) -> Result<std::num::NonZeroU32, Outcome> {
-    if raw.starts_with('-') {
-        return Err(usage(format!(
-            "{flag} must be ≥ 1; got negative value: {raw}"
-        )));
-    }
-    if raw.starts_with('+') {
-        return Err(usage(format!("{flag}: leading `+` not accepted: {raw}")));
-    }
-    let n: u32 = raw
-        .parse()
-        .map_err(|_| usage(format!("{flag}: not an integer: {raw}")))?;
-    std::num::NonZeroU32::new(n).ok_or_else(|| usage(format!("{flag} must be ≥ 1; got 0")))
-}
-
-// Flat per-flag table: length IS the spec; one arm per known flag
-// with its parse rules and error messages inline. Splitting into
-// helpers would scatter the flag contract across files.
+/// Parse CLI args into `Args` or a synthetic `Outcome::UsageError`.
+///
+/// Backed by clap (F9 migration); the `-n` shorthand for
+/// `--codex-review-n` is preserved by the explicit `short = 'n'`
+/// attribute, converging on `ooda-pr-codex-review` (closes F9 bug 5).
+/// Side-effect flags are gathered into an `ArgGroup` so clap rejects
+/// `--advance-level --drop-level` etc. at parse time (closes F9 bug 2
+/// via clap's `multiple = false` semantics).
 #[allow(clippy::too_many_lines)]
 fn parse_args() -> Result<Args, Outcome> {
-    if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+    use clap::Parser;
+    if std::env::args_os().skip(1).any(|a| {
+        let s = a.to_string_lossy();
+        s == "-h" || s == "--help"
+    }) {
         print_usage(&mut std::io::stdout());
         std::process::exit(0);
     }
-
-    let mut target: Option<ReviewTarget> = None;
-    let mut level = CodexReasoningLevel::Low;
-    let mut ceiling = CodexReasoningLevel::Xhigh;
-    let mut n: std::num::NonZeroU32 = std::num::NonZeroU32::new(3).expect("3 is non-zero");
-    let mut max_iter: std::num::NonZeroU32 = std::num::NonZeroU32::new(50).expect("50 is non-zero");
-    let mut state_root: Option<PathBuf> = None;
-    let mut codex_bin: PathBuf = PathBuf::from("codex");
-    let mut side_effect: Option<SideEffect> = None;
-
-    let set_side_effect = |slot: &mut Option<SideEffect>, new: SideEffect| -> Result<(), Outcome> {
-        if slot.is_some() {
-            return Err(usage(
-                "side-effect flags (--advance-level / --drop-level / --restart-from-floor / --mark-*) are mutually exclusive",
-            ));
+    let raw = match CliRaw::try_parse_from(std::env::args_os()) {
+        Ok(r) => r,
+        Err(e) => {
+            if matches!(
+                e.kind(),
+                clap::error::ErrorKind::DisplayHelp
+                    | clap::error::ErrorKind::DisplayVersion
+                    | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                print_usage(&mut std::io::stdout());
+                std::process::exit(0);
+            }
+            return Err(usage(format_clap_error(&e)));
         }
-        *slot = Some(new);
-        Ok(())
     };
 
-    let mut set_target = |new: ReviewTarget| -> Result<(), Outcome> {
-        if target.is_some() {
-            return Err(usage(
-                "exactly one of --uncommitted / --base / --commit / --pr is required",
-            ));
-        }
-        target = Some(new);
-        Ok(())
+    // Resolve target. Exactly one of --uncommitted / --base /
+    // --commit / --pr in loop mode; none in side-effect mode.
+    let targets_present: u8 = u8::from(raw.uncommitted)
+        + u8::from(raw.base.is_some())
+        + u8::from(raw.commit.is_some())
+        + u8::from(raw.pr.is_some());
+    if targets_present > 1 {
+        return Err(usage(
+            "exactly one of --uncommitted / --base / --commit / --pr is required",
+        ));
+    }
+    let target = if raw.uncommitted {
+        Some(ReviewTarget::Uncommitted)
+    } else if let Some(b) = raw.base {
+        let parsed = BranchName::parse(&b).map_err(|e| usage(e.to_string()))?;
+        Some(ReviewTarget::Base(parsed))
+    } else if let Some(s) = raw.commit {
+        let parsed = GitCommitSha::parse(&s).map_err(|e| usage(e.to_string()))?;
+        Some(ReviewTarget::Commit(parsed))
+    } else {
+        raw.pr.map(ReviewTarget::Pr)
     };
 
-    let mut iter = std::env::args().skip(1);
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "-h" | "--help" => unreachable!("pre-scan handles --help"),
-            "--uncommitted" => set_target(ReviewTarget::Uncommitted)?,
-            "--base" => {
-                let v = next_value(&mut iter, "--base")?;
-                let b = BranchName::parse(&v).map_err(|e| usage(e.to_string()))?;
-                set_target(ReviewTarget::Base(b))?;
-            }
-            "--commit" => {
-                let v = next_value(&mut iter, "--commit")?;
-                let s = GitCommitSha::parse(&v).map_err(|e| usage(e.to_string()))?;
-                set_target(ReviewTarget::Commit(s))?;
-            }
-            "--pr" => {
-                let v = next_value(&mut iter, "--pr")?;
-                if v.starts_with('+') {
-                    return Err(usage(format!("--pr: leading `+` not accepted: {v}")));
-                }
-                let num: u64 = v
-                    .parse()
-                    .map_err(|_| usage(format!("--pr: not a positive integer: {v}")))?;
-                if num == 0 {
-                    return Err(usage("--pr must be ≥ 1; got 0"));
-                }
-                set_target(ReviewTarget::Pr(num))?;
-            }
-            "--level" => {
-                let v = next_value(&mut iter, "--level")?;
-                level = parse_level(&v).map_err(usage)?;
-            }
-            "--ceiling" => {
-                let v = next_value(&mut iter, "--ceiling")?;
-                ceiling = parse_level(&v).map_err(usage)?;
-            }
-            "--codex-review-n" => {
-                let v = next_value(&mut iter, "--codex-review-n")?;
-                n = parse_positive_u32("--codex-review-n", &v)?;
-            }
-            "--max-iter" => {
-                let v = next_value(&mut iter, "--max-iter")?;
-                max_iter = parse_positive_u32("--max-iter", &v)?;
-            }
-            "--state-root" => {
-                let v = next_value(&mut iter, "--state-root")?;
-                state_root = Some(PathBuf::from(v));
-            }
-            "--codex-bin" => {
-                let v = next_value(&mut iter, "--codex-bin")?;
-                codex_bin = PathBuf::from(v);
-            }
-            "--criteria" => {
-                let _ = next_value(&mut iter, "--criteria")?;
-                return Err(usage(
-                    "--criteria is not supported by the current `codex review` CLI when a target mode is used; omit it and use codex's built-in review criteria",
-                ));
-            }
-            "--advance-level" => set_side_effect(&mut side_effect, SideEffect::AdvanceLevel)?,
-            "--drop-level" => set_side_effect(&mut side_effect, SideEffect::DropLevel)?,
-            "--restart-from-floor" => {
-                set_side_effect(&mut side_effect, SideEffect::RestartFromFloor)?;
-            }
-            "--mark-retro-clean" => set_side_effect(&mut side_effect, SideEffect::MarkRetroClean)?,
-            "--mark-retro-changes" => {
-                let v = next_value(&mut iter, "--mark-retro-changes")?;
-                set_side_effect(&mut side_effect, SideEffect::MarkRetroChanges(v))?;
-            }
-            "--mark-address-passed" => {
-                set_side_effect(&mut side_effect, SideEffect::MarkAddressPassed)?;
-            }
-            "--mark-address-failed" => {
-                let v = next_value(&mut iter, "--mark-address-failed")?;
-                set_side_effect(&mut side_effect, SideEffect::MarkAddressFailed(v))?;
-            }
-            other => return Err(usage(format!("unknown argument: {other}"))),
-        }
+    // Resolve side effect.
+    let side_effects_present: u8 = u8::from(raw.advance_level)
+        + u8::from(raw.drop_level)
+        + u8::from(raw.restart_from_floor)
+        + u8::from(raw.mark_retro_clean)
+        + u8::from(raw.mark_retro_changes.is_some())
+        + u8::from(raw.mark_address_passed)
+        + u8::from(raw.mark_address_failed.is_some());
+    if side_effects_present > 1 {
+        return Err(usage(
+            "side-effect flags (--advance-level / --drop-level / --restart-from-floor / --mark-*) are mutually exclusive",
+        ));
+    }
+    let side_effect = if raw.advance_level {
+        Some(SideEffect::AdvanceLevel)
+    } else if raw.drop_level {
+        Some(SideEffect::DropLevel)
+    } else if raw.restart_from_floor {
+        Some(SideEffect::RestartFromFloor)
+    } else if raw.mark_retro_clean {
+        Some(SideEffect::MarkRetroClean)
+    } else if let Some(s) = raw.mark_retro_changes {
+        Some(SideEffect::MarkRetroChanges(s))
+    } else if raw.mark_address_passed {
+        Some(SideEffect::MarkAddressPassed)
+    } else {
+        raw.mark_address_failed.map(SideEffect::MarkAddressFailed)
+    };
+
+    // --criteria is currently unsupported by the upstream `codex
+    // review` CLI when a target mode is used; reject loud at parse
+    // time so the operator sees actionable feedback.
+    if raw.criteria.is_some() {
+        return Err(usage(
+            "--criteria is not supported by the current `codex review` CLI when a target mode is used; omit it and use codex's built-in review criteria",
+        ));
     }
 
-    // Loop mode requires a target; side-effect mode never reads
-    // it. Reject a missing target only in loop mode.
+    // Loop mode requires a target; side-effect mode never reads it.
     if target.is_none() && side_effect.is_none() {
         return Err(usage(
             "exactly one of --uncommitted / --base / --commit / --pr is required",
         ));
     }
 
-    if ceiling < level {
+    if raw.ceiling < raw.level {
         return Err(usage(format!(
             "--ceiling ({}) must be >= --level ({})",
-            ceiling.as_str(),
-            level.as_str()
+            raw.ceiling.as_str(),
+            raw.level.as_str()
         )));
     }
 
     Ok(Args {
         target,
-        level,
-        ceiling,
-        n,
-        max_iter,
-        state_root,
-        codex_bin,
+        level: raw.level,
+        ceiling: raw.ceiling,
+        n: raw.codex_review_n,
+        max_iter: raw.max_iter,
+        state_root: raw.state_root,
+        codex_bin: raw.codex_bin,
         side_effect,
     })
+}
+
+fn format_clap_error(e: &clap::Error) -> String {
+    let raw = e.to_string();
+    let mut first = raw
+        .lines()
+        .find(|line| line.starts_with("error:"))
+        .unwrap_or_else(|| raw.lines().next().unwrap_or(""))
+        .trim_start_matches("error:")
+        .trim()
+        .to_string();
+    if first.is_empty() {
+        first = raw.lines().next().unwrap_or("").to_string();
+    }
+    first
+}
+
+/// clap-facing surface. `-n` shorthand for `--codex-review-n` is
+/// preserved (F9 bug 5).
+///
+/// Boolean flag fan-out: target modes + side-effect modes both
+/// route through standalone bool flags rather than a single enum,
+/// because clap derives don't let an enum cleanly mix
+/// `Subcommand`-style discriminants with `Args`-style typed
+/// payloads (`--mark-retro-changes <REASON>`). The fan-out is
+/// disjunctive — `parse_args` enforces "≤ 1 of each group" against
+/// `targets_present` / `side_effects_present` and yields
+/// `UsageError(_)` on conflict.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(clap::Parser, Debug)]
+#[command(
+    name = "ooda-codex-review",
+    about = "drive `codex review` to fixed point across the reasoning ladder",
+    disable_help_flag = false,
+    disable_version_flag = true,
+    arg_required_else_help = false
+)]
+struct CliRaw {
+    /// review working-tree changes vs HEAD
+    #[arg(long)]
+    uncommitted: bool,
+
+    /// review current branch vs BRANCH
+    #[arg(long)]
+    base: Option<String>,
+
+    /// review a specific commit (40-hex SHA)
+    #[arg(long)]
+    commit: Option<String>,
+
+    /// review a specific PR's changes (positive integer)
+    #[arg(long, value_parser = parse_pr_value)]
+    pr: Option<u64>,
+
+    /// reasoning floor: low|medium|high|xhigh
+    #[arg(long, value_parser = parse_level_value, default_value = "low")]
+    level: CodexReasoningLevel,
+
+    /// reasoning ceiling: low|medium|high|xhigh
+    #[arg(long, value_parser = parse_level_value, default_value = "xhigh")]
+    ceiling: CodexReasoningLevel,
+
+    /// parallel review count (must be ≥ 1)
+    #[arg(short = 'n', long = "codex-review-n", value_parser = parse_nonzero_u32_value, default_value_t = std::num::NonZeroU32::new(3).expect("3 is non-zero"))]
+    codex_review_n: std::num::NonZeroU32,
+
+    /// loop iteration cap (must be ≥ 1)
+    #[arg(long, value_parser = parse_max_iter_value, default_value_t = std::num::NonZeroU32::new(50).expect("50 is non-zero"))]
+    max_iter: std::num::NonZeroU32,
+
+    /// OODA state-tree root
+    #[arg(long, value_parser = parse_existing_state_root)]
+    state_root: Option<PathBuf>,
+
+    /// path to the `codex` binary (default `codex`)
+    #[arg(long, default_value = "codex")]
+    codex_bin: PathBuf,
+
+    /// unsupported with current `codex review` target modes
+    #[arg(long)]
+    criteria: Option<String>,
+
+    /// climb one rung (Idle at ceiling)
+    #[arg(long)]
+    advance_level: bool,
+
+    /// drop one rung, clamp at floor
+    #[arg(long)]
+    drop_level: bool,
+
+    /// reset `current_level` to floor
+    #[arg(long)]
+    restart_from_floor: bool,
+
+    /// record Clean outcome
+    #[arg(long)]
+    mark_retro_clean: bool,
+
+    /// record `RetrospectiveChanges` outcome
+    #[arg(long)]
+    mark_retro_changes: Option<String>,
+
+    /// record Addressed outcome; drop one rung
+    #[arg(long)]
+    mark_address_passed: bool,
+
+    /// emit `HandoffHuman` with DETAILS as prompt
+    #[arg(long)]
+    mark_address_failed: Option<String>,
+}
+
+fn parse_level_value(raw: &str) -> Result<CodexReasoningLevel, String> {
+    parse_level(raw)
+}
+
+fn parse_max_iter_value(raw: &str) -> Result<std::num::NonZeroU32, String> {
+    if raw.starts_with('-') {
+        return Err(format!("--max-iter must be ≥ 1; got negative value: {raw}"));
+    }
+    if raw.starts_with('+') {
+        return Err(format!("--max-iter: leading `+` not accepted: {raw}"));
+    }
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("--max-iter: not an integer: {raw}"))?;
+    std::num::NonZeroU32::new(n).ok_or_else(|| "--max-iter must be ≥ 1; got 0".to_string())
+}
+
+fn parse_nonzero_u32_value(raw: &str) -> Result<std::num::NonZeroU32, String> {
+    if raw.starts_with('-') {
+        return Err(format!(
+            "--codex-review-n must be ≥ 1; got negative value: {raw}"
+        ));
+    }
+    if raw.starts_with('+') {
+        return Err(format!("--codex-review-n: leading `+` not accepted: {raw}"));
+    }
+    let n: u32 = raw
+        .parse()
+        .map_err(|_| format!("--codex-review-n: not an integer: {raw}"))?;
+    std::num::NonZeroU32::new(n).ok_or_else(|| "--codex-review-n must be ≥ 1; got 0".to_string())
+}
+
+fn parse_pr_value(raw: &str) -> Result<u64, String> {
+    if raw.starts_with('+') {
+        return Err(format!("--pr: leading `+` not accepted: {raw}"));
+    }
+    let n: u64 = raw
+        .parse()
+        .map_err(|_| format!("--pr: not a positive integer: {raw}"))?;
+    if n == 0 {
+        return Err("--pr must be ≥ 1; got 0".to_string());
+    }
+    Ok(n)
+}
+
+fn parse_existing_state_root(raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if !path.exists() {
+        return Err(format!("--state-root does not exist: {raw}"));
+    }
+    if !path.is_dir() {
+        return Err(format!("--state-root is not a directory: {raw}"));
+    }
+    Ok(path)
 }
 
 // ----- repo discovery --------------------------------------------------

@@ -1131,7 +1131,7 @@ generated 0 comments.
 * This doc comment still says \"workflow consensus protocol\".
 
 **src/core/config/src/impls/consensus.rs:19**
-* `ConsensusConfig` is now a public type in `w3_config::impls::consensus`.
+* `ConsensusConfig` is now a public type in `example_config::impls::consensus`.
 
 </details>
 ";

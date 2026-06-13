@@ -767,9 +767,9 @@ mod tests {
     }
 
     /// Regression: `gh pr view --json author` returns
-    /// `{"login":"app/dependabot"}` for App-authored PRs (observed
-    /// against w3-io/w3-explorer#353). The parser used to reject
-    /// the `/` byte and the binary crashed with `BinaryError` 70.
+    /// `{"login":"app/dependabot"}` for App-authored PRs. The
+    /// parser used to reject the `/` byte and the binary crashed
+    /// with `BinaryError` 70.
     #[test]
     fn github_login_accepts_app_slug_form() {
         let l = GitHubLogin::parse("app/dependabot").expect("valid app/ form");

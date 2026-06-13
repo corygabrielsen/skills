@@ -289,7 +289,8 @@ mod tests {
 
     #[test]
     fn parse_run_id_from_link_well_formed_actions_url() {
-        let url = "https://github.com/w3-io/w3/actions/runs/27206702939/job/80324317269";
+        let url =
+            "https://github.com/example-org/example-repo/actions/runs/27206702939/job/80324317269";
         assert_eq!(
             parse_run_id_from_link(url),
             Some(WorkflowRunId(27_206_702_939)),
@@ -316,13 +317,13 @@ mod tests {
         // `actions/runs/N` without the `/job/M` suffix is the
         // run-summary URL, not a per-job rollup row. We only want
         // to map per-job rows back to runs.
-        let url = "https://github.com/w3-io/w3/actions/runs/27206702939";
+        let url = "https://github.com/example-org/example-repo/actions/runs/27206702939";
         assert_eq!(parse_run_id_from_link(url), None);
     }
 
     #[test]
     fn parse_run_id_from_link_non_numeric_run_id_returns_none() {
-        let url = "https://github.com/w3-io/w3/actions/runs/abc/job/123";
+        let url = "https://github.com/example-org/example-repo/actions/runs/abc/job/123";
         assert_eq!(parse_run_id_from_link(url), None);
     }
 

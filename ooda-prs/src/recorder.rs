@@ -33,8 +33,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ooda_state::{
-    BlobRef, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, Result as StateResult,
-    RunId, RunWriter, StateError, StateRoot, domain_specific, terminal_event,
+    BlobRef, DecisionKind, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain,
+    Result as StateResult, RunId, RunWriter, StateError, StateRoot, domain_specific,
+    terminal_event,
 };
 
 /// Error type returned by recorder path-resolving methods.
@@ -48,7 +49,7 @@ use serde_json::{Value, json};
 
 use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
-use crate::decide::decision::Decision;
+use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::compare::MergeBaseDelta;
 use crate::orient::ci::CiReport;
@@ -659,21 +660,27 @@ fn blob_path(inner: &Inner, blob: &BlobRef) -> PathBuf {
 
 /// Project a [`Decision`] onto a stable kind string the
 /// domain-agnostic state schema records on `IterationDecided`.
+///
+/// The wire-string literals live on [`DecisionKind`] in
+/// `ooda_state::tokens` — every recorder (PR trio + codex-review)
+/// routes through that enum so the wire shape cannot drift between
+/// binaries.
 fn decision_kind(decision: &Decision) -> String {
+    decision_kind_discriminant(decision).as_str().to_string()
+}
+
+fn decision_kind_discriminant(decision: &Decision) -> DecisionKind {
     match decision {
-        Decision::Execute(_) => "Execute".to_string(),
-        Decision::Halt(halt) => match halt {
-            crate::decide::decision::DecisionHalt::Success => "Halt::Success".to_string(),
-            crate::decide::decision::DecisionHalt::Terminal(t) => {
-                format!("Halt::Terminal({t:?})")
-            }
-            crate::decide::decision::DecisionHalt::AgentNeeded(_) => {
-                "Halt::AgentNeeded".to_string()
-            }
-            crate::decide::decision::DecisionHalt::HumanNeeded(_) => {
-                "Halt::HumanNeeded".to_string()
-            }
-        },
+        Decision::Execute(_) => DecisionKind::Execute,
+        Decision::Halt(DecisionHalt::Success) => DecisionKind::HaltSuccess,
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)) => {
+            DecisionKind::HaltTerminalSucceeded
+        }
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => {
+            DecisionKind::HaltTerminalAborted
+        }
+        Decision::Halt(DecisionHalt::AgentNeeded(_)) => DecisionKind::HaltAgentNeeded,
+        Decision::Halt(DecisionHalt::HumanNeeded(_)) => DecisionKind::HaltHumanNeeded,
     }
 }
 

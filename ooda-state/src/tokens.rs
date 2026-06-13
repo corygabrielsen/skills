@@ -146,6 +146,46 @@ impl Domain for CodexReviewDomain {
     }
 }
 
+// ── decision_kind vocabulary ────────────────────────────────────────
+
+/// Closed set of `decision_kind` literals every recorder emits on
+/// [`EventBody::IterationDecided`]. Lifting the wire shape into one
+/// enum forecloses the drift class that let
+/// `Halt::Terminal::Succeeded` (ooda-codex-review) and
+/// `Halt::Terminal(Succeeded)` (PR trio) coexist on the same wire —
+/// the canonical string lives once, every binary routes through
+/// [`Self::as_str`].
+///
+/// Domain-neutrality holds: the vocabulary names variants of
+/// `ooda_core::Decision` / `ooda_core::DecisionHalt`, which are
+/// cross-domain types. Per-binary mappers in each recorder match on
+/// their `Decision` value and pick the right [`DecisionKind`] —
+/// `ooda-state` knows the strings; the binary knows the values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DecisionKind {
+    Execute,
+    HaltSuccess,
+    HaltTerminalSucceeded,
+    HaltTerminalAborted,
+    HaltAgentNeeded,
+    HaltHumanNeeded,
+}
+
+impl DecisionKind {
+    /// Wire-stable `decision_kind` literal.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Execute => "Execute",
+            Self::HaltSuccess => "Halt::Success",
+            Self::HaltTerminalSucceeded => "Halt::Terminal(Succeeded)",
+            Self::HaltTerminalAborted => "Halt::Terminal(Aborted)",
+            Self::HaltAgentNeeded => "Halt::AgentNeeded",
+            Self::HaltHumanNeeded => "Halt::HumanNeeded",
+        }
+    }
+}
+
 // ── kind_suffix vocabulary ──────────────────────────────────────────
 
 /// Closed set of `kind_suffix` literals every PR-side recorder
@@ -318,6 +358,51 @@ mod tests {
         match evt {
             EventBody::RunHalted { outcome, .. } => assert_eq!(outcome, "DoneFixedPoint"),
             other => panic!("expected RunHalted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decision_kind_wire_strings_are_stable() {
+        // These strings are the wire vocabulary every recorder emits
+        // on `IterationDecided`. Any drift here changes the on-disk
+        // schema; downstream readers (cockpit, audit tooling) parse
+        // these exact bytes. Asserting literally so a casual edit to
+        // the enum's `as_str` impl fails a unit test, not silently a
+        // consumer.
+        assert_eq!(DecisionKind::Execute.as_str(), "Execute");
+        assert_eq!(DecisionKind::HaltSuccess.as_str(), "Halt::Success");
+        assert_eq!(
+            DecisionKind::HaltTerminalSucceeded.as_str(),
+            "Halt::Terminal(Succeeded)"
+        );
+        assert_eq!(
+            DecisionKind::HaltTerminalAborted.as_str(),
+            "Halt::Terminal(Aborted)"
+        );
+        assert_eq!(DecisionKind::HaltAgentNeeded.as_str(), "Halt::AgentNeeded");
+        assert_eq!(DecisionKind::HaltHumanNeeded.as_str(), "Halt::HumanNeeded");
+    }
+
+    #[test]
+    fn decision_kind_terminal_uses_paren_not_double_colon() {
+        // Regression guard for the round-2 G3 drift instance:
+        // `ooda-codex-review` emitted `"Halt::Terminal::Succeeded"`
+        // while the PR trio emitted `"Halt::Terminal(Succeeded)"`. The
+        // lifted vocabulary forces the paren-form on every recorder;
+        // a casual rewrite back to `::` here fails the test.
+        for terminal in [
+            DecisionKind::HaltTerminalSucceeded,
+            DecisionKind::HaltTerminalAborted,
+        ] {
+            let s = terminal.as_str();
+            assert!(
+                s.contains('(') && s.ends_with(')'),
+                "expected paren-form wire shape, got {s:?}"
+            );
+            assert!(
+                !s.contains("Terminal::"),
+                "expected paren-form not double-colon, got {s:?}"
+            );
         }
     }
 

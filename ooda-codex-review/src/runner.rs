@@ -32,16 +32,31 @@
 
 use std::num::NonZeroU32;
 
-use ooda_state::{EventBody, RunWriter};
+use ooda_state::{DecisionKind, EventBody, RunWriter};
 
 use crate::act::{ActContext, ActError, act};
 use crate::decide::action::{Action, ActionEffect, CodexReasoningLevel};
 use crate::decide::decide;
-use crate::decide::decision::{Decision, DecisionHalt, HaltReason};
+use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
 use crate::ids::{RepoId, ReviewTarget};
 use crate::observe::codex::CodexObservations;
 use crate::orient::OrientedState;
 use crate::orient::orient;
+
+/// Map a [`DecisionHalt`] onto its [`DecisionKind`] discriminant.
+/// Wire-string literals live on [`DecisionKind`] in
+/// `ooda_state::tokens` — every recorder (PR trio + codex-review)
+/// routes through that enum so the wire shape cannot drift between
+/// binaries.
+fn halt_decision_kind(halt: &DecisionHalt) -> DecisionKind {
+    match halt {
+        DecisionHalt::Success => DecisionKind::HaltSuccess,
+        DecisionHalt::Terminal(Terminal::Succeeded) => DecisionKind::HaltTerminalSucceeded,
+        DecisionHalt::Terminal(Terminal::Aborted) => DecisionKind::HaltTerminalAborted,
+        DecisionHalt::AgentNeeded(_) => DecisionKind::HaltAgentNeeded,
+        DecisionHalt::HumanNeeded(_) => DecisionKind::HaltHumanNeeded,
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum LoopError {
@@ -111,12 +126,15 @@ impl<'a> EventSink<'a> {
     }
 
     fn decided(&mut self, iter: u32, decision: &Decision) {
+        // `Execute` carries the action's `kind.name()` here (not the
+        // bare `"Execute"` literal the PR trio emits) so the codex-
+        // review wire stream retains per-iteration action visibility
+        // without a sidecar blob. All halt variants route through the
+        // shared [`DecisionKind`] vocabulary so the wire shape cannot
+        // drift from the PR trio's recorders.
         let kind = match decision {
             Decision::Execute(a) => a.kind.name().to_string(),
-            Decision::Halt(DecisionHalt::Success) => "Halt::Success".into(),
-            Decision::Halt(DecisionHalt::Terminal(t)) => format!("Halt::Terminal::{t:?}"),
-            Decision::Halt(DecisionHalt::AgentNeeded(_)) => "Halt::AgentNeeded".into(),
-            Decision::Halt(DecisionHalt::HumanNeeded(_)) => "Halt::HumanNeeded".into(),
+            Decision::Halt(halt) => halt_decision_kind(halt).as_str().to_string(),
         };
         let _ = self.writer.append(EventBody::IterationDecided {
             iteration: iter,
@@ -636,6 +654,83 @@ mod tests {
             kinds,
             vec!["run_started", "iteration_oriented", "iteration_decided"],
             "AgentNeeded halt should emit orient + decision but no act/halt event",
+        );
+    }
+
+    // ── decision_kind wire shape ──
+
+    #[test]
+    fn halt_decision_kind_maps_each_variant_to_shared_token() {
+        // Drift guard: codex-review's decided() must route every
+        // DecisionHalt through the same DecisionKind discriminants the
+        // PR trio's recorder.rs uses. Asserting the exact wire string
+        // per variant (sourced from the lifted ooda_state vocabulary)
+        // makes a future revert to `Halt::Terminal::{t:?}` a compile-
+        // independent unit-test failure.
+        assert_eq!(
+            halt_decision_kind(&DecisionHalt::Success).as_str(),
+            "Halt::Success"
+        );
+        assert_eq!(
+            halt_decision_kind(&DecisionHalt::Terminal(Terminal::Succeeded)).as_str(),
+            "Halt::Terminal(Succeeded)"
+        );
+        assert_eq!(
+            halt_decision_kind(&DecisionHalt::Terminal(Terminal::Aborted)).as_str(),
+            "Halt::Terminal(Aborted)"
+        );
+    }
+
+    #[test]
+    fn iteration_decided_writes_paren_form_for_halt_terminal() {
+        // End-to-end coverage: run a loop that halts with Terminal at
+        // ceiling and read back events.jsonl. Asserts the on-disk
+        // bytes carry the paren-form `Halt::Terminal(Succeeded)` —
+        // the same shape ooda-pr, ooda-prs, and ooda-pr-codex-review
+        // emit — not the historical `Halt::Terminal::Succeeded` drift.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let observe = scripted_observe(vec![CodexObservations {
+            current_level: CodexReasoningLevel::Xhigh,
+            ..obs(BatchState::Complete {
+                verdicts: vec![record(1, VerdictClass::Clean)],
+            })
+        }]);
+        let tmp = TempDir::new().unwrap();
+        let state = StateRoot::new(tmp.path()).unwrap();
+        let run_id = RunId::generate();
+        let mut writer = state.create_run(run_id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "codex-review".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        {
+            let mut sink = EventSink::new(&mut writer);
+            let _ = run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(1),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap();
+        }
+        let events_path = tmp
+            .path()
+            .join("runs")
+            .join(run_id.as_str())
+            .join("events.jsonl");
+        let body = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            body.contains(r#""decision_kind":"Halt::Terminal(Succeeded)""#),
+            "expected paren-form Halt::Terminal(Succeeded) in events.jsonl, got:\n{body}",
+        );
+        assert!(
+            !body.contains(r#""decision_kind":"Halt::Terminal::"#),
+            "regression: double-colon Halt::Terminal:: drift reappeared in events.jsonl:\n{body}",
         );
     }
 

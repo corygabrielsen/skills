@@ -46,8 +46,8 @@
 
 pub mod tokens;
 pub use tokens::{
-    CodexReviewDomain, Domain, DomainKind, OutcomeKind, PrDomain, blob_path, domain_specific,
-    terminal_event,
+    CodexReviewDomain, DecisionKind, Domain, DomainKind, OutcomeKind, PrDomain, blob_path,
+    domain_specific, terminal_event,
 };
 
 use std::fs::{self, File, OpenOptions};

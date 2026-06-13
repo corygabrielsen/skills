@@ -37,13 +37,13 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use ooda_state::{
-    BlobRef, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunWriter, StateRoot,
-    domain_specific, resolve_state_root, terminal_event,
+    BlobRef, DecisionKind, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunWriter,
+    StateRoot, domain_specific, resolve_state_root, terminal_event,
 };
 
 use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
-use crate::decide::decision::Decision;
+use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::compare::MergeBaseDelta;
 use crate::orient::ci::CiReport;
@@ -744,19 +744,27 @@ fn stall_action_kind(outcome: &Outcome) -> Option<String> {
 
 /// Stable token for a `Decision` variant, suitable for the
 /// `decision_kind` field on `IterationDecided`.
+///
+/// The wire-string literals live on [`DecisionKind`] in
+/// `ooda_state::tokens` — every recorder (PR trio + codex-review)
+/// routes through that enum so the wire shape cannot drift between
+/// binaries.
 fn decision_kind_token(decision: &Decision) -> String {
+    decision_kind_discriminant(decision).as_str().to_string()
+}
+
+fn decision_kind_discriminant(decision: &Decision) -> DecisionKind {
     match decision {
-        Decision::Execute(_) => "Execute".to_string(),
-        Decision::Halt(crate::decide::decision::DecisionHalt::Success) => "Halt::Success".into(),
-        Decision::Halt(crate::decide::decision::DecisionHalt::Terminal(t)) => {
-            format!("Halt::Terminal({t:?})")
+        Decision::Execute(_) => DecisionKind::Execute,
+        Decision::Halt(DecisionHalt::Success) => DecisionKind::HaltSuccess,
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)) => {
+            DecisionKind::HaltTerminalSucceeded
         }
-        Decision::Halt(crate::decide::decision::DecisionHalt::AgentNeeded(_)) => {
-            "Halt::AgentNeeded".into()
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => {
+            DecisionKind::HaltTerminalAborted
         }
-        Decision::Halt(crate::decide::decision::DecisionHalt::HumanNeeded(_)) => {
-            "Halt::HumanNeeded".into()
-        }
+        Decision::Halt(DecisionHalt::AgentNeeded(_)) => DecisionKind::HaltAgentNeeded,
+        Decision::Halt(DecisionHalt::HumanNeeded(_)) => DecisionKind::HaltHumanNeeded,
     }
 }
 

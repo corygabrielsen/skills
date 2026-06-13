@@ -32,13 +32,13 @@ use serde::Serialize;
 use serde_json::json;
 
 use ooda_state::{
-    BlobRef, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunId, RunWriter,
-    StateError, StateRoot, domain_specific, resolve_state_root, terminal_event,
+    BlobRef, DecisionKind, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain, RunId,
+    RunWriter, StateError, StateRoot, domain_specific, resolve_state_root, terminal_event,
 };
 
 use crate::dashboard::Dashboard;
 use crate::decide::action::Action;
-use crate::decide::decision::{Decision, DecisionHalt};
+use crate::decide::decision::{Decision, DecisionHalt, Terminal};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::compare::MergeBaseDelta;
 use crate::orient::OrientedState;
@@ -815,21 +815,31 @@ fn pr_index_path(
 }
 
 /// Single-token rendering for the `IterationDecided` event's
-/// `decision_kind` field. Domain-stable; downstream readers
-/// switch on this string.
-/// Single-token rendering for the `IterationDecided` event's
-/// `decision_kind` field. `Execute` is bare (no `::<kind>` suffix);
+/// `decision_kind` field. Domain-stable; downstream readers switch
+/// on this string. `Execute` is bare (no `::<kind>` suffix);
 /// downstream readers that need the action kind read the
 /// `iteration_decision_envelope` event's blob.
+///
+/// The wire-string literals live on [`DecisionKind`] in
+/// `ooda_state::tokens` — every recorder (PR trio + codex-review)
+/// routes through that enum so the wire shape cannot drift between
+/// binaries.
 fn decision_kind(decision: &Decision) -> String {
+    decision_kind_discriminant(decision).as_str().to_string()
+}
+
+fn decision_kind_discriminant(decision: &Decision) -> DecisionKind {
     match decision {
-        Decision::Execute(_) => "Execute".into(),
-        Decision::Halt(halt) => match halt {
-            DecisionHalt::Success => "Halt::Success".into(),
-            DecisionHalt::Terminal(t) => format!("Halt::Terminal({t:?})"),
-            DecisionHalt::AgentNeeded(_) => "Halt::AgentNeeded".into(),
-            DecisionHalt::HumanNeeded(_) => "Halt::HumanNeeded".into(),
-        },
+        Decision::Execute(_) => DecisionKind::Execute,
+        Decision::Halt(DecisionHalt::Success) => DecisionKind::HaltSuccess,
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Succeeded)) => {
+            DecisionKind::HaltTerminalSucceeded
+        }
+        Decision::Halt(DecisionHalt::Terminal(Terminal::Aborted)) => {
+            DecisionKind::HaltTerminalAborted
+        }
+        Decision::Halt(DecisionHalt::AgentNeeded(_)) => DecisionKind::HaltAgentNeeded,
+        Decision::Halt(DecisionHalt::HumanNeeded(_)) => DecisionKind::HaltHumanNeeded,
     }
 }
 

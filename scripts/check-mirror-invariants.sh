@@ -252,9 +252,13 @@ fi
 # recorder that emits `IterationExecuted` twice and another that
 # emits it once is a wire-shape divergence the script catches.
 #
-# `ooda-codex-review` is excluded (it lives in a sibling crate with a
-# legitimately divergent event set; its recorder lives inline in
-# `main.rs`, not in `recorder.rs`).
+# `ooda-codex-review` participates in `decision_kind` coverage via the
+# `DecisionKind::` wire vocabulary lifted into `ooda_state::tokens`
+# (see `decision_kind_drift` check below). Its `DomainKind::` /
+# `EventBody::` multisets legitimately diverge from the PR trio (its
+# event set is smaller and its recorder lives inline in `main.rs` +
+# `runner.rs`, not in `recorder.rs`), so it is excluded from those two
+# checks.
 wire_tokens() {
     local file="$1"
     local pattern="$2"
@@ -314,6 +318,45 @@ diff_wire_tokens_excluding_domain_specific() {
     done
 }
 diff_wire_tokens_excluding_domain_specific "EventBody" "EventBody::[A-Za-z][A-Za-z0-9_]* \{"
+
+# `decision_kind` wire-token coverage spans ALL FOUR binaries (PR trio
+# + ooda-codex-review). The literal strings live on
+# `ooda_state::tokens::DecisionKind`; every recorder maps its
+# `Decision`/`DecisionHalt` value onto that enum and calls `.as_str()`.
+# A drift instance — `ooda-codex-review` historically emitting
+# `Halt::Terminal::Succeeded` while the PR trio emitted
+# `Halt::Terminal(Succeeded)` — was what motivated the lift, and this
+# check forecloses its recurrence.
+#
+# Coverage is structural: every binary must route its `decision_kind`
+# through a `DecisionKind::` variant, and the literal wire-string
+# forms (`Halt::Terminal::` double-colon, `format!("Halt::Terminal(`
+# paren-format) must NOT appear anywhere — those would re-introduce
+# the drift the lift eliminated.
+check_decision_kind_drift() {
+    local binary="$1"
+    local recorder_path="$2"
+    if [ ! -f "$recorder_path" ]; then
+        report_fail "decision_kind: $binary recorder source missing at $recorder_path"
+        return
+    fi
+    # Positive coverage: at least one DecisionKind:: routing site.
+    if ! grep -q 'DecisionKind::' "$recorder_path"; then
+        report_fail "decision_kind: $binary does not route through DecisionKind:: (lifted vocabulary bypassed in $recorder_path)"
+    fi
+    # Negative coverage: ban `format!("Halt::...` emission. The lifted
+    # vocabulary owns the literal strings; any `format!("Halt::` in a
+    # recorder is bypassing the enum and recreating the drift the lift
+    # eliminated. Regression-guard tests use `contains`/`assert_eq!`
+    # against the literal, never `format!`, so they don't false-fire.
+    if grep -nE 'format!\("Halt::' "$recorder_path" >&2; then
+        report_fail "decision_kind: $binary uses format!(\"Halt::...\") in $recorder_path — route through DecisionKind:: instead"
+    fi
+}
+check_decision_kind_drift "ooda-pr" "$ROOT/ooda-pr/src/recorder.rs"
+check_decision_kind_drift "ooda-prs" "$ROOT/ooda-prs/src/recorder.rs"
+check_decision_kind_drift "ooda-pr-codex-review" "$ROOT/ooda-pr-codex-review/src/recorder.rs"
+check_decision_kind_drift "ooda-codex-review" "$ROOT/ooda-codex-review/src/runner.rs"
 
 if [ "$fail" -ne 0 ]; then
     printf '\nMirror invariant violated. Re-sync the canonical and re-run.\n' >&2

@@ -89,7 +89,9 @@ mod tests {
     fn fetch_all_passes_through_identity_and_scans_batch() {
         let dir = temp_batch_dir("passthrough");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nLooks good\n").unwrap();
+        fs::write(dir.join("low-2.exit"), "0\n").unwrap();
 
         let obs = fetch_all(
             dummy_repo_id(),

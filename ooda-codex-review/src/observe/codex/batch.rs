@@ -11,10 +11,13 @@
 //!
 //! # Completion predicate
 //!
-//! A log is "completed" iff it contains the verdict marker AND a
-//! non-empty body after it. Marker-only counts as Running:
-//! observing the body mid-stream produces false-cleans, and
-//! waiting for the body to land is bounded.
+//! A log is "completed" iff (a) its sibling `.exit` file is
+//! present (the subprocess has exited) AND (b) the log contains
+//! the verdict marker AND (c) a non-empty body after the marker.
+//! The `.exit` file is the ground truth that the subprocess has
+//! stopped writing; without it, marker+body may be mid-stream and
+//! reading the partial body produces false-cleans via substring-
+//! matched verdict classification.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,7 +31,7 @@ use crate::decide::action::CodexReasoningLevel;
 use super::verdict::{self, VerdictClass};
 
 /// Per-level batch state from the observe layer's perspective.
-/// The three values partition the filesystem signal completely.
+/// The four values partition the filesystem signal completely.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BatchState {
@@ -43,6 +46,18 @@ pub(crate) enum BatchState {
     /// `expected` files have all completed; per-slot bodies and
     /// classifications attached.
     Complete { verdicts: Vec<VerdictRecord> },
+    /// More completed slots observed than `expected`. Indicates a
+    /// stale-state condition (e.g., stray log from a prior run,
+    /// off-by-one between caller's `n` and observer's `expected`).
+    /// Returning [`Self::Running`] from this shape would silently
+    /// emit `AwaitReviews { pending: 0 }`, a Wait that the loop
+    /// honours forever; surface to a human resolver instead.
+    InconsistentState {
+        total: u32,
+        completed: u32,
+        expected: u32,
+        reason: String,
+    },
 }
 
 /// One reviewer's verdict within a batch.
@@ -66,6 +81,7 @@ pub(crate) struct VerdictRecord {
 /// | 0     | —         | `NotStarted` |
 /// | n > 0 | c < expected | `Running { total = n, completed = c }` |
 /// | n > 0 | c == expected | `Complete { verdicts }` |
+/// | n > 0 | c > expected | `InconsistentState { .. }` |
 ///
 /// `expected` is required because filesystem absence alone cannot
 /// distinguish "spawn hasn't happened" from "spawn happened and
@@ -127,46 +143,58 @@ pub(crate) fn scan_batch(
     for (&slot, p) in &log_paths {
         let body_text = fs::read_to_string(p)?;
         let extracted = verdict::extract_verdict(&body_text);
-        if let Some(exit_path) = exit_paths.get(&slot) {
-            let code = read_exit_status(exit_path)?;
-            if code != 0 {
+        // Completion requires the sibling `.exit` file: the
+        // subprocess has stopped writing. Without it the log may
+        // be mid-stream and reading the partial body produces
+        // false-cleans via substring-matched classification.
+        let Some(exit_path) = exit_paths.get(&slot) else {
+            continue;
+        };
+        let code = read_exit_status(exit_path)?;
+        if code != 0 {
+            return Err(io::Error::other(format!(
+                "codex review slot {slot} exited {code}; see {}",
+                p.display()
+            )));
+        }
+        let verdict_body = match extracted {
+            None => {
                 return Err(io::Error::other(format!(
-                    "codex review slot {slot} exited {code}; see {}",
+                    "codex review slot {slot} exited 0 without a verdict marker; see {}",
                     p.display()
                 )));
             }
-            match extracted.as_ref() {
-                None => {
-                    return Err(io::Error::other(format!(
-                        "codex review slot {slot} exited 0 without a verdict marker; see {}",
-                        p.display()
-                    )));
-                }
-                Some(body) if body.trim().is_empty() => {
-                    return Err(io::Error::other(format!(
-                        "codex review slot {slot} exited 0 without a verdict body; see {}",
-                        p.display()
-                    )));
-                }
-                Some(_) => {}
+            Some(body) if body.trim().is_empty() => {
+                return Err(io::Error::other(format!(
+                    "codex review slot {slot} exited 0 without a verdict body; see {}",
+                    p.display()
+                )));
             }
-        }
-        if let Some(verdict_body) = extracted.filter(|b| !b.trim().is_empty()) {
-            verdicts.push(VerdictRecord {
-                slot,
-                class: verdict::classify(&verdict_body),
-                body: verdict_body,
-            });
-        }
+            Some(body) => body,
+        };
+        verdicts.push(VerdictRecord {
+            slot,
+            class: verdict::classify(&verdict_body),
+            body: verdict_body,
+        });
     }
 
     // Bounded by the per-iteration reviewer fan-out; u32 fits.
     let total = u32::try_from(log_paths.len()).expect("batch log count fits in u32");
     let completed = u32::try_from(verdicts.len()).expect("batch verdict count fits in u32");
-    if completed == expected {
-        Ok(BatchState::Complete { verdicts })
-    } else {
-        Ok(BatchState::Running { total, completed })
+    match completed.cmp(&expected) {
+        std::cmp::Ordering::Equal => Ok(BatchState::Complete { verdicts }),
+        std::cmp::Ordering::Greater => Ok(BatchState::InconsistentState {
+            total,
+            completed,
+            expected,
+            reason: format!(
+                "completed slots ({completed}) exceed expected fan-out ({expected}) in {}; \
+                 stray log file or mismatched caller `n`",
+                batch_dir.display()
+            ),
+        }),
+        std::cmp::Ordering::Less => Ok(BatchState::Running { total, completed }),
     }
 }
 
@@ -253,6 +281,7 @@ mod tests {
     fn partial_completion_is_running() {
         let dir = temp_batch_dir("partial");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
@@ -267,15 +296,40 @@ mod tests {
     }
 
     #[test]
+    fn marker_plus_body_without_exit_file_is_running() {
+        // Regression: a log with the verdict marker plus a single
+        // post-marker byte but no `.exit` file is the codex
+        // subprocess mid-stream. Classifying it as Complete races
+        // the partial body into the verdict and can produce a
+        // false-clean via substring matching.
+        let dir = temp_batch_dir("mid-stream");
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nN").unwrap();
+        fs::write(dir.join("low-2.log"), "thinking\ncodex\nL").unwrap();
+        fs::write(dir.join("low-3.log"), "thinking\ncodex\nR").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        assert_eq!(
+            s,
+            BatchState::Running {
+                total: 3,
+                completed: 0
+            }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn full_completion_classifies_each() {
         let dir = temp_batch_dir("complete");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
         fs::write(
             dir.join("low-2.log"),
             "thinking\ncodex\nReview comment: src/foo.rs:42\n",
         )
         .unwrap();
+        fs::write(dir.join("low-2.exit"), "0\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nLooks good.\n").unwrap();
+        fs::write(dir.join("low-3.exit"), "0\n").unwrap();
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
         match s {
             BatchState::Complete { verdicts } => {
@@ -349,6 +403,7 @@ mod tests {
     fn completed_slots_keep_filename_slot_numbers() {
         let dir = temp_batch_dir("filename-slots");
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-2.exit"), "0\n").unwrap();
 
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap();
         match s {
@@ -359,10 +414,13 @@ mod tests {
     }
 
     #[test]
-    fn extra_completed_logs_are_still_running_until_expected_match() {
-        // 4 done but expected=3 — could happen if a stray log lingers from
-        // a prior batch. Treat as Running so decide doesn't commit to a
-        // mis-sized verdict set.
+    fn extra_completed_logs_surface_as_inconsistent_state() {
+        // 4 done but expected=3 — stray log from a prior batch or
+        // an n-mismatch between the caller and the observer. Used
+        // to project to Running { completed=4, total=4 }, which
+        // decide turned into AwaitReviews { pending: 0 } — a Wait
+        // the loop honours forever. Now surfaces as
+        // InconsistentState so a human resolver can intervene.
         let dir = temp_batch_dir("oversize");
         for n in 1..=4 {
             fs::write(
@@ -370,15 +428,23 @@ mod tests {
                 "thinking\ncodex\nNo issues found\n",
             )
             .unwrap();
+            fs::write(dir.join(format!("low-{n}.exit")), "0\n").unwrap();
         }
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
-        assert_eq!(
-            s,
-            BatchState::Running {
-                total: 4,
-                completed: 4
+        match s {
+            BatchState::InconsistentState {
+                total,
+                completed,
+                expected,
+                reason,
+            } => {
+                assert_eq!(total, 4);
+                assert_eq!(completed, 4);
+                assert_eq!(expected, 3);
+                assert!(reason.contains("exceed expected"), "reason: {reason}");
             }
-        );
+            other => panic!("expected InconsistentState, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

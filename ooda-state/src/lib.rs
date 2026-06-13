@@ -902,11 +902,16 @@ impl RunWriter {
     /// ([`EventBody::RunHalted`], [`EventBody::RunStalled`],
     /// [`EventBody::RunCapReached`]).
     ///
-    /// Marker removal runs unconditionally: even if the terminal
-    /// append fails (disk full, oversize event, EIO) the live
-    /// marker is still cleared so cockpit / `live_runs()` do not
-    /// report a corpse run forever. The append error, if any, is
-    /// returned after the cleanup.
+    /// Append-first ordering: the terminal event must land on disk
+    /// before the live marker is cleared. The reader-side invariant
+    /// is "absent live marker ⇒ terminal event in the log"; clearing
+    /// the marker after a failed append would break it and readers
+    /// could no longer distinguish a deliberate halt from SIGKILL.
+    ///
+    /// On append failure: the writer is NOT marked halted and the
+    /// marker is NOT touched. The error is returned to the caller
+    /// and [`Drop`] later observes `halted == false` and emits the
+    /// `DroppedWithoutHalt` fallback (which clears the marker).
     ///
     /// # Errors
     ///
@@ -929,21 +934,18 @@ impl RunWriter {
         if self.halted {
             return Err(StateError::AlreadyHalted(self.id.clone()));
         }
-        let append_res = self.append_event(Event::now(body));
-        // Mark halted regardless of append success: the on-disk
-        // marker is being cleared, so subsequent appends would be
-        // ambiguous. Callers see the append error if any.
+        // Append first. If this fails, leave `halted` false and the
+        // marker untouched so Drop's `DroppedWithoutHalt` fallback
+        // still fires and the reader-side invariant
+        // "absent live marker ⇒ terminal event in the log" holds.
+        self.append_event(Event::now(body))?;
         self.halted = true;
         let marker = self.root.live_marker(&self.id);
-        let remove_res = match fs::remove_file(&marker) {
+        match fs::remove_file(&marker) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(StateError::Io(e)),
-        };
-        // Surface the append error first; marker-cleanup error is
-        // secondary (the marker may still be reaped by the next
-        // halt or by manual `fs::remove_file`).
-        append_res.and(remove_res)
+        }
     }
 }
 
@@ -1745,7 +1747,7 @@ mod tests {
     }
 
     #[test]
-    fn halt_clears_live_marker_even_when_append_fails() {
+    fn halt_preserves_marker_when_append_fails_so_drop_can_fallback() {
         let (_tmp, root) = fresh();
         let id = RunId::generate();
         let mut writer = root.create_run(id.clone()).unwrap();
@@ -1757,7 +1759,11 @@ mod tests {
             .unwrap();
         assert!(root.live_runs().unwrap().contains(&id));
         // Force an oversized terminal event so the append step
-        // fails. Marker removal must still run.
+        // fails. Reader-side invariant: absent live marker ⇒
+        // terminal event in the log. So a failed append must leave
+        // the marker present; Drop's fallback later emits the
+        // synthetic `DroppedWithoutHalt` terminal event and clears
+        // the marker, preserving the invariant end-to-end.
         let big_outcome = "B".repeat(8 * 1024);
         let err = writer
             .halt(EventBody::RunHalted {
@@ -1767,9 +1773,23 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, StateError::EventTooLarge { .. }), "{err:?}");
         assert!(
-            !root.live_runs().unwrap().contains(&id),
-            "marker must be cleared even when append fails",
+            root.live_runs().unwrap().contains(&id),
+            "marker must be preserved when append fails so Drop's \
+             DroppedWithoutHalt fallback can reconcile the log",
         );
+        // After Drop runs, marker is gone and a synthetic
+        // RunHalted terminal event is on disk.
+        drop(writer);
+        assert!(!root.live_runs_unfiltered().unwrap().contains(&id));
+        let reader = root.open_run(id).unwrap();
+        let events = reader.events().unwrap();
+        let last = events.last().expect("at least one event");
+        match &last.body {
+            EventBody::RunHalted { outcome, .. } => {
+                assert_eq!(outcome, "DroppedWithoutHalt");
+            }
+            other => panic!("expected synthetic RunHalted, got {other:?}"),
+        }
     }
 
     #[test]

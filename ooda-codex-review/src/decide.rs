@@ -51,6 +51,9 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
             let pending = oriented.expected.saturating_sub(*completed);
             mk_await_reviews(oriented.current_level, pending)
         }
+        BatchState::InconsistentState { reason, .. } => {
+            mk_batch_state_inconsistent(oriented.current_level, reason)
+        }
         BatchState::Complete { verdicts } if all_clean(verdicts) => {
             // All-clean at ceiling is the terminal fixed point.
             // All-clean below ceiling defers to retrospective
@@ -131,6 +134,27 @@ fn mk_address_batch(level: CodexReasoningLevel, issue_count: u32) -> Action {
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::typed("address", &level),
+    }
+}
+
+fn mk_batch_state_inconsistent(level: CodexReasoningLevel, reason: &str) -> Action {
+    Action {
+        kind: ActionKind::BatchStateInconsistent {
+            level,
+            reason: reason.to_string(),
+        },
+        effect: ActionEffect::Human {
+            prompt: ooda_core::HandoffPrompt::new(format!(
+                "Stale codex-review batch state at level {}: {reason}. \
+                 The auto-loop has no safe recovery: inspect the batch \
+                 directory, clear stray log/exit files (or remove \
+                 `head_sha.txt` to force a fresh batch), then re-run.",
+                level.as_str(),
+            )),
+        },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Mid(MidTier::Pathology),
+        blocker: BlockerKey::typed("inconsistent", &level),
     }
 }
 
@@ -340,6 +364,33 @@ mod tests {
     }
 
     #[test]
+    fn inconsistent_state_halts_for_human_resolution() {
+        // Stale state: more completed slots than expected. The
+        // legacy projection (Running { completed > expected })
+        // would emit AwaitReviews { pending: 0 } — a Wait the
+        // loop honours forever. The new variant routes the same
+        // input to a HumanNeeded handoff carrying the reason.
+        let bs = BatchState::InconsistentState {
+            total: 4,
+            completed: 4,
+            expected: 3,
+            reason: "stray log file from prior batch".to_string(),
+        };
+        let o = oriented(bs, CodexReasoningLevel::High, 3);
+        let d = decide(&o);
+        match d {
+            Decision::Halt(DecisionHalt::HumanNeeded(action)) => match action.kind {
+                ActionKind::BatchStateInconsistent { level, reason } => {
+                    assert_eq!(level, CodexReasoningLevel::High);
+                    assert!(reason.contains("stray log"), "reason: {reason}");
+                }
+                other => panic!("expected BatchStateInconsistent, got {other:?}"),
+            },
+            other => panic!("expected Halt(HumanNeeded), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pending_clamps_at_zero_when_completed_exceeds_expected() {
         let bs = BatchState::Running {
             total: 5,
@@ -390,12 +441,18 @@ mod tests {
         /// `Halt(AgentNeeded(Retrospective))` — below ceiling with
         /// all verdicts clean: hand off to retrospective synthesis.
         HaltRetrospective,
+        /// `Halt(HumanNeeded(BatchStateInconsistent))` — stale
+        /// state observed; no safe auto-recovery.
+        HaltBatchStateInconsistent,
     }
 
     fn expected_decide_behavior(batch_state: &BatchState) -> DecideBaselineBehavior {
         match batch_state {
             BatchState::NotStarted => DecideBaselineBehavior::ExecuteRunReviews,
             BatchState::Running { .. } => DecideBaselineBehavior::ExecuteAwaitReviews,
+            BatchState::InconsistentState { .. } => {
+                DecideBaselineBehavior::HaltBatchStateInconsistent
+            }
             // Baseline: all-clean verdicts. The has-issues sub-case
             // is exercised by `complete_with_issues_halts_for_address_batch`.
             BatchState::Complete { .. } => DecideBaselineBehavior::HaltRetrospective,
@@ -408,6 +465,12 @@ mod tests {
             BatchState::Running {
                 total: 3,
                 completed: 1,
+            },
+            BatchState::InconsistentState {
+                total: 4,
+                completed: 4,
+                expected: 3,
+                reason: "stray log".to_string(),
             },
             BatchState::Complete {
                 verdicts: vec![
@@ -434,6 +497,14 @@ mod tests {
                     panic!("decide emitted unexpected AgentNeeded kind in baseline: {other:?}")
                 }
             },
+            Decision::Halt(DecisionHalt::HumanNeeded(action)) => match &action.kind {
+                ActionKind::BatchStateInconsistent { .. } => {
+                    DecideBaselineBehavior::HaltBatchStateInconsistent
+                }
+                other => {
+                    panic!("decide emitted unexpected HumanNeeded kind in baseline: {other:?}")
+                }
+            },
             other @ Decision::Halt(_) => {
                 panic!("decide emitted unexpected Decision in baseline: {other:?}")
             }
@@ -445,7 +516,7 @@ mod tests {
         let states = all_batch_states();
         assert_eq!(
             states.len(),
-            3,
+            4,
             "`all_batch_states` must include one sample per \
              `BatchState` variant; adding a new variant requires \
              adding both an arm in `expected_decide_behavior` AND a \

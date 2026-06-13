@@ -238,11 +238,6 @@ fn spawn_codex_review_batch(
     // head_sha.txt and per-slot logs are being (re)written.
     let _batch_lock = ooda_core::FileLock::acquire(&dir.join(".batch.lock"))
         .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
-    let mut sha_file = ooda_core::atomic_io::open_secure_truncate(&dir.join("head_sha.txt"))
-        .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
-    sha_file
-        .write_all(codex.head_sha.as_bytes())
-        .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
 
     if should_preflight_path(&codex.codex_bin) && !codex.codex_bin.exists() {
         return Err(ActError::CodexSpawn {
@@ -256,14 +251,34 @@ fn spawn_codex_review_batch(
 
     let codex_args = build_codex_args(level, &codex.base_branch);
 
+    // Per-iteration: spawn all n slots first; only stamp
+    // `head_sha.txt` once every spawn has succeeded. The observe
+    // side's identity gate keys off `head_sha.txt`; if a partial
+    // spawn leaves k<n logs and a matching head_sha, the next
+    // observe sees `Running { total = k, completed = ... }` and
+    // never re-spawns (head matches, no missing axis trigger),
+    // deadlocking the loop until the next push.
+    //
+    // Writing the SHA last preserves the invariant: head_sha
+    // present ⇒ every slot's spawn syscall returned Ok. A
+    // partial-spawn failure leaves head_sha absent, the observe
+    // gate projects `NotStarted`, and the next decide re-emits
+    // `RunReviews` to retry from clean. The truncate-on-entry of
+    // per-slot log files in the loop below makes the retry
+    // idempotent against the residue of the failed attempt.
+    let head_sha_path = dir.join("head_sha.txt");
+
     for slot in 1..=n {
         let log_path = dir.join(format!("{}-{slot}.log", level.as_str()));
         let exit_path = dir.join(format!("{}-{slot}.exit", level.as_str()));
-        ooda_core::atomic_io::open_secure_truncate(&log_path)
-            .map_err(|source| ActError::CodexSpawn { slot, source })?;
+        ooda_core::atomic_io::open_secure_truncate(&log_path).map_err(|source| {
+            cleanup_partial_batch(&dir, level, n);
+            ActError::CodexSpawn { slot, source }
+        })?;
         if let Err(source) = std::fs::remove_file(&exit_path)
             && source.kind() != std::io::ErrorKind::NotFound
         {
+            cleanup_partial_batch(&dir, level, n);
             return Err(ActError::CodexSpawn { slot, source });
         }
 
@@ -273,9 +288,10 @@ fn spawn_codex_review_batch(
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .stdin(Stdio::null());
-        let mut child = cmd
-            .spawn()
-            .map_err(|source| ActError::CodexSpawn { slot, source })?;
+        let mut child = cmd.spawn().map_err(|source| {
+            cleanup_partial_batch(&dir, level, n);
+            ActError::CodexSpawn { slot, source }
+        })?;
         // Detached reaper thread per child. The observe layer reads
         // `.exit` for completion signal; this thread's only job is
         // to call `waitpid` so the OS reclaims the zombie when the
@@ -285,7 +301,37 @@ fn spawn_codex_review_batch(
             let _ = child.wait();
         });
     }
+
+    // Every slot spawned successfully — stamp the SHA last so the
+    // observe-side gate unblocks the batch.
+    let mut sha_file = ooda_core::atomic_io::open_secure_truncate(&head_sha_path)
+        .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
+    sha_file
+        .write_all(codex.head_sha.as_bytes())
+        .map_err(|source| ActError::CodexSpawn { slot: 0, source })?;
     Ok(())
+}
+
+/// Delete any per-slot log/exit files that a partially-failed
+/// spawn pass may have left behind. Belt-and-braces with the
+/// "write `head_sha.txt` last" invariant: on retry, the observe
+/// gate already projects `NotStarted` (`head_sha` absent), so the
+/// loop body's truncate-on-entry would clobber stale logs
+/// anyway; cleaning up preemptively keeps `ls <batch_dir>` from
+/// surfacing zero-byte logs as artifacts of the failed attempt.
+///
+/// Best-effort: a `NotFound` is the steady state of a slot that
+/// never opened its log. Other errors are swallowed — the next
+/// successful spawn pass will overwrite whatever survives, and
+/// surfacing a secondary cleanup error would shadow the primary
+/// `CodexSpawn` cause.
+fn cleanup_partial_batch(dir: &Path, level: CodexReasoningLevel, n: u32) {
+    for slot in 1..=n {
+        let log_path = dir.join(format!("{}-{slot}.log", level.as_str()));
+        let exit_path = dir.join(format!("{}-{slot}.exit", level.as_str()));
+        let _ = std::fs::remove_file(&log_path);
+        let _ = std::fs::remove_file(&exit_path);
+    }
 }
 
 /// Build the codex-subprocess argv. The reasoning level and the
@@ -366,5 +412,71 @@ mod tests {
             rendered.contains(&needle),
             "expected {needle:?} in {rendered:?}",
         );
+    }
+
+    #[test]
+    fn partial_spawn_failure_leaves_head_sha_absent_for_clean_retry() {
+        // Regression: the previous shape wrote `head_sha.txt`
+        // FIRST, before the per-slot spawn loop. A partial-spawn
+        // failure (fd exhaustion, transient ENOENT, an existing
+        // file/dir collision on `.exit`) left k<n logs plus a
+        // matching `head_sha.txt`, and the next observe saw
+        // `Running { total = k }` forever — the head SHA matched,
+        // so no axis re-triggered `RunReviews` — until a fresh
+        // push moved the SHA out from under the deadlock.
+        //
+        // The new shape stamps `head_sha.txt` LAST, after every
+        // slot's spawn syscall returned Ok. A partial-spawn
+        // failure leaves it absent; the observe gate projects
+        // `NotStarted`; the next decide re-emits `RunReviews`.
+
+        let test_root = std::env::temp_dir().join(format!(
+            "ooda-pr-codex-review-act-site-a-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&test_root);
+        std::fs::create_dir_all(&test_root).unwrap();
+
+        let codex_pr_root = test_root.join("codex_root");
+        let level = CodexReasoningLevel::Low;
+        let head_sha = "abc123def456";
+        let n: u32 = 3;
+
+        // Pre-compute the batch dir and inject a slot-2 obstacle
+        // before invoking. `low-2.exit` as a directory makes the
+        // mid-loop `fs::remove_file` fail with `kind != NotFound`,
+        // forcing the partial-spawn error path AFTER slot 1 has
+        // already spawned successfully.
+        let dir = crate::observe::codex::batch_dir(&codex_pr_root, level, head_sha);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir(dir.join(format!("{}-2.exit", level.as_str()))).unwrap();
+
+        // The codex_bin field is what's passed as argv[0] inside
+        // `/bin/sh -c '"$@" ...'`. Using `/bin/true` keeps the
+        // detached child cheap and lets slot 1 spawn successfully.
+        let lock_file = std::fs::File::create(test_root.join("act.lock")).unwrap();
+        let codex = CodexActContext {
+            codex_bin: PathBuf::from("/bin/true"),
+            codex_pr_root: codex_pr_root.clone(),
+            n,
+            head_sha: head_sha.to_string(),
+            base_branch: "main".to_string(),
+            _lock: lock_file,
+        };
+
+        let err = spawn_codex_review_batch(&codex, &test_root, level, n).unwrap_err();
+        match err {
+            ActError::CodexSpawn { slot, .. } => assert_eq!(slot, 2),
+            other => panic!("expected CodexSpawn at slot 2, got {other:?}"),
+        }
+
+        assert!(
+            !dir.join("head_sha.txt").exists(),
+            "head_sha.txt must be absent on partial-spawn failure \
+             so the observe gate projects NotStarted and the next \
+             decide re-emits RunReviews from clean",
+        );
+
+        let _ = std::fs::remove_dir_all(&test_root);
     }
 }

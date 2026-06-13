@@ -149,6 +149,16 @@ pub enum ActionKind {
     /// embeds the orchestrator-supplied failure details. Human
     /// automation.
     TestsFailedTriage,
+
+    /// Halt for human resolution when the observed batch state is
+    /// inconsistent (e.g., more completed slots than expected — a
+    /// stray log from a prior batch). The auto-loop has no policy
+    /// for resolving stale state safely; surface to a human. Human
+    /// automation.
+    BatchStateInconsistent {
+        level: CodexReasoningLevel,
+        reason: String,
+    },
 }
 
 impl ActionKind {
@@ -174,6 +184,7 @@ impl ActionKindName for ActionKind {
             Self::RunTests => "RunTests",
             Self::RequestCriteriaRefinement => "RequestCriteriaRefinement",
             Self::TestsFailedTriage => "TestsFailedTriage",
+            Self::BatchStateInconsistent { .. } => "BatchStateInconsistent",
         }
     }
 }

@@ -46,11 +46,11 @@ same PR walks the same per-PR ledger.
 
 ## Names
 
-| Name       | Refers to                                                                                                                                                                                                                    |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/ooda-pr` | The skill (this document, invoked from a Claude Code agent prompt).                                                                                                                                                          |
-| `ooda-pr`  | The compiled Rust binary. The `run` wrapper resolves the symlink via `pwd -P` and locates the binary at `target/release/ooda-pr` inside the resolved source directory. Callers should invoke `run`, not the binary directly. |
-| `run`      | The wrapper script at `~/.claude/skills/ooda-pr/run`.                                                                                                                                                                        |
+| Name                    | Refers to                                                                                                                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/ooda-pr-codex-review` | The skill (this document, invoked from a Claude Code agent prompt).                                                                                                                                                                       |
+| `ooda-pr-codex-review`  | The compiled Rust binary. The `run` wrapper resolves the symlink via `pwd -P` and locates the binary at `target/release/ooda-pr-codex-review` inside the resolved source directory. Callers should invoke `run`, not the binary directly. |
+| `run`                   | The wrapper script at `~/.claude/skills/ooda-pr-codex-review/run`.                                                                                                                                                                        |
 
 Always invoke `run`; never the binary directly. `run` performs
 the rebuild step (`cargo build --release --quiet`) before
@@ -121,9 +121,9 @@ distinct concerns:
 
 **Safe patterns:**
 
-- ooda-pr alone on the line: `~/.claude/skills/ooda-pr/run owner/repo 42`
-- ooda-pr as the last command after `;`: `pwd; ~/.claude/skills/ooda-pr/run owner/repo 42`
-- ooda-pr on the right of `&&` after a reliably-succeeding left side: `cd /tmp && ~/.claude/skills/ooda-pr/run owner/repo 42`
+- ooda-pr alone on the line: `~/.claude/skills/ooda-pr-codex-review/run owner/repo 42`
+- ooda-pr as the last command after `;`: `pwd; ~/.claude/skills/ooda-pr-codex-review/run owner/repo 42`
+- ooda-pr on the right of `&&` after a reliably-succeeding left side: `cd /tmp && ~/.claude/skills/ooda-pr-codex-review/run owner/repo 42`
 
 **Capturing stderr:** redirect to a file (`ooda-pr ... 2>file`)
 for a single invocation. For repeated invocations, use append
@@ -176,7 +176,7 @@ agent mistakes; the binary is not at fault.
 **After a `Handoff*` (exit 3 or 4).** Surface the handoff to the
 user (header + iter-log + handoff blob; see `Handoff*` prompt
 format → "Surface to the user"). Then perform the requested
-action and re-invoke `/ooda-pr` in **loop mode** (no `inspect`).
+action and re-invoke `/ooda-pr-codex-review` in **loop mode** (no `inspect`).
 The loop's first iteration re-observes the now-modified state and
 either selects the next action or halts.
 
@@ -190,8 +190,8 @@ results, not faster convergence.
 ## How to call
 
 ```bash
-~/.claude/skills/ooda-pr/run [options] <owner/repo> <pr>           # loop mode
-~/.claude/skills/ooda-pr/run inspect [options] <owner/repo> <pr>   # one pass
+~/.claude/skills/ooda-pr-codex-review/run [options] <owner/repo> <pr>           # loop mode
+~/.claude/skills/ooda-pr-codex-review/run inspect [options] <owner/repo> <pr>   # one pass
 ```
 
 **Argument rules:**
@@ -527,8 +527,8 @@ always carries an `Action` and always emits the
 |  0   | `DoneSucceeded`           | `DoneMerged`                                                                 | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                 |
 |  1   | `Paused`                  | `Paused`                                                                     | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires). |
 |  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`                                    | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.           |
-|  3   | `HandoffHuman(action)`    | `Hand off to human: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below). Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                   |
-|  4   | `HandoffAgent(action)`    | `Hand off to agent: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                          |
+|  3   | `HandoffHuman(action)`    | `Hand off to human: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below). Re-invoke `/ooda-pr-codex-review` after they resolve it.                                                                                                                                                      |
+|  4   | `HandoffAgent(action)`    | `Hand off to agent: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr-codex-review` after the agent finishes.                                                                                             |
 |  5   | `DoneAborted`             | `DoneClosed`                                                                 | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                         |
 |  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`                                   | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                        |
 |  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                                 | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                             |
@@ -855,10 +855,10 @@ but the stall comparator only sees non-`Wait` actions
 
 ## Build
 
-Manual build (for development): `cd ~/.claude/skills/ooda-pr && cargo build --release`. The `run` wrapper invokes this on demand for normal use; manual build is useful for warming the cache or driving incremental rebuilds in an IDE. After a manual build, still invoke `run` rather than the binary directly — `run` ensures freshness on subsequent source edits.
+Manual build (for development): `cd ~/.claude/skills/ooda-pr-codex-review && cargo build --release`. The `run` wrapper invokes this on demand for normal use; manual build is useful for warming the cache or driving incremental rebuilds in an IDE. After a manual build, still invoke `run` rather than the binary directly — `run` ensures freshness on subsequent source edits.
 
 For deeper semantics — internal types (`Decision`, `HaltReason`,
 `Action`, `Automation`), the orient axes, and named invariants
-— see `~/.claude/skills/ooda-pr/README.md`. The contract this
+— see `~/.claude/skills/ooda-pr-codex-review/README.md`. The contract this
 SKILL describes (Outcome variants, exit codes, stderr format) is
 self-sufficient for normal caller use.

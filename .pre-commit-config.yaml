@@ -58,7 +58,7 @@ repos:
         entry: scripts/check-mirror-invariants.sh
         language: script
         pass_filenames: false
-        files: ^ooda-(pr|prs|pr-codex-review)/src/.*\.rs$
+        files: ^ooda-(pr|prs|pr-codex-review|codex-review|attest)/(src/.*\.rs|SKILL\.md)$
 
       - id: validate-commit-message
         name: Validate commit subject (≤50 chars)

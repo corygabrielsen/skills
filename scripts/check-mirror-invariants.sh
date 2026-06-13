@@ -358,6 +358,32 @@ check_decision_kind_drift "ooda-prs" "$ROOT/ooda-prs/src/recorder.rs"
 check_decision_kind_drift "ooda-pr-codex-review" "$ROOT/ooda-pr-codex-review/src/recorder.rs"
 check_decision_kind_drift "ooda-codex-review" "$ROOT/ooda-codex-review/src/runner.rs"
 
+# Each binary's SKILL.md must invoke its OWN `run` wrapper, never a
+# sibling's. A copy-paste from one SKILL.md to another silently drops
+# the caller onto the wrong binary — for `ooda-pr-codex-review`, that
+# meant callers following the doc invoked `ooda-pr` (no codex axis)
+# and hit `UsageError` exit 64 on codex-only flags. Pattern matches
+# any `~/.claude/skills/<name>/run` path; presence of a non-self name
+# is the bug. Informational `/ooda-pr` cross-references (no `/run`
+# suffix) are unaffected.
+check_skill_md_sibling_invocation() {
+    local skill="$1"
+    local skill_md="$ROOT/$skill/SKILL.md"
+    if [ ! -f "$skill_md" ]; then
+        return
+    fi
+    local foreign
+    foreign=$(grep -nE '~/\.claude/skills/[a-z-]+/run' "$skill_md" \
+        | grep -v "~/\.claude/skills/$skill/run" || true)
+    if [ -n "$foreign" ]; then
+        report_fail "$skill/SKILL.md invokes a sibling skill's run script:"
+        printf '%s\n' "$foreign" >&2
+    fi
+}
+for skill in ooda-pr ooda-prs ooda-pr-codex-review ooda-codex-review ooda-attest; do
+    check_skill_md_sibling_invocation "$skill"
+done
+
 if [ "$fail" -ne 0 ]; then
     printf '\nMirror invariant violated. Re-sync the canonical and re-run.\n' >&2
     exit 1

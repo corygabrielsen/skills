@@ -46,28 +46,32 @@ fn action_summary(action: &Action) -> ActionSummary {
     }
 }
 
-/// Stable stringification for iteration-key dedup.
+/// Canonical, injective stringification for iteration-key dedup.
+///
+/// Equal-logical inputs produce equal output; distinct-logical inputs produce
+/// distinct output. Object keys are sorted lexicographically; strings (and
+/// object keys) are escaped by `serde_json`, which handles `\`, `"`, control
+/// chars, and unicode correctly.
 fn stable_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(&canonicalize(value)).expect("serde_json::Value always serializes")
+}
+
+/// Rebuild a `Value` so every nested object has keys in lexicographic order.
+/// Array element order is preserved; atoms are returned as-is.
+fn canonicalize(value: &serde_json::Value) -> serde_json::Value {
     match value {
-        serde_json::Value::Null => "null".to_string(),
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::String(s) => format!("\"{}\"", s.replace('"', "\\\"")),
-        serde_json::Value::Array(arr) => {
-            let inner: Vec<String> = arr.iter().map(stable_json).collect();
-            format!("[{}]", inner.join(","))
-        }
         serde_json::Value::Object(map) => {
-            let mut sorted: BTreeMap<&String, &serde_json::Value> = BTreeMap::new();
-            for (k, v) in map {
-                sorted.insert(k, v);
+            let sorted: BTreeMap<&String, &serde_json::Value> = map.iter().collect();
+            let mut out = serde_json::Map::with_capacity(sorted.len());
+            for (k, v) in sorted {
+                out.insert(k.clone(), canonicalize(v));
             }
-            let inner: Vec<String> = sorted
-                .iter()
-                .map(|(k, v)| format!("\"{}\":{}", k, stable_json(v)))
-                .collect();
-            format!("{{{}}}", inner.join(","))
+            serde_json::Value::Object(out)
         }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(canonicalize).collect())
+        }
+        atom => atom.clone(),
     }
 }
 
@@ -561,6 +565,56 @@ mod tests {
     #[test]
     fn stable_json_empty_object() {
         assert_eq!(stable_json(&json!({})), "{}");
+    }
+
+    #[test]
+    fn stable_json_object_key_order_does_not_affect_output() {
+        let a = json!({"a": 1, "b": 2});
+        let b = json!({"b": 2, "a": 1});
+        assert_eq!(stable_json(&a), stable_json(&b));
+    }
+
+    #[test]
+    fn stable_json_escapes_backslash_in_string() {
+        // Previous implementation left `\` unescaped in string content. The
+        // canonical encoder must escape it so a string containing a literal
+        // backslash is distinguishable from any other input that would have
+        // produced the same output bytes via the old format.
+        let a = json!("a\\b"); // 3 chars: a, \, b
+        let b = json!("ab"); // 2 chars: a, b
+        assert_ne!(stable_json(&a), stable_json(&b));
+        assert_eq!(stable_json(&a), r#""a\\b""#);
+    }
+
+    #[test]
+    fn stable_json_escapes_control_chars_in_string() {
+        // Newline and tab in string content must be escaped, otherwise the
+        // raw bytes leak into the iter_key separator format and a literal
+        // newline collides with the two-char sequence `\n`.
+        let nl_literal = json!("\n"); // 1 char: 0x0A
+        let nl_escape = json!("\\n"); // 2 chars: \, n
+        assert_ne!(stable_json(&nl_literal), stable_json(&nl_escape));
+
+        let tab_literal = json!("\t"); // 1 char: 0x09
+        let tab_escape = json!("\\t"); // 2 chars: \, t
+        assert_ne!(stable_json(&tab_literal), stable_json(&tab_escape));
+    }
+
+    #[test]
+    fn stable_json_object_key_with_quote_does_not_collide() {
+        // Previous implementation inserted object keys raw with no escaping,
+        // so a key containing `","` could mimic the entry separator and
+        // shadow a two-entry object.
+        let two_entries = json!({"a": null, "b": null});
+        let one_entry_injecting_key = serde_json::Value::Object({
+            let mut m = serde_json::Map::new();
+            m.insert(r#"a":null,"b"#.to_string(), serde_json::Value::Null);
+            m
+        });
+        assert_ne!(
+            stable_json(&two_entries),
+            stable_json(&one_entry_injecting_key)
+        );
     }
 
     // -- iter_key --

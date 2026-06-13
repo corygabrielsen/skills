@@ -36,7 +36,7 @@ use crate::axis_impls::pull_request_metadata::{
 };
 use crate::axis_impls::reviews::{ReviewsAxis, ReviewsObservation};
 use crate::axis_impls::state::{StateAxis, StateObservation};
-use crate::decide::action::{Action, Urgency, rate_limit_wait_action};
+use crate::decide::action::{Action, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{CodexReasoningLevel, PullRequestNumber, Timestamp};
 use crate::observe::codex::{CodexObservations, fetch_all as fetch_codex};
@@ -45,7 +45,7 @@ use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
 use crate::recorder::Recorder;
-use ooda_core::{Axis, MidTier, decide_from_candidates};
+use ooda_core::{Axis, decide_from_candidates};
 use ooda_state::ObserveOutcome;
 
 /// Driver-level orchestration: invoke each axis's `candidates()` via
@@ -65,14 +65,15 @@ use ooda_state::ObserveOutcome;
 /// the urgency sort settles its relative position alongside the
 /// other bot-review axes.
 ///
-/// Class invariant — *advancement preempts passivity*: an active
-/// candidate the system can drive must outrank a candidate that
-/// only waits on an external signal. The fallback merge-state
-/// blocker (`merge_blocked_policy`) fires only when no axis
-/// produced an actionable advancement path; if any candidate at
-/// `BlockingFix` exists, the policy fallback is dropped before
-/// `out.sort_by_key(|a| a.urgency)` so the actionable wins. The
-/// sort is stable: axis order within a tier is preserved.
+/// Class invariant — *specific preempts fallback*: a candidate
+/// whose axis names a concrete gate must outrank a candidate that
+/// only reports "no modeled gate fires". The fallback merge-state
+/// blocker (`merge_blocked_policy`) fires when GitHub reports
+/// `BLOCKED` and no modeled axis explains the block; if any
+/// candidate with a different blocker exists, the policy fallback
+/// is dropped before `out.sort_by_key(|a| a.urgency)` so the
+/// specific axis wins regardless of tier. The sort is stable: axis
+/// order within a tier is preserved.
 pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Action> {
     let mut out: Vec<Action> = Vec::new();
     out.extend(StateAxis.candidates(&StateObservation {
@@ -150,21 +151,20 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
 
 /// Verdict-by-absence: `merge_blocked_policy` is the closure-check
 /// fallback that fires when GitHub reports `BLOCKED` and no modeled
-/// gate explains the block. When an agent-actionable candidate
-/// (`BlockingFix`) is also in the set, the agent path is strictly
-/// more informative than the fallback's "no modeled gate fires"
-/// handoff — drop the fallback so the actionable wins the iteration.
+/// gate explains the block. Whenever any other candidate is in the
+/// set, that candidate names a concrete blocker — strictly more
+/// informative than the fallback's "no modeled gate fires" handoff.
+/// Drop the fallback so the specific axis wins the iteration,
+/// independent of urgency tier.
 ///
-/// The yield is one-way: actionable wins over fallback. The
-/// `Pathology > BlockingWait` relationship the fallback originally
-/// claimed (so Wait actions don't shadow real pathologies) is
-/// preserved — a `BlockingWait`-only candidate set leaves the
-/// fallback in place.
+/// The yield is one-way and per-blocker, not per-tier: a candidate
+/// set consisting only of `merge_blocked_policy` entries leaves the
+/// fallback in place — it is then the only signal.
 fn yield_policy_to_actionable(candidates: &mut Vec<Action>) {
-    let has_actionable = candidates
+    let has_specific = candidates
         .iter()
-        .any(|a| matches!(a.urgency, Urgency::Mid(MidTier::BlockingFix)));
-    if has_actionable {
+        .any(|a| a.blocker.as_str() != "merge_blocked_policy");
+    if has_specific {
         candidates.retain(|a| a.blocker.as_str() != "merge_blocked_policy");
     }
 }
@@ -502,5 +502,109 @@ mod tests {
             LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 143),
             LoopExit::Halted(_) => panic!("expected SignalInterrupted"),
         }
+    }
+
+    /// Test helper: build a Full action at an arbitrary `MidTier`.
+    /// Lets the yield-filter tests cover every tier the fallback
+    /// can lose to under stable-sort, not just `BlockingFix`.
+    fn action_at(tier: ooda_core::MidTier, blocker: &str) -> Action {
+        use crate::decide::action::{ActionEffect, ActionKind, TargetEffect, Urgency};
+        use crate::ids::BlockerKey;
+        Action {
+            kind: ActionKind::Rebase,
+            effect: ActionEffect::Full { log: "stub".into() },
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::Mid(tier),
+            blocker: BlockerKey::for_test(blocker),
+        }
+    }
+
+    fn policy() -> Action {
+        // `merge_blocked_policy` is emitted at `MidTier::Pathology`
+        // by the merge-eligibility axis; the yield filter is
+        // per-blocker, but mirroring the production tier keeps the
+        // fixtures honest.
+        action_at(ooda_core::MidTier::Pathology, "merge_blocked_policy")
+    }
+
+    #[test]
+    fn yield_drops_policy_when_pathology_peer_present() {
+        // Sibling at the same tier with a different blocker — the
+        // B1/H2 case (`signing_blocked_unverified` recovery recipe).
+        let mut cands = vec![
+            policy(),
+            action_at(ooda_core::MidTier::Pathology, "signing_blocked_unverified"),
+        ];
+        yield_policy_to_actionable(&mut cands);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].blocker.as_str(), "signing_blocked_unverified");
+    }
+
+    #[test]
+    fn yield_drops_policy_when_blocking_human_peer_present() {
+        // A named-reviewer / approval gate at BlockingHuman is more
+        // informative than the "do not infer the cause" handoff.
+        let mut cands = vec![
+            policy(),
+            action_at(
+                ooda_core::MidTier::BlockingHuman,
+                "merge_blocked_pending_approval",
+            ),
+        ];
+        yield_policy_to_actionable(&mut cands);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].blocker.as_str(), "merge_blocked_pending_approval");
+    }
+
+    #[test]
+    fn yield_drops_policy_when_blocking_fix_peer_present() {
+        // Original case the pre-generalization filter handled —
+        // must continue to hold under the broader rule.
+        let mut cands = vec![
+            policy(),
+            action_at(ooda_core::MidTier::BlockingFix, "unresolved_threads"),
+        ];
+        yield_policy_to_actionable(&mut cands);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].blocker.as_str(), "unresolved_threads");
+    }
+
+    #[test]
+    fn yield_drops_policy_when_critical_peer_present() {
+        // H4 case: any Critical-tier candidate (e.g. a rate-limit
+        // wait or state-axis conflict) names a more specific gate.
+        let mut cands = vec![
+            policy(),
+            action_at(ooda_core::MidTier::Critical, "rate_limit_wait"),
+        ];
+        yield_policy_to_actionable(&mut cands);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].blocker.as_str(), "rate_limit_wait");
+    }
+
+    #[test]
+    fn yield_keeps_policy_when_alone() {
+        // Policy is the only signal — the verdict-by-absence
+        // contract requires it survive so closure check still
+        // surfaces the BLOCKED state.
+        let mut cands = vec![policy()];
+        yield_policy_to_actionable(&mut cands);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].blocker.as_str(), "merge_blocked_policy");
+    }
+
+    #[test]
+    fn yield_keeps_policy_when_only_other_candidate_is_also_policy() {
+        // Degenerate but tractable: two policy entries, no specific
+        // blocker present. Filter must not self-drop on a peer with
+        // the same blocker key.
+        let mut cands = vec![policy(), policy()];
+        yield_policy_to_actionable(&mut cands);
+        assert_eq!(cands.len(), 2);
+        assert!(
+            cands
+                .iter()
+                .all(|a| a.blocker.as_str() == "merge_blocked_policy")
+        );
     }
 }

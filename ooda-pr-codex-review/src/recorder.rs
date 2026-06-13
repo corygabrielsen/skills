@@ -1049,11 +1049,24 @@ mod tests {
     fn write_handoff_md_returns_err_when_append_fails() {
         // Site 5 invariant: failed `IterationHandoff` append
         // surfaces as Err rather than silently dropping the event.
+        //
+        // Failure injection: replace the run directory with a
+        // regular file. `write_atomic` and `open_secure_append` both
+        // try to materialize the run subtree (`blobs/`,
+        // `events.jsonl`) under that path; `secure_create_dir_all`
+        // refuses to walk through a non-directory and the call
+        // surfaces an IO error.
         let root = temp_root("handoff-err");
         let recorder = open_recorder(&root);
         recorder.set_iteration(Some(1));
-        let runs_dir = root.join("runs");
-        std::fs::remove_dir_all(&runs_dir).unwrap();
+        let run_subtree = std::fs::read_dir(root.join("runs"))
+            .unwrap()
+            .next()
+            .expect("recorder must have created a run dir")
+            .unwrap()
+            .path();
+        std::fs::remove_dir_all(&run_subtree).unwrap();
+        std::fs::write(&run_subtree, b"not-a-directory").unwrap();
         let result = recorder.write_handoff_md("body", OutcomeKind::HandoffHuman, "Rebase");
         assert!(result.is_err(), "got {result:?}");
         let _ = std::fs::remove_dir_all(&root);

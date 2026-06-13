@@ -52,8 +52,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 
 /// Unix mode bits for sensitive files: owner read+write only.
+///
+/// Exposed for call sites whose `OpenOptions` shape is not covered by
+/// the [`open_secure_append`] / [`open_secure_create_new`] /
+/// [`open_secure_truncate`] helpers and must apply the mode directly.
 #[cfg(unix)]
-const SECURE_FILE_MODE: u32 = 0o600;
+pub const SECURE_FILE_MODE: u32 = 0o600;
 
 /// Unix mode bits for sensitive directories: owner read+write+execute only.
 #[cfg(unix)]

@@ -109,7 +109,9 @@ where
 {
     let key_path = recorder.dedup_path()?;
     if let Some(parent) = key_path.parent() {
-        fs::create_dir_all(parent).map_err(PostError::Hash)?;
+        // 0o700 on the index ancestor — the leaf dedup-hash file
+        // and the sibling `.lock` sidecar name the observed PR.
+        ooda_core::atomic_io::secure_create_dir_all(parent).map_err(PostError::Hash)?;
     }
     let _lock = ooda_core::FileLock::acquire(&key_path).map_err(PostError::Hash)?;
     let prior = read_prior_hash(&key_path).map_err(PostError::Hash)?;

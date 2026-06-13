@@ -39,6 +39,8 @@
 
 use std::fs::{File, OpenOptions};
 use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// RAII guard around a held advisory lock on a sidecar file.
@@ -115,11 +117,18 @@ fn sidecar_path(path: &Path) -> PathBuf {
 }
 
 fn open_sidecar(sidecar: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(sidecar)
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(false);
+    // Sidecar mode: the `.lock` file's NAME leaks the guarded-data
+    // identifier (e.g. status-comment.json.lock implies a
+    // status-comment.json sibling) to co-tenants on a 0o755 parent.
+    // Land the sidecar at 0o600 so a directory walk does not expose
+    // the lock-name even when the protected file is later secured.
+    #[cfg(unix)]
+    {
+        options.mode(crate::atomic_io::SECURE_FILE_MODE);
+    }
+    options.open(sidecar)
 }
 
 #[cfg(test)]
@@ -203,6 +212,21 @@ mod tests {
         assert_ne!(guard.sidecar(), target);
         // We never opened `target`; only the sidecar.
         assert!(!target.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_lands_at_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("state.json");
+        let guard = FileLock::acquire(&target).unwrap();
+        let mode = std::fs::metadata(guard.sidecar())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "sidecar must be created at 0o600");
     }
 
     #[test]

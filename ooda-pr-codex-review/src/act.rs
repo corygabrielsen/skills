@@ -114,8 +114,11 @@ pub(crate) struct CodexActContext {
     /// PR base branch at this iteration. Forwarded to the codex
     /// subprocess so the diff base tracks the PR's recorded base.
     pub base_branch: String,
-    /// FD-tied advisory lock. Released on FD close.
-    pub _lock: std::fs::File,
+    /// FD-tied advisory lock. Released on FD close (held via the
+    /// `ooda_core::FileLock` RAII guard so the sidecar inherits
+    /// 0o600 mode and the kernel-advisory release-on-fd-close
+    /// contract).
+    pub _lock: ooda_core::FileLock,
 }
 
 /// Per-iteration act-stage context. The action enum stays narrow
@@ -354,9 +357,19 @@ fn build_logged_codex_command(
     exit_path: &Path,
 ) -> Command {
     let mut cmd = Command::new("/bin/sh");
+    // `umask 077` before any redirection so the shell's `>`
+    // creates `$OODA_LOG_PATH` and `$OODA_EXIT_PATH` at 0o600.
+    // The `.log` is pre-created at 0o600 via `open_secure_truncate`
+    // (mode preserved across `>` truncate), but the `.exit` is NOT
+    // pre-created: the observe layer's completion invariant is
+    // ".exit existence ⇒ subprocess terminated", so pre-creating it
+    // would race against in-flight observe passes that would read
+    // empty bytes and fail to parse. `umask 077` is the durable fix:
+    // any file the shell creates lands at 0o600 without changing
+    // when it is created.
     cmd.arg("-c")
         .arg(
-            r#""$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH"; exit "$code""#,
+            r#"umask 077; "$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH"; exit "$code""#,
         )
         .arg("ooda-pr-codex-review-child")
         .arg(codex_bin)
@@ -454,14 +467,16 @@ mod tests {
         // The codex_bin field is what's passed as argv[0] inside
         // `/bin/sh -c '"$@" ...'`. Using `/bin/true` keeps the
         // detached child cheap and lets slot 1 spawn successfully.
-        let lock_file = std::fs::File::create(test_root.join("act.lock")).unwrap();
+        let lock = ooda_core::FileLock::try_acquire(&test_root.join("act"))
+            .unwrap()
+            .expect("fresh lock acquires");
         let codex = CodexActContext {
             codex_bin: PathBuf::from("/bin/true"),
             codex_pr_root: codex_pr_root.clone(),
             n,
             head_sha: head_sha.to_string(),
             base_branch: "main".to_string(),
-            _lock: lock_file,
+            _lock: lock,
         };
 
         let err = spawn_codex_review_batch(&codex, &test_root, level, n).unwrap_err();

@@ -232,9 +232,19 @@ fn build_logged_codex_command(
     exit_path: &std::path::Path,
 ) -> Command {
     let mut cmd = Command::new("/bin/sh");
+    // `umask 077` before any redirection so the shell's `>`
+    // creates `$OODA_LOG_PATH` and `$OODA_EXIT_PATH` at 0o600.
+    // The `.log` is pre-created at 0o600 via `open_secure_truncate`
+    // (mode preserved across `>` truncate), but the `.exit` is NOT
+    // pre-created: the observe layer's completion invariant is
+    // ".exit existence ⇒ subprocess terminated", so pre-creating it
+    // would race against in-flight observe passes that would read
+    // empty bytes and fail to parse. `umask 077` is the durable fix:
+    // any file the shell creates lands at 0o600 without changing
+    // when it is created.
     cmd.arg("-c")
         .arg(
-            r#""$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH"; exit "$code""#,
+            r#"umask 077; "$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH"; exit "$code""#,
         )
         .arg("ooda-codex-review-child")
         .arg(codex_bin)

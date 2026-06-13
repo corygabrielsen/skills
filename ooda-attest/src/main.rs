@@ -25,7 +25,6 @@
 //! |   70 | write failure (IO / serialization) |
 //! |    1 | fallback |
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -252,7 +251,10 @@ fn resolve_state_root(explicit: Option<&Path>) -> Result<PathBuf, String> {
     }
 
     let resolved = resolve_ooda_state_root(None);
-    fs::create_dir_all(&resolved).map_err(|e| {
+    // 0o700 on the resolved state root and any intermediate
+    // components — keep observation snapshots and attestation files
+    // off the default umask 0o755 path.
+    ooda_core::atomic_io::secure_create_dir_all(&resolved).map_err(|e| {
         format!(
             "failed to create resolved state root {}: {e}",
             resolved.display()

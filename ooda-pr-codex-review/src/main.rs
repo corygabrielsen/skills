@@ -816,20 +816,28 @@ fn build_codex_act_context(
         .pr_workspace_root()
         .map_err(|e| Outcome::binary_error(format!("recorder: {e}")))?
         .join("codex");
-    if let Err(e) = std::fs::create_dir_all(&codex_pr_root) {
+    // 0o700 across the codex workspace tree — per-PR review logs,
+    // exit codes, and sibling sidecars live below this root.
+    if let Err(e) = ooda_core::atomic_io::secure_create_dir_all(&codex_pr_root) {
         return Err(Outcome::binary_error(format!(
             "create codex pr_root {}: {e}",
             codex_pr_root.display()
         )));
     }
+    // Route through `FileLock::try_acquire` so the sidecar inherits
+    // the secure-mode discipline from `ooda_core::file_lock` rather
+    // than the shell's umask. Matches the `.batch.lock` →
+    // `.batch.lock.lock` convention already in use at the inner
+    // batch-dir guard (`observe::codex::batch`, `act::run`).
     let lock_path = codex_pr_root.join(".lock");
-    let lock = match std::fs::File::options()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-    {
-        Ok(f) => f,
+    let lock = match ooda_core::FileLock::try_acquire(&lock_path) {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            return Err(Outcome::binary_error(format!(
+                "another invocation holds the codex review lock at {}; concurrent ooda-pr-codex-review runs against the same PR with codex enabled are not supported — wait for the prior run to exit, or use --state-root to isolate",
+                lock_path.display()
+            )));
+        }
         Err(e) => {
             return Err(Outcome::binary_error(format!(
                 "open codex .lock at {}: {e}",
@@ -837,12 +845,6 @@ fn build_codex_act_context(
             )));
         }
     };
-    if let Err(e) = lock.try_lock() {
-        return Err(Outcome::binary_error(format!(
-            "another invocation holds the codex review lock at {} ({e}); concurrent ooda-pr-codex-review runs against the same PR with codex enabled are not supported — wait for the prior run to exit, or use --state-root to isolate",
-            lock_path.display()
-        )));
-    }
     Ok(Some(CodexActContext {
         codex_bin: args.codex_review_bin.clone(),
         codex_pr_root,

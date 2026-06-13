@@ -102,7 +102,10 @@ pub(crate) fn write_sticky(
     pending: bool,
 ) -> std::io::Result<()> {
     if let Some(parent) = sticky_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        // 0o700 on the index ancestor — see `pr_index_path` rationale
+        // in `recorder.rs`. The leaf sticky-head file and sibling
+        // `.lock` sidecar name the observed PR.
+        ooda_core::atomic_io::secure_create_dir_all(parent)?;
     }
     let _lock = FileLock::acquire(sticky_path)?;
     let record = StickyHead {

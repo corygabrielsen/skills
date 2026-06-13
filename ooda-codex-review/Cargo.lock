@@ -299,6 +299,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "hex",
+ "ooda-core",
  "serde",
  "serde_json",
  "sha2",

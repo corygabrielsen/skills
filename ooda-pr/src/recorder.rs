@@ -21,7 +21,9 @@
 //!   (`observe::github::gh`) can record without threading the
 //!   recorder through every call site.
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -782,9 +784,9 @@ fn open_append(path: &Path) -> Result<File, io::Error> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent)?;
+        ooda_core::atomic_io::secure_create_dir_all(parent)?;
     }
-    OpenOptions::new().create(true).append(true).open(path)
+    ooda_core::atomic_io::open_secure_append(path)
 }
 
 /// Per-PR index directory: a stable per-`(slug, pr)` location for
@@ -810,7 +812,11 @@ fn pr_index_path(
         .join(slug.owner().as_str())
         .join(slug.repo().as_str())
         .join(pr.to_string());
-    fs::create_dir_all(&dir)?;
+    // 0o700 across the index tree — its leaf files (status-comment
+    // dedup hash, sticky head SHA, .action.lock sidecar) name the
+    // observed PR; a 0o755 ancestor leaks the PR identity to co-
+    // tenants on the same machine.
+    ooda_core::atomic_io::secure_create_dir_all(&dir)?;
     Ok(dir)
 }
 
@@ -1176,13 +1182,26 @@ mod tests {
         // tailing `events.jsonl` would otherwise never observe the
         // handoff and the run would go quiet without recording why
         // it stopped.
+        //
+        // Failure injection: replace the run directory with a
+        // regular file. `write_atomic` and `open_secure_append` both
+        // try to materialize the run subtree (`blobs/`,
+        // `events.jsonl`) under that path; `secure_create_dir_all`
+        // refuses to walk through a non-directory and the call
+        // surfaces an IO error.
         let root = temp_root("handoff-err");
         let recorder = open_recorder(&root);
         recorder.set_iteration(Some(1));
-        // Force the blob/append step to fail by unlinking the run
-        // tree between `set_iteration` and the call.
-        let runs_dir = root.join("runs");
-        fs::remove_dir_all(&runs_dir).unwrap();
+        // The recorder created a single run subtree in `runs/`; find
+        // it by enumeration (the recorder does not expose the id).
+        let run_subtree = fs::read_dir(root.join("runs"))
+            .unwrap()
+            .next()
+            .expect("recorder must have created a run dir")
+            .unwrap()
+            .path();
+        fs::remove_dir_all(&run_subtree).unwrap();
+        fs::write(&run_subtree, b"not-a-directory").unwrap();
         let result =
             recorder.write_handoff_md("Rebase onto base", OutcomeKind::HandoffHuman, "Rebase");
         assert!(

@@ -50,11 +50,16 @@ pub use tokens::{
     domain_specific, terminal_event,
 };
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use ooda_core::atomic_io::{
+    open_secure_append, open_secure_create_new, secure_create_dir_all, write_atomic,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -532,8 +537,14 @@ impl StateRoot {
     /// subdirectories cannot be created at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let root = path.into();
-        fs::create_dir_all(root.join("runs"))?;
-        fs::create_dir_all(root.join("live"))?;
+        // Use `secure_create_dir_all` so the intermediate components
+        // (`runs/`, `live/`, and any caller-supplied prefix that does
+        // not yet exist) land at 0o700 rather than the default-umask
+        // 0o755. The state tree carries GitHub observation snapshots
+        // (PR bodies, comment author handles, review-thread text);
+        // co-tenant readability is a confidentiality leak.
+        secure_create_dir_all(&root.join("runs"))?;
+        secure_create_dir_all(&root.join("live"))?;
         Ok(Self { root })
     }
 
@@ -566,7 +577,9 @@ impl StateRoot {
     pub fn create_run(&self, id: RunId) -> Result<RunWriter> {
         let run_dir = self.run_dir(&id);
         let blobs_dir = run_dir.join("blobs");
-        fs::create_dir_all(&blobs_dir)?;
+        // 0o700 on `runs/<id>/` and `runs/<id>/blobs/` — keep the
+        // observation-snapshot tree off the default umask path.
+        secure_create_dir_all(&blobs_dir)?;
         let events_path = run_dir.join("events.jsonl");
         if let Ok(meta) = fs::metadata(&events_path)
             && meta.len() > 0
@@ -710,18 +723,28 @@ unsafe extern "C" {
     fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
-/// Best-effort sweep of orphan `<sha>.<ext>.tmp` siblings in a
-/// blobs directory. Called from [`StateRoot::create_run`].
+/// Best-effort sweep of orphan tmp siblings produced by a crashed
+/// blob-write. Called from [`StateRoot::create_run`].
+///
+/// `ooda_core::atomic_io::write_atomic` names its tmp sibling
+/// `<sha>.<ext>.tmp.<pid>.<nanos>.<seq>` (the trailing components
+/// disambiguate concurrent writers). Match any filename whose stem
+/// contains `.tmp` followed by a `.` so both the historical
+/// `<sha>.<ext>.tmp` shape and the live `.tmp.<...>` shape are
+/// reclaimed.
 fn sweep_blob_tmps(blobs_dir: &Path) {
     let Ok(entries) = fs::read_dir(blobs_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let is_legacy_tmp = path
             .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
-        {
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"));
+        if name.contains(".tmp.") || is_legacy_tmp {
             let _ = fs::remove_file(&path);
         }
     }
@@ -787,11 +810,7 @@ impl RunWriter {
         // marker, not the file.
         self.append_event(Event::now(body))?;
         let marker = self.root.live_marker(&self.id);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
+        match open_secure_create_new(&marker) {
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(StateError::AlreadyStarted(self.id.clone()));
@@ -844,7 +863,10 @@ impl RunWriter {
             });
         }
         let path = self.root.run_dir(&self.id).join("events.jsonl");
-        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        // First-write of `events.jsonl` lands at 0o600 so subsequent
+        // appends inherit owner-only mode. Existing files keep their
+        // current mode (chmod-after-open would be a TOCTOU race).
+        let mut f = open_secure_append(&path)?;
         f.write_all(&line)?;
         Ok(())
     }
@@ -879,15 +901,12 @@ impl RunWriter {
         if blob_path.exists() {
             return Ok(blob);
         }
-        // tmp+rename: write to a sibling temp, then atomically
-        // rename into place. No fsync — can be tightened if
-        // durability across power loss becomes a requirement.
-        let tmp = blob_path.with_extension(format!("{ext}.tmp"));
-        {
-            let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-            f.write_all(bytes)?;
-        }
-        fs::rename(&tmp, &blob_path)?;
+        // Route through `write_atomic` so the blob inherits the
+        // shared `tmp → fsync → rename → fsync(parent)` protocol +
+        // 0o600 mode + secure tmp-name disambiguation. The hash-
+        // existence short-circuit above preserves dedup; `write_atomic`
+        // only runs for first-write of a given sha.
+        write_atomic(&blob_path, bytes)?;
         Ok(blob)
     }
 
@@ -2034,6 +2053,94 @@ mod tests {
         std::fs::write(blobs_dir.join("abc.md.tmp"), b"stale").unwrap();
         let _writer = root.create_run(id).unwrap();
         assert!(!blobs_dir.join("abc.md.tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_subdirs_land_at_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let _root = StateRoot::new(tmp.path()).unwrap();
+        for sub in ["runs", "live"] {
+            let mode = fs::metadata(tmp.path().join(sub))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700, "{sub}/ must be 0o700, got 0o{mode:o}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_run_blobs_dir_lands_at_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, root) = fresh();
+        let id = RunId::generate();
+        let _writer = root.create_run(id.clone()).unwrap();
+        let run_dir = tmp.path().join("runs").join(id.as_str());
+        for sub in [run_dir.as_path(), &run_dir.join("blobs")] {
+            let mode = fs::metadata(sub).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} must be 0o700", sub.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn events_jsonl_lands_at_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        let path = tmp
+            .path()
+            .join("runs")
+            .join(id.as_str())
+            .join("events.jsonl");
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_marker_lands_at_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: "test".into(),
+                target: serde_json::Value::Null,
+            })
+            .unwrap();
+        let marker = tmp.path().join("live").join(id.as_str());
+        let mode = fs::metadata(&marker).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blob_lands_at_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, root) = fresh();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id.clone()).unwrap();
+        let blob = writer.write_blob(b"sensitive bytes", "txt").unwrap();
+        let path = tmp
+            .path()
+            .join("runs")
+            .join(id.as_str())
+            .join("blobs")
+            .join(blob.filename());
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

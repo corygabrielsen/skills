@@ -371,9 +371,17 @@ fn run_iter(
                 },
             );
             let action = rate_limit_wait_action(hit);
+            // Pairing invariant: every `action_started` /
+            // `wait_started` event must be followed by a matching
+            // `action_end` / `wait_end` on the same iteration.
+            // Resolve the lock path *before* emitting started events
+            // — if `action_lock_path` errs (`RecorderError`), `?`
+            // propagates immediately, so no started events are ever
+            // written. The on-disk story stays consistent: either
+            // both halves of the pair are present, or neither is.
+            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
-            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             let act_result = act(&action, slug, pr, &lock_path, repo_root);
             if act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
@@ -410,11 +418,15 @@ fn run_iter(
                 return Ok(IterStep::Halt(HaltReason::Stalled(action)));
             }
             let is_wait = action.effect.is_wait();
+            // Pairing invariant — see rate-limit branch above. Lock
+            // path resolves before any started event is emitted so a
+            // `RecorderError` here cannot leave a started↔end pair
+            // half-open.
+            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             if is_wait {
                 recorder.record_wait_start(iter, &action);
             }
-            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             let act_result = act(&action, slug, pr, &lock_path, repo_root);
             if is_wait && act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);

@@ -9,10 +9,12 @@ use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 use super::gh::{GhError, gh_json_paginate};
 
 /// Server-side per-page projection. The deleted-identity fallback
-/// is required so deleted-author rows do not abort decoding (the
-/// login type rejects empty strings).
+/// is `ghost`, GitHub's own canonical sentinel for orphaned content;
+/// `ghost` parses through [`GitHubLogin`] (lowercase alphanumeric).
+/// A non-parseable sentinel here would let any commenter brick the
+/// observe pass against a PR by deleting their account.
 const COMMENT_JQ: &str =
-    r#"[.[] | {id, user: {login: (.user.login // "[deleted]")}, body, created_at, html_url}]"#;
+    r#"[.[] | {id, user: {login: (.user.login // "ghost")}, body, created_at, html_url}]"#;
 
 /// Fetch every issue-level comment on a PR.
 pub(crate) fn fetch_issue_comments(
@@ -85,5 +87,16 @@ mod tests {
         let comments: Vec<IssueComment> = serde_json::from_str(json).unwrap();
         assert_eq!(comments[0].body, "");
         assert_eq!(comments[0].html_url, "");
+    }
+
+    #[test]
+    fn deleted_account_sentinel_parses_cleanly() {
+        // The COMMENT_JQ projection coalesces `user: null` (GitHub's
+        // deleted-author shape) to "ghost" before the bytes reach
+        // serde. The post-jq shape must round-trip cleanly; otherwise
+        // any commenter could brick observe by deleting their account.
+        let json = r#"[{"id":1,"user":{"login":"ghost"},"body":"x","created_at":"2026-04-23T00:00:00Z","html_url":"https://example"}]"#;
+        let comments: Vec<IssueComment> = serde_json::from_str(json).unwrap();
+        assert_eq!(comments[0].user.login.as_str(), "ghost");
     }
 }

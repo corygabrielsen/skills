@@ -157,6 +157,14 @@ fn missing_codex_binary_surfaces_as_binary_error() {
     // spawn error propagates as Outcome::BinaryError (exit 6). The
     // batch_dir path goes under TMPDIR so we don't pollute the
     // user's state.
+    //
+    // Observability invariant (round-2 P1 regression guard): a
+    // failed act MUST emit `iteration_executed { success: false }`
+    // BEFORE the terminal `run_halted`. Without that event,
+    // readers tailing `events.jsonl` (cockpit, projection) cannot
+    // distinguish "decided then act-failed" from "decided then
+    // never tried". This test asserts both the exit-code contract
+    // and the event-stream contract on the same scenario.
     let state_root =
         std::env::temp_dir().join(format!("ooda-codex-review-cli-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state_root);
@@ -175,6 +183,36 @@ fn missing_codex_binary_surfaces_as_binary_error() {
     ]);
     assert_eq!(code, 70, "stderr={stderr}");
     assert!(first_line(&stderr).starts_with("BinaryError: "));
+
+    // Walk the runs/ directory: exactly one run for this invocation.
+    let runs = state_root.join("runs");
+    let mut run_ids = Vec::new();
+    for entry in std::fs::read_dir(&runs).unwrap() {
+        run_ids.push(entry.unwrap().file_name().into_string().unwrap());
+    }
+    assert_eq!(run_ids.len(), 1, "exactly one run: {run_ids:?}");
+    let events_path = runs.join(&run_ids[0]).join("events.jsonl");
+    let body = std::fs::read_to_string(&events_path).unwrap();
+    let executed_pos = body
+        .find(r#""kind":"iteration_executed""#)
+        .unwrap_or_else(|| panic!("missing iteration_executed event in {body}"));
+    let halted_pos = body
+        .find(r#""kind":"run_halted""#)
+        .unwrap_or_else(|| panic!("missing run_halted event in {body}"));
+    assert!(
+        executed_pos < halted_pos,
+        "iteration_executed must precede run_halted; got:\n{body}",
+    );
+    // The executed event for the failed spawn must record success=false.
+    let executed_line = body
+        .lines()
+        .find(|l| l.contains(r#""kind":"iteration_executed""#))
+        .expect("iteration_executed line missing");
+    assert!(
+        executed_line.contains(r#""success":false"#),
+        "failed act must record success:false; got: {executed_line}",
+    );
+
     let _ = std::fs::remove_dir_all(&state_root);
 }
 
@@ -322,6 +360,31 @@ fn end_to_end_with_fake_codex_clean_at_ceiling_halts_done_fixed_point() {
 
     assert_eq!(code, 0, "expected DoneFixedPoint (0); stderr={stderr}");
     assert_eq!(first_line(&stderr), "DoneFixedPoint");
+
+    // Observability invariant (round-2 P1 success-path guard): a
+    // successful act records `iteration_executed { success: true }`.
+    // Paired with `missing_codex_binary_surfaces_as_binary_error`
+    // this pins both branches of the success bit, so a future
+    // regression to a hardcoded literal in `EventSink::acted`
+    // would fail one of the two tests.
+    let runs = state_root.join("runs");
+    let run_id = std::fs::read_dir(&runs)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name()
+        .into_string()
+        .unwrap();
+    let body = std::fs::read_to_string(runs.join(&run_id).join("events.jsonl")).unwrap();
+    let executed_line = body
+        .lines()
+        .find(|l| l.contains(r#""kind":"iteration_executed""#))
+        .expect("iteration_executed line missing on happy path");
+    assert!(
+        executed_line.contains(r#""success":true"#),
+        "successful act must record success:true; got: {executed_line}",
+    );
 
     let _ = std::fs::remove_dir_all(&state_root);
 }

@@ -142,7 +142,7 @@ impl<'a> EventSink<'a> {
         });
     }
 
-    fn acted(&mut self, iter: u32, action: &Action) {
+    fn acted(&mut self, iter: u32, action: &Action, success: bool) {
         let body = match &action.effect {
             ActionEffect::Wait { interval, .. } => EventBody::IterationWaited {
                 iteration: iter,
@@ -150,13 +150,19 @@ impl<'a> EventSink<'a> {
                 interval_ms: u64::try_from(interval.as_duration().as_millis()).unwrap_or(u64::MAX),
             },
             ActionEffect::Full { .. } | ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
-                // `acted` is only invoked after the act stage
-                // succeeded; failed acts return early via the
-                // `HaltReason::ActFailed` path before reaching here.
+                // `acted` is emitted regardless of the act stage's
+                // result; `success` reflects whether `act()` returned
+                // Ok. A failed act (spawn error, `NotImplemented`,
+                // `UnsupportedTarget`) records `success: false` here
+                // BEFORE the loop bubbles the error and finalize lands
+                // the terminal `RunHalted` — readers tailing
+                // `events.jsonl` (cockpit, projection) can distinguish
+                // "decided then act-failed" from "decided then never
+                // attempted".
                 EventBody::IterationExecuted {
                     iteration: iter,
                     action_kind: action.kind.name().to_string(),
-                    success: true,
+                    success,
                 }
             }
         };
@@ -283,8 +289,18 @@ fn run_iter(
             if last_non_wait_key == Some(&current_key) {
                 return Ok(IterStep::Halt(HaltReason::Stalled(action)));
             }
-            act(&action, ctx).map_err(LoopError::Act)?;
-            events.acted(iter, &action);
+            // Record `acted` regardless of `act()`'s result so a
+            // failed act lands an `IterationExecuted { success: false }`
+            // on the event stream BEFORE the loop bubbles the error.
+            // Without this ordering the stream goes
+            // IterationDecided → RunHalted(BinaryError) with no
+            // intervening act event — readers cannot distinguish
+            // "decided then failed to act" from "decided then never
+            // tried".
+            let act_result = act(&action, ctx);
+            let success = act_result.is_ok();
+            events.acted(iter, &action, success);
+            act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))
         }
     }

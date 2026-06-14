@@ -431,36 +431,48 @@ single binary boundary for shell dispatch.
 shape-completeness, but `/ooda-prs` constructs it **only** at the
 suite parser and lifts it directly to `MultiOutcome::UsageError` —
 it never appears inside a `ProcessOutcome`. Stdout JSONL records
-therefore carry only the 9 reachable variants (see Output
+therefore carry only the 10 reachable variants (see Output
 channels).
 
 ### Aggregate exit code (`$?`)
 
 `MultiOutcome::exit_code()` is a **priority projection**:
 
-| Condition                                              | `$?` | Mode reachability   |
-| :----------------------------------------------------- | :--: | :------------------ |
-| `MultiOutcome::UsageError`                             |  64  | both (parser-level) |
-| any `ProcessOutcome` carries `BinaryError(_)`          |  70  | both                |
-| else any carries `HandoffAgent(_)`                     |  4   | both                |
-| else any carries `HandoffHuman(_)`                     |  3   | both                |
-| else any carries `StuckCapReached(_)`                  |  7   | loop only           |
-| else any carries `StuckRepeated(_)`                    |  6   | loop only           |
-| else any carries `WouldAdvance(_)`                     |  2   | inspect only        |
-| else every PR ∈ `{DoneSucceeded, DoneAborted, Paused}` |  0   | both                |
+| Condition                                               | `$?` | Mode reachability   |
+| :------------------------------------------------------ | :--: | :------------------ |
+| `MultiOutcome::UsageError`                              |  64  | both (parser-level) |
+| any `ProcessOutcome` carries `SignalInterrupted{143}`   | 143  | both                |
+| else any carries `SignalInterrupted{130}` (or other u8) | 130  | both                |
+| else any carries `BinaryError(_)`                       |  70  | both                |
+| else any carries `HandoffAgent(_)`                      |  4   | both                |
+| else any carries `HandoffHuman(_)`                      |  3   | both                |
+| else any carries `StuckCapReached(_)`                   |  7   | loop only           |
+| else any carries `StuckRepeated(_)`                     |  6   | loop only           |
+| else any carries `WouldAdvance(_)`                      |  2   | inspect only        |
+| else any carries `DoneAborted`                          |  5   | both                |
+| else every PR ∈ `{DoneSucceeded, Paused}`               |  0   | both                |
 
-**Priority order** (highest first): `UsageError > BinaryError >
+**Priority order** (highest first): `UsageError >
+SignalInterrupted(143) > SignalInterrupted(130) > BinaryError >
 HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated >
-WouldAdvance > non-actionable`. Priority is **semantic**, not
-numeric — the first matching condition wins, even though
-`StuckRepeated`'s code (`6`) is numerically smaller than
-`HandoffAgent`'s (`4`). The "non-actionable" class is the
-union `{DoneSucceeded, DoneAborted, Paused}`: every PR is either fully
-merged (exit-0 per-PR), already closed (exit-5 per-PR), or has no
-candidate action this pass (exit-1 per-PR — "Paused" is _not_ a
-terminal lifecycle state, just a poll-back-later signal). All three
-collapse to suite-level `$? = 0`; per-PR JSONL records disambiguate
-which of the three each PR landed on.
+WouldAdvance > DoneAborted > non-actionable`. Priority is
+**semantic**, not numeric — the first matching condition wins,
+even though `StuckRepeated`'s code (`6`) is numerically smaller
+than `HandoffAgent`'s (`4`). `SignalInterrupted` ranks above
+every other per-PR outcome so a wrapper polling `$?` learns the
+shutdown happened without parsing stdout; `SIGTERM` (143) beats
+`SIGINT` (130) so the higher-urgency token surfaces on a mixed
+bundle. `DoneAborted` (exit-5 per-PR, exit-5 at suite level) is
+**not** in the non-actionable class — a closed-without-merge PR
+is operationally distinct from a merged one, and the suite
+exit code surfaces the closure so harness callers can route on
+the difference. The "non-actionable" class is the union
+`{DoneSucceeded, Paused}`: every PR is either fully merged
+(exit-0 per-PR) or has no candidate action this pass (exit-1
+per-PR — "Paused" is _not_ a terminal lifecycle state, just a
+poll-back-later signal). Both collapse to suite-level `$? = 0`;
+per-PR JSONL records disambiguate which of the two each PR
+landed on.
 
 This contract is **coarser** than `/ooda-pr`'s 1:1 variant→exit
 mapping by design: a single byte of `$?` cannot encode N PRs
@@ -520,19 +532,19 @@ which delegates to `format_duration` for the `Wait{interval}` arm;
 `<minutes>m<seconds>s`, picking whichever form is non-redundant for
 the duration's value):
 
-| Field        | Type    | Always present? | Notes                                                                                                                                                                                                                                             |
-| ------------ | ------- | :-------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `slug`       | string  |       yes       | `<owner>/<repo>`                                                                                                                                                                                                                                  |
-| `pr`         | integer |       yes       | positive integer                                                                                                                                                                                                                                  |
-| `pr_url`     | string  |       yes       | `https://github.com/<owner>/<repo>/pull/<pr>`                                                                                                                                                                                                     |
-| `run_id`     | string  |       yes       | Opaque [`ooda_state`] run id. Joins the record back to `<state-root>/runs/<run-id>/events.jsonl`. Empty string when the per-PR recorder failed to open (the same condition that produced `Outcome::BinaryError` for the PR).                      |
-| `outcome`    | string  |       yes       | variant name; **9 reachable values** in stdout: `DoneMerged`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`, `WouldAdvance`, `HandoffAgent`, `BinaryError`, `Paused`, `DoneClosed`. `UsageError` is suite-level only and never appears here. |
-| `exit`       | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 70}` — the 1:1 mapping inherited from `/ooda-pr`. `64` does **not** appear in JSONL records (UsageError emits no stdout); `130`/`143` are signal-synthesized and the binary never returns them.     |
-| `action`     | string  |   conditional   | present iff `outcome ∈ {StuckRepeated, StuckCapReached, HandoffHuman, HandoffAgent, WouldAdvance}` — the `ActionKind::name()` (e.g. `"Rebase"`, `"AddressThreads"`)                                                                               |
-| `blocker`    | string  |   conditional   | same condition as `action` — the `BlockerKey` payload, a non-empty stable identifier. Typical values are ASCII with `:` and spaces (e.g. `"ci_fail: Build / test"`), but no surface form is contractual; consumers must not parse it.             |
-| `prompt`     | string  |   conditional   | `outcome ∈ {HandoffAgent, HandoffHuman}` — verbatim agent/human prompt from `Action.description`. Multi-line content is JSON-string-escaped (literal `\n` in the JSON source, real newlines after `jq -r` decoding).                              |
-| `automation` | string  |   conditional   | `outcome = WouldAdvance` only. Reachable values are `"Full"` and `"Wait(<duration>)"` — `Decision::Execute` is structurally restricted to `{Full, Wait{..}}`, so `"Agent"` and `"Human"` cannot appear.                                           |
-| `msg`        | string  |   conditional   | `outcome = BinaryError` only — single-line human-triage string (newlines flattened to spaces by the binary)                                                                                                                                       |
+| Field        | Type    | Always present? | Notes                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------ | ------- | :-------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `slug`       | string  |       yes       | `<owner>/<repo>`                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pr`         | integer |       yes       | positive integer                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pr_url`     | string  |       yes       | `https://github.com/<owner>/<repo>/pull/<pr>`                                                                                                                                                                                                                                                                                                                                                        |
+| `run_id`     | string  |       yes       | Opaque [`ooda_state`] run id. Joins the record back to `<state-root>/runs/<run-id>/events.jsonl`. Empty string when the per-PR recorder failed to open (the same condition that produced `Outcome::BinaryError` for the PR).                                                                                                                                                                         |
+| `outcome`    | string  |       yes       | variant name; **10 reachable values** in stdout: `DoneMerged`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`, `WouldAdvance`, `HandoffAgent`, `BinaryError`, `Paused`, `DoneClosed`, `SignalInterrupted`. `UsageError` is suite-level only and never appears here.                                                                                                                              |
+| `exit`       | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 70, 130, 143}` — the 1:1 mapping inherited from `/ooda-pr`, extended with the two `SignalInterrupted` codes. `64` does **not** appear in JSONL records (UsageError emits no stdout); a per-PR `SignalInterrupted` lands when a worker traps the shutdown signal mid-loop and folds into the suite-level priority projection (see Aggregate exit code). |
+| `action`     | string  |   conditional   | present iff `outcome ∈ {StuckRepeated, StuckCapReached, HandoffHuman, HandoffAgent, WouldAdvance}` — the `ActionKind::name()` (e.g. `"Rebase"`, `"AddressThreads"`)                                                                                                                                                                                                                                  |
+| `blocker`    | string  |   conditional   | same condition as `action` — the `BlockerKey` payload, a non-empty stable identifier. Typical values are ASCII with `:` and spaces (e.g. `"ci_fail: Build / test"`), but no surface form is contractual; consumers must not parse it.                                                                                                                                                                |
+| `prompt`     | string  |   conditional   | `outcome ∈ {HandoffAgent, HandoffHuman}` — verbatim agent/human prompt from `Action.description`. Multi-line content is JSON-string-escaped (literal `\n` in the JSON source, real newlines after `jq -r` decoding).                                                                                                                                                                                 |
+| `automation` | string  |   conditional   | `outcome = WouldAdvance` only. Reachable values are `"Full"` and `"Wait(<duration>)"` — `Decision::Execute` is structurally restricted to `{Full, Wait{..}}`, so `"Agent"` and `"Human"` cannot appear.                                                                                                                                                                                              |
+| `msg`        | string  |   conditional   | `outcome = BinaryError` only — single-line human-triage string (newlines flattened to spaces by the binary)                                                                                                                                                                                                                                                                                          |
 
 `UsageError` (parse failure) emits **no stdout** — `$? = 64` and
 the stderr usage block are sufficient. The JSONL stream is a clean
@@ -745,11 +757,13 @@ Internal invariants of the design:
      same file.
 
 [P7] The harness pattern composes: `$?` partitions every
-     invocation into one of `{converged: 0}`, `{actionable agent
-     work: 5}`, `{actionable human work: 3}`, `{actionable
-     diagnostic: 1, 2, 6}`, `{inspect-only artifact: 4}`, or
-     `{fatal parser error: 64}`. The per-PR JSONL records carry
-     the fine-grained per-PR state for each branch.
+     invocation into one of `{converged: 0}`,
+     `{actionable agent work: 4}`, `{actionable human work: 3}`,
+     `{actionable diagnostic: 6, 7, 70}`,
+     `{inspect-only artifact: 2}`, `{abort: 5}`,
+     `{signal: 130, 143}`, or `{fatal parser error: 64}`. The
+     per-PR JSONL records carry the fine-grained per-PR state
+     for each branch.
 
 [P8] No surviving counterexample. (See `README.md` for the
      enumerated counterexample sweep.)

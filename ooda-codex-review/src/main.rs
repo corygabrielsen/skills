@@ -132,7 +132,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Side-effect flags (skip the loop, emit a single ladder-transition event run, exit immediately. Mutually exclusive):\n  --advance-level              climb one rung (Idle at ceiling)\n  --drop-level                 drop one rung, clamp at floor (Idle at floor)\n  --restart-from-floor         reset current_level to floor\n  --mark-retro-clean           record Clean outcome; advance, or DoneFixedPoint at ceiling\n  --mark-retro-changes REASON  record RetrospectiveChanges outcome; restart from floor\n  --mark-address-passed        record Addressed outcome; drop one rung\n  --mark-address-failed DETAILS  emit HandoffHuman with DETAILS as prompt\n\
          \n\
-         Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneFixedPoint    1 Idle               2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent      5 DoneAborted        6 StuckRepeated     7 StuckCapReached\n  64 UsageError       70 BinaryError       (130 SIGINT, 143 SIGTERM reserved)"
+         Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneFixedPoint    1 Idle               2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent      5 DoneAborted        6 StuckRepeated     7 StuckCapReached\n  64 UsageError       70 BinaryError      130 SignalInterrupted (SIGINT)\n 143 SignalInterrupted (SIGTERM)"
     );
 }
 

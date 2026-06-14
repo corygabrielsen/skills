@@ -413,6 +413,32 @@ for skill in ooda-pr ooda-prs ooda-pr-codex-review ooda-codex-review ooda-attest
     check_skill_md_sibling_invocation "$skill"
 done
 
+# 130/143 are NOT reserved kernel-only codes. Every binary in the
+# family catches SIGINT/SIGTERM at an iteration boundary and emits
+# `Outcome::SignalInterrupted`; the binary itself prints
+# `Interrupted: exit code <N>` and exits 130 / 143 from its own
+# main(). Any SKILL.md that still claims those codes are "reserved",
+# "kernel kills", or "the binary never returns them" is documenting
+# a state that ships truthfully today as SignalInterrupted — the
+# wrong contract for callers writing signal-shutdown dispatchers.
+# Pattern enumerates the specific shapes of the bad claim, not a
+# loose `reserved` keyword (the table-adjacent "held in reserve for
+# future Outcome variants" prose is unrelated and must not match).
+check_signal_misclaim() {
+    local skill_md="$1"
+    local hits
+    hits=$(grep -nE '130[^A-Za-z0-9]*(reserved|kernel|never returns?)|143[^A-Za-z0-9]*(reserved|kernel|never returns?)|reserved.*(kernel|kill)|kernel.*kill|130/143.*never returns?|never returns? (this|them|130|143)' "$skill_md" || true)
+    if [ -n "$hits" ]; then
+        report_fail "$skill_md still describes 130/143 as reserved kernel-only; both codes are returned by Outcome::SignalInterrupted"
+        printf '%s\n' "$hits" >&2
+    fi
+}
+for skill in ooda-pr ooda-prs ooda-pr-codex-review ooda-codex-review ooda-attest; do
+    skill_md="$ROOT/$skill/SKILL.md"
+    [ -f "$skill_md" ] || continue
+    check_signal_misclaim "$skill_md"
+done
+
 if [ "$fail" -ne 0 ]; then
     printf '\nMirror invariant violated. Re-sync the canonical and re-run.\n' >&2
     exit 1

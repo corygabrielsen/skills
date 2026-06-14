@@ -630,6 +630,9 @@ impl Recorder {
     ) {
         let kind = outcome_kind(outcome);
         let last_action = stall_action_kind(outcome);
+        // Pair 1: typed event chain — `DomainSpecific::Outcome`
+        // breadcrumb (forensic anchor if `halt` fails) followed by
+        // `RunWriter::halt` (terminal event + live-marker release).
         self.best_effort(|inner| {
             let outcome_blob = inner.write_json_blob(outcome)?;
             inner.writer.append(domain_specific(
@@ -641,9 +644,6 @@ impl Recorder {
                     "blob": outcome_blob,
                 }),
             ))?;
-            if let Some(file) = inner.legacy_trace.as_mut() {
-                writeln!(file, "exit={code}")?;
-            }
             // `halt` deletes the live marker. After this returns the
             // run no longer appears in `live/`; further appends are
             // best-effort.
@@ -653,6 +653,19 @@ impl Recorder {
                 i32::from(u8::from(code)),
                 last_action.as_deref(),
             ))?;
+            Ok(())
+        });
+        // Pair 2: legacy trace file mirror. Informational — a
+        // `writeln!` failure (trace file unlinked, ENOSPC, ...)
+        // must NOT short-circuit the typed `halt` above. The prior
+        // shape bundled the trace write into the same closure, so
+        // a stub trace fault propagated through `?` and silently
+        // masked the real outcome behind `DroppedWithoutHalt`.
+        // Round-2 P4.
+        self.best_effort(|inner| {
+            if let Some(file) = inner.legacy_trace.as_mut() {
+                writeln!(file, "exit={code}")?;
+            }
             Ok(())
         });
     }
@@ -1100,6 +1113,73 @@ mod tests {
 
         // Live marker has been removed by `halt`.
         assert!(!root.join("live").join(&run_ids[0]).exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn record_outcome_halts_when_legacy_trace_write_faults() {
+        // Round-2 P4 regression: prior shape bundled the
+        // `legacy_trace` `writeln!` between the breadcrumb append
+        // and `writer.halt(...)` in the same `?`-propagating
+        // closure. A trace write fault (file unlinked between
+        // open and append, ENOSPC on the trace mount) short-
+        // circuited the closure and skipped `halt`; `Drop` later
+        // emitted `DroppedWithoutHalt/-1` and rewrote a real
+        // `DoneMerged/0` outcome as a silent crash.
+        //
+        // Failure injection: point `legacy_trace` at `/dev/full`
+        // — a Linux character device where every write returns
+        // ENOSPC. The recorder's open path succeeds (the device
+        // exists, append-mode `open(2)` is fine on character
+        // specials) and the eventual `writeln!` triggers the
+        // exact short-circuit the fix targets.
+        //
+        // Assertion: `RunHalted` with the real outcome lands on
+        // `events.jsonl` and the live marker is released
+        // regardless of the trace fault.
+        if !PathBuf::from("/dev/full").exists() {
+            // /dev/full is the failure-injection device; skip on
+            // platforms that lack it rather than spuriously fail.
+            return;
+        }
+        let root = temp_root("trace-fault");
+        let _ = fs::remove_dir_all(&root);
+        let recorder = Recorder::open(RecorderConfig {
+            slug: RepoSlug::parse("example/widgets").unwrap(),
+            pr: PullRequestNumber::new(7).unwrap(),
+            mode: RunMode::Inspect,
+            max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
+            status_comment: false,
+            state_root: Some(root.clone()),
+            legacy_trace: Some(PathBuf::from("/dev/full")),
+        })
+        .unwrap();
+        let run_id = recorder.run_id();
+
+        recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
+
+        let events_path = root.join("runs").join(&run_id).join("events.jsonl");
+        let events = fs::read_to_string(&events_path).unwrap();
+        // Typed terminal event survives the trace fault.
+        assert!(
+            events.contains(r#""kind":"run_halted""#),
+            "halt event must reach disk despite trace fault: {events}",
+        );
+        assert!(
+            events.contains(r#""outcome":"Paused""#),
+            "real outcome token must be recorded, not DroppedWithoutHalt: {events}",
+        );
+        // Breadcrumb stays in place — the forensic anchor.
+        assert!(
+            events.contains(r#""kind_suffix":"outcome""#),
+            "DomainSpecific::Outcome breadcrumb must be present: {events}",
+        );
+        // Live marker released — halt ran, not Drop's fallback.
+        assert!(
+            !root.join("live").join(&run_id).exists(),
+            "live marker must be released by halt despite trace fault",
+        );
 
         let _ = fs::remove_dir_all(root);
     }

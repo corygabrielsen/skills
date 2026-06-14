@@ -109,7 +109,8 @@ use decide::action::{ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
 use ids::{BlockerKey, BranchName, GitCommitSha, RepoId, ReviewTarget};
 use observe::codex::fetch_all;
 use ooda_state::{
-    CodexReviewDomain, Domain, EventBody, OutcomeKind, RunId, RunWriter, StateRoot, terminal_event,
+    CodexReviewDomain, Domain, DomainKind, EventBody, OutcomeKind, RunId, RunWriter, StateRoot,
+    domain_specific, terminal_event,
 };
 use outcome::Outcome;
 use runner::{EventSink, LoopConfig, LoopExit, run_loop};
@@ -748,9 +749,21 @@ fn run_session(args: &Args) -> Outcome {
 }
 
 /// Emit the terminal event for this run and release the live
-/// marker. Errors are swallowed: the outcome has already been
-/// computed and the caller needs it back regardless of whether
-/// the audit-trail close succeeded.
+/// marker.
+///
+/// Append-fault contract: writes a `DomainSpecific::Outcome`
+/// breadcrumb BEFORE the typed `RunHalted` event. If
+/// `writer.halt` fails (oversized terminal event, ENOSPC, ...)
+/// the breadcrumb is still durable on disk and a forensic
+/// reader can recover the intended outcome — without it `Drop`
+/// would emit `DroppedWithoutHalt` and the real outcome would
+/// look like a crash. Mirrors the PR-side recorder pattern at
+/// `ooda-pr/src/recorder.rs::record_outcome`. Round-2 P6.
+///
+/// Halt failures are stderr-warned rather than silently
+/// discarded — the prior `let _ =` shape hid every failure
+/// mode and let `Drop`'s `DroppedWithoutHalt` fallback rewrite
+/// the outcome with no operator-visible signal.
 fn finalize(writer: &mut RunWriter, outcome: &Outcome) {
     let kind = outcome_kind(outcome);
     let last_action = match outcome {
@@ -759,13 +772,34 @@ fn finalize(writer: &mut RunWriter, outcome: &Outcome) {
         }
         _ => None,
     };
-    let body = terminal_event(
-        &CodexReviewDomain,
-        kind,
-        i32::from(outcome.exit_code().as_u8()),
-        last_action.as_deref(),
-    );
-    let _ = writer.halt(body);
+    let exit_code = i32::from(outcome.exit_code().as_u8());
+    if let Err(e) = write_outcome_breadcrumb(writer, outcome, exit_code) {
+        eprintln!("[ooda-codex-review] recorder: outcome breadcrumb failed: {e}");
+    }
+    let body = terminal_event(&CodexReviewDomain, kind, exit_code, last_action.as_deref());
+    if let Err(e) = writer.halt(body) {
+        eprintln!("[ooda-codex-review] recorder: halt failed: {e}");
+    }
+}
+
+/// Write the `DomainSpecific::Outcome` breadcrumb that precedes
+/// the typed terminal event. See [`finalize`] for the rationale.
+/// Factored so the early-return failure mode does not entangle
+/// with the `halt` call site.
+fn write_outcome_breadcrumb(
+    writer: &mut RunWriter,
+    outcome: &Outcome,
+    exit_code: i32,
+) -> Result<(), ooda_state::StateError> {
+    let bytes = serde_json::to_vec_pretty(outcome)?;
+    let blob = writer.write_blob(&bytes, "json")?;
+    writer.append(domain_specific(
+        DomainKind::Outcome,
+        serde_json::json!({
+            "exit_code": exit_code,
+            "blob": blob,
+        }),
+    ))
 }
 
 /// Project an [`Outcome`] onto its [`OutcomeKind`] discriminant —
@@ -1106,5 +1140,119 @@ mod tests {
         assert!(payload["value"].is_null());
         assert_eq!(payload["floor"], "low");
         assert_eq!(payload["ceiling"], "xhigh");
+    }
+
+    #[test]
+    fn finalize_writes_outcome_breadcrumb_before_halt() {
+        // Round-2 P6 regression: prior `finalize` shape was
+        // `let _ = writer.halt(body)` with no preceding
+        // breadcrumb. If `halt`'s append faulted (oversized
+        // terminal event, ENOSPC on the events.jsonl partition,
+        // ...) the typed `RunHalted` event was lost, `Drop`
+        // emitted `DroppedWithoutHalt`, and the real outcome
+        // looked like a crash.
+        //
+        // The fix prepends a `DomainSpecific::Outcome` event
+        // carrying the serialized outcome blob. A forensic
+        // reader walking events.jsonl after a halt fault can
+        // recover the intended outcome from the breadcrumb.
+        // This test asserts the ordering invariant on disk:
+        // the breadcrumb appears BEFORE the typed terminal
+        // event, so the breadcrumb is durable even when the
+        // halt write would have failed.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = StateRoot::new(tmp.path().to_path_buf()).unwrap();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: CodexReviewDomain.name().into(),
+                target: serde_json::json!({}),
+            })
+            .unwrap();
+        let run_id = writer.run_id().as_str().to_string();
+
+        finalize(&mut writer, &Outcome::DoneSucceeded);
+
+        let events_path = tmp.path().join("runs").join(&run_id).join("events.jsonl");
+        let events = std::fs::read_to_string(&events_path).unwrap();
+        let breadcrumb_idx = events
+            .find(r#""kind_suffix":"outcome""#)
+            .expect("DomainSpecific::Outcome breadcrumb must be present");
+        let halt_idx = events
+            .find(r#""kind":"run_halted""#)
+            .expect("typed RunHalted terminal event must be present");
+        assert!(
+            breadcrumb_idx < halt_idx,
+            "breadcrumb must precede halt so a halt-write fault leaves the \
+             intended outcome on disk; got breadcrumb at {breadcrumb_idx}, \
+             halt at {halt_idx}: {events}",
+        );
+        // Domain-mapped wire token: `DoneSucceeded` → `DoneFixedPoint`.
+        assert!(
+            events.contains(r#""outcome":"DoneFixedPoint""#),
+            "RunHalted must carry the CodexReviewDomain-mapped token: {events}",
+        );
+        // Breadcrumb carries enough info for forensic recovery:
+        // exit_code (0 for DoneSucceeded → DoneFixedPoint).
+        assert!(
+            events.contains(r#""exit_code":0"#),
+            "breadcrumb must record the intended exit code: {events}",
+        );
+    }
+
+    #[test]
+    fn finalize_breadcrumb_survives_when_halt_already_fired() {
+        // Failure-injection variant: pre-halt the writer with a
+        // sentinel terminal event, then invoke `finalize`. The
+        // subsequent `writer.halt` call inside `finalize` will
+        // return `AlreadyHalted` — the same `Err` shape an
+        // ENOSPC / oversize fault would produce. The breadcrumb
+        // append happens earlier in the same `&mut writer`
+        // session and ALSO sees `AlreadyHalted`; this test
+        // documents that limitation explicitly. The forensic-
+        // recovery invariant is therefore proven by the
+        // ordering test above (breadcrumb-before-halt), not by
+        // double-halting here. What we DO assert: `finalize`
+        // does not panic and does not corrupt the on-disk log
+        // when the writer rejects further appends.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = StateRoot::new(tmp.path().to_path_buf()).unwrap();
+        let id = RunId::generate();
+        let mut writer = root.create_run(id).unwrap();
+        writer
+            .start(EventBody::RunStarted {
+                domain: CodexReviewDomain.name().into(),
+                target: serde_json::json!({}),
+            })
+            .unwrap();
+        let run_id = writer.run_id().as_str().to_string();
+        writer
+            .halt(EventBody::RunHalted {
+                outcome: "Paused".into(),
+                exit_code: 1,
+            })
+            .unwrap();
+
+        // Second halt path: must not panic, must surface no new
+        // events (writer is halted), and must keep the pre-halt
+        // RunHalted line intact.
+        finalize(&mut writer, &Outcome::DoneSucceeded);
+
+        let events_path = tmp.path().join("runs").join(&run_id).join("events.jsonl");
+        let events = std::fs::read_to_string(&events_path).unwrap();
+        // Pre-halt event still present — finalize did not
+        // overwrite it.
+        assert!(
+            events.contains(r#""outcome":"Paused""#),
+            "pre-existing halt event must be preserved: {events}",
+        );
+        // No second `RunHalted` line — writer rejected the
+        // append.
+        assert_eq!(
+            events.matches(r#""kind":"run_halted""#).count(),
+            1,
+            "double-halt must not duplicate the terminal event: {events}",
+        );
     }
 }

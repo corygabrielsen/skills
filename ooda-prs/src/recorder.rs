@@ -623,11 +623,23 @@ impl Recorder {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if let Err(e) = f(&mut inner) {
-                    eprintln!("ooda recorder: append failed: {e}");
+                    // Loop-identity prefix lets a human watching ≥2
+                    // concurrent OODA loops disambiguate which run
+                    // emitted this advisory. Shape matches the
+                    // main-loop helper `loop_prefix` in main.rs.
+                    eprintln!(
+                        "[ooda-prs {}#{} run={}] recorder: append failed: {e}",
+                        inner.slug,
+                        inner.pr,
+                        inner.run_id.as_str(),
+                    );
                 }
             }
             Err(_) => {
-                eprintln!("ooda recorder: mutex poisoned; event dropped");
+                // Mutex poisoned: slug/pr/run-id unrecoverable here.
+                // Emit the binary tag alone so the line is still
+                // attributable to ooda-prs.
+                eprintln!("[ooda-prs] recorder: mutex poisoned; event dropped");
             }
         }
     }

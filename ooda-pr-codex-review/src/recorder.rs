@@ -262,6 +262,19 @@ impl Recorder {
         }
     }
 
+    /// Opaque run identifier — same value the on-disk
+    /// `runs/<run-id>/` directory uses. Surfaced in advisory stderr
+    /// prefixes so a human watching concurrent OODA loops can join a
+    /// warning line back to its run audit trail. Returns the empty
+    /// string on mutex poison; callers omit the `run=` field when
+    /// empty.
+    pub(crate) fn run_id(&self) -> String {
+        match self.inner.lock() {
+            Ok(inner) => inner.writer.run_id().as_str().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
     /// Cross-run PR-keyed workspace root: `<state-root>/workspaces/
     /// pr-codex-review/<slug>/<pr>/`. Act-side state (codex spawn
     /// directories, comment dedup file) lives under this path,
@@ -664,11 +677,23 @@ impl Recorder {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if let Err(e) = f(&mut inner) {
-                    eprintln!("ooda recorder: append failed: {e}");
+                    // Loop-identity prefix lets a human watching ≥2
+                    // concurrent OODA loops disambiguate which run
+                    // emitted this advisory. Shape matches the
+                    // main-loop helper `loop_prefix` in main.rs.
+                    eprintln!(
+                        "[ooda-pr-codex-review {}#{} run={}] recorder: append failed: {e}",
+                        inner.slug,
+                        inner.pr,
+                        inner.writer.run_id().as_str(),
+                    );
                 }
             }
             Err(_) => {
-                eprintln!("ooda recorder: mutex poisoned; event dropped");
+                // Mutex poisoned: slug/pr/run-id unrecoverable here.
+                // Emit the binary tag alone so the line is still
+                // attributable to ooda-pr-codex-review.
+                eprintln!("[ooda-pr-codex-review] recorder: mutex poisoned; event dropped");
             }
         }
     }

@@ -728,6 +728,7 @@ fn run_mode(mode: Mode) -> RunMode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_inspect(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -777,7 +778,8 @@ fn run_inspect(
                 hit.scope.name(),
                 hit.retry_after.as_duration().as_secs(),
             );
-            eprintln!("{line}");
+            let run_id = recorder.run_id();
+            eprintln!("{} {line}", loop_prefix(slug, pr, Some(&run_id)));
             recorder.write_trace_line(&line);
             recorder.record_observe_end(
                 1,
@@ -803,7 +805,8 @@ fn run_inspect(
             "stack: {} → {}",
             obs.pull_request_view.base_ref_name, obs.stack_root_branch,
         );
-        eprintln!("{line}");
+        let run_id = recorder.run_id();
+        eprintln!("{} {line}", loop_prefix(slug, pr, Some(&run_id)));
         recorder.write_trace_line(&line);
     }
     let oriented = orient(&obs, None, current_timestamp());
@@ -827,7 +830,7 @@ fn run_inspect(
         );
         recorder.record_status_comment_rendered(Some(1), &rendered, "inspect comment rendered");
         let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(1));
-        log_post_result("comment", true, r, Some(recorder));
+        log_post_result(slug, pr, "comment", true, r, Some(recorder));
     }
     let snapshot = HandoffSnapshot {
         ci: oriented.ci.clone(),
@@ -895,7 +898,8 @@ fn run_full(
             d,
         );
         let line = iteration_line(i, d);
-        eprintln!("{line}");
+        let run_id = recorder.run_id();
+        eprintln!("{} {line}", loop_prefix(slug, pr, Some(&run_id)));
         recorder.write_trace_line(&line);
         if args.status_comment {
             let rendered = comment::render::render(
@@ -912,7 +916,14 @@ fn run_full(
                 format!("[iter {i}] comment rendered"),
             );
             let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(i));
-            log_post_result(&format!("[iter {i}] comment"), false, r, Some(recorder));
+            log_post_result(
+                slug,
+                pr,
+                &format!("[iter {i}] comment"),
+                false,
+                r,
+                Some(recorder),
+            );
         }
     };
     let outcome = match run_loop(
@@ -931,7 +942,24 @@ fn run_full(
     decorate_handoff_human(outcome, slug, pr, snapshot.as_ref())
 }
 
+/// Loop-identity prefix for advisory stderr lines.
+///
+/// With ≥2 concurrent OODA invocations live (the common case in
+/// this user's workflow), a bare `eprintln!("{line}")` cannot be
+/// attributed to a specific loop. The prefix carries
+/// binary+slug+PR+run-id so a stderr grep disambiguates every
+/// warning line. Run-id is omitted (rather than printed empty)
+/// when the recorder is not yet open or the mutex is poisoned.
+fn loop_prefix(slug: &RepoSlug, pr: PullRequestNumber, run_id: Option<&str>) -> String {
+    match run_id {
+        Some(rid) if !rid.is_empty() => format!("[ooda-prs {slug}#{pr} run={rid}]"),
+        _ => format!("[ooda-prs {slug}#{pr}]"),
+    }
+}
+
 fn log_post_result(
+    slug: &RepoSlug,
+    pr: PullRequestNumber,
     prefix: &str,
     verbose_skip: bool,
     r: Result<bool, comment::post::PostError>,
@@ -939,7 +967,8 @@ fn log_post_result(
 ) {
     let line = post_result_line(prefix, verbose_skip, r);
     if let Some(line) = line {
-        eprintln!("{line}");
+        let run_id = recorder.map(Recorder::run_id);
+        eprintln!("{} {line}", loop_prefix(slug, pr, run_id.as_deref()));
         if let Some(recorder) = recorder {
             recorder.write_trace_line(&line);
         }
@@ -1475,6 +1504,30 @@ mod tests {
         assert_eq!(
             iteration_line(12, &decision),
             "[iter 12] halt: HumanNeeded blocker: pending_human_review: review-team"
+        );
+    }
+
+    #[test]
+    fn loop_prefix_carries_binary_slug_pr_and_run_id() {
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        assert_eq!(
+            loop_prefix(&slug, pr, Some("abc123")),
+            "[ooda-prs acme/widget#42 run=abc123]"
+        );
+    }
+
+    #[test]
+    fn loop_prefix_omits_run_id_when_absent() {
+        let slug = RepoSlug::parse("acme/widget").unwrap();
+        let pr = PullRequestNumber::parse("42").unwrap();
+        assert_eq!(loop_prefix(&slug, pr, None), "[ooda-prs acme/widget#42]");
+        // Empty run-id collapses to the same shape as None: keeps
+        // the prefix grammar regular so a stderr grep can pivot on
+        // the presence of `run=`.
+        assert_eq!(
+            loop_prefix(&slug, pr, Some("")),
+            "[ooda-prs acme/widget#42]"
         );
     }
 

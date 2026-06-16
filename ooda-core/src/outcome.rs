@@ -163,7 +163,10 @@ mod tests {
     fn dummy() -> Action<K> {
         Action {
             kind: K,
-            effect: ActionEffect::Full { log: "x".into() },
+            effect: ActionEffect::Full {
+                log: "x".into(),
+                upstream: crate::action::UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("t"),
@@ -343,7 +346,7 @@ mod tests {
         // canonical serde output so the variant goldens stay short.
         let dummy_action_json = json!({
             "kind": null,
-            "effect": {"Full": {"log": "x"}},
+            "effect": {"Full": {"log": "x", "upstream": "Sync"}},
             "target_effect": "Blocks",
             "urgency": {"Mid": "BlockingFix"},
             "blocker": "t",

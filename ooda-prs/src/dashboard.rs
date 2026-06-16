@@ -674,7 +674,10 @@ mod tests {
     fn act(kind: ActionKind, urgency: Urgency, blocker: &str, log: &str) -> Action {
         Action {
             kind,
-            effect: ActionEffect::Full { log: log.into() },
+            effect: ActionEffect::Full {
+                log: log.into(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency,
             blocker: BlockerKey::for_test(blocker),

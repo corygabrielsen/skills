@@ -57,9 +57,9 @@ pub fn classify<K>(action: Action<K>) -> Decision<K> {
         blocker,
     } = action;
     match effect {
-        ActionEffect::Full { log } => Decision::Execute(Action {
+        ActionEffect::Full { log, upstream } => Decision::Execute(Action {
             kind,
-            effect: ActionEffect::Full { log },
+            effect: ActionEffect::Full { log, upstream },
             target_effect,
             urgency,
             blocker,
@@ -204,7 +204,9 @@ pub enum Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{Action, ActionEffect, MidTier, TargetEffect, Urgency};
+    use crate::action::{
+        Action, ActionEffect, MidTier, TargetEffect, UpstreamConsistency, Urgency,
+    };
     use crate::blocker::BlockerKey;
     use crate::handoff_prompt::HandoffPrompt;
 
@@ -214,7 +216,10 @@ mod tests {
     fn dummy() -> Action<K> {
         Action {
             kind: K,
-            effect: ActionEffect::Full { log: "x".into() },
+            effect: ActionEffect::Full {
+                log: "x".into(),
+                upstream: UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("t"),
@@ -309,7 +314,10 @@ mod tests {
 
     #[test]
     fn classify_full_yields_execute() {
-        let d = classify(dummy_with_effect(ActionEffect::Full { log: "x".into() }));
+        let d = classify(dummy_with_effect(ActionEffect::Full {
+            log: "x".into(),
+            upstream: UpstreamConsistency::Sync,
+        }));
         assert!(matches!(
             d,
             Decision::Execute(Action {

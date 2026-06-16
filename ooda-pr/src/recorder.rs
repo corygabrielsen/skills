@@ -994,7 +994,20 @@ mod tests {
 
     fn recorder_action_golden(action: &Action) -> serde_json::Value {
         let effect_json = match &action.effect {
-            ActionEffect::Full { log } => json!({"Full": {"log": log}}),
+            ActionEffect::Full { log, upstream } => json!({
+                "Full": {
+                    "log": log,
+                    "upstream": match upstream {
+                        ooda_core::UpstreamConsistency::Sync => json!("Sync"),
+                        ooda_core::UpstreamConsistency::Eventual(interval) => json!({
+                            "Eventual": {
+                                "secs": interval.as_duration().as_secs(),
+                                "nanos": interval.as_duration().subsec_nanos(),
+                            }
+                        }),
+                    },
+                }
+            }),
             ActionEffect::Wait { interval, log } => json!({
                 "Wait": {
                     "interval": {
@@ -1032,6 +1045,11 @@ mod tests {
         vec![
             ActionEffect::Full {
                 log: "Mark PR ready".into(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            },
+            ActionEffect::Full {
+                log: "Rerequest Copilot review".into(),
+                upstream: ooda_core::UpstreamConsistency::Eventual(PollingInterval::from_secs(30)),
             },
             ActionEffect::Wait {
                 interval: PollingInterval::from_secs(30),
@@ -1051,10 +1069,11 @@ mod tests {
         let samples = recorder_sample_effects();
         assert_eq!(
             samples.len(),
-            4,
-            "`recorder_sample_effects` must include one sample per `ActionEffect` variant; \
-             adding a new variant requires adding both a golden arm in `recorder_action_golden` \
-             AND a sample here.",
+            5,
+            "`recorder_sample_effects` must include one sample per `ActionEffect` variant \
+             (plus one per `UpstreamConsistency` discriminant under `Full`); adding a new \
+             variant requires adding both a golden arm in `recorder_action_golden` AND a \
+             sample here.",
         );
         for effect in samples {
             let action = sample_action(effect);

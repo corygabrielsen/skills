@@ -154,7 +154,17 @@ fn in_flight_candidates(summary: &CiSummary, checks: &[PendingCheck], out: &mut 
             kind: ActionKind::ReRunWorkflow {
                 checks: degraded_ne,
             },
-            effect: ActionEffect::Full { log },
+            effect: ActionEffect::Full {
+                log,
+                // `gh api POST .../rerun` returns when the request
+                // is accepted; the rerun then queues asynchronously
+                // through GitHub Actions. The next observe pass
+                // may still see the prior state until the queue
+                // schedules the run (typically ≤30s).
+                upstream: ooda_core::UpstreamConsistency::Eventual(
+                    ooda_core::PollingInterval::from_secs(30),
+                ),
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingFix),
             // Gate identity: the (rerun-loop, symptom-class) pair.

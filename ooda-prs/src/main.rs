@@ -1438,7 +1438,10 @@ mod tests {
     fn action(blocker: &str) -> decide::action::Action {
         decide::action::Action {
             kind: decide::action::ActionKind::Rebase,
-            effect: ActionEffect::Full { log: "x".into() },
+            effect: ActionEffect::Full {
+                log: "x".into(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::Mid(MidTier::BlockingFix),
             blocker: ids::BlockerKey::for_test(blocker),
@@ -1463,7 +1466,10 @@ mod tests {
     #[test]
     fn format_effect_variants() {
         assert_eq!(
-            format_effect(&ActionEffect::Full { log: String::new() }),
+            format_effect(&ActionEffect::Full {
+                log: String::new(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            }),
             "Full"
         );
         assert_eq!(

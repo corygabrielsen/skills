@@ -52,7 +52,8 @@ pub mod spawn;
 pub mod stall_key;
 
 pub use action::{
-    Action, ActionEffect, ActionKindName, HandoffAction, MidTier, TargetEffect, Urgency,
+    Action, ActionEffect, ActionKindName, HandoffAction, MidTier, TargetEffect,
+    UpstreamConsistency, Urgency,
 };
 pub use axis::Axis;
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};

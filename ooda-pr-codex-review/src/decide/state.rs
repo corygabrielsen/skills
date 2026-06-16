@@ -37,6 +37,9 @@ pub(crate) fn blocking_candidates(
             kind: ActionKind::MarkReady,
             effect: ActionEffect::Full {
                 log: "Mark PR as ready for review".into(),
+                // `gh pr ready` blocks until the upstream draft flag
+                // flips; the next observe pass sees `draft: false`.
+                upstream: ooda_core::UpstreamConsistency::Sync,
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::Critical),
@@ -48,6 +51,9 @@ pub(crate) fn blocking_candidates(
             kind: ActionKind::RemoveWipLabel,
             effect: ActionEffect::Full {
                 log: "Remove \"work in progress\" label".into(),
+                // `gh pr edit --remove-label` blocks until the
+                // upstream label set updates; observable next pass.
+                upstream: ooda_core::UpstreamConsistency::Sync,
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::Critical),

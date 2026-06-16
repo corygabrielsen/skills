@@ -132,7 +132,34 @@ pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
                 // in favour of addressing known feedback.
                 out.push(Action {
                     kind: ActionKind::RerequestCopilot { symptom: None },
-                    effect: ActionEffect::Full { log: desc },
+                    effect: ActionEffect::Full {
+                        log: desc,
+                        // Re-request POSTs to the GitHub bot
+                        // reviewer endpoint. Two known eventual-
+                        // consistency modes:
+                        //
+                        // 1. State-changing POST emits a
+                        //    `review_requested` timeline event,
+                        //    which the next observe pass surfaces
+                        //    via `correlate_rounds` — but only
+                        //    after upstream propagation (seconds).
+                        // 2. Idempotent re-POST against an already-
+                        //    pending reviewer succeeds without
+                        //    emitting an event at all (per the
+                        //    empirically-verified contract at
+                        //    act/copilot.rs:14-30).
+                        //
+                        // Case 2 means orient cannot witness the
+                        // re-request from upstream alone. A
+                        // consecutive identical Full would trip
+                        // the stall comparator on iter 2 before
+                        // Copilot has had a chance to ack (~30s
+                        // typical). The runner's auto-Wait on
+                        // repeat covers this window.
+                        upstream: ooda_core::UpstreamConsistency::Eventual(
+                            ooda_core::PollingInterval::from_secs(30),
+                        ),
+                    },
                     target_effect: TargetEffect::Advances,
                     urgency: Urgency::Mid(MidTier::BlockingFix),
                     blocker: BlockerKey::typed("copilot_tier", &report.tier),
@@ -176,7 +203,16 @@ fn degraded_rerequest(symptom: Symptom) -> Action {
         kind: ActionKind::RerequestCopilot {
             symptom: Some(symptom),
         },
-        effect: ActionEffect::Full { log: log.into() },
+        effect: ActionEffect::Full {
+            log: log.into(),
+            // Same eventual-consistency model as the tier-advancement
+            // RerequestCopilot above — POST may be idempotent against
+            // an already-pending reviewer and produce no timeline
+            // event. Runner auto-Waits on consecutive repeat.
+            upstream: ooda_core::UpstreamConsistency::Eventual(
+                ooda_core::PollingInterval::from_secs(30),
+            ),
+        },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::from_static(tag),

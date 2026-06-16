@@ -394,7 +394,12 @@ mod tests {
                 level: CodexReasoningLevel::Low,
                 n: 2,
             },
-            effect: ActionEffect::Full { log: "n/a".into() },
+            effect: ActionEffect::Full {
+                log: "n/a".into(),
+                upstream: ooda_core::UpstreamConsistency::Eventual(
+                    ooda_core::PollingInterval::from_secs(60),
+                ),
+            },
             target_effect: crate::decide::action::TargetEffect::Advances,
             urgency: crate::decide::action::Urgency::Mid(MidTier::Critical),
             blocker: crate::ids::BlockerKey::from_static("runreviews:low"),

@@ -118,7 +118,10 @@ mod tests {
             if obs.needs_sync {
                 vec![Action {
                     kind: DocAxisKind::Sync,
-                    effect: ActionEffect::Full { log: "sync".into() },
+                    effect: ActionEffect::Full {
+                        log: "sync".into(),
+                        upstream: crate::action::UpstreamConsistency::Sync,
+                    },
                     target_effect: TargetEffect::Neutral,
                     urgency: Urgency::Pre,
                     blocker: BlockerKey::from_static("needs_sync"),

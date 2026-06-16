@@ -294,6 +294,7 @@ pub(crate) fn run_loop(
         &mut on_state,
         1,
         None,
+        None,
     )? {
         IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
         IterStep::Executed(action) => action,
@@ -306,6 +307,19 @@ pub(crate) fn run_loop(
     } else {
         Some(last_attempted.stall_key())
     };
+    // Eventual-consistency auto-Wait state. After a Full+Eventual
+    // action repeats and the runner converts it to a synthetic Wait,
+    // we stash its stall key here. A third consecutive non-Wait
+    // emission of the same key is a genuine stall — the
+    // propagation window was already granted and produced no
+    // observable change.
+    //
+    // Reset when a non-Wait action with a different key fires
+    // (real progress elsewhere). Natural and synthetic Wait actions
+    // leave the state intact so an oscillation pattern
+    // (K1-Full → K2-Wait → K1-Full → …) halts correctly on the
+    // second K1 reappearance.
+    let mut auto_wait_used_for: Option<ooda_core::StallKey> = None;
 
     for iter in 2..=max_iter {
         if let Some(exit_code) = crate::signal::check_shutdown() {
@@ -319,12 +333,21 @@ pub(crate) fn run_loop(
             &mut on_state,
             iter,
             last_non_wait_key.as_ref(),
+            auto_wait_used_for.as_ref(),
         )?;
         match step {
             IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
             IterStep::Executed(action) => {
-                if !action.effect.is_wait() {
-                    last_non_wait_key = Some(action.stall_key());
+                let key = action.stall_key();
+                let is_wait = action.effect.is_wait();
+                let synthetic_wait_conversion = is_wait && last_non_wait_key.as_ref() == Some(&key);
+                if synthetic_wait_conversion {
+                    auto_wait_used_for = Some(key.clone());
+                } else if !is_wait {
+                    if auto_wait_used_for.as_ref() != Some(&key) {
+                        auto_wait_used_for = None;
+                    }
+                    last_non_wait_key = Some(key);
                 }
                 last_attempted = action;
             }
@@ -335,6 +358,46 @@ pub(crate) fn run_loop(
     // path: the unrolled first iteration either returned a Halt or
     // populated it.
     Ok(LoopExit::Halted(HaltReason::CapReached(last_attempted)))
+}
+
+/// Pre-act stall comparator outcomes. `Proceed` carries the
+/// (possibly synthetic-Wait-converted) action forward to the
+/// recorder/act path; `Halt` short-circuits to a Stalled halt.
+enum StallCheckOutcome {
+    Proceed(Action),
+    Halt(HaltReason),
+}
+
+/// Three outcomes on a non-Wait `(kind, blocker)` repeat:
+///
+/// 1. Already auto-waited for this key (`auto_wait_used_for` matches):
+///    the propagation window was granted and produced no observable
+///    change. Halt as Stalled.
+/// 2. Eventual upstream declared on the effect: convert the Full to
+///    a synthetic Wait of the declared propagation interval. The
+///    outer loop detects the conversion via stall-key match on a
+///    Wait action and arms `auto_wait_used_for` so a third repeat
+///    halts via path #1.
+/// 3. Sync upstream: a repeat IS a genuine stall — orient re-derived
+///    the blocker after the Sync effect should have resolved it.
+///    Halt as Stalled.
+fn apply_stall_check(
+    mut action: Action,
+    last_non_wait_key: Option<&ooda_core::StallKey>,
+    auto_wait_used_for: Option<&ooda_core::StallKey>,
+) -> StallCheckOutcome {
+    let current_key = action.stall_key();
+    if last_non_wait_key == Some(&current_key) {
+        if auto_wait_used_for == Some(&current_key) {
+            return StallCheckOutcome::Halt(HaltReason::Stalled(action));
+        }
+        if let Some(wait_effect) = action.effect.synthetic_wait_on_repeat() {
+            action.effect = wait_effect;
+        } else {
+            return StallCheckOutcome::Halt(HaltReason::Stalled(action));
+        }
+    }
+    StallCheckOutcome::Proceed(action)
 }
 
 /// One observe → orient → decide → act cycle. Returns an early-halt
@@ -350,6 +413,7 @@ fn run_iter(
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
     iter: u32,
     last_non_wait_key: Option<&ooda_core::StallKey>,
+    auto_wait_used_for: Option<&ooda_core::StallKey>,
 ) -> Result<IterStep, LoopError> {
     let slug = ctx.slug.clone();
     let pr = ctx.pr;
@@ -442,15 +506,11 @@ fn run_iter(
 
     match decision {
         Decision::Halt(halt) => Ok(IterStep::Halt(HaltReason::Decision(halt))),
-        Decision::Execute(action) => {
-            // Stall comparison runs *before* the side effect: a
-            // Full action whose upstream is eventually consistent
-            // must not fire twice while the prior call is still
-            // propagating. Equality on `StallKey<K>` — the
-            // `(discriminant, blocker)` pair — is the test.
-            let current_key = action.stall_key();
-            if last_non_wait_key == Some(&current_key) {
-                return Ok(IterStep::Halt(HaltReason::Stalled(action)));
+        Decision::Execute(mut action) => {
+            // Stall comparator: see [`apply_stall_check`].
+            match apply_stall_check(action, last_non_wait_key, auto_wait_used_for) {
+                StallCheckOutcome::Halt(reason) => return Ok(IterStep::Halt(reason)),
+                StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
             recorder.record_action_start(iter, &action);
@@ -520,7 +580,10 @@ mod tests {
         use crate::ids::BlockerKey;
         Action {
             kind: ActionKind::Rebase,
-            effect: ActionEffect::Full { log: "stub".into() },
+            effect: ActionEffect::Full {
+                log: "stub".into(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(tier),
             blocker: BlockerKey::for_test(blocker),

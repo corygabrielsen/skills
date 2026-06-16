@@ -97,6 +97,20 @@ fn mk_run_reviews(level: CodexReasoningLevel, n: u32) -> Action {
                 "Spawn {n} `codex review` subprocesses at reasoning level {}.",
                 level.as_str()
             ),
+            // Codex review children are spawned detached; the act
+            // call returns once the processes are launched. The
+            // children's completion is observed via per-slot log
+            // and exit files that only appear after each subprocess
+            // finishes. The next observe pass may still see no
+            // completion until the workers land their outputs.
+            //
+            // 60s gives slot-0 a realistic chance to surface its
+            // exit file at typical codex reasoning latencies;
+            // longer ladders propagate over multiple iterations via
+            // the iteration cap.
+            upstream: ooda_core::UpstreamConsistency::Eventual(
+                ooda_core::PollingInterval::from_secs(60),
+            ),
         },
         target_effect: TargetEffect::Advances,
         urgency: Urgency::Mid(MidTier::Critical),

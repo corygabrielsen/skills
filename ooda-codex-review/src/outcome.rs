@@ -49,7 +49,10 @@ mod tests {
                 level: CodexReasoningLevel::Low,
                 n: 3,
             },
-            effect: ActionEffect::Full { log: "test".into() },
+            effect: ActionEffect::Full {
+                log: "test".into(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Advances,
             urgency: Urgency::Mid(MidTier::Critical),
             blocker: BlockerKey::from_static("not-started"),

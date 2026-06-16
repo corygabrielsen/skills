@@ -71,7 +71,18 @@ pub struct HandoffAction<K> {
 pub enum ActionEffect {
     /// Driven inside the loop without halting. The log line is a
     /// trace artifact, never surfaced to an external actor.
-    Full { log: String },
+    ///
+    /// `upstream` declares whether the side effect is observable to
+    /// the next iteration's observe pass without delay
+    /// ([`UpstreamConsistency::Sync`]) or whether the upstream is
+    /// eventually consistent and the next iteration may still see
+    /// the pre-call state ([`UpstreamConsistency::Eventual`]). The
+    /// runner uses this declaration to discriminate "genuine stall"
+    /// from "propagation window" on the stall comparator.
+    Full {
+        log: String,
+        upstream: UpstreamConsistency,
+    },
     /// Driven inside the loop after sleeping `interval`. Same
     /// audience for `log` as [`Self::Full`].
     Wait {
@@ -82,6 +93,47 @@ pub enum ActionEffect {
     Agent { prompt: HandoffPrompt },
     /// Halts the loop and surfaces the prompt to a human.
     Human { prompt: HandoffPrompt },
+}
+
+/// Upstream observability model for a [`ActionEffect::Full`]
+/// side-effect. Carried as a typed property on the effect so the
+/// runner's stall comparator can discriminate genuine repeat
+/// stalls from eventual-consistency propagation windows.
+///
+/// # Design rationale
+///
+/// The runner's stall comparator (see binary-side `runner.rs`)
+/// halts when two consecutive non-Wait iterations produce the
+/// same `(kind, blocker)` pair: a repeated identical Full action
+/// signals either a genuine infinite loop or an upstream that
+/// hasn't propagated yet. These two cases want different responses:
+///
+/// * `Sync` — the upstream side-effect IS observable to the next
+///   observe pass. A repeat genuinely indicates a stall: orient
+///   re-derived the same blocker after the effect should have
+///   resolved it. Halt as Stalled immediately.
+///
+/// * `Eventual(interval)` — the upstream is asynchronously
+///   propagated (e.g. GitHub timeline events, GitHub Actions
+///   queue, detached worker subprocesses). A repeat on the very
+///   next iteration is the *expected* eventual-consistency window:
+///   convert the repeat to a synthetic [`ActionEffect::Wait`] of
+///   `interval` so the upstream has time to surface. If a third
+///   consecutive identical key still appears after the synthetic
+///   Wait, that IS a genuine stall and the runner halts.
+///
+/// One auto-Wait per stall key per repeated-run is the bound; the
+/// loop's iteration cap caps total exposure regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum UpstreamConsistency {
+    /// Side-effect is observable to the next observe pass without
+    /// delay. Repeats indicate a genuine stall.
+    Sync,
+    /// Side-effect propagates asynchronously through the upstream
+    /// (timeline event lag, queue scheduling, detached subprocess
+    /// completion). On a repeat the runner converts to a synthetic
+    /// Wait of `interval` rather than halting.
+    Eventual(PollingInterval),
 }
 
 impl ActionEffect {
@@ -113,6 +165,31 @@ impl ActionEffect {
         matches!(self, Self::Wait { .. })
     }
 
+    /// If this effect is a [`Self::Full`] with
+    /// [`UpstreamConsistency::Eventual`], return the synthetic Wait
+    /// the runner should substitute when the stall comparator
+    /// detects a consecutive repeat of the same `(kind, blocker)`
+    /// pair. Returns `None` for Sync Full, natural Wait, and
+    /// handoff variants — those should halt or proceed as-is.
+    ///
+    /// The Wait's interval comes from the call-site's declared
+    /// [`UpstreamConsistency::Eventual`] payload. The Wait's `log`
+    /// preserves the original Full's log line so the recorder
+    /// traces the conversion to its source action.
+    #[must_use]
+    pub fn synthetic_wait_on_repeat(&self) -> Option<Self> {
+        match self {
+            Self::Full {
+                log,
+                upstream: UpstreamConsistency::Eventual(interval),
+            } => Some(Self::Wait {
+                interval: *interval,
+                log: log.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     /// `true` iff this effect requires halting the loop and
     /// handing off to an external actor (agent or human).
     #[must_use]
@@ -130,7 +207,7 @@ impl ActionEffect {
     #[must_use]
     pub fn rendered_message(&self) -> String {
         match self {
-            Self::Full { log } | Self::Wait { log, .. } => log.clone(),
+            Self::Full { log, .. } | Self::Wait { log, .. } => log.clone(),
             Self::Agent { prompt } | Self::Human { prompt } => prompt.to_string(),
         }
     }
@@ -146,7 +223,7 @@ impl ActionEffect {
     #[must_use]
     pub fn rendered_summary(&self) -> String {
         match self {
-            Self::Full { log } | Self::Wait { log, .. } => log.clone(),
+            Self::Full { log, .. } | Self::Wait { log, .. } => log.clone(),
             Self::Agent { prompt } | Self::Human { prompt } => prompt.headline.to_string(),
         }
     }
@@ -305,7 +382,10 @@ mod tests {
     fn dummy(kind: TestKind) -> Action<TestKind> {
         Action {
             kind,
-            effect: ActionEffect::Full { log: "test".into() },
+            effect: ActionEffect::Full {
+                log: "test".into(),
+                upstream: UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("test:blocker"),
@@ -428,7 +508,10 @@ mod tests {
         let human = ActionEffect::Human {
             prompt: HandoffPrompt::new("p"),
         };
-        let full = ActionEffect::Full { log: "x".into() };
+        let full = ActionEffect::Full {
+            log: "x".into(),
+            upstream: UpstreamConsistency::Sync,
+        };
         let wait = ActionEffect::Wait {
             interval: PollingInterval::from_secs(30),
             log: "x".into(),
@@ -447,15 +530,53 @@ mod tests {
         let mut a = ActionEffect::Agent {
             prompt: HandoffPrompt::new("p"),
         };
-        let mut f = ActionEffect::Full { log: "x".into() };
+        let mut f = ActionEffect::Full {
+            log: "x".into(),
+            upstream: UpstreamConsistency::Sync,
+        };
         assert!(a.prompt_mut().is_some());
         assert!(f.prompt_mut().is_none());
+    }
+
+    #[test]
+    fn synthetic_wait_on_repeat_returns_some_for_eventual_full_only() {
+        let interval = PollingInterval::from_secs(45);
+        let eventual = ActionEffect::Full {
+            log: "rerequest".into(),
+            upstream: UpstreamConsistency::Eventual(interval),
+        };
+        let sync = ActionEffect::Full {
+            log: "rerequest".into(),
+            upstream: UpstreamConsistency::Sync,
+        };
+        let wait = ActionEffect::Wait {
+            interval,
+            log: "x".into(),
+        };
+        let agent = ActionEffect::Agent {
+            prompt: HandoffPrompt::new("p"),
+        };
+
+        let Some(ActionEffect::Wait {
+            interval: out_interval,
+            log: out_log,
+        }) = eventual.synthetic_wait_on_repeat()
+        else {
+            panic!("expected synthetic Wait from Eventual Full");
+        };
+        assert_eq!(out_interval, interval);
+        assert_eq!(out_log, "rerequest");
+
+        assert!(sync.synthetic_wait_on_repeat().is_none());
+        assert!(wait.synthetic_wait_on_repeat().is_none());
+        assert!(agent.synthetic_wait_on_repeat().is_none());
     }
 
     #[test]
     fn effect_rendered_message_dispatches_to_payload() {
         let f = ActionEffect::Full {
             log: "fulled".into(),
+            upstream: UpstreamConsistency::Sync,
         };
         let a = ActionEffect::Agent {
             prompt: HandoffPrompt::new("agented"),

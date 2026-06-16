@@ -68,7 +68,10 @@ mod tests {
     fn action_with(kind: K, blocker: &str, desc: &str) -> Action<K> {
         Action {
             kind,
-            effect: ActionEffect::Full { log: desc.into() },
+            effect: ActionEffect::Full {
+                log: desc.into(),
+                upstream: crate::action::UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::for_test(blocker),

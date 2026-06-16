@@ -1105,6 +1105,7 @@ mod tests {
 
         let action = sample_action(ActionEffect::Full {
             log: "Mark PR ready".into(),
+            upstream: ooda_core::UpstreamConsistency::Sync,
         });
         recorder.record_action_end(1, &action, Ok(()));
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
@@ -1150,6 +1151,7 @@ mod tests {
 
         let action = sample_action(ActionEffect::Full {
             log: "stalled".into(),
+            upstream: ooda_core::UpstreamConsistency::Sync,
         });
         recorder.record_outcome(
             &Outcome::StuckRepeated(Box::new(action)),

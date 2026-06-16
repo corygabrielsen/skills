@@ -58,7 +58,13 @@ fn sync_graphite_stack_action(divergence: &BranchDivergence) -> Action {
             from_sha: divergence.from_sha.clone(),
             to_sha: divergence.to_sha.clone(),
         },
-        effect: ActionEffect::Full { log },
+        effect: ActionEffect::Full {
+            log,
+            // `gt sync` blocks until the local rebase + remote push
+            // complete; the next observe pass sees the new branch
+            // head without delay.
+            upstream: ooda_core::UpstreamConsistency::Sync,
+        },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingFix),
         blocker: BlockerKey::typed("branch_sync_graphite", &CohortSha::new(&divergence.to_sha)),

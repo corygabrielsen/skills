@@ -187,7 +187,10 @@ mod tests {
     fn dummy_action() -> Action {
         Action {
             kind: ActionKind::Rebase,
-            effect: ActionEffect::Full { log: "x".into() },
+            effect: ActionEffect::Full {
+                log: "x".into(),
+                upstream: ooda_core::UpstreamConsistency::Sync,
+            },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingFix),
             blocker: BlockerKey::from_static("rebase-needed"),

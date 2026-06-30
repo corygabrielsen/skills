@@ -43,6 +43,14 @@ pub(crate) enum VerdictClass {
     /// Operationally routed like `HasIssues`; surfaced
     /// distinctly so post-hoc tooling can see the abstention.
     Indeterminate,
+    /// Slot was abandoned: the reviewer subprocess didn't finish
+    /// before the loop gave up (cap reached, or all pending slots
+    /// went idle past the alive threshold). Routed like `HasIssues`
+    /// so the loop never silently claims fixed-point on a partial
+    /// sample. Surfaced distinctly so post-hoc tooling and human
+    /// resolvers can distinguish "review ran and was inconclusive"
+    /// from "review never completed".
+    Abandoned,
 }
 
 /// Classify an extracted verdict body.

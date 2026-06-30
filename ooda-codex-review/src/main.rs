@@ -709,6 +709,7 @@ fn run_session(args: &Args) -> Outcome {
         target: codex_target,
         repo_root,
         codex_bin: args.codex_bin.clone(),
+        spawned_pgids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
     let level = args.level;

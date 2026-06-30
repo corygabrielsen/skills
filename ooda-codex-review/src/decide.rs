@@ -20,8 +20,10 @@ pub(crate) mod action;
 pub(crate) mod decision;
 
 use crate::ids::BlockerKey;
+use std::time::{Duration, SystemTime};
+
 use crate::observe::codex::VerdictClass;
-use crate::observe::codex::batch::{BatchState, VerdictRecord};
+use crate::observe::codex::batch::{ALIVE_THRESHOLD, BatchState, VerdictRecord};
 use crate::orient::OrientedState;
 
 use action::{Action, ActionEffect, ActionKind, CodexReasoningLevel, TargetEffect, Urgency};
@@ -45,10 +47,46 @@ fn await_interval() -> ooda_core::PollingInterval {
 }
 
 pub(crate) fn decide(oriented: &OrientedState) -> Decision {
-    let action = match &oriented.batch_state {
+    // Running state goes through an alive/idle discriminator:
+    // any pending slot whose log mtime is within the
+    // [`ALIVE_THRESHOLD`] window is genuinely streaming, so we
+    // emit an `AwaitReviews` Wait and keep polling. Only when
+    // EVERY pending slot has been idle past the threshold does
+    // the discriminator promote the state to a synthetic
+    // Complete with [`VerdictClass::Abandoned`] verdicts and
+    // fall through to the normal terminal fork. This catches
+    // the "slow but progressing" tail (a slot still logging at
+    // 30+ min wall time on xhigh) without ever silently
+    // claiming fixed point on a partial sample.
+    let synthesized = match &oriented.batch_state {
+        BatchState::Running {
+            pending_slots,
+            completed_verdicts: _,
+        } => {
+            let now = SystemTime::now();
+            let any_alive = pending_slots
+                .iter()
+                .any(|s| is_alive(s.log_mtime, now, ALIVE_THRESHOLD));
+            if any_alive {
+                None
+            } else {
+                oriented
+                    .batch_state
+                    .project_abandoning_pending("all pending slots idle past alive threshold")
+            }
+        }
+        _ => None,
+    };
+    let batch_state = synthesized.as_ref().unwrap_or(&oriented.batch_state);
+
+    let action = match batch_state {
         BatchState::NotStarted => mk_run_reviews(oriented.current_level, oriented.expected),
-        BatchState::Running { completed, .. } => {
-            let pending = oriented.expected.saturating_sub(*completed);
+        BatchState::Running {
+            completed_verdicts, ..
+        } => {
+            let completed =
+                u32::try_from(completed_verdicts.len()).expect("completed slot count fits in u32");
+            let pending = oriented.expected.saturating_sub(completed);
             mk_await_reviews(oriented.current_level, pending)
         }
         BatchState::InconsistentState { reason, .. } => {
@@ -65,13 +103,18 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
         }
         BatchState::Complete { verdicts } => {
             // Bounded by per-batch reviewer fan-out; fits in u32.
+            // `Abandoned` is counted alongside `HasIssues` /
+            // `Indeterminate` so a partial sample with abandoned
+            // pending slots never silently claims fixed point.
             let has_issues_count = u32::try_from(
                 verdicts
                     .iter()
                     .filter(|v| {
                         matches!(
                             v.class,
-                            VerdictClass::HasIssues | VerdictClass::Indeterminate
+                            VerdictClass::HasIssues
+                                | VerdictClass::Indeterminate
+                                | VerdictClass::Abandoned
                         )
                     })
                     .count(),
@@ -81,6 +124,13 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
         }
     };
     ooda_core::classify(action)
+}
+
+/// `true` iff `mtime` is within `threshold` of `now` — the slot has
+/// produced log output recently enough that the codex subprocess
+/// is presumed to still be making forward progress.
+fn is_alive(mtime: SystemTime, now: SystemTime, threshold: Duration) -> bool {
+    now.duration_since(mtime).is_ok_and(|d| d <= threshold)
 }
 
 fn all_clean(verdicts: &[VerdictRecord]) -> bool {
@@ -194,6 +244,7 @@ fn mk_retrospective(level: CodexReasoningLevel) -> Action {
 mod tests {
     use super::*;
     use crate::observe::codex::VerdictClass;
+    use crate::observe::codex::batch::PendingSlot;
     use ooda_core::MidTier;
 
     fn oriented(
@@ -253,10 +304,7 @@ mod tests {
 
     #[test]
     fn running_emits_await_with_pending_count() {
-        let bs = BatchState::Running {
-            total: 3,
-            completed: 1,
-        };
+        let bs = BatchState::running_alive(1, 3);
         let o = oriented(bs, CodexReasoningLevel::Medium, 3);
         let d = decide(&o);
         match d {
@@ -271,6 +319,92 @@ mod tests {
                 assert!(matches!(action.effect, ActionEffect::Wait { .. }));
             }
             other @ Decision::Halt(_) => panic!("expected Execute(AwaitReviews), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn running_with_idle_pending_projects_to_complete_with_abandoned_verdicts() {
+        // Peer-reported StuckCapReached bug: 4 of 5 slots had clean
+        // verdicts but were thrown away because the parent gave up
+        // while the 5th was "still streaming." Pre-fix, a Running
+        // state with one pending slot whose log_mtime had advanced
+        // 30+ minutes earlier kept emitting AwaitReviews forever
+        // until the iter cap tripped, then the runner dropped the
+        // 4 clean verdicts on the floor.
+        //
+        // Now: when every pending slot has been idle past the
+        // ALIVE_THRESHOLD, the discriminator projects to a synthetic
+        // Complete with the completed verdicts + Abandoned verdicts
+        // for the pending slots. The normal terminal fork takes it:
+        // Abandoned counts as not-clean, so the loop routes to
+        // AddressBatch — surfacing the 4 clean reviews + the 1
+        // abandoned slot to the orchestrator instead of dropping
+        // everything.
+        let idle = SystemTime::now() - Duration::from_mins(10);
+        let bs = BatchState::Running {
+            pending_slots: vec![PendingSlot {
+                slot: 5,
+                log_mtime: idle,
+                log_bytes: 2_800_000,
+            }],
+            completed_verdicts: vec![
+                record(1, VerdictClass::Clean),
+                record(2, VerdictClass::Clean),
+                record(3, VerdictClass::Clean),
+                record(4, VerdictClass::Clean),
+            ],
+        };
+        let o = oriented(bs, CodexReasoningLevel::Xhigh, 5);
+        let d = decide(&o);
+        // 4 Clean + 1 Abandoned → not all clean → AddressBatch.
+        match d {
+            Decision::Halt(DecisionHalt::AgentNeeded(handoff)) => {
+                assert!(matches!(
+                    handoff.kind,
+                    ActionKind::AddressBatch {
+                        level: CodexReasoningLevel::Xhigh,
+                        ..
+                    },
+                ));
+            }
+            other => panic!("expected AddressBatch handoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn running_with_alive_pending_continues_polling() {
+        // Mirror of the failure case: when at least one pending
+        // slot has produced log output within the alive window,
+        // the discriminator preserves the Running state and emits
+        // AwaitReviews — the slow-but-progressing tail must NOT be
+        // mistaken for a hung slot. Pre-fix, the loop cap was the
+        // only termination signal and it tripped on healthy long
+        // runs.
+        let alive = SystemTime::now() - Duration::from_secs(30); // 30s idle, under threshold
+        let bs = BatchState::Running {
+            pending_slots: vec![PendingSlot {
+                slot: 5,
+                log_mtime: alive,
+                log_bytes: 2_800_000,
+            }],
+            completed_verdicts: vec![
+                record(1, VerdictClass::Clean),
+                record(2, VerdictClass::Clean),
+                record(3, VerdictClass::Clean),
+                record(4, VerdictClass::Clean),
+            ],
+        };
+        let o = oriented(bs, CodexReasoningLevel::Xhigh, 5);
+        let d = decide(&o);
+        match d {
+            Decision::Execute(action) => assert!(matches!(
+                action.kind,
+                ActionKind::AwaitReviews {
+                    level: CodexReasoningLevel::Xhigh,
+                    pending: 1,
+                }
+            )),
+            other @ Decision::Halt(_) => panic!("expected AwaitReviews, got {other:?}"),
         }
     }
 
@@ -405,21 +539,30 @@ mod tests {
     }
 
     #[test]
-    fn pending_clamps_at_zero_when_completed_exceeds_expected() {
-        let bs = BatchState::Running {
-            total: 5,
-            completed: 5,
-        };
-        let o = oriented(bs, CodexReasoningLevel::Low, 3);
+    fn running_with_no_alive_pending_promotes_to_complete_via_discriminator() {
+        // A `Running` state whose pending slots have all been idle
+        // past [`ALIVE_THRESHOLD`] is projected to a synthetic
+        // `Complete` (with abandoned pending verdicts). With zero
+        // pending slots — the boundary case — the discriminator
+        // simply takes the existing completed verdicts and runs
+        // the normal terminal fork. This replaces the old
+        // pre-discriminator behavior where `Running { 5/5 }` (a
+        // state `scan_batch` cannot produce, but which a synthetic
+        // construction could) emitted a degenerate
+        // `AwaitReviews { pending: 0 }` Wait the loop honored
+        // forever.
+        let bs = BatchState::running_alive(5, 5);
+        let o = oriented(bs, CodexReasoningLevel::Low, 5);
         let d = decide(&o);
-        // saturating_sub means pending = 0 here; runner re-observes
-        // and the next pass will likely transition to Complete.
+        // 5 Clean verdicts below ceiling → retrospective handoff.
         match d {
-            Decision::Execute(action) => match action.kind {
-                ActionKind::AwaitReviews { pending, .. } => assert_eq!(pending, 0),
-                other => panic!("expected AwaitReviews, got {other:?}"),
-            },
-            other @ Decision::Halt(_) => panic!("expected Execute, got {other:?}"),
+            Decision::Halt(DecisionHalt::AgentNeeded(handoff)) => assert!(matches!(
+                handoff.kind,
+                ActionKind::Retrospective {
+                    level: CodexReasoningLevel::Low,
+                },
+            )),
+            other => panic!("expected Halt(AgentNeeded(Retrospective)), got {other:?}"),
         }
     }
 
@@ -476,10 +619,7 @@ mod tests {
     fn all_batch_states() -> Vec<BatchState> {
         vec![
             BatchState::NotStarted,
-            BatchState::Running {
-                total: 3,
-                completed: 1,
-            },
+            BatchState::running_alive(1, 3),
             BatchState::InconsistentState {
                 total: 4,
                 completed: 4,

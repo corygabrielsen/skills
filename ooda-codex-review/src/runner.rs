@@ -270,6 +270,55 @@ pub(crate) fn run_loop(
         }
     }
 
+    // Cap-trip force-projection: if the iter cap fired while we
+    // were polling AwaitReviews, the alive/idle discriminator in
+    // decide kept emitting Wait because at least one pending slot
+    // was still streaming output. Surfacing the iter-cap as
+    // StuckCapReached would discard the completed verdicts that
+    // already landed — exactly the partial-batch discard bug.
+    //
+    // Resolution: re-observe once, project the still-Running state
+    // to a synthetic Complete with the live pending slots tagged
+    // as Abandoned, and run decide on the projected state. The
+    // normal terminal fork then surfaces the completed verdicts as
+    // AddressBatch (or DoneFixedPoint when every completed slot is
+    // Clean and no slots were pending at cap-trip). This composes
+    // with the alive/idle discriminator: short hangs project
+    // mid-loop via the 90s threshold; long-running-but-alive slots
+    // project at the cap. Either path preserves the completed
+    // verdicts; neither silently claims fixed point on a partial
+    // sample because Abandoned is counted alongside HasIssues in
+    // decide's all-clean predicate.
+    if matches!(
+        last_attempted.kind,
+        crate::decide::action::ActionKind::AwaitReviews { .. }
+    ) && let Ok(obs) = observe(repo_id, target)
+    {
+        let oriented = orient(&obs, config.ceiling);
+        if let Some(synthetic) = oriented
+            .batch_state
+            .project_abandoning_pending("iteration cap reached while pending slots remained alive")
+        {
+            let projected = OrientedState {
+                batch_state: synthetic,
+                ..oriented
+            };
+            match decide(&projected) {
+                Decision::Halt(halt) => return Ok(LoopExit::Halted(HaltReason::Decision(halt))),
+                Decision::Execute(action) => {
+                    // Decide projected to a non-handoff action.
+                    // Unreachable in practice: a Complete state
+                    // routes through one of the three Halt arms
+                    // (Terminal at ceiling, AgentNeeded for
+                    // Retrospective/AddressBatch). Fall through
+                    // to CapReached carrying the would-be action
+                    // for typed diagnostics.
+                    return Ok(LoopExit::Halted(HaltReason::CapReached(action)));
+                }
+            }
+        }
+    }
+
     Ok(LoopExit::Halted(HaltReason::CapReached(last_attempted)))
 }
 
@@ -392,7 +441,11 @@ mod tests {
     }
 
     /// Scripted observe closure. Returns the next entry in `seq` on
-    /// each call; panics if the loop calls past the end.
+    /// each call; returns an `Err` once the sequence is exhausted
+    /// so tests that exercise paths past the per-iter observe count
+    /// (e.g. the cap-trip force-projection's final re-observe) see
+    /// the failure as an observe error rather than a panic and the
+    /// runner falls through to the standard `CapReached` carry-over.
     fn scripted_observe(
         seq: Vec<CodexObservations>,
     ) -> impl FnMut(&RepoId, &ReviewTarget) -> Result<CodexObservations, String> {
@@ -400,8 +453,7 @@ mod tests {
         move |_, _| {
             cell.borrow_mut()
                 .next()
-                .map(Ok)
-                .expect("loop called observe past the end of the scripted sequence")
+                .ok_or_else(|| "scripted observe exhausted".to_string())
         }
     }
 
@@ -602,6 +654,64 @@ mod tests {
                 ));
             }
             other => panic!("expected CapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_reached_with_alive_pending_force_projects_to_address_batch() {
+        // Peer-reported gap in the prior fix: alive/idle discriminator
+        // only projects when ALL pending slots go idle. A continuously
+        // alive but slow slot keeps emitting AwaitReviews until the
+        // iter cap fires, and pre-this-patch the runner halted with
+        // StuckCapReached(AwaitReviews) — discarding the completed
+        // verdicts.
+        //
+        // Now: at cap-trip, if last_attempted is AwaitReviews, the
+        // runner does one final observe + project_abandoning_pending
+        // + decide. The pending slot becomes Abandoned, the existing
+        // clean verdicts compose with it, and the normal decide
+        // path surfaces AddressBatch (Abandoned counts as not-clean
+        // so the loop never silently claims fixed point on a
+        // partial sample).
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        unsafe {
+            std::env::set_var("OODA_AWAIT_SECS", "1");
+        }
+        // Loop runs `cap` iterations of AwaitReviews against an alive
+        // pending slot; one extra observe is provided for the
+        // cap-trip force-projection's final re-observe. The 4 clean
+        // verdicts + 1 alive pending slot become 4 clean + 1
+        // abandoned at projection time → AddressBatch.
+        let observe = scripted_observe(vec![
+            obs(BatchState::running_alive(4, 5)),
+            obs(BatchState::running_alive(4, 5)),
+            obs(BatchState::running_alive(4, 5)),
+        ]);
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
+        let halt = unwrap_halt(
+            run_loop(
+                &repo_id(),
+                &target(),
+                loop_cfg(2),
+                &ctx(),
+                observe,
+                &mut sink,
+            )
+            .unwrap(),
+        );
+        match halt {
+            HaltReason::Decision(DecisionHalt::AgentNeeded(handoff)) => {
+                assert!(matches!(
+                    handoff.kind,
+                    crate::decide::action::ActionKind::AddressBatch { .. }
+                        | crate::decide::action::ActionKind::Retrospective { .. }
+                ));
+            }
+            other => panic!(
+                "expected Decision(AgentNeeded(AddressBatch | Retrospective)) via cap-trip projection, got {other:?}"
+            ),
         }
     }
 

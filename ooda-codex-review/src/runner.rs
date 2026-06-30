@@ -206,6 +206,15 @@ pub(crate) fn run_loop(
     events: &mut EventSink<'_>,
 ) -> Result<LoopExit, LoopError> {
     let max_iter = config.max_iterations.get();
+    // RAII guard: on any exit from run_loop (including panic),
+    // sweep every codex subtree spawned through this context.
+    // Pre-fix, halting paths left the wrapper `sh` and its node
+    // codex descendants running indefinitely — empirically a slot
+    // finished cleanly 12 min after its parent's StuckCapReached.
+    let _reaper = ChildReaper {
+        ctx,
+        grace: std::time::Duration::from_secs(2),
+    };
 
     // Boundary signal poll. The handler runs in signal context and
     // only stores into the atomic; the loop owns every side effect
@@ -262,6 +271,23 @@ pub(crate) fn run_loop(
     }
 
     Ok(LoopExit::Halted(HaltReason::CapReached(last_attempted)))
+}
+
+/// RAII guard that runs [`crate::act::reap_spawned_children`] on
+/// drop. Bound to the `run_loop` stack frame so EVERY exit path —
+/// halt, signal interrupt, observe error, panic — invokes the
+/// reaper exactly once. Without the guard, exit paths that don't
+/// pass through the cap-reached arm leave codex subprocesses
+/// running indefinitely.
+struct ChildReaper<'a> {
+    ctx: &'a ActContext,
+    grace: std::time::Duration,
+}
+
+impl Drop for ChildReaper<'_> {
+    fn drop(&mut self) {
+        crate::act::reap_spawned_children(self.ctx, self.grace);
+    }
 }
 
 /// Run one full observe → orient → decide → act cycle.
@@ -335,6 +361,7 @@ mod tests {
             target: target(),
             repo_root: std::env::current_dir().unwrap(),
             codex_bin: PathBuf::from("/bin/true"),
+            spawned_pgids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -504,14 +531,8 @@ mod tests {
             std::env::set_var("OODA_AWAIT_SECS", "1");
         }
         let observe = scripted_observe(vec![
-            obs(BatchState::Running {
-                total: 3,
-                completed: 1,
-            }),
-            obs(BatchState::Running {
-                total: 3,
-                completed: 2,
-            }),
+            obs(BatchState::running_alive(1, 3)),
+            obs(BatchState::running_alive(2, 3)),
         ]);
         let (_tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);
@@ -554,14 +575,8 @@ mod tests {
             std::env::set_var("OODA_AWAIT_SECS", "1");
         }
         let observe = scripted_observe(vec![
-            obs(BatchState::Running {
-                total: 5,
-                completed: 1,
-            }),
-            obs(BatchState::Running {
-                total: 5,
-                completed: 2,
-            }),
+            obs(BatchState::running_alive(1, 5)),
+            obs(BatchState::running_alive(2, 5)),
         ]);
         let (_tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);

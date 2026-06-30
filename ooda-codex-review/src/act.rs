@@ -17,8 +17,11 @@
 //! path). The runner threads one through per invocation.
 
 use std::ffi::OsString;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind, CodexReasoningLevel};
 use crate::ids::ReviewTarget;
@@ -38,6 +41,18 @@ pub(crate) struct ActContext {
     /// Path to the review binary. Defaults to bare name (PATH
     /// lookup); tests inject a fake path.
     pub codex_bin: PathBuf,
+    /// Shared registry of spawned codex children's process group
+    /// IDs. Each [`spawn_codex_reviews`] call places its wrapper
+    /// shell into a fresh PGID (= the wrapper's PID, see
+    /// `CommandExt::process_group(0)`) and appends the PGID here.
+    /// The PGID is the rendezvous point for [`reap_spawned_children`]
+    /// to kill the whole `sh → node → codex` subtree at `run_loop`
+    /// shutdown — `kill` against just the wrapper PID misses the
+    /// node descendants spawned by the codex CLI under `~/.nvm`.
+    ///
+    /// Cleared (via `take`) after a successful reap so subsequent
+    /// calls in the same process are no-ops.
+    pub spawned_pgids: Arc<Mutex<Vec<i32>>>,
 }
 
 #[derive(Debug)]
@@ -163,9 +178,25 @@ fn spawn_codex_reviews(
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .stdin(Stdio::null());
+        // Place the wrapper sh into a fresh process group whose
+        // ID equals the wrapper's PID. The codex node grandchild
+        // inherits the PGID, so a single `killpg(pgid, SIGTERM)`
+        // at shutdown reaps the entire `sh → node → codex` subtree.
+        // Without this, the wrapper's PID is its own group's PID
+        // but the parent's group, so signal-by-group on shutdown
+        // would inadvertently target the orchestrator itself.
+        cmd.process_group(0);
         let mut child = cmd
             .spawn()
             .map_err(|source| ActError::Spawn { slot, source })?;
+        // Record the PGID = wrapper PID before handing the `Child`
+        // to the reaper thread. The reaper thread takes ownership
+        // of the `Child` for waitpid; the PGID is the kill handle
+        // that doesn't depend on that ownership.
+        let pgid = i32::try_from(child.id()).expect("PID fits in i32 on supported platforms");
+        if let Ok(mut pgids) = ctx.spawned_pgids.lock() {
+            pgids.push(pgid);
+        }
         // Detached reaper thread per child. The observe layer reads
         // `.exit` for completion signal; this thread's only job is
         // to call `waitpid` so the OS reclaims the zombie when the
@@ -176,6 +207,44 @@ fn spawn_codex_reviews(
         });
     }
     Ok(())
+}
+
+/// Reap every codex subtree spawned through this context. Sends
+/// `SIGTERM` to each tracked process group, waits `grace` for
+/// graceful shutdown (codex shuts down its rmcp service + file
+/// watchers on SIGTERM in <1s typical), then escalates to
+/// `SIGKILL` for any survivors. Idempotent: calling on an already-
+/// reaped context is a no-op.
+///
+/// Called from the `run_loop` shutdown path so subprocesses do
+/// not outlive the parent. Pre-fix, the wrapper `sh` and its node
+/// codex descendants kept running after the parent halted —
+/// observably so in the empirical state-tree investigation: a slot
+/// finished cleanly 12 minutes after its parent's `StuckCapReached`.
+pub(crate) fn reap_spawned_children(ctx: &ActContext, grace: Duration) {
+    let pgids = match ctx.spawned_pgids.lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(_) => return,
+    };
+    if pgids.is_empty() {
+        return;
+    }
+    for pgid in &pgids {
+        // Negative PID targets the process group. Best-effort:
+        // ESRCH (no such process group, already exited) is fine
+        // and not logged; the only failure that matters is EPERM,
+        // which would indicate a deeper sandbox issue out of scope
+        // for the run_loop shutdown.
+        unsafe {
+            libc::killpg(*pgid, libc::SIGTERM);
+        }
+    }
+    std::thread::sleep(grace);
+    for pgid in &pgids {
+        unsafe {
+            libc::killpg(*pgid, libc::SIGKILL);
+        }
+    }
 }
 
 /// Build the review-CLI argv for the given target and reasoning
@@ -365,6 +434,7 @@ mod tests {
             target: ReviewTarget::Uncommitted,
             repo_root: PathBuf::from("/tmp/nope"),
             codex_bin: PathBuf::from("codex"),
+            spawned_pgids: Arc::new(Mutex::new(Vec::new())),
         };
         assert!(matches!(
             act(&action, &ctx),
@@ -388,6 +458,7 @@ mod tests {
             target: ReviewTarget::Uncommitted,
             repo_root: std::env::current_dir().unwrap(),
             codex_bin: PathBuf::from("/bin/true"),
+            spawned_pgids: Arc::new(Mutex::new(Vec::new())),
         };
         let action = Action {
             kind: ActionKind::RunReviews {
@@ -415,6 +486,44 @@ mod tests {
         assert!(dir.join("low-1.exit").exists(), "exit 1 not created");
         assert!(dir.join("low-2.exit").exists(), "exit 2 not created");
 
+        // Spawned-PGID tracking: per-slot wrapper PGID landed in
+        // the shared registry. This is the rendezvous reap_spawned
+        // _children uses to kill the whole sh → node → codex
+        // subtree at run_loop shutdown.
+        let pgids = ctx.spawned_pgids.lock().unwrap();
+        assert_eq!(pgids.len(), 2, "expected 2 spawned PGIDs, got {pgids:?}");
+        assert!(
+            pgids.iter().all(|&p| p > 0),
+            "PGIDs must be positive PIDs, got {pgids:?}"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reap_spawned_children_clears_pgid_registry() {
+        // Reap walks the registry and clears it. Idempotent: a
+        // second call (or a call on an empty context) is a no-op.
+        // We don't actually spawn here — fake PGID entries verify
+        // the registry mechanics without needing real children.
+        // The kill paths target nonexistent PGIDs; killpg returns
+        // ESRCH which is intentionally ignored.
+        let ctx = ActContext {
+            batch_dir: PathBuf::from("/tmp/nope"),
+            target: ReviewTarget::Uncommitted,
+            repo_root: PathBuf::from("/tmp/nope"),
+            codex_bin: PathBuf::from("/bin/true"),
+            spawned_pgids: Arc::new(Mutex::new(vec![999_999, 999_998])),
+        };
+        assert_eq!(ctx.spawned_pgids.lock().unwrap().len(), 2);
+        // Use a tiny grace — the killpg ESRCH path doesn't block.
+        reap_spawned_children(&ctx, std::time::Duration::from_millis(10));
+        assert!(
+            ctx.spawned_pgids.lock().unwrap().is_empty(),
+            "reap must clear the registry",
+        );
+        // Idempotent.
+        reap_spawned_children(&ctx, std::time::Duration::from_millis(10));
+        assert!(ctx.spawned_pgids.lock().unwrap().is_empty());
     }
 }

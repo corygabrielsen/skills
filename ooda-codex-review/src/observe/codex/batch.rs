@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
@@ -39,10 +40,17 @@ pub(crate) enum BatchState {
     /// or happened and failed before any subprocess created its
     /// log.
     NotStarted,
-    /// In flight. `total` files exist; `completed` of them have
-    /// satisfied the completion predicate; the remainder are
-    /// streaming.
-    Running { total: u32, completed: u32 },
+    /// In flight. `pending_slots` describes each slot still
+    /// streaming, including its log mtime so decide can apply
+    /// alive/idle discrimination. `completed_verdicts` carries
+    /// the partial verdict set for the slots that have already
+    /// finished — used both for normal progress display and for
+    /// partial-batch projection when the loop must abandon
+    /// pending slots (idle past threshold, or cap reached).
+    Running {
+        pending_slots: Vec<PendingSlot>,
+        completed_verdicts: Vec<VerdictRecord>,
+    },
     /// `expected` files have all completed; per-slot bodies and
     /// classifications attached.
     Complete { verdicts: Vec<VerdictRecord> },
@@ -70,6 +78,55 @@ pub(crate) struct VerdictRecord {
     pub body: String,
     /// Heuristic classification.
     pub class: VerdictClass,
+}
+
+/// A slot whose subprocess is still streaming — `.exit` not yet
+/// present. Carries the log mtime so decide can apply alive/idle
+/// discrimination (a slot whose log advanced within the last
+/// [`ALIVE_THRESHOLD`] is making forward progress and must not
+/// be abandoned; a slot quiet past the threshold is hung and is
+/// safe to abandon).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PendingSlot {
+    /// 1-indexed slot within the batch; matches the filename's
+    /// slot component.
+    pub slot: u32,
+    /// Last write to this slot's `.log`, as seen by `scan_batch`.
+    /// Serialized as the duration since the UNIX epoch so the
+    /// on-disk shape is stable across hosts.
+    #[serde(with = "system_time_secs")]
+    pub log_mtime: SystemTime,
+    /// Size of the slot's `.log` in bytes — useful for diagnostic
+    /// rendering ("slot 5: streaming, 2.4 MB so far").
+    pub log_bytes: u64,
+}
+
+/// Pending-slot liveness threshold. A slot whose log mtime is
+/// within this window of `now` is considered alive — decide keeps
+/// polling. A slot quiet for longer is hung and may be abandoned.
+///
+/// Empirical calibration: across observed xhigh runs, the longest
+/// gap between log line timestamps within a single in-flight slot
+/// was ≤60 seconds even during the codex CLI's quietest reasoning
+/// phases. 90 seconds is a comfortable margin above the observed
+/// p99 quiet-gap; longer thresholds delay halting genuinely hung
+/// slots without buying real safety, shorter thresholds risk
+/// false-abandonment of slow-but-progressing slots.
+pub(crate) const ALIVE_THRESHOLD: Duration = Duration::from_secs(90);
+
+/// Serde shim for [`SystemTime`]: store as seconds-since-epoch so
+/// the recorder blob is stable across hosts (and serialization
+/// never fails on a clock-pre-epoch fixture).
+mod system_time_secs {
+    use serde::{Serialize, Serializer};
+    use std::time::SystemTime;
+
+    pub(crate) fn serialize<S: Serializer>(t: &SystemTime, ser: S) -> Result<S::Ok, S::Error> {
+        let secs = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        secs.serialize(ser)
+    }
 }
 
 /// Scan `batch_dir` and project to a [`BatchState`].
@@ -140,6 +197,7 @@ pub(crate) fn scan_batch(
     }
 
     let mut verdicts = Vec::with_capacity(log_paths.len());
+    let mut pending_slots: Vec<PendingSlot> = Vec::new();
     for (&slot, p) in &log_paths {
         let body_text = fs::read_to_string(p)?;
         let extracted = verdict::extract_verdict(&body_text);
@@ -148,6 +206,14 @@ pub(crate) fn scan_batch(
         // be mid-stream and reading the partial body produces
         // false-cleans via substring-matched classification.
         let Some(exit_path) = exit_paths.get(&slot) else {
+            // Pending: capture log mtime + size for the
+            // alive/idle discriminator in decide.
+            let meta = fs::metadata(p)?;
+            pending_slots.push(PendingSlot {
+                slot,
+                log_mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                log_bytes: meta.len(),
+            });
             continue;
         };
         let code = read_exit_status(exit_path)?;
@@ -194,7 +260,82 @@ pub(crate) fn scan_batch(
                 batch_dir.display()
             ),
         }),
-        std::cmp::Ordering::Less => Ok(BatchState::Running { total, completed }),
+        std::cmp::Ordering::Less => Ok(BatchState::Running {
+            pending_slots,
+            completed_verdicts: verdicts,
+        }),
+    }
+}
+
+impl BatchState {
+    /// Test-only constructor: build a `Running` variant from a
+    /// (completed, total) pair. Pending slots are synthesized with
+    /// "now" mtimes (always alive) so tests that exercise the
+    /// pre-discriminator path continue to read as in-flight; tests
+    /// that need the idle case construct slots explicitly via
+    /// [`Self::running_with_idle_pending`].
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn running_alive(completed: u32, total: u32) -> Self {
+        let pending_count = total.saturating_sub(completed);
+        let pending_slots = (1..=pending_count)
+            .map(|i| PendingSlot {
+                slot: completed + i,
+                log_mtime: SystemTime::now(),
+                log_bytes: 0,
+            })
+            .collect();
+        let completed_verdicts = (1..=completed)
+            .map(|slot| VerdictRecord {
+                slot,
+                body: "test verdict".to_string(),
+                class: VerdictClass::Clean,
+            })
+            .collect();
+        Self::Running {
+            pending_slots,
+            completed_verdicts,
+        }
+    }
+
+    /// Project a [`Self::Running`] state to a synthetic [`Self::Complete`]
+    /// by abandoning any pending slots — used by decide when the
+    /// alive/idle discriminator decides all pending slots are hung,
+    /// and by the runner's cap-reached path when there is no further
+    /// budget. Pending slots produce [`VerdictClass::Abandoned`]
+    /// verdicts whose body explains the reason; the existing decide
+    /// path then takes the synthetic Complete state through the
+    /// normal `all_clean → DoneFixedPoint` / `AddressBatch` fork
+    /// (and Abandoned counts as not-clean, so a partial sample
+    /// never silently claims fixed point).
+    ///
+    /// Returns `None` if `self` is not `Running`; the caller is
+    /// expected to dispatch on the variant first.
+    pub(crate) fn project_abandoning_pending(&self, reason: &str) -> Option<Self> {
+        let Self::Running {
+            pending_slots,
+            completed_verdicts,
+        } = self
+        else {
+            return None;
+        };
+        let mut verdicts = completed_verdicts.clone();
+        for p in pending_slots {
+            verdicts.push(VerdictRecord {
+                slot: p.slot,
+                body: format!(
+                    "Slot abandoned ({reason}). Last log mtime: {} epoch-seconds; \
+                     log bytes streamed: {}.",
+                    p.log_mtime
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs()),
+                    p.log_bytes
+                ),
+                class: VerdictClass::Abandoned,
+            });
+        }
+        verdicts.sort_by_key(|v| v.slot);
+        Some(Self::Complete { verdicts })
     }
 }
 
@@ -267,13 +408,16 @@ mod tests {
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
-        assert_eq!(
-            s,
+        match s {
             BatchState::Running {
-                total: 3,
-                completed: 0
+                pending_slots,
+                completed_verdicts,
+            } => {
+                assert_eq!(pending_slots.len(), 3);
+                assert!(completed_verdicts.is_empty());
             }
-        );
+            other => panic!("expected Running, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -285,13 +429,17 @@ mod tests {
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
-        assert_eq!(
-            s,
+        match s {
             BatchState::Running {
-                total: 3,
-                completed: 1
+                pending_slots,
+                completed_verdicts,
+            } => {
+                assert_eq!(pending_slots.len(), 2);
+                assert_eq!(completed_verdicts.len(), 1);
+                assert_eq!(completed_verdicts[0].slot, 1);
             }
-        );
+            other => panic!("expected Running, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -307,13 +455,16 @@ mod tests {
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nL").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nR").unwrap();
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
-        assert_eq!(
-            s,
+        match s {
             BatchState::Running {
-                total: 3,
-                completed: 0
+                pending_slots,
+                completed_verdicts,
+            } => {
+                assert_eq!(pending_slots.len(), 3);
+                assert!(completed_verdicts.is_empty());
             }
-        );
+            other => panic!("expected Running, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

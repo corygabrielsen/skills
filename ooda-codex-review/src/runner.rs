@@ -235,6 +235,7 @@ pub(crate) fn run_loop(
         events,
         1,
         None,
+        None,
     )? {
         IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
         IterStep::Executed(action) => action,
@@ -244,6 +245,24 @@ pub(crate) fn run_loop(
     } else {
         Some(last_attempted.stall_key())
     };
+    // Eventual-consistency auto-Wait state — mirrors ooda-pr's
+    // `run_loop`. After a Full+Eventual repeat is converted to a
+    // synthetic Wait, the converted key is stashed here so a third
+    // consecutive non-Wait emission halts (the propagation window
+    // was already granted). Reset when a non-Wait action with a
+    // different key fires; Wait actions (natural or synthetic)
+    // leave it intact so oscillation patterns
+    // (K1-Full → K2-Wait → K1-Full → …) halt correctly on the
+    // second K1 reappearance.
+    //
+    // In the codex-review domain only `RunReviews` is declared
+    // Full+Eventual today, so the conversion is most relevant when
+    // a freshly-spawned codex slot has not yet produced any log
+    // bytes by the next observe pass (the upstream "spawn → log
+    // exists" propagation window is the typed `Eventual(60s)` on
+    // RunReviews's effect). Without the conversion, that repeat
+    // would halt `Stalled` immediately.
+    let mut auto_wait_used_for: Option<ooda_core::StallKey> = None;
 
     for iter in 2..=max_iter {
         if let Some(exit_code) = crate::signal::check_shutdown() {
@@ -258,12 +277,29 @@ pub(crate) fn run_loop(
             events,
             iter,
             last_non_wait_key.as_ref(),
+            auto_wait_used_for.as_ref(),
         )?;
         match step {
             IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
             IterStep::Executed(action) => {
-                if !action.effect.is_wait() {
-                    last_non_wait_key = Some(action.stall_key());
+                let key = action.stall_key();
+                let is_wait = action.effect.is_wait();
+                // Synthetic-Wait detection: a Wait whose key
+                // matches the still-pending non-Wait stall key can
+                // only have arrived via the synthetic-Wait
+                // conversion below (natural Wait kinds — e.g.
+                // `AwaitReviews` — use a different `ActionKind`
+                // discriminant, so their keys differ). Seed
+                // `auto_wait_used_for` so the next iteration of the
+                // same key halts.
+                let synthetic_wait_conversion = is_wait && last_non_wait_key.as_ref() == Some(&key);
+                if synthetic_wait_conversion {
+                    auto_wait_used_for = Some(key.clone());
+                } else if !is_wait {
+                    if auto_wait_used_for.as_ref() != Some(&key) {
+                        auto_wait_used_for = None;
+                    }
+                    last_non_wait_key = Some(key);
                 }
                 last_attempted = action;
             }
@@ -339,6 +375,54 @@ impl Drop for ChildReaper<'_> {
     }
 }
 
+/// Pre-act stall comparator outcomes. `Proceed` carries the
+/// (possibly synthetic-Wait-converted) action forward to the
+/// recorder/act path; `Halt` short-circuits to a Stalled halt.
+#[derive(Debug)]
+enum StallCheckOutcome {
+    Proceed(Action),
+    Halt(HaltReason),
+}
+
+/// Three outcomes on a non-Wait `(kind, blocker)` repeat:
+///
+/// 1. Already auto-waited for this key (`auto_wait_used_for` matches):
+///    the propagation window was granted and produced no observable
+///    change. Halt as Stalled.
+/// 2. Eventual upstream declared on the effect: convert the Full to
+///    a synthetic Wait of the declared propagation interval. The
+///    outer loop detects the conversion via stall-key match on a
+///    Wait action and arms `auto_wait_used_for` so a third repeat
+///    halts via path #1.
+/// 3. Sync upstream: a repeat IS a genuine stall — orient re-derived
+///    the blocker after the Sync effect should have resolved it.
+///    Halt as Stalled.
+///
+/// Extracted as a helper so unit tests can drive the comparator
+/// directly without paying the act-layer sleep on a converted
+/// `Eventual(60s)` synthetic Wait (the codex-review domain's
+/// `RunReviews` action has a 60-second propagation interval, so
+/// an end-to-end test would block for a full minute per converted
+/// repeat).
+fn apply_stall_check(
+    mut action: Action,
+    last_non_wait_key: Option<&ooda_core::StallKey>,
+    auto_wait_used_for: Option<&ooda_core::StallKey>,
+) -> StallCheckOutcome {
+    let current_key = action.stall_key();
+    if last_non_wait_key == Some(&current_key) {
+        if auto_wait_used_for == Some(&current_key) {
+            return StallCheckOutcome::Halt(HaltReason::Stalled(action));
+        }
+        if let Some(wait_effect) = action.effect.synthetic_wait_on_repeat() {
+            action.effect = wait_effect;
+        } else {
+            return StallCheckOutcome::Halt(HaltReason::Stalled(action));
+        }
+    }
+    StallCheckOutcome::Proceed(action)
+}
+
 /// Run one full observe → orient → decide → act cycle.
 #[allow(clippy::too_many_arguments)]
 fn run_iter(
@@ -350,6 +434,7 @@ fn run_iter(
     events: &mut EventSink<'_>,
     iter: u32,
     last_non_wait_key: Option<&ooda_core::StallKey>,
+    auto_wait_used_for: Option<&ooda_core::StallKey>,
 ) -> Result<IterStep, LoopError> {
     let obs = observe(repo_id, target).map_err(LoopError::Observe)?;
     let oriented = orient(&obs, ceiling);
@@ -360,10 +445,11 @@ fn run_iter(
     match decision {
         Decision::Halt(halt) => Ok(IterStep::Halt(HaltReason::Decision(halt))),
         Decision::Execute(action) => {
-            let current_key = action.stall_key();
-            if last_non_wait_key == Some(&current_key) {
-                return Ok(IterStep::Halt(HaltReason::Stalled(action)));
-            }
+            // Stall comparator: see [`apply_stall_check`].
+            let action = match apply_stall_check(action, last_non_wait_key, auto_wait_used_for) {
+                StallCheckOutcome::Halt(reason) => return Ok(IterStep::Halt(reason)),
+                StallCheckOutcome::Proceed(a) => a,
+            };
             // Record `acted` regardless of `act()`'s result so a
             // failed act lands an `IterationExecuted { success: false }`
             // on the event stream BEFORE the loop bubbles the error.
@@ -654,6 +740,104 @@ mod tests {
                 ));
             }
             other => panic!("expected CapReached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_stall_check_converts_eventual_full_repeat_to_synthetic_wait() {
+        // RunReviews is declared `ActionEffect::Full` with
+        // `UpstreamConsistency::Eventual(60s)` — the upstream side
+        // effect (codex subprocess spawn) is observable to the
+        // next observe pass only after the OS has scheduled the
+        // child and the wrapper has touched its log file. The
+        // comparator must NOT halt Stalled on the second repeat;
+        // it must convert to a synthetic Wait so the propagation
+        // window has a chance to surface.
+        //
+        // Mirrors ooda-pr's
+        // `eventual_full_repeat_converts_to_synthetic_wait_then_halts_on_third`,
+        // but driven through `apply_stall_check` directly to avoid
+        // the 60-second sleep an end-to-end test would incur on
+        // the converted Wait.
+        use crate::decide::action::ActionKind;
+        let level = CodexReasoningLevel::Xhigh;
+        let action = Action {
+            kind: ActionKind::RunReviews { level, n: 1 },
+            effect: ActionEffect::Full {
+                log: "stub".into(),
+                upstream: ooda_core::UpstreamConsistency::Eventual(
+                    ooda_core::PollingInterval::from_secs(60),
+                ),
+            },
+            target_effect: crate::decide::action::TargetEffect::Advances,
+            urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::Critical),
+            blocker: crate::ids::BlockerKey::typed("runreviews", &level),
+        };
+        let key = action.stall_key();
+
+        // iter 1: first emission, no comparator yet → Proceed.
+        match apply_stall_check(action.clone(), None, None) {
+            StallCheckOutcome::Proceed(a) => assert!(matches!(a.effect, ActionEffect::Full { .. })),
+            StallCheckOutcome::Halt(h) => panic!("iter 1 expected Proceed, got Halt({h:?})"),
+        }
+        // iter 2: same key as iter 1; auto-Wait not yet armed →
+        // converts to synthetic Wait (Eventual upstream declared).
+        match apply_stall_check(action.clone(), Some(&key), None) {
+            StallCheckOutcome::Proceed(a) => {
+                assert!(matches!(a.effect, ActionEffect::Wait { .. }));
+            }
+            StallCheckOutcome::Halt(h) => {
+                panic!("iter 2 expected synthetic Wait conversion, got Halt({h:?})")
+            }
+        }
+        // iter 3: same key as iter 1, auto-Wait already armed
+        // from iter 2 → genuine stall.
+        match apply_stall_check(action.clone(), Some(&key), Some(&key)) {
+            StallCheckOutcome::Halt(HaltReason::Stalled(a)) => {
+                assert!(matches!(a.kind, ActionKind::RunReviews { .. }));
+            }
+            other => panic!("iter 3 expected Stalled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_stall_check_passes_through_distinct_keys() {
+        // Symmetry test: distinct (kind, blocker) pairs across
+        // consecutive iters must never trip the comparator.
+        // Without this, normal RunReviews → AwaitReviews → ...
+        // would halt Stalled because each iter's key differs.
+        use crate::decide::action::ActionKind;
+        let level = CodexReasoningLevel::Xhigh;
+        let action = Action {
+            kind: ActionKind::AwaitReviews { level, pending: 1 },
+            effect: ActionEffect::Wait {
+                interval: ooda_core::PollingInterval::from_secs(30),
+                log: "stub".into(),
+            },
+            target_effect: crate::decide::action::TargetEffect::Neutral,
+            urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::BlockingWait),
+            blocker: crate::ids::BlockerKey::typed("await", &level),
+        };
+        let different_key = {
+            let runreviews = Action {
+                kind: ActionKind::RunReviews { level, n: 1 },
+                effect: ActionEffect::Full {
+                    log: "stub".into(),
+                    upstream: ooda_core::UpstreamConsistency::Eventual(
+                        ooda_core::PollingInterval::from_secs(60),
+                    ),
+                },
+                target_effect: crate::decide::action::TargetEffect::Advances,
+                urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::Critical),
+                blocker: crate::ids::BlockerKey::typed("runreviews", &level),
+            };
+            runreviews.stall_key()
+        };
+        match apply_stall_check(action, Some(&different_key), None) {
+            StallCheckOutcome::Proceed(_) => {}
+            StallCheckOutcome::Halt(h) => {
+                panic!("distinct keys must not halt, got {h:?}")
+            }
         }
     }
 

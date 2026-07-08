@@ -108,18 +108,31 @@ pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
             let stale = report.threads.stale;
             let not_at_head = !report.fresh;
             let suppressed = latest.comments_suppressed;
+            // Confirm-clean: the latest round at HEAD found comments
+            // (all now resolved by human/agent judgment). Platinum
+            // requires Copilot to have re-inspected the code post-
+            // fix and reported zero findings — resolution alone is
+            // not the platinum bar. Re-request drives the loop
+            // toward a fresh zero-comment review.
+            let addressed_awaiting_review =
+                report.fresh && stale == 0 && latest.comments_visible > 0;
 
             // A fresh re-request dominates the staleness and
             // not-at-HEAD conditions: one pass clears both and may
             // resolve suppressed findings as a side effect.
-            if stale > 0 || not_at_head {
+            if stale > 0 || not_at_head || addressed_awaiting_review {
                 let desc = if stale > 0 {
                     format!(
                         "Re-request Copilot review so it sees {}",
                         crate::text::count(stale as usize, "new reply"),
                     )
-                } else {
+                } else if not_at_head {
                     "Re-request Copilot review on HEAD to reach platinum".into()
+                } else {
+                    format!(
+                        "Re-request Copilot review to confirm {} addressed",
+                        crate::text::count(latest.comments_visible as usize, "prior finding"),
+                    )
                 };
                 // BlockingFix (not Critical): re-requesting a reviewer is
                 // not unconditional progress. When other axes have
@@ -386,6 +399,43 @@ mod tests {
         // other reviewers (Reviews axis emits AddressThreads at the
         // same tier, sorts first by stable-sort axis order).
         assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
+    }
+
+    #[test]
+    fn gold_at_head_with_visible_comments_emits_rerequest_to_confirm() {
+        // Peer-reported regression: a Copilot review at HEAD that
+        // found findings which were then addressed and resolved
+        // used to score Platinum immediately (thread resolution
+        // was the terminal signal). Per Cory's spec, Platinum
+        // requires Copilot to have re-inspected the code and
+        // reported zero comments — resolution alone is human
+        // judgment. The intermediate state emits RerequestCopilot
+        // as a `Full` (upstream: `Eventual(30s)`) so the loop
+        // drives toward the confirm-clean re-review; auto-Wait
+        // + stall detector bound the eventual-consistency window.
+        let mut latest = round_at_head();
+        latest.comments_visible = 3;
+        let r = report(
+            CopilotActivity::Reviewed { latest },
+            CopilotTier::Gold,
+            BotThreadSummary::default(),
+            true, // fresh: latest round IS at HEAD
+        );
+        let cs = candidates(&r);
+        assert!(
+            matches!(cs[0].kind, ActionKind::RerequestCopilot { symptom: None }),
+            "expected RerequestCopilot, got {:?}",
+            cs[0].kind
+        );
+        assert!(matches!(cs[0].effect, ActionEffect::Full { .. }));
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
+        let ActionEffect::Full { ref log, .. } = cs[0].effect else {
+            unreachable!("just asserted Full above");
+        };
+        assert!(
+            log.contains("confirm") && log.contains("prior finding"),
+            "log message should describe the confirm-clean intent; got: {log}",
+        );
     }
 
     #[test]

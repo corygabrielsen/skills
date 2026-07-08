@@ -611,8 +611,22 @@ fn synthetic_round(rev: &PullRequestReview, round_no: u32) -> CopilotReviewRound
 /// Tier classification, first-match-wins:
 ///   bronze:   no review, or in-flight, or actionable threads present
 ///   silver:   reviewed, no actionable threads, suppressed findings present
-///   gold:     reviewed, no actionable, no suppressed, but stale or off-HEAD
-///   platinum: reviewed, no actionable, no suppressed, no stale, latest at HEAD
+///   gold:     reviewed, no actionable, no suppressed, and either
+///             (a) stale-or-off-HEAD, or
+///             (b) latest review at HEAD found comments — resolution
+///                 without a fresh re-review does not confirm the
+///                 fixes hold
+///   platinum: reviewed at HEAD, no actionable, no suppressed, no
+///             stale, and the latest review reported zero comments
+///             — a fresh Copilot re-review at HEAD came back clean
+///
+/// The Gold-vs-Platinum discriminator is the latest round's
+/// `comments_visible`. Marking threads resolved on a review that
+/// found findings is human/agent judgment; Platinum requires
+/// upstream (Copilot) to have re-inspected the code post-fix and
+/// declared it clean. Decide's Copilot axis emits `RerequestCopilot`
+/// while at Gold so the loop drives toward the zero-comment
+/// re-review.
 fn score_tier(
     rounds: &[CopilotReviewRound],
     threads: &BotThreadSummary,
@@ -633,11 +647,14 @@ fn score_tier(
     if threads.stale > 0 {
         return CopilotTier::Gold;
     }
-    if latest.commit.as_ref() == Some(head) {
-        CopilotTier::Platinum
-    } else {
-        CopilotTier::Gold
+    let at_head = latest.commit.as_ref() == Some(head);
+    if !at_head {
+        return CopilotTier::Gold;
     }
+    if latest.comments_visible > 0 {
+        return CopilotTier::Gold;
+    }
+    CopilotTier::Platinum
 }
 
 fn is_fresh(rounds: &[CopilotReviewRound], head: &GitCommitSha) -> bool {
@@ -1671,6 +1688,36 @@ generated 0 comments.
         .unwrap();
         assert_eq!(r.tier, CopilotTier::Platinum);
         assert!(r.fresh);
+    }
+
+    #[test]
+    fn tier_gold_when_reviewed_at_head_but_comments_visible() {
+        // Confirm-clean bar: a review at HEAD that found comments
+        // stays Gold even after every thread has been resolved.
+        // Platinum requires Copilot to have re-inspected the code
+        // and reported zero comments — thread resolution alone is
+        // human/agent judgment, not upstream confirmation.
+        let events = vec![
+            req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
+            ack_event("2026-04-23T10:01:00Z"),
+        ];
+        let revs = vec![copilot_review(
+            HEAD_SHA,
+            "2026-04-23T10:05:00Z",
+            "generated 3 comments about the migration.",
+        )];
+        let r = orient_copilot_test(
+            enabled(),
+            &events,
+            &revs,
+            &empty_threads(),
+            &empty_reqs(),
+            &head(),
+        )
+        .unwrap();
+        assert_eq!(r.tier, CopilotTier::Gold);
+        assert!(r.fresh, "fresh remains true — the round IS at HEAD");
+        assert_eq!(r.rounds.last().unwrap().comments_visible, 3);
     }
 
     #[test]

@@ -53,7 +53,17 @@ pub(crate) fn fetch_review_threads_page(
           line
           comments(first:100) {{
             pageInfo {{ hasNextPage endCursor }}
-            nodes {{ databaseId author {{ login }} createdAt body }}
+            nodes {{
+              databaseId
+              author {{
+                __typename
+                ... on User {{ login }}
+                ... on Bot {{ login }}
+                ... on Mannequin {{ login }}
+              }}
+              createdAt
+              body
+            }}
           }}
         }}
       }}
@@ -194,9 +204,79 @@ pub struct ThreadComment {
     pub body: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// A comment's authoring identity.
+///
+/// # Wire-shape invariant
+///
+/// GitHub's GraphQL API serializes bot actors' `login` field
+/// through the generic `Actor` interface without the `[bot]`
+/// suffix — `"copilot-pull-request-reviewer"` on the wire,
+/// `"copilot-pull-request-reviewer[bot]"` via REST. Downstream
+/// classifiers (see [`crate::orient::thread::classify_author`],
+/// [`crate::ids::GitHubLogin::is_bot`]) treat the `[bot]` suffix
+/// as the structural bot marker. Every `CommentAuthor` that
+/// reaches those classifiers carries a login whose structural
+/// `is_bot()` check agrees with the actor's true type: the
+/// custom [`serde::Deserialize`] impl below discriminates the
+/// GraphQL `__typename` union and re-attaches the `[bot]` suffix
+/// to Bot logins that arrive bare.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CommentAuthor {
     pub login: GitHubLogin,
+}
+
+/// GraphQL Actor union — the wire-side shape the fetcher receives.
+/// `__typename` is fetched via the `... on User { login }` /
+/// `... on Bot { login }` / `... on Mannequin { login }` union
+/// selections in [`fetch_review_threads_page`] and
+/// [`fetch_thread_comments_page`]. Unknown actor types (rare;
+/// e.g. `EnterpriseUserAccount`, `Organization`) fail
+/// deserialization loudly rather than defaulting to a synthetic
+/// login — silent widening would suppress the same
+/// misclassification the tagged union exists to catch.
+#[derive(Deserialize)]
+#[serde(tag = "__typename")]
+enum WireCommentAuthor {
+    User { login: GitHubLogin },
+    Bot { login: String },
+    Mannequin { login: GitHubLogin },
+}
+
+impl<'de> serde::Deserialize<'de> for CommentAuthor {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Untagged fallback: input without `__typename` carries
+        // only `{ login }`. Downstream classification remains
+        // structural — a bare login without type context is Human
+        // unless the login itself already carries the `[bot]`
+        // suffix — so this branch parses the login string as-is
+        // and defers to the classifier.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Tagged(WireCommentAuthor),
+            Legacy { login: GitHubLogin },
+        }
+
+        let login = match Either::deserialize(d)? {
+            Either::Tagged(
+                WireCommentAuthor::User { login } | WireCommentAuthor::Mannequin { login },
+            )
+            | Either::Legacy { login } => login,
+            Either::Tagged(WireCommentAuthor::Bot { login }) => {
+                // Normalize: attach `[bot]` iff missing. Idempotent
+                // for a login that already carries the suffix
+                // (some hosts return the suffixed form even through
+                // the generic Actor interface).
+                let normalized = if login.ends_with("[bot]") {
+                    login
+                } else {
+                    format!("{login}[bot]")
+                };
+                GitHubLogin::parse(&normalized).map_err(serde::de::Error::custom)?
+            }
+        };
+        Ok(Self { login })
+    }
 }
 
 // -- reviewRequests ---------------------------------------------------
@@ -342,17 +422,83 @@ mod tests {
         assert!(!pr.review_threads.page_info.has_next_page);
         assert!(pr.review_threads.page_info.end_cursor.is_some());
 
-        // Each thread has at least one comment from Copilot.
+        // Each thread has at least one comment from Copilot. The
+        // fixture carries the wire-side `__typename: "Bot"` +
+        // bare `login: "copilot-pull-request-reviewer"` shape;
+        // the parser normalizes the login to include `[bot]` so
+        // downstream `is_bot()` structural checks agree with the
+        // actor's true type.
         for t in &pr.review_threads.nodes {
             assert!(!t.comments.nodes.is_empty());
             let a = t.comments.nodes[0]
                 .author
                 .as_ref()
                 .expect("fixture has non-null authors");
-            assert_eq!(a.login.as_str(), "copilot-pull-request-reviewer");
+            assert_eq!(a.login.as_str(), "copilot-pull-request-reviewer[bot]");
+            assert!(
+                a.login.is_bot(),
+                "structural [bot] marker must be preserved through the parse",
+            );
         }
 
         assert_eq!(pr.review_requests.nodes.len(), 0);
+    }
+
+    #[test]
+    fn graphql_bot_author_gets_normalized_to_suffixed_login() {
+        // Invariant: a GraphQL `__typename: Bot` author's login
+        // carries the `[bot]` suffix after parse, so downstream
+        // structural `is_bot()` classifiers agree with the
+        // actor's true type. GitHub's GraphQL Actor interface
+        // serializes Bot logins without the suffix; the
+        // deserializer re-attaches it.
+        let json = r#"{"__typename":"Bot","login":"copilot-pull-request-reviewer"}"#;
+        let a: CommentAuthor = serde_json::from_str(json).unwrap();
+        assert_eq!(a.login.as_str(), "copilot-pull-request-reviewer[bot]");
+        assert!(a.login.is_bot());
+    }
+
+    #[test]
+    fn graphql_bot_author_with_pre_suffixed_login_is_idempotent() {
+        // Some hosts return the suffixed form through the
+        // generic Actor interface. The normalizer is
+        // idempotent: no double-append.
+        let json = r#"{"__typename":"Bot","login":"copilot-pull-request-reviewer[bot]"}"#;
+        let a: CommentAuthor = serde_json::from_str(json).unwrap();
+        assert_eq!(a.login.as_str(), "copilot-pull-request-reviewer[bot]");
+    }
+
+    #[test]
+    fn graphql_user_author_login_passes_through_unchanged() {
+        let json = r#"{"__typename":"User","login":"alice"}"#;
+        let a: CommentAuthor = serde_json::from_str(json).unwrap();
+        assert_eq!(a.login.as_str(), "alice");
+        assert!(!a.login.is_bot());
+    }
+
+    #[test]
+    fn graphql_mannequin_author_login_passes_through_unchanged() {
+        // Mannequin authors are migrated identities from
+        // GitHub Enterprise Server or SVN imports; treat their
+        // login as a plain human login (no bot marker
+        // synthesis).
+        let json = r#"{"__typename":"Mannequin","login":"ghost"}"#;
+        let a: CommentAuthor = serde_json::from_str(json).unwrap();
+        assert_eq!(a.login.as_str(), "ghost");
+        assert!(!a.login.is_bot());
+    }
+
+    #[test]
+    fn untagged_shape_parses_login_as_is() {
+        // Input without `__typename` (fixtures or callers that
+        // don't select the union) parses the login string
+        // unchanged. No bot marker synthesis without type
+        // context: downstream classification defaults to Human
+        // unless the login itself already carries `[bot]`.
+        let json = r#"{"login":"copilot-pull-request-reviewer"}"#;
+        let a: CommentAuthor = serde_json::from_str(json).unwrap();
+        assert_eq!(a.login.as_str(), "copilot-pull-request-reviewer");
+        assert!(!a.login.is_bot());
     }
 
     #[test]

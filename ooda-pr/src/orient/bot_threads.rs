@@ -101,6 +101,7 @@ mod tests {
             comments: ThreadComments {
                 page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
+                    pull_request_review: None,
                     database_id: None,
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse("copilot[bot]").unwrap(),

@@ -55,6 +55,7 @@ pub(crate) fn fetch_review_threads_page(
             pageInfo {{ hasNextPage endCursor }}
             nodes {{
               databaseId
+              pullRequestReview {{ databaseId }}
               author {{
                 __typename
                 ... on User {{ login }}
@@ -97,7 +98,7 @@ fn fetch_thread_comments_page(
     ... on PullRequestReviewThread {{
       comments(first:100,after:"{cursor}") {{
         pageInfo {{ hasNextPage endCursor }}
-        nodes {{ databaseId author {{ login }} createdAt body }}
+        nodes {{ databaseId pullRequestReview {{ databaseId }} author {{ login }} createdAt body }}
       }}
     }}
   }}
@@ -197,11 +198,26 @@ pub struct ThreadComment {
     /// don't carry it.
     #[serde(default)]
     pub database_id: Option<u64>,
+    /// The review this comment was submitted under. Joins the REST
+    /// review stream's numeric `id` for the structural visible-count
+    /// channel. Optional: fixtures may omit it, and the host emits
+    /// `null` for comments whose review was deleted.
+    #[serde(default)]
+    pub pull_request_review: Option<CommentReviewRef>,
     /// Absent when the comment's authoring identity has been
     /// deleted.
     pub author: Option<CommentAuthor>,
     pub created_at: Timestamp,
     pub body: String,
+}
+
+/// Reference to the review a thread comment belongs to. Carries the
+/// numeric database id only — the join key against REST reviews.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentReviewRef {
+    #[serde(default)]
+    pub database_id: Option<u64>,
 }
 
 /// A comment's authoring identity.

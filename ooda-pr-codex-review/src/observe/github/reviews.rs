@@ -22,6 +22,11 @@ pub(crate) fn fetch_pull_request_reviews(
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct PullRequestReview {
+    /// Numeric REST id. Joins GraphQL `PullRequestReview.databaseId`
+    /// on thread comments for the structural visible-count channel.
+    /// Optional so fixtures without it decode.
+    #[serde(default)]
+    pub id: Option<u64>,
     /// Absent when the author identity has been deleted. Optional so
     /// historical reviews do not abort the observe pass.
     #[serde(default)]

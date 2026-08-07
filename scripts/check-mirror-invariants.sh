@@ -109,14 +109,14 @@ STRICT_FILES=(
 # diffing. Used for cases where pr-codex-review must carry an
 # additional test-fixture line (the `codex_review: None` field on
 # OrientedState) that the other binaries' OrientedState does not have.
+# Entries are meaningful only for files in STRICT_FILES: the partial
+# loop never diffs pr-codex-review, so an allowlist entry for a
+# PARTIAL_MIRROR_FILES file is unreachable.
 declare -a ALLOWLIST_PATHS=(
-    "ooda-pr-codex-review:src/decide/reviews.rs"
-    "ooda-pr-codex-review:src/decide/state.rs"
     "ooda-pr-codex-review:src/decide/pull_request_metadata.rs"
     "ooda-pr-codex-review:src/decide/doc_review.rs"
     "ooda-pr-codex-review:src/decide/claude_review.rs"
     "ooda-pr-codex-review:src/decide/closeout.rs"
-    "ooda-pr-codex-review:src/comment/render.rs"
 )
 ALLOWLIST_PATTERN='codex_review: None,'
 

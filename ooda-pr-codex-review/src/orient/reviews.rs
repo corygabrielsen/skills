@@ -383,6 +383,7 @@ mod tests {
             comments: ThreadComments {
                 page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
+                    pull_request_review: None,
                     database_id: None,
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse("alice").unwrap(),
@@ -396,6 +397,7 @@ mod tests {
 
     fn review(state: ReviewState, login: &str, sha: &str) -> PullRequestReview {
         PullRequestReview {
+            id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse(login).unwrap(),
             }),
@@ -781,6 +783,7 @@ mod tests {
         let revs = vec![
             // Old human change request.
             PullRequestReview {
+                id: None,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("alice").unwrap(),
                 }),
@@ -792,6 +795,7 @@ mod tests {
             },
             // Bot change request — must be ignored.
             PullRequestReview {
+                id: None,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("copilot[bot]").unwrap(),
                 }),
@@ -803,6 +807,7 @@ mod tests {
             },
             // Latest human change request — must win.
             PullRequestReview {
+                id: None,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("bob").unwrap(),
                 }),
@@ -831,6 +836,7 @@ mod tests {
     #[test]
     fn latest_human_change_request_none_when_only_bot_change_request() {
         let revs = vec![PullRequestReview {
+            id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot[bot]").unwrap(),
             }),

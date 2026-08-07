@@ -351,6 +351,12 @@ fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
 /// the stall classifier's gate identity stays stable across iterations.
 /// Entries whose path is not a valid `FilePath` (control bytes, leading
 /// slash, etc.) are dropped at this boundary rather than propagated.
+/// Id prefix for threads minted from suppressed findings. Minted ids
+/// are not host GraphQL node ids: the resolve mutation does not
+/// apply to them, and the prompt renderer partitions the resolve
+/// step on this prefix.
+const SUPPRESSED_THREAD_ID_PREFIX: &str = "copilot-suppressed:";
+
 fn synthesise_suppressed_threads(
     round: &crate::orient::copilot::CopilotReviewRound,
 ) -> Vec<ReviewThread> {
@@ -367,7 +373,10 @@ fn synthesise_suppressed_threads(
         let Ok(path) = FilePath::new(c.path.clone()) else {
             continue;
         };
-        let id_raw = format!("copilot-suppressed:{sha_prefix}:{}:{}", c.path, c.line);
+        let id_raw = format!(
+            "{SUPPRESSED_THREAD_ID_PREFIX}{sha_prefix}:{}:{}",
+            c.path, c.line
+        );
         let Ok(id) = ThreadId::new(id_raw) else {
             continue;
         };
@@ -506,20 +515,49 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
         );
     }
 
-    prompt.push_heading(3, "Step 2 — mark each thread resolved");
-    prompt.push_paragraph(
-        "After addressing (or judging not-applicable) each thread, mark it \
-         resolved on GitHub by running:",
-    );
-    prompt.push_code(
-        "bash",
-        "gh api graphql -f query='mutation { resolveReviewThread(input: \
-         { threadId: \"<thread_id>\" }) { thread { id } } }'",
-    );
-    prompt.push_paragraph(
-        "Substitute the per-thread `thread_id` shown in each entry above. The \
-         mutation is idempotent — already-resolved threads succeed as a no-op.",
-    );
+    // Synthetic (suppressed-finding) threads carry minted ids, not
+    // host GraphQL node ids — the resolve mutation errors on them.
+    // Partition the resolve step so the actor is never instructed to
+    // run a doomed call.
+    let synthetic_count = threads
+        .iter()
+        .filter(|t| t.id.as_str().starts_with(SUPPRESSED_THREAD_ID_PREFIX))
+        .count();
+    let host_count = threads.len() - synthetic_count;
+
+    if host_count > 0 {
+        prompt.push_heading(3, "Step 2 — mark each thread resolved");
+        prompt.push_paragraph(
+            "After addressing (or judging not-applicable) each thread, mark it \
+             resolved on GitHub by running:",
+        );
+        prompt.push_code(
+            "bash",
+            "gh api graphql -f query='mutation { resolveReviewThread(input: \
+             { threadId: \"<thread_id>\" }) { thread { id } } }'",
+        );
+        prompt.push_paragraph(
+            "Substitute the per-thread `thread_id` shown in each entry above. The \
+             mutation is idempotent — already-resolved threads succeed as a no-op.",
+        );
+    }
+    if synthetic_count > 0 {
+        let heading = if host_count > 0 {
+            "Step 2a — suppressed-finding threads"
+        } else {
+            "Step 2 — how these threads clear"
+        };
+        prompt.push_heading(3, heading);
+        prompt.push_paragraph(format!(
+            "Threads whose id starts with `{SUPPRESSED_THREAD_ID_PREFIX}` are \
+             minted from findings the reviewer rendered only in its review \
+             body. They have no host-side thread, so the resolve mutation \
+             does not apply to them — do not attempt it. They clear on \
+             their own: the minted set is re-derived each observation from \
+             the reviewer's latest review at HEAD, so pushing your fixes \
+             retires them.",
+        ));
+    }
 
     prompt
 }
@@ -693,6 +731,58 @@ mod tests {
             }
             other => panic!("unexpected kind {other:?}"),
         }
+    }
+
+    fn prompt_text(action: &Action) -> String {
+        match &action.effect {
+            ActionEffect::Agent { prompt } => prompt.to_string(),
+            other => panic!("expected Agent effect, got {other:?}"),
+        }
+    }
+
+    fn find_address_threads(cs: &[Action]) -> &Action {
+        cs.iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads must fire")
+    }
+
+    #[test]
+    fn all_synthetic_threads_prompt_omits_resolve_mutation() {
+        use crate::orient::copilot::SuppressedComment;
+        let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "stale doc comment".into(),
+        }]);
+        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        let text = prompt_text(find_address_threads(&cs));
+        assert!(
+            !text.contains("resolveReviewThread"),
+            "synthetic-only prompt must not prescribe the resolve mutation:\n{text}"
+        );
+        assert!(text.contains(SUPPRESSED_THREAD_ID_PREFIX));
+        assert!(text.contains("do not attempt it"));
+    }
+
+    #[test]
+    fn mixed_threads_prompt_partitions_resolve_step() {
+        use crate::orient::copilot::SuppressedComment;
+        let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            path: "src/lib.rs".into(),
+            line: 12,
+            body: "stale doc comment".into(),
+        }]);
+        let host = vec![live_thread("src/host.rs", 5, "host-side issue")];
+        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &host);
+        let text = prompt_text(find_address_threads(&cs));
+        assert!(
+            text.contains("resolveReviewThread"),
+            "host threads keep the resolve step:\n{text}"
+        );
+        assert!(
+            text.contains("Step 2a — suppressed-finding threads"),
+            "synthetic threads get the partitioned step:\n{text}"
+        );
     }
 
     #[test]

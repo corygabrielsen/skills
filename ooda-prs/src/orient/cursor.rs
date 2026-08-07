@@ -616,6 +616,7 @@ mod tests {
     }
     fn cursor_review(sha: &str, at: &str, body: &str) -> PullRequestReview {
         PullRequestReview {
+            id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("cursor[bot]").unwrap(),
             }),
@@ -688,6 +689,7 @@ mod tests {
             comments: ThreadComments {
                 page_info: PageInfo::default(),
                 nodes: vec![ThreadComment {
+                    pull_request_review: None,
                     database_id: None,
                     author: Some(CommentAuthor {
                         login: GitHubLogin::parse("cursor[bot]").unwrap(),

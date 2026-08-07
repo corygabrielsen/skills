@@ -222,6 +222,7 @@ mod tests {
 
     fn claude_review(at: &str, body: &str, url: &str) -> PullRequestReview {
         PullRequestReview {
+            id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("claude[bot]").unwrap(),
             }),
@@ -271,6 +272,7 @@ mod tests {
                     nodes: logins
                         .iter()
                         .map(|l| ThreadComment {
+                            pull_request_review: None,
                             database_id: None,
                             author: Some(CommentAuthor {
                                 login: GitHubLogin::parse(l).unwrap(),
@@ -457,6 +459,7 @@ mod tests {
     #[test]
     fn non_claude_reviews_and_comments_are_filtered_out() {
         let r = PullRequestReview {
+            id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
             }),

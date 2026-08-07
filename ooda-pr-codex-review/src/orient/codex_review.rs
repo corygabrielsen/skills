@@ -20,11 +20,13 @@
 //!   axis converging.
 
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
 use crate::ids::CodexReasoningLevel;
 use crate::observe::codex::VerdictClass;
+use crate::observe::codex::batch::ALIVE_THRESHOLD;
 use crate::observe::codex::{BatchState, CodexLevelObservation, CodexObservations, VerdictRecord};
 
 /// The phase the axis is in at the current level.
@@ -103,7 +105,18 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
             }
         }
         Some(lvl_obs) => {
-            let status = match &lvl_obs.batch_state {
+            // Alive/idle discriminator — mirrors ooda-codex-review's
+            // decide layer: a Running batch where EVERY pending slot
+            // has been idle past [`ALIVE_THRESHOLD`] is promoted to a
+            // synthetic Complete with the pending slots Abandoned,
+            // then falls through the normal status fork. Any slot
+            // still streaming keeps the batch in Await — the "slow
+            // but progressing" tail is never abandoned mid-flight.
+            // Abandoned counts as non-clean downstream, so a partial
+            // sample never silently claims fixed point.
+            let projected = discriminate_running(&lvl_obs.batch_state, SystemTime::now());
+            let batch_state = projected.as_ref().unwrap_or(&lvl_obs.batch_state);
+            let status = match batch_state {
                 BatchState::NotStarted => CodexReviewStatus::Spawn {
                     level: lvl_obs.level,
                 },
@@ -144,6 +157,30 @@ fn all_clean(verdicts: &[VerdictRecord]) -> bool {
     verdicts
         .iter()
         .all(|v| matches!(v.class, VerdictClass::Clean))
+}
+
+/// Promote a `Running` batch whose pending slots are ALL idle past
+/// [`ALIVE_THRESHOLD`] to a synthetic `Complete` with those slots
+/// `Abandoned`. `None` when the state is not `Running` or any slot
+/// is still alive.
+fn discriminate_running(bs: &BatchState, now: SystemTime) -> Option<BatchState> {
+    let BatchState::Running { pending_slots, .. } = bs else {
+        return None;
+    };
+    let any_alive = pending_slots
+        .iter()
+        .any(|s| is_alive(s.log_mtime, now, ALIVE_THRESHOLD));
+    if any_alive {
+        return None;
+    }
+    bs.project_abandoning_pending("all pending slots idle past alive threshold")
+}
+
+/// `true` iff `mtime` is within `threshold` of `now` — the slot has
+/// produced log output recently enough that the codex subprocess is
+/// presumed to still be making forward progress.
+fn is_alive(mtime: SystemTime, now: SystemTime, threshold: Duration) -> bool {
+    now.duration_since(mtime).is_ok_and(|d| d <= threshold)
 }
 
 #[cfg(test)]
@@ -213,6 +250,75 @@ mod tests {
                 completed,
             } => {
                 assert_eq!(level, CodexReasoningLevel::Low);
+                assert_eq!(total, 3);
+                assert_eq!(completed, 1);
+            }
+            other => panic!("expected Await, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn running_with_all_pending_idle_projects_to_address() {
+        // Alive/idle discriminator: every pending slot idle past
+        // ALIVE_THRESHOLD (epoch mtimes) → the batch is promoted to
+        // a synthetic Complete whose pending slots are Abandoned,
+        // and the axis surfaces Address instead of waiting forever.
+        use crate::observe::codex::batch::PendingSlot;
+        let bs = BatchState::Running {
+            pending_slots: vec![
+                PendingSlot {
+                    slot: 2,
+                    log_mtime: SystemTime::UNIX_EPOCH,
+                    log_bytes: 10,
+                },
+                PendingSlot {
+                    slot: 3,
+                    log_mtime: SystemTime::UNIX_EPOCH,
+                    log_bytes: 0,
+                },
+            ],
+            completed_verdicts: vec![clean(1)],
+        };
+        let o = obs(vec![lvl_obs(CodexReasoningLevel::Low, bs)]);
+        let r = orient_codex_review(&o);
+        match r.status {
+            CodexReviewStatus::Address { level, verdicts } => {
+                assert_eq!(level, CodexReasoningLevel::Low);
+                assert_eq!(verdicts.len(), 3);
+                assert!(matches!(verdicts[0].class, VerdictClass::Clean));
+                assert!(matches!(verdicts[1].class, VerdictClass::Abandoned));
+                assert!(matches!(verdicts[2].class, VerdictClass::Abandoned));
+            }
+            other => panic!("expected Address, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn running_with_one_alive_slot_stays_await() {
+        // One slot still streaming (fresh mtime) — the discriminator
+        // must not abandon: Await, not Address.
+        use crate::observe::codex::batch::PendingSlot;
+        let bs = BatchState::Running {
+            pending_slots: vec![
+                PendingSlot {
+                    slot: 2,
+                    log_mtime: SystemTime::UNIX_EPOCH,
+                    log_bytes: 10,
+                },
+                PendingSlot {
+                    slot: 3,
+                    log_mtime: SystemTime::now(),
+                    log_bytes: 512,
+                },
+            ],
+            completed_verdicts: vec![clean(1)],
+        };
+        let o = obs(vec![lvl_obs(CodexReasoningLevel::Low, bs)]);
+        let r = orient_codex_review(&o);
+        match r.status {
+            CodexReviewStatus::Await {
+                total, completed, ..
+            } => {
                 assert_eq!(total, 3);
                 assert_eq!(completed, 1);
             }

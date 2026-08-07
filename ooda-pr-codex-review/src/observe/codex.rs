@@ -110,6 +110,32 @@ pub(crate) fn fetch_all(
     })
 }
 
+/// Project every `Running` level to a synthetic `Complete` whose
+/// pending slots are `Abandoned`. Cap-trip support: the runner calls
+/// this after the iteration cap fires while awaiting a batch, so
+/// the completed verdicts surface through the normal Address path
+/// instead of being discarded behind a bare cap halt. Non-`Running`
+/// levels pass through unchanged.
+pub(crate) fn project_abandoning_pending(
+    obs: &CodexObservations,
+    reason: &str,
+) -> CodexObservations {
+    CodexObservations {
+        levels: obs.levels.map_ref(|lvl| CodexLevelObservation {
+            level: lvl.level,
+            batch_state: lvl
+                .batch_state
+                .project_abandoning_pending(reason)
+                .unwrap_or_else(|| lvl.batch_state.clone()),
+            batch_dir: lvl.batch_dir.clone(),
+        }),
+        expected: obs.expected,
+        head_sha: obs.head_sha.clone(),
+        floor: obs.floor,
+        ceiling: obs.ceiling,
+    }
+}
+
 /// The inclusive ladder slice `[floor, ceiling]`. Non-empty by
 /// construction: `floor` is seeded before any termination check, so
 /// `floor == ceiling` yields a singleton.

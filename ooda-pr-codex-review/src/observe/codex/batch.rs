@@ -143,11 +143,6 @@ pub(crate) struct PendingSlot {
 /// p99 quiet-gap; longer thresholds delay halting genuinely hung
 /// slots without buying real safety, shorter thresholds risk
 /// false-abandonment of slow-but-progressing slots.
-///
-/// `allow(dead_code)`: consumed by the codex-review binary's
-/// alive/idle discriminator; the pr-codex-review binary does not
-/// wire the discriminator yet and this file is shared verbatim.
-#[allow(dead_code)]
 pub(crate) const ALIVE_THRESHOLD: Duration = Duration::from_secs(90);
 
 /// Serde shim for [`SystemTime`]: store as seconds-since-epoch so
@@ -326,11 +321,6 @@ impl BatchState {
     ///
     /// Returns `None` if `self` is not `Running`; the caller is
     /// expected to dispatch on the variant first.
-    ///
-    /// `allow(dead_code)`: consumed by the codex-review binary's
-    /// runner; the pr-codex-review binary does not wire the
-    /// cap-trip projection yet and this file is shared verbatim.
-    #[allow(dead_code)]
     pub(crate) fn project_abandoning_pending(&self, reason: &str) -> Option<Self> {
         let Self::Running {
             pending_slots,

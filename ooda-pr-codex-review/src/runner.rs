@@ -354,6 +354,54 @@ pub(crate) fn run_loop(
         }
     }
 
+    // Cap-trip force-projection (mirrors ooda-codex-review's
+    // runner): if the cap fired while polling
+    // AwaitCodexReviewBatch, at least one pending slot was still
+    // streaming when the budget ran out. Surfacing the iter-cap as
+    // StuckCapReached would discard the completed verdicts that
+    // already landed — the partial-batch discard bug. Re-scan the
+    // batch (filesystem only, no network), project the Running
+    // levels to synthetic Completes with pending slots Abandoned,
+    // and route the projected axis report through its own decide.
+    // The Address arm carries an Agent effect, so the usual
+    // classification surfaces the partial findings as a handoff;
+    // Abandoned counts as non-clean, so the projection never
+    // silently claims fixed point on a partial sample.
+    if matches!(
+        last_attempted.kind,
+        crate::decide::action::ActionKind::AwaitCodexReviewBatch { .. }
+    ) && let (Some(codex_cfg), Some(codex_ctx)) = (codex_cfg.as_ref(), ctx.codex.as_ref())
+        && let Ok(codex_obs) = fetch_codex(
+            &codex_ctx.codex_pr_root,
+            codex_cfg.floor,
+            codex_cfg.ceiling,
+            codex_ctx.n,
+            &codex_ctx.head_sha,
+        )
+    {
+        let projected = crate::observe::codex::project_abandoning_pending(
+            &codex_obs,
+            "iteration cap reached while pending slots remained alive",
+        );
+        let report = crate::orient::codex_review::orient_codex_review(&projected);
+        if let Some(action) = crate::decide::codex_review::candidates(&report)
+            .into_iter()
+            .next()
+        {
+            match ooda_core::classify(action) {
+                Decision::Halt(halt) => return Ok(LoopExit::Halted(HaltReason::Decision(halt))),
+                Decision::Execute(action) => {
+                    // Decide projected to a non-handoff action —
+                    // e.g. a NotStarted level surfacing Spawn.
+                    // There is no budget left to run it; fall
+                    // through to CapReached carrying the would-be
+                    // action for typed diagnostics.
+                    return Ok(LoopExit::Halted(HaltReason::CapReached(action)));
+                }
+            }
+        }
+    }
+
     // `last_attempted: Action` is the witness for the cap-reached
     // path: the unrolled first iteration either returned a Halt or
     // populated it.
@@ -569,6 +617,73 @@ mod tests {
         match exit {
             LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 143),
             LoopExit::Halted(_) => panic!("expected SignalInterrupted"),
+        }
+    }
+
+    #[test]
+    fn cap_trip_projection_pipeline_surfaces_partial_batch_as_agent_handoff() {
+        // Pins the composition the cap-trip hook runs when the
+        // iteration cap fires during AwaitCodexReviewBatch: project
+        // Running levels (pending slots → Abandoned), orient the
+        // axis, classify its top candidate. A batch with completed
+        // verdicts plus an alive-but-out-of-budget slot must surface
+        // as an Agent handoff carrying the partial findings — never
+        // a bare cap halt that discards them.
+        use crate::ids::CodexReasoningLevel;
+        use crate::observe::codex::batch::PendingSlot;
+        use crate::observe::codex::{
+            BatchState, CodexLevelObservation, CodexObservations, VerdictClass, VerdictRecord,
+        };
+        let obs = CodexObservations {
+            levels: ooda_core::NonEmpty::singleton(CodexLevelObservation {
+                level: CodexReasoningLevel::Low,
+                batch_state: BatchState::Running {
+                    pending_slots: vec![PendingSlot {
+                        slot: 3,
+                        log_mtime: std::time::SystemTime::now(),
+                        log_bytes: 2048,
+                    }],
+                    completed_verdicts: vec![
+                        VerdictRecord {
+                            slot: 1,
+                            body: "No issues found".into(),
+                            class: VerdictClass::Clean,
+                        },
+                        VerdictRecord {
+                            slot: 2,
+                            body: "Review comment: src/a.rs:1".into(),
+                            class: VerdictClass::HasIssues,
+                        },
+                    ],
+                },
+                batch_dir: std::path::PathBuf::from("/tmp/cap-trip-pipeline"),
+            }),
+            expected: 3,
+            head_sha: "headsha".into(),
+            floor: CodexReasoningLevel::Low,
+            ceiling: CodexReasoningLevel::Low,
+        };
+        let projected = crate::observe::codex::project_abandoning_pending(
+            &obs,
+            "iteration cap reached while pending slots remained alive",
+        );
+        let report = crate::orient::codex_review::orient_codex_review(&projected);
+        let action = crate::decide::codex_review::candidates(&report)
+            .into_iter()
+            .next()
+            .expect("projected Complete must yield a candidate");
+        match ooda_core::classify(action) {
+            Decision::Halt(ooda_core::DecisionHalt::AgentNeeded(handoff)) => {
+                match handoff.kind {
+                    crate::decide::action::ActionKind::AddressCodexReviewBatch { level, count } => {
+                        assert_eq!(level, CodexReasoningLevel::Low);
+                        // HasIssues (slot 2) + Abandoned (slot 3).
+                        assert_eq!(count, 2);
+                    }
+                    other => panic!("expected AddressCodexReviewBatch, got {other:?}"),
+                }
+            }
+            other => panic!("expected AgentNeeded halt, got {other:?}"),
         }
     }
 

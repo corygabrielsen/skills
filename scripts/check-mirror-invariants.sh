@@ -222,6 +222,35 @@ for file in "${PER_BINARY_DIVERGENT_FILES[@]}"; do
     done
 done
 
+# Codex-pair set: the two codex-running binaries hold these files
+# verbatim; `ooda-codex-review` is canonical for the pair. Domain
+# differences live in each binary's caller (`observe/codex.rs`), not
+# in these files. Added after the 2026-08-07 audit found the pair
+# had drifted bidirectionally (salvage/orphan machinery on one side,
+# identity gate on the other) with no enforcement.
+CODEX_PAIR_CANON="ooda-codex-review"
+CODEX_PAIR_MIRROR="ooda-pr-codex-review"
+declare -a CODEX_PAIR_FILES=(
+    "src/observe/codex/batch.rs"
+    "src/observe/codex/verdict.rs"
+)
+for file in "${CODEX_PAIR_FILES[@]}"; do
+    canon_path="$ROOT/$CODEX_PAIR_CANON/$file"
+    mirror_path="$ROOT/$CODEX_PAIR_MIRROR/$file"
+    if [ ! -f "$canon_path" ]; then
+        report_fail "$CODEX_PAIR_CANON/$file missing (codex-pair canonical absent)"
+        continue
+    fi
+    if [ ! -f "$mirror_path" ]; then
+        report_fail "$CODEX_PAIR_MIRROR/$file missing (codex-pair mirror absent)"
+        continue
+    fi
+    if ! cmp -s "$canon_path" "$mirror_path"; then
+        report_fail "$CODEX_PAIR_MIRROR/$file diverges from $CODEX_PAIR_CANON/$file (codex-pair)"
+        diff "$canon_path" "$mirror_path" >&2 || true
+    fi
+done
+
 # Coverage check: every .rs file in canonical ooda-pr/src/ must be
 # classified into exactly one of {STRICT, PARTIAL, PER_BINARY_DIVERGENT}.
 # Catches "new file added without tier assignment" — the failure mode

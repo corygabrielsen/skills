@@ -107,10 +107,16 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
                 BatchState::NotStarted => CodexReviewStatus::Spawn {
                     level: lvl_obs.level,
                 },
-                BatchState::Running { total, completed } => CodexReviewStatus::Await {
+                BatchState::Running {
+                    pending_slots,
+                    completed_verdicts,
+                } => CodexReviewStatus::Await {
                     level: lvl_obs.level,
-                    total: *total,
-                    completed: *completed,
+                    // Widths are bounded by the batch fan-out; u32 fits.
+                    total: u32::try_from(pending_slots.len() + completed_verdicts.len())
+                        .expect("batch slot count fits in u32"),
+                    completed: u32::try_from(completed_verdicts.len())
+                        .expect("batch verdict count fits in u32"),
                 },
                 BatchState::Complete { verdicts } => CodexReviewStatus::Address {
                     level: lvl_obs.level,
@@ -197,10 +203,7 @@ mod tests {
     fn running_at_floor_emits_await() {
         let o = obs(vec![lvl_obs(
             CodexReasoningLevel::Low,
-            BatchState::Running {
-                total: 3,
-                completed: 1,
-            },
+            BatchState::running_alive(1, 3),
         )]);
         let r = orient_codex_review(&o);
         match r.status {

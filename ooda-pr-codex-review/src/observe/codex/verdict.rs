@@ -1,5 +1,9 @@
 //! Pure parse + classify of a streamed reviewer log. No I/O.
 //!
+//! Shared verbatim between the codex-review binaries (see
+//! `scripts/check-mirror-invariants.sh`, codex-pair tier); domain
+//! differences live in each binary's caller, not here.
+//!
 //! # Log shape
 //!
 //! The reviewer streams interleaved blocks demarcated by exact
@@ -42,7 +46,7 @@ pub(crate) fn extract_verdict(log: &str) -> Option<String> {
     after_last_marker.map(|i| log[i..].to_string())
 }
 
-/// Ternary classification of a verdict body.
+/// Classification of a verdict body.
 ///
 /// **Algebra**:
 /// - **Structural signals dominate**: the reviewer's own grammar
@@ -52,6 +56,9 @@ pub(crate) fn extract_verdict(log: &str) -> Option<String> {
 ///   set of phrasings classifies as `Clean`.
 /// - **Abstention is a valid output**: unclassifiable prose maps to
 ///   `Indeterminate` rather than to a default class.
+/// - **Absence is a valid output**: a slot the loop gave up on maps
+///   to `Abandoned` — never synthesized by [`classify`], only by
+///   batch projection over pending slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum VerdictClass {
@@ -63,6 +70,14 @@ pub(crate) enum VerdictClass {
     /// identically to `HasIssues`, but the distinction is preserved
     /// for observability.
     Indeterminate,
+    /// Slot was abandoned: the reviewer subprocess didn't finish
+    /// before the loop gave up (cap reached, or all pending slots
+    /// went idle past the alive threshold). Routed like `HasIssues`
+    /// so the loop never silently claims fixed-point on a partial
+    /// sample. Surfaced distinctly so post-hoc tooling and human
+    /// resolvers can distinguish "review ran and was inconclusive"
+    /// from "review never completed".
+    Abandoned,
 }
 
 /// Classify a verdict body.

@@ -55,7 +55,10 @@ pub(crate) fn fetch_all(
     level: CodexReasoningLevel,
     expected: u32,
 ) -> io::Result<CodexObservations> {
-    let batch_state = scan_batch(batch_dir, level, expected)?;
+    // Identity is `None`: this binary derives a fresh batch dir per
+    // run and reviews a working tree, which has no stable identity
+    // token to stamp.
+    let batch_state = scan_batch(batch_dir, level, expected, None)?;
     Ok(CodexObservations {
         repo_id,
         target,

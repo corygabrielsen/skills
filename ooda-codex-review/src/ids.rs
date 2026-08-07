@@ -2,6 +2,12 @@
 //! validating constructor; an invalid value cannot exist as a
 //! typed instance.
 
+// Re-exported so the codex-pair mirrored files (observe/codex/
+// batch.rs, verdict.rs) import `crate::ids::CodexReasoningLevel`
+// identically in both binaries; this binary defines the type in
+// its action module.
+pub(crate) use crate::decide::action::CodexReasoningLevel;
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

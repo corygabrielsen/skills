@@ -1,23 +1,55 @@
-//! Per-level batch scanning: read the run directory, count log
-//! files, extract completed verdicts, project to [`BatchState`].
+//! Scan a single batch directory and reduce it to a [`BatchState`].
 //!
-//! # Filesystem layout
+//! Shared verbatim between the codex-review binaries (see
+//! `scripts/check-mirror-invariants.sh`, codex-pair tier); domain
+//! differences live in each binary's caller, not here.
 //!
-//! ```text
-//! <batch_dir>/
-//!   {level}-{slot}.log
-//!   {level}-{slot}.exit
-//! ```
+//! # Batch layout
 //!
-//! # Completion predicate
+//! A *batch* is a directory containing:
+//! - an optional *identity stamp* file (`head_sha.txt` — the name
+//!   is historical; the content is an opaque identity token)
+//!   recording the target identity the batch was spawned against,
+//! - per-slot *log* files holding reviewer output, named
+//!   `{level}-{slot}.log`,
+//! - optional per-slot *exit* files holding subprocess exit codes,
+//!   named `{level}-{slot}.exit`.
 //!
-//! A log is "completed" iff (a) its sibling `.exit` file is
-//! present (the subprocess has exited) AND (b) the log contains
-//! the verdict marker AND (c) a non-empty body after the marker.
-//! The `.exit` file is the ground truth that the subprocess has
-//! stopped writing; without it, marker+body may be mid-stream and
-//! reading the partial body produces false-cleans via substring-
-//! matched verdict classification.
+//! # Invariants
+//!
+//! - **Slot completion ⇔ exit file + marker + non-empty body**: a
+//!   log is *completed* when (a) its sibling `.exit` file is
+//!   present (the subprocess has stopped writing) AND (b) the log
+//!   contains the verdict marker AND (c) a non-empty body after
+//!   it. The `.exit` file is the ground truth for "subprocess
+//!   stopped"; without it, marker+body may be mid-stream and
+//!   reading the partial body produces false-cleans via
+//!   substring-matched verdict classification.
+//! - **Identity gate (when an identity is supplied)**: a batch
+//!   directory whose stamp is missing or whose recorded identity
+//!   does not match the supplied one is reported as not-started,
+//!   forcing re-spawn. This is the entire mechanism by which a
+//!   target-identity change invalidates prior reviewer batches.
+//!   `None` skips the gate — for callers whose batch directories
+//!   are already identity-scoped or whose target has no stable
+//!   identity token.
+//! - **Pending slots carry liveness evidence**: a slot without an
+//!   `.exit` file is reported with its log mtime and size so the
+//!   decide layer can discriminate alive (log advanced within
+//!   [`ALIVE_THRESHOLD`]) from hung, and abandon only the latter.
+//! - **Exit-without-log is a binary error**: an exit file with no
+//!   matching log indicates the spawn protocol was violated; the
+//!   scan cannot classify the batch and fails loudly rather than
+//!   silently dropping the slot.
+//! - **Zero-exit-without-verdict is a binary error**: a slot that
+//!   exited successfully but produced no verdict marker or an empty
+//!   body fails the scan — a clean exit must produce a verdict.
+//! - **`completed == expected` is required for `Complete`**:
+//!   `completed < expected` keeps the batch in `Running`;
+//!   `completed > expected` surfaces as `InconsistentState` so a
+//!   human resolver can clear stray logs — the legacy projection
+//!   to `Running { completed > expected }` produced a pending-zero
+//!   Wait the loop honours forever.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,18 +59,17 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::decide::action::CodexReasoningLevel;
+use crate::ids::CodexReasoningLevel;
 
 use super::verdict::{self, VerdictClass};
 
-/// Per-level batch state from the observe layer's perspective.
-/// The four values partition the filesystem signal completely.
+/// Discrete state of a batch from the observe layer's perspective.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BatchState {
-    /// No log files for this level. The spawn has not happened —
-    /// or happened and failed before any subprocess created its
-    /// log.
+    /// No batch is in progress for the supplied target identity.
+    /// Either no slots have been spawned, or the on-disk batch was
+    /// stamped against a different identity and is being ignored.
     NotStarted,
     /// In flight. `pending_slots` describes each slot still
     /// streaming, including its log mtime so decide can apply
@@ -55,11 +86,11 @@ pub(crate) enum BatchState {
     /// classifications attached.
     Complete { verdicts: Vec<VerdictRecord> },
     /// More completed slots observed than `expected`. Indicates a
-    /// stale-state condition (e.g., stray log from a prior run,
+    /// stale-state condition (stray log from a prior batch,
     /// off-by-one between caller's `n` and observer's `expected`).
     /// Returning [`Self::Running`] from this shape would silently
-    /// emit `AwaitReviews { pending: 0 }`, a Wait that the loop
-    /// honours forever; surface to a human resolver instead.
+    /// emit a pending-zero Wait the loop honours forever; surface
+    /// to a human resolver instead.
     InconsistentState {
         total: u32,
         completed: u32,
@@ -68,15 +99,15 @@ pub(crate) enum BatchState {
     },
 }
 
-/// One reviewer's verdict within a batch.
+/// A single reviewer's verdict within a batch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct VerdictRecord {
     /// 1-indexed slot within the batch; matches the filename's
     /// slot component.
     pub slot: u32,
-    /// Raw body — everything after the last verdict marker line.
+    /// Verdict body — the log suffix after the last verdict marker.
     pub body: String,
-    /// Heuristic classification.
+    /// Classification of the body.
     pub class: VerdictClass,
 }
 
@@ -112,6 +143,11 @@ pub(crate) struct PendingSlot {
 /// p99 quiet-gap; longer thresholds delay halting genuinely hung
 /// slots without buying real safety, shorter thresholds risk
 /// false-abandonment of slow-but-progressing slots.
+///
+/// `allow(dead_code)`: consumed by the codex-review binary's
+/// alive/idle discriminator; the pr-codex-review binary does not
+/// wire the discriminator yet and this file is shared verbatim.
+#[allow(dead_code)]
 pub(crate) const ALIVE_THRESHOLD: Duration = Duration::from_secs(90);
 
 /// Serde shim for [`SystemTime`]: store as seconds-since-epoch so
@@ -129,24 +165,29 @@ mod system_time_secs {
     }
 }
 
-/// Scan `batch_dir` and project to a [`BatchState`].
+/// Reduce a batch directory to a [`BatchState`].
 ///
-/// Decision table over (file count, completion count, expected):
+/// **Reduction**:
+/// - Identity-stamp mismatch or absence (when `expected_identity`
+///   is `Some`) → `NotStarted`.
+/// - Empty or missing directory → `NotStarted`.
+/// - `completed < expected` → `Running { pending_slots,
+///   completed_verdicts }`.
+/// - `completed == expected` → `Complete { verdicts }`.
+/// - `completed > expected` → `InconsistentState { .. }`.
 ///
-/// | files | completed | result |
-/// |-------|-----------|--------|
-/// | 0     | —         | `NotStarted` |
-/// | n > 0 | c < expected | `Running { total = n, completed = c }` |
-/// | n > 0 | c == expected | `Complete { verdicts }` |
-/// | n > 0 | c > expected | `InconsistentState { .. }` |
+/// **Errors**: protocol violations (exit without log, zero-exit
+/// without verdict, non-zero exit) surface as `io::Error::other`
+/// rather than silently degrading the classification.
 ///
-/// `expected` is required because filesystem absence alone cannot
-/// distinguish "spawn hasn't happened" from "spawn happened and
-/// crashed before any first write".
+/// `expected` is supplied externally because filesystem absence
+/// cannot distinguish "not yet spawned" from "spawned and crashed
+/// pre-write"; the calling layer owns that interpretation.
 pub(crate) fn scan_batch(
     batch_dir: &Path,
     level: CodexReasoningLevel,
     expected: u32,
+    expected_identity: Option<&str>,
 ) -> io::Result<BatchState> {
     let prefix = format!("{}-", level.as_str());
     let read_dir = match fs::read_dir(batch_dir) {
@@ -156,45 +197,20 @@ pub(crate) fn scan_batch(
     };
 
     // Per-batch-dir advisory lock. Acquired cooperatively against
-    // the spawn-side lock that excludes log truncation; the
-    // observe pass thus never reads a half-truncated log mid
-    // re-spawn.
+    // the same sidecar the spawn path holds while stamping identity
+    // and (re)truncating per-slot logs. Blocking is bounded: the
+    // spawn path holds only across a handful of small writes, not
+    // across the codex subprocess lifetime.
     let _batch_lock = ooda_core::FileLock::acquire(&batch_dir.join(".batch.lock"))?;
 
-    let mut log_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
-    let mut exit_paths: BTreeMap<u32, PathBuf> = BTreeMap::new();
-
-    for entry in read_dir.filter_map(std::result::Result::ok) {
-        let path = entry.path();
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if let Some(slot) = parse_slot(&name, &prefix, ".log") {
-            log_paths.insert(slot, path);
-        } else if let Some(slot) = parse_slot(&name, &prefix, ".exit") {
-            exit_paths.insert(slot, path);
-        }
-    }
-
-    if log_paths.is_empty() && exit_paths.is_empty() {
+    // Identity gate — see module invariant.
+    if !identity_matches(batch_dir, expected_identity)? {
         return Ok(BatchState::NotStarted);
     }
-    if log_paths.is_empty() {
-        return Err(io::Error::other(format!(
-            "codex review wrote exit status without a log in {}; cannot classify batch",
-            batch_dir.display()
-        )));
-    }
-    if let Some(slot) = exit_paths
-        .keys()
-        .find(|slot| !log_paths.contains_key(slot))
-        .copied()
-    {
-        return Err(io::Error::other(format!(
-            "codex review slot {slot} wrote exit status without a matching log in {}; cannot classify batch",
-            batch_dir.display()
-        )));
-    }
+
+    let Some((log_paths, exit_paths)) = collect_batch_paths(read_dir, &prefix, batch_dir)? else {
+        return Ok(BatchState::NotStarted);
+    };
 
     let mut verdicts = Vec::with_capacity(log_paths.len());
     let mut pending_slots: Vec<PendingSlot> = Vec::new();
@@ -272,8 +288,7 @@ impl BatchState {
     /// (completed, total) pair. Pending slots are synthesized with
     /// "now" mtimes (always alive) so tests that exercise the
     /// pre-discriminator path continue to read as in-flight; tests
-    /// that need the idle case construct slots explicitly via
-    /// [`Self::running_with_idle_pending`].
+    /// that need the idle case construct slots explicitly.
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn running_alive(completed: u32, total: u32) -> Self {
@@ -305,12 +320,17 @@ impl BatchState {
     /// budget. Pending slots produce [`VerdictClass::Abandoned`]
     /// verdicts whose body explains the reason; the existing decide
     /// path then takes the synthetic Complete state through the
-    /// normal `all_clean → DoneFixedPoint` / `AddressBatch` fork
-    /// (and Abandoned counts as not-clean, so a partial sample
-    /// never silently claims fixed point).
+    /// normal all-clean / address fork (and Abandoned counts as
+    /// not-clean, so a partial sample never silently claims fixed
+    /// point).
     ///
     /// Returns `None` if `self` is not `Running`; the caller is
     /// expected to dispatch on the variant first.
+    ///
+    /// `allow(dead_code)`: consumed by the codex-review binary's
+    /// runner; the pr-codex-review binary does not wire the
+    /// cap-trip projection yet and this file is shared verbatim.
+    #[allow(dead_code)]
     pub(crate) fn project_abandoning_pending(&self, reason: &str) -> Option<Self> {
         let Self::Running {
             pending_slots,
@@ -339,6 +359,68 @@ impl BatchState {
     }
 }
 
+/// Identity gate: `true` when no identity is expected, or the batch
+/// dir's stamp matches it. A missing stamp with an expected identity
+/// is `false` (never started for this identity), not an error.
+fn identity_matches(batch_dir: &Path, expected_identity: Option<&str>) -> io::Result<bool> {
+    let Some(expected) = expected_identity else {
+        return Ok(true);
+    };
+    match fs::read_to_string(batch_dir.join("head_sha.txt")) {
+        Ok(stored) => Ok(stored.trim() == expected),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Per-slot file paths, keyed by 1-indexed slot.
+type SlotPaths = BTreeMap<u32, PathBuf>;
+
+/// Collect per-slot log/exit paths for `prefix`. `Ok(None)` means no
+/// files exist for this level — not started. Errors on spawn-protocol
+/// violations (exit status without a matching log).
+fn collect_batch_paths(
+    read_dir: fs::ReadDir,
+    prefix: &str,
+    batch_dir: &Path,
+) -> io::Result<Option<(SlotPaths, SlotPaths)>> {
+    let mut log_paths: SlotPaths = BTreeMap::new();
+    let mut exit_paths: SlotPaths = BTreeMap::new();
+
+    for entry in read_dir.filter_map(std::result::Result::ok) {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(slot) = parse_slot(&name, prefix, ".log") {
+            log_paths.insert(slot, path);
+        } else if let Some(slot) = parse_slot(&name, prefix, ".exit") {
+            exit_paths.insert(slot, path);
+        }
+    }
+
+    if log_paths.is_empty() && exit_paths.is_empty() {
+        return Ok(None);
+    }
+    if log_paths.is_empty() {
+        return Err(io::Error::other(format!(
+            "codex review wrote exit status without a log in {}; cannot classify batch",
+            batch_dir.display()
+        )));
+    }
+    if let Some(slot) = exit_paths
+        .keys()
+        .find(|slot| !log_paths.contains_key(slot))
+        .copied()
+    {
+        return Err(io::Error::other(format!(
+            "codex review slot {slot} wrote exit status without a matching log in {}; cannot classify batch",
+            batch_dir.display()
+        )));
+    }
+    Ok(Some((log_paths, exit_paths)))
+}
+
 fn parse_slot(name: &str, prefix: &str, suffix: &str) -> Option<u32> {
     let raw = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
     if raw.is_empty() || raw.starts_with('0') {
@@ -361,31 +443,77 @@ fn read_exit_status(path: &Path) -> io::Result<i32> {
 mod tests {
     use super::*;
 
-    fn temp_batch_dir(label: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "ooda-codex-review-batch-test-{label}-{}",
-            std::process::id()
-        ));
+    const SHA: &str = "matchsha";
+
+    fn temp_batch_dir(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("codex-batch-test-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("mkdir");
         dir
     }
 
+    fn write_stamp(dir: &Path, sha: &str) {
+        fs::write(dir.join("head_sha.txt"), sha).unwrap();
+    }
+
     #[test]
     fn missing_dir_is_not_started() {
-        let dir = std::env::temp_dir().join(format!(
-            "ooda-codex-review-batch-missing-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("codex-batch-missing-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
         assert_eq!(s, BatchState::NotStarted);
     }
 
     #[test]
     fn empty_dir_is_not_started() {
         let dir = temp_batch_dir("empty");
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
+        assert_eq!(s, BatchState::NotStarted);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_dir_with_stamp_is_not_started() {
+        let dir = temp_batch_dir("empty-stamped");
+        write_stamp(&dir, SHA);
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, Some(SHA)).unwrap();
+        assert_eq!(s, BatchState::NotStarted);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_identity_scans_unstamped_dir() {
+        // `None` skips the gate: a dir with logs but no stamp scans
+        // normally. Pins the None semantics against a future
+        // regression that would make the stamp unconditionally
+        // required.
+        let dir = temp_batch_dir("no-identity");
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "0\n").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap();
+        match s {
+            BatchState::Complete { verdicts } => assert_eq!(verdicts.len(), 1),
+            other => panic!("expected Complete, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dir_without_stamp_is_not_started_when_identity_expected() {
+        let dir = temp_batch_dir("no-stamp");
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, Some("abc")).unwrap();
+        assert_eq!(s, BatchState::NotStarted);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn identity_mismatch_is_not_started() {
+        let dir = temp_batch_dir("stamp-mismatch");
+        write_stamp(&dir, "old-sha");
+        fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, Some("new-sha")).unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -395,7 +523,7 @@ mod tests {
         let dir = temp_batch_dir("other-levels");
         fs::write(dir.join("high-1.log"), "thinking\ncodex\nverdict\n").unwrap();
         fs::write(dir.join("medium-1.log"), "thinking\ncodex\nverdict\n").unwrap();
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
         assert_eq!(s, BatchState::NotStarted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -407,7 +535,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
         match s {
             BatchState::Running {
                 pending_slots,
@@ -428,7 +556,7 @@ mod tests {
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\n").unwrap();
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
         match s {
             BatchState::Running {
                 pending_slots,
@@ -454,7 +582,7 @@ mod tests {
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nN").unwrap();
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nL").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nR").unwrap();
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
         match s {
             BatchState::Running {
                 pending_slots,
@@ -469,8 +597,9 @@ mod tests {
     }
 
     #[test]
-    fn full_completion_classifies_each() {
+    fn full_completion_with_matching_stamp_classifies_each() {
         let dir = temp_batch_dir("complete");
+        write_stamp(&dir, SHA);
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
         fs::write(
@@ -481,7 +610,7 @@ mod tests {
         fs::write(dir.join("low-2.exit"), "0\n").unwrap();
         fs::write(dir.join("low-3.log"), "thinking\ncodex\nLooks good.\n").unwrap();
         fs::write(dir.join("low-3.exit"), "0\n").unwrap();
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, Some(SHA)).unwrap();
         match s {
             BatchState::Complete { verdicts } => {
                 assert_eq!(verdicts.len(), 3);
@@ -502,8 +631,7 @@ mod tests {
         let dir = temp_batch_dir("nonzero-exit");
         fs::write(dir.join("low-1.log"), "error: unexpected argument '--pr'\n").unwrap();
         fs::write(dir.join("low-1.exit"), "2\n").unwrap();
-
-        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("slot 1 exited 2"), "msg: {msg}");
         assert!(msg.contains("low-1.log"), "msg: {msg}");
@@ -515,8 +643,7 @@ mod tests {
         let dir = temp_batch_dir("zero-no-marker");
         fs::write(dir.join("low-1.log"), "thinking\nfinished without marker\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
-
-        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("exited 0 without a verdict marker"),
@@ -530,8 +657,7 @@ mod tests {
         let dir = temp_batch_dir("zero-empty-body");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\n").unwrap();
         fs::write(dir.join("low-1.exit"), "0\n").unwrap();
-
-        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("without a verdict body"), "msg: {msg}");
         let _ = fs::remove_dir_all(&dir);
@@ -542,8 +668,7 @@ mod tests {
         let dir = temp_batch_dir("orphan-exit");
         fs::write(dir.join("low-1.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-2.exit"), "0\n").unwrap();
-
-        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap_err();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("slot 2"), "msg: {msg}");
         assert!(msg.contains("without a matching log"), "msg: {msg}");
@@ -555,8 +680,7 @@ mod tests {
         let dir = temp_batch_dir("filename-slots");
         fs::write(dir.join("low-2.log"), "thinking\ncodex\nNo issues found\n").unwrap();
         fs::write(dir.join("low-2.exit"), "0\n").unwrap();
-
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap();
         match s {
             BatchState::Complete { verdicts } => assert_eq!(verdicts[0].slot, 2),
             other => panic!("expected Complete, got {other:?}"),
@@ -569,9 +693,9 @@ mod tests {
         // 4 done but expected=3 — stray log from a prior batch or
         // an n-mismatch between the caller and the observer. Used
         // to project to Running { completed=4, total=4 }, which
-        // decide turned into AwaitReviews { pending: 0 } — a Wait
-        // the loop honours forever. Now surfaces as
-        // InconsistentState so a human resolver can intervene.
+        // decide turned into a pending-zero Wait the loop honours
+        // forever. Now surfaces as InconsistentState so a human
+        // resolver can intervene.
         let dir = temp_batch_dir("oversize");
         for n in 1..=4 {
             fs::write(
@@ -581,7 +705,7 @@ mod tests {
             .unwrap();
             fs::write(dir.join(format!("low-{n}.exit")), "0\n").unwrap();
         }
-        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3).unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
         match s {
             BatchState::InconsistentState {
                 total,

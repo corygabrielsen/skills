@@ -94,7 +94,7 @@ pub(crate) fn fetch_all(
     // mapping — non-emptiness is structural, not asserted.
     let levels = ladder_slice(floor, ceiling).try_map(|level| {
         let dir = batch_dir(pr_codex_root, level, head_sha);
-        let batch_state = batch::scan_batch(&dir, level, expected, head_sha)?;
+        let batch_state = batch::scan_batch(&dir, level, expected, Some(head_sha))?;
         io::Result::Ok(CodexLevelObservation {
             level,
             batch_state,

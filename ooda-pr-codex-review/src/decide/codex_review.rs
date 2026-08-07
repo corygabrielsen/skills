@@ -48,7 +48,9 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
                 .filter(|v| {
                     matches!(
                         v.class,
-                        VerdictClass::HasIssues | VerdictClass::Indeterminate
+                        VerdictClass::HasIssues
+                            | VerdictClass::Indeterminate
+                            | VerdictClass::Abandoned
                     )
                 })
                 .collect();

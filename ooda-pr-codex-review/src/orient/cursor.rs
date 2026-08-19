@@ -619,6 +619,7 @@ mod tests {
             id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("cursor[bot]").unwrap(),
+                user_type: None,
             }),
             state: ReviewState::Commented,
             commit_id: GitCommitSha::parse(sha).unwrap(),

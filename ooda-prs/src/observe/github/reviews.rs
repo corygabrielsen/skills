@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{GitCommitSha, GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
 use super::gh::{GhError, gh_json_paginate};
+use super::requested_reviewers::UserType;
 
 /// Fetch every review on a PR.
 pub(crate) fn fetch_pull_request_reviews(
@@ -47,6 +48,9 @@ pub(crate) struct PullRequestReview {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ReviewUser {
     pub login: GitHubLogin,
+    /// Host-attested account type; see `UserRef::user_type`.
+    #[serde(rename = "type", default)]
+    pub user_type: Option<UserType>,
 }
 
 /// Per-review verdict. `Unknown` is the forward-compat fallback

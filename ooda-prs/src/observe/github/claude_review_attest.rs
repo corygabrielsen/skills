@@ -225,6 +225,7 @@ mod tests {
             id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("claude[bot]").unwrap(),
+                user_type: None,
             }),
             state: ReviewState::Commented,
             commit_id: GitCommitSha::parse(VALID_SHA).unwrap(),
@@ -462,6 +463,7 @@ mod tests {
             id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
+                user_type: None,
             }),
             state: ReviewState::Commented,
             commit_id: GitCommitSha::parse(VALID_SHA).unwrap(),

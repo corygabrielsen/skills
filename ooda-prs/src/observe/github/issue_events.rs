@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{GitHubLogin, PullRequestNumber, RepoSlug, Timestamp};
 
+use super::requested_reviewers::UserType;
+
 use super::gh::{GhError, gh_json_paginate};
 
 /// Fetch every PR timeline event.
@@ -45,6 +47,12 @@ pub(crate) struct Actor {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct UserRef {
     pub login: GitHubLogin,
+    /// Host-attested account type. Load-bearing for identity: the
+    /// host emits the bare display login `Copilot` on this surface,
+    /// and only the `Bot` attestation distinguishes it from a
+    /// user-registrable bare name.
+    #[serde(rename = "type", default)]
+    pub user_type: Option<UserType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

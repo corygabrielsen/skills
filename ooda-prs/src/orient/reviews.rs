@@ -400,6 +400,7 @@ mod tests {
             id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse(login).unwrap(),
+                user_type: None,
             }),
             state,
             commit_id: GitCommitSha::parse(sha).unwrap(),
@@ -786,6 +787,7 @@ mod tests {
                 id: None,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("alice").unwrap(),
+                    user_type: None,
                 }),
                 state: ReviewState::ChangesRequested,
                 commit_id: GitCommitSha::parse(HEAD).unwrap(),
@@ -798,6 +800,7 @@ mod tests {
                 id: None,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("copilot[bot]").unwrap(),
+                    user_type: None,
                 }),
                 state: ReviewState::ChangesRequested,
                 commit_id: GitCommitSha::parse(HEAD).unwrap(),
@@ -810,6 +813,7 @@ mod tests {
                 id: None,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("bob").unwrap(),
+                    user_type: None,
                 }),
                 state: ReviewState::ChangesRequested,
                 commit_id: GitCommitSha::parse(HEAD).unwrap(),
@@ -839,6 +843,7 @@ mod tests {
             id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot[bot]").unwrap(),
+                user_type: None,
             }),
             state: ReviewState::ChangesRequested,
             commit_id: GitCommitSha::parse(HEAD).unwrap(),

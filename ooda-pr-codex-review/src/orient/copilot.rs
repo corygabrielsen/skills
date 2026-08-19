@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use crate::ids::{GitCommitSha, GitHubLogin, Timestamp};
 use crate::observe::github::issue_events::IssueEvent;
 use crate::observe::github::pull_request_view::Commit;
-use crate::observe::github::requested_reviewers::RequestedReviewers;
+use crate::observe::github::requested_reviewers::{RequestedReviewers, UserType};
 use crate::observe::github::review_threads::ReviewThreadsResponse;
 use crate::observe::github::reviews::PullRequestReview;
 use crate::observe::github::rulesets::CopilotCodeReviewParams;
@@ -53,6 +53,20 @@ const COPILOT_LOGINS: &[&str] = &[COPILOT_REVIEWER_LOGIN, "app/copilot-pull-requ
 
 pub(crate) fn is_copilot(login: &str) -> bool {
     GitHubLogin::parse(login).is_ok_and(|l| l.is_bot()) && COPILOT_LOGINS.contains(&login)
+}
+
+/// Bare display login the host emits for the Copilot reviewer on
+/// type-attested surfaces (timeline `requested_reviewer`, requested
+/// reviewers, review authors).
+const COPILOT_DISPLAY_LOGIN: &str = "Copilot";
+
+/// Classifies a `(login, host-attested account type)` pair as the
+/// Copilot reviewer. The bare display login is accepted only under
+/// the host's `Bot` attestation: any plain-user account can register
+/// a bare name, but cannot carry the `Bot` type. Bot-form logins
+/// classify regardless of attestation ([`is_copilot`]).
+pub(crate) fn is_copilot_ref(login: &str, user_type: Option<UserType>) -> bool {
+    is_copilot(login) || (user_type == Some(UserType::Bot) && login == COPILOT_DISPLAY_LOGIN)
 }
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -290,7 +304,7 @@ pub(crate) fn orient_copilot(
         .filter(|r| {
             r.user
                 .as_ref()
-                .is_some_and(|u| is_copilot(u.login.as_str()))
+                .is_some_and(|u| is_copilot_ref(u.login.as_str(), u.user_type))
         })
         .collect();
 
@@ -551,7 +565,7 @@ fn copilot_timeline(events: &[&IssueEvent]) -> Vec<TimelinePoint> {
         match e.event.as_str() {
             "review_requested" => {
                 if let Some(rr) = &e.requested_reviewer
-                    && is_copilot(rr.login.as_str())
+                    && is_copilot_ref(rr.login.as_str(), rr.user_type)
                 {
                     points.push(TimelinePoint {
                         kind: TimelineKind::Requested,
@@ -961,7 +975,10 @@ fn bare_stage(
 }
 
 fn currently_pending(requested: &RequestedReviewers) -> bool {
-    requested.users.iter().any(|u| is_copilot(u.login.as_str()))
+    requested
+        .users
+        .iter()
+        .any(|u| is_copilot_ref(u.login.as_str(), Some(u.user_type)))
 }
 
 // ── Health computation ───────────────────────────────────────────────
@@ -1155,6 +1172,7 @@ mod tests {
             id: None,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
+                user_type: None,
             }),
             state: ReviewState::Commented,
             commit_id: GitCommitSha::parse(sha).unwrap(),
@@ -1172,6 +1190,7 @@ mod tests {
             created_at: Some(ts(at)),
             requested_reviewer: Some(UserRef {
                 login: GitHubLogin::parse(login).unwrap(),
+                user_type: None,
             }),
             requested_team: None,
             // review_requested events are NOT app-performed; only
@@ -1251,6 +1270,43 @@ mod tests {
         assert!(!is_copilot("[bot]"));
         assert!(!is_copilot("copilot\n"));
         assert!(!is_copilot("copilot bot"));
+    }
+
+    #[test]
+    fn is_copilot_ref_accepts_bare_login_only_with_bot_attestation() {
+        // The 2026-08 host migration: `requested_reviewer` carries the
+        // bare display login with a host-attested account type.
+        assert!(is_copilot_ref("Copilot", Some(UserType::Bot)));
+        // No attestation (or non-Bot): a user-registrable bare name.
+        assert!(!is_copilot_ref("Copilot", None));
+        assert!(!is_copilot_ref("Copilot", Some(UserType::User)));
+        assert!(!is_copilot_ref("Copilot", Some(UserType::Unknown)));
+        // Attestation does not admit other identities.
+        assert!(!is_copilot_ref("Cursor", Some(UserType::Bot)));
+        assert!(!is_copilot_ref("alice", Some(UserType::Bot)));
+        // Bot-form logins classify with or without attestation.
+        assert!(is_copilot_ref("copilot-pull-request-reviewer[bot]", None));
+        assert!(is_copilot_ref(
+            "copilot-pull-request-reviewer[bot]",
+            Some(UserType::Bot)
+        ));
+    }
+
+    #[test]
+    fn bare_copilot_request_event_opens_a_round() {
+        // Regression: the host migration emits
+        // `{login: "Copilot", type: "Bot"}` on `review_requested`.
+        // Pre-fix this event was unclassified, no round opened, and
+        // decide re-emitted RerequestCopilot until StuckRepeated.
+        let mut e = req_event("2026-08-19T19:35:06Z", "alice");
+        e.requested_reviewer = Some(UserRef {
+            login: GitHubLogin::parse("Copilot").unwrap(),
+            user_type: Some(UserType::Bot),
+        });
+        let events = [&e];
+        let timeline = copilot_timeline(&events[..]);
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].kind, TimelineKind::Requested);
     }
 
     // ── body parsing ──

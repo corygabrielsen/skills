@@ -290,6 +290,29 @@ impl Recorder {
         Ok(self.pr_index_dir()?.join("last_seen_head.json"))
     }
 
+    /// The resolved state root this worker writes under — the same
+    /// root the attestation axes must read from.
+    ///
+    /// Resolution happens exactly once, in [`Self::open`], via
+    /// [`ooda_state::resolve_state_root`]. Observe-layer callers
+    /// take the root from here rather than re-reading the raw
+    /// `--state-root` argv slot: the raw slot is `None` whenever
+    /// the flag is omitted, while the recorder still falls back
+    /// through `OODA_STATE_HOME` / `XDG_STATE_HOME` / `$HOME`. Two
+    /// resolutions of one root is the shape that lets writer and
+    /// reader disagree; there is one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError`] when the recorder mutex is poisoned.
+    pub(crate) fn state_root(&self) -> StateResult<PathBuf> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| StateError::Io(io::Error::other("recorder mutex poisoned")))?;
+        Ok(inner.state_root.path().to_path_buf())
+    }
+
     /// Resolve the per-PR index directory, creating it if needed.
     /// Shared core for [`Self::dedup_path`],
     /// [`Self::action_lock_path`], and [`Self::last_seen_head_path`].
@@ -1051,6 +1074,31 @@ mod tests {
             legacy_trace: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn state_root_accessor_equals_the_root_the_run_is_written_under() {
+        // Regression: the attestation axes read from
+        // `Recorder::state_root()`, the run tree is written under
+        // `Inner::state_root`. If those two ever name different
+        // directories, `ooda-attest` writes where the observe
+        // layer does not look and every axis reports
+        // never-attested against a file that exists.
+        let root = temp_root("state-root-accessor");
+        let _ = std::fs::remove_dir_all(&root);
+        let recorder = open_recorder(&root);
+        let reported = recorder.state_root().unwrap();
+        assert_eq!(reported, root);
+        let run_events = root
+            .join("runs")
+            .join(recorder.run_id())
+            .join("events.jsonl");
+        assert!(
+            run_events.starts_with(&reported),
+            "run tree {run_events:?} must live under the reported root {reported:?}",
+        );
+        assert!(run_events.exists(), "run tree absent at {run_events:?}");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

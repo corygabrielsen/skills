@@ -625,10 +625,19 @@ fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
             return Outcome::binary_error(format!("recorder: {e}"));
         }
     };
+    // Attestation reads resolve against the recorder's root, not
+    // the raw `--state-root` slot — see [`Recorder::state_root`].
+    let state_root = match recorder.state_root() {
+        Ok(p) => p,
+        Err(e) => {
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
+            return Outcome::binary_error(format!("recorder: {e}"));
+        }
+    };
     let obs = match fetch_all(
         &args.slug,
         args.pr,
-        args.state_root.as_deref(),
+        Some(state_root.as_path()),
         Some(&sticky_path),
         repo_root,
     ) {
@@ -751,6 +760,12 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
         Ok(p) => p,
         Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
     };
+    // Attestation reads resolve against the recorder's root, not
+    // the raw `--state-root` slot — see [`Recorder::state_root`].
+    let state_root = match recorder.state_root() {
+        Ok(p) => p,
+        Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
+    };
     let ctx = ActContext {
         slug: args.slug.clone(),
         pr: args.pr,
@@ -821,7 +836,7 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
             );
         }
     };
-    let outcome = match run_loop(ctx, args.state_root.as_deref(), cfg, recorder, on_state) {
+    let outcome = match run_loop(ctx, Some(state_root.as_path()), cfg, recorder, on_state) {
         Ok(LoopExit::Halted(reason)) => Outcome::from(reason),
         Ok(LoopExit::SignalInterrupted { exit_code }) => Outcome::SignalInterrupted { exit_code },
         Err(e) => Outcome::from(e),

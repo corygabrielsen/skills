@@ -275,6 +275,46 @@ fn state_root_repeated_rejected() {
     );
 }
 
+/// The raw `--state-root` argv slot is consumed exactly once, at the
+/// `RecorderConfig` construction. Every other consumer takes the root
+/// from `Recorder::state_root()`, which reports the value resolved
+/// once in `Recorder::open`.
+///
+/// Resolving one root along two paths is a defect even when both
+/// sites are individually correct: the raw slot is `None` whenever
+/// the flag is omitted, while the recorder still falls back through
+/// `OODA_STATE_HOME` / `XDG_STATE_HOME` / `$HOME`. A reader handed
+/// the raw slot therefore reads nothing while the writer writes to
+/// the resolved default — and because every attestation axis shares
+/// one binding in `fetch_all`, all four go blind at once. The
+/// `read_*(p).ok().flatten()` collapse in the observe layer renders
+/// that state indistinguishable from ordinary never-attested, so
+/// nothing downstream can report it.
+///
+/// Asserted structurally because the wiring lives in `main.rs`,
+/// which has no unit-test seam: `run_inspect` and `run_full` both
+/// require the network. `src/main.rs` and `src/recorder.rs` are also
+/// the two files `scripts/check-mirror-invariants.sh` classifies as
+/// per-binary divergent and never diffs, so no mirror check can see
+/// a regression here either.
+#[test]
+fn raw_state_root_argv_slot_is_consumed_exactly_once() {
+    let main_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("read src/main.rs");
+    let raw_uses = main_rs.matches("args.state_root").count();
+    assert_eq!(
+        raw_uses, 1,
+        "`args.state_root` must appear exactly once (the RecorderConfig \
+         construction); found {raw_uses}. A second use means some reader \
+         re-resolves the root instead of taking Recorder::state_root(), \
+         and disagrees with the writer whenever --state-root is omitted."
+    );
+    assert!(
+        main_rs.contains("recorder.state_root()"),
+        "reader paths must take the root from Recorder::state_root()"
+    );
+}
+
 #[test]
 fn trace_flag_removed() {
     // `--trace` was removed when the per-PR recorder shifted to

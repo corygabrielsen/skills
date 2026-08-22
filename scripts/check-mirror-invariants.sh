@@ -468,6 +468,35 @@ for skill in ooda-pr ooda-prs ooda-pr-codex-review ooda-codex-review ooda-attest
     check_signal_misclaim "$skill_md"
 done
 
+# Single-resolution of the state root. The raw `--state-root` argv slot
+# is `None` whenever the flag is omitted, while `Recorder::open` falls
+# back through `OODA_STATE_HOME` / `XDG_STATE_HOME` / `$HOME`. A reader
+# handed the raw slot therefore reads nothing while the writer writes to
+# the resolved default; every attestation axis shares one binding in
+# `fetch_all`, so all four go blind together, and the observe layer's
+# `read_*(p).ok().flatten()` collapse makes that indistinguishable from
+# ordinary never-attested.
+#
+# The invariant: `args.state_root` is consumed exactly once per
+# `main.rs` — the `RecorderConfig` construction — and every reader takes
+# the root from `Recorder::state_root()`.
+#
+# Checked here rather than left to each binary's test suite because
+# `src/main.rs` is PER_BINARY_DIVERGENT: the tier is never diffed, which
+# is precisely how this defect survived being fixed in `ooda-pr` alone
+# while both mirrors kept it.
+for binary in "$CANON" "${MIRRORS[@]}"; do
+    main_rs="$ROOT/$binary/src/main.rs"
+    [ -f "$main_rs" ] || continue
+    raw_uses=$(grep -c 'args\.state_root' "$main_rs" || true)
+    if [ "$raw_uses" -ne 1 ]; then
+        report_fail "$binary/src/main.rs consumes the raw args.state_root slot $raw_uses times (must be exactly 1: the RecorderConfig construction)"
+    fi
+    if ! grep -q 'recorder\.state_root()' "$main_rs"; then
+        report_fail "$binary/src/main.rs never reads Recorder::state_root() — reader paths must take the resolved root"
+    fi
+done
+
 if [ "$fail" -ne 0 ]; then
     printf '\nMirror invariant violated. Re-sync the canonical and re-run.\n' >&2
     exit 1

@@ -745,10 +745,19 @@ fn run_inspect(
             return Outcome::binary_error(format!("recorder: {e}"));
         }
     };
+    // Attestation reads resolve against the recorder's root, not
+    // the raw `--state-root` slot — see [`Recorder::state_root`].
+    let state_root = match recorder.state_root() {
+        Ok(p) => p,
+        Err(e) => {
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
+            return Outcome::binary_error(format!("recorder: {e}"));
+        }
+    };
     let obs = match fetch_all(
         slug,
         pr,
-        args.state_root.as_deref(),
+        Some(state_root.as_path()),
         Some(&sticky_path),
         repo_root,
     ) {
@@ -864,6 +873,12 @@ fn run_full(
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
+    // Attestation reads resolve against the recorder's root, not
+    // the raw `--state-root` slot — see [`Recorder::state_root`].
+    let state_root = match recorder.state_root() {
+        Ok(p) => p,
+        Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
+    };
     let mut snapshot: Option<HandoffSnapshot> = None;
     let on_state = |i: u32,
                     obs: &observe::github::GitHubObservations,
@@ -929,7 +944,7 @@ fn run_full(
     let outcome = match run_loop(
         slug,
         pr,
-        args.state_root.as_deref(),
+        Some(state_root.as_path()),
         repo_root,
         cfg,
         recorder,

@@ -37,9 +37,9 @@ fn print_usage(out: &mut dyn std::io::Write) {
         out,
         "ooda-pr — drive a PR through observe → orient → decide → act until halt.\n\
          \n\
-         Usage:\n  ooda-pr [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr inspect [options] <owner/repo> <pr>   one pass; print Outcome; exit\n\
+         Usage:\n  ooda-pr [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr [options] inspect <owner/repo> <pr>   one pass; print Outcome; exit\n\
          \n\
-         Options:\n  --max-iter N        loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment    post a status comment on the PR each iteration (deduped)\n  --state-root PATH   write always-on harness state under PATH\n  --repo-root PATH    target working tree for all `gt`/`git` invocations\n                      (default: derive from CWD via `git rev-parse --show-toplevel`)\n  --trace PATH        also append the compact trace to PATH\n  -h, --help          show this help and exit\n\
+         Options (must precede `inspect`):\n  --max-iter N        loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment    post a status comment on the PR each iteration (deduped)\n  --state-root PATH   harness state + attestation root (default: $OODA_STATE_HOME,\n                      else $XDG_STATE_HOME/ooda, else ~/.local/state/ooda)\n  --repo-root PATH    target working tree for all `gt`/`git` invocations\n                      (default: derive from CWD via `git rev-parse --show-toplevel`)\n  --trace PATH        also append the compact trace to PATH\n  -h, --help          show this help and exit\n\
          \n\
          Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneMerged       1 Paused             2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent     5 DoneClosed         6 StuckRepeated     7 StuckCapReached\n  64 UsageError      70 BinaryError      130 SignalInterrupted (SIGINT)\n 143 SignalInterrupted (SIGTERM)"
     );
@@ -546,10 +546,17 @@ fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
             return Outcome::binary_error(format!("recorder: {e}"));
         }
     };
+    let state_root = match recorder.state_root() {
+        Ok(p) => p,
+        Err(e) => {
+            recorder.record_observe_end(1, ObserveOutcome::Error(e.to_string()));
+            return Outcome::binary_error(format!("recorder: {e}"));
+        }
+    };
     let obs = match fetch_all(
         &args.slug,
         args.pr,
-        args.state_root.as_deref(),
+        Some(state_root.as_path()),
         Some(&sticky_path),
         repo_root,
     ) {
@@ -664,6 +671,12 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
+    // Attestation reads resolve against the recorder's root, not
+    // the raw `--state-root` slot — see [`Recorder::state_root`].
+    let state_root = match recorder.state_root() {
+        Ok(p) => p,
+        Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
+    };
     let mut snapshot: Option<HandoffSnapshot> = None;
     let on_state = |i: u32,
                     obs: &observe::github::GitHubObservations,
@@ -730,7 +743,7 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     let outcome = match run_loop(
         &args.slug,
         args.pr,
-        args.state_root.as_deref(),
+        Some(state_root.as_path()),
         repo_root,
         cfg,
         recorder,

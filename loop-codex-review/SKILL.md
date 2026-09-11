@@ -679,10 +679,12 @@ After human approval:
 
 ```bash
 git add -A && git commit -m "$(cat <<'EOF'
-codex-review: Fix issues from iteration {N}
+Parameterize auth query and clarify null check
 
-Issues resolved:
-- CR-001: SQL injection in auth.js (major)
+- Replace string concatenation in the credential lookup with a
+  parameterized query, closing an injection path
+- Add a comment explaining why the request handler needs no null
+  check
 EOF
 )"
 ```

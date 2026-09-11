@@ -3,10 +3,23 @@
 //! Wraps `Command::output()` such that the parent never blocks
 //! indefinitely on a stuck child AND never grows unbounded buffers
 //! from a child that emits gigabytes of output. On deadline elapsed,
-//! the child is `SIGKILL`ed via [`std::process::Child::kill`] and reaped, and the
-//! call returns [`SpawnError::Timeout`]. On either pipe's buffer
-//! growing past its per-stream cap, the helper kills + reaps the
-//! child and returns [`SpawnError::OutputTooLarge`].
+//! the child's process group is `SIGKILL`ed and the child reaped,
+//! and the call returns [`SpawnError::Timeout`]. On either pipe's
+//! buffer growing past its per-stream cap, the helper kills + reaps
+//! the group and returns [`SpawnError::OutputTooLarge`].
+//!
+//! # Process group
+//!
+//! The child is spawned into a fresh process group whose ID equals
+//! its PID. Every descendant inherits the group, so the kill reaches
+//! the whole subtree: `gt sync` forks `git`, and a shell wrapper
+//! forks its command. Killing only the direct child would orphan
+//! those grandchildren, and an orphan that inherited the pipes keeps
+//! them open past the helper's return. A side effect of the separate
+//! group is that a terminal `SIGINT` no longer reaches the child;
+//! the OODA binaries trap the signal themselves and let the in-flight
+//! call finish or hit its deadline, which is also what keeps a
+//! `gt sync` from being interrupted mid-rebase.
 //!
 //! # Why this exists
 //!
@@ -49,7 +62,8 @@
 //! the fds).
 
 use std::io::Read;
-use std::process::{Command, Output, Stdio};
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -167,6 +181,21 @@ impl std::error::Error for SpawnError {
 /// Polling interval for `try_wait`. Tight enough that a sub-second
 /// child still completes within one tick of its actual exit; loose
 /// enough that a multi-second deadline doesn't pin a core.
+/// `SIGKILL` the child's process group (ID = child PID by
+/// construction in [`run_with_limits`]), then reap the child.
+/// Returns whether the kill was delivered. Falls back to
+/// [`Child::kill`] if the PID does not fit an `i32`.
+fn kill_group(child: &mut Child) -> bool {
+    let killed = match i32::try_from(child.id()) {
+        // SAFETY: `killpg` takes plain integers and reports every
+        // failure through its return value; no memory is touched.
+        Ok(pgid) => (unsafe { libc::killpg(pgid, libc::SIGKILL) }) == 0,
+        Err(_) => child.kill().is_ok(),
+    };
+    let _ = child.wait();
+    killed
+}
+
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Spawn `cmd` and wait at most `limits.deadline` for completion,
@@ -206,7 +235,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output, SpawnError> {
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .process_group(0);
     let mut child = cmd.spawn().map_err(SpawnError::Spawn)?;
     // `take()` removes the pipe ends from `Child` so the drain
     // threads own them; otherwise `try_wait` would see the pipes
@@ -253,8 +283,7 @@ pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output,
         // child gets reported as OutputTooLarge even if it raced
         // to exit between drain-thread overflow and try_wait.
         if stdout_overflow.load(Ordering::Acquire) {
-            let killed = child.kill().is_ok();
-            let _ = child.wait();
+            let killed = kill_group(&mut child);
             return Err(SpawnError::OutputTooLarge {
                 stream: Stream::Stdout,
                 limit: limits.max_stdout_bytes,
@@ -262,8 +291,7 @@ pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output,
             });
         }
         if stderr_overflow.load(Ordering::Acquire) {
-            let killed = child.kill().is_ok();
-            let _ = child.wait();
+            let killed = kill_group(&mut child);
             return Err(SpawnError::OutputTooLarge {
                 stream: Stream::Stderr,
                 limit: limits.max_stderr_bytes,
@@ -274,11 +302,10 @@ pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output,
             break status;
         }
         if start.elapsed() >= limits.deadline {
-            // SIGKILL the child; reap regardless so the OS
+            // SIGKILL the group; reap regardless so the OS
             // does not leak a zombie. The drain threads see
             // the pipe close and exit on their own.
-            let killed = child.kill().is_ok();
-            let _ = child.wait();
+            let killed = kill_group(&mut child);
             return Err(SpawnError::Timeout {
                 deadline: limits.deadline,
                 killed,
@@ -359,6 +386,26 @@ fn drain_pipe<R: Read>(
 mod tests {
     use super::*;
 
+    /// `true` if any live process's argv equals `args` exactly.
+    /// Reads `/proc/<pid>/cmdline`; unreadable entries are skipped.
+    fn process_with_args_exists(args: &[&str]) -> bool {
+        let want: Vec<u8> = args
+            .iter()
+            .flat_map(|a| a.bytes().chain(std::iter::once(0)))
+            .collect();
+        std::fs::read_dir("/proc")
+            .expect("/proc readable")
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .bytes()
+                    .all(|b| b.is_ascii_digit())
+            })
+            .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
+            .any(|cmdline| cmdline == want)
+    }
+
     /// Default test limits: 10s deadline, 1 MiB caps. Loose enough
     /// that ordinary `fast_command` cases don't trip them.
     fn default_limits() -> SpawnLimits {
@@ -389,8 +436,12 @@ mod tests {
         // within the runtime, but if reaping were broken the
         // test runner under heavy parallelism would surface
         // zombies elsewhere.
+        // dash forks `sleep` as a grandchild of the shell; the
+        // fractional duration is a marker no other test uses, so
+        // a /proc scan after the timeout proves the group died.
+        const MARKER: &str = "5.271828";
         let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg("sleep 5");
+        cmd.arg("-c").arg(format!("sleep {MARKER}"));
         let limits = SpawnLimits {
             deadline: Duration::from_millis(200),
             max_stdout_bytes: 1 << 20,
@@ -399,6 +450,10 @@ mod tests {
         let started = Instant::now();
         let err = run_with_limits(&mut cmd, limits).expect_err("must time out");
         let elapsed = started.elapsed();
+        assert!(
+            !process_with_args_exists(&["sleep", MARKER]),
+            "grandchild `sleep {MARKER}` survived the group kill",
+        );
         match err {
             SpawnError::Timeout { deadline, killed } => {
                 assert_eq!(deadline, limits.deadline);

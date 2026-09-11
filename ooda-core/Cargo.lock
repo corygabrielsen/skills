@@ -271,6 +271,7 @@ name = "ooda-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

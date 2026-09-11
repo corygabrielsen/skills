@@ -2,7 +2,7 @@
 # Run a Cargo check against the Rust crates touched by pre-commit.
 #
 # Usage:
-#   check-rust-crates.sh <fmt|clippy|test> [file...]
+#   check-rust-crates.sh <fmt|clippy|test|doc> [file...]
 #
 # With file arguments, each path is mapped to its nearest ancestor Cargo.toml.
 # With no file arguments, every Cargo.toml within two levels is checked.
@@ -16,7 +16,7 @@ set -o pipefail
 [ -n "${BASH_VERSION:-}" ] || { printf '%s: requires bash\n' "$0" >&2; exit 1; }
 
 usage() {
-    echo "Usage: $0 <fmt|clippy|test> [file...]" >&2
+    echo "Usage: $0 <fmt|clippy|test|doc> [file...]" >&2
     exit 2
 }
 
@@ -28,7 +28,7 @@ mode="$1"
 shift
 
 case "$mode" in
-    fmt | clippy | test) ;;
+    fmt | clippy | test | doc) ;;
     *) usage ;;
 esac
 
@@ -90,6 +90,10 @@ for crate in "${sorted_crates[@]}"; do
         test)
             echo "==> $crate: cargo test --quiet"
             (cd "$crate" && cargo test --quiet)
+            ;;
+        doc)
+            echo "==> $crate: RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps --document-private-items"
+            (cd "$crate" && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --quiet)
             ;;
     esac
 done

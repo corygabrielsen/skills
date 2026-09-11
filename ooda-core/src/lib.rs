@@ -23,11 +23,11 @@
 //! # Scope
 //!
 //! No async. The crate is the type spine plus its exit-code
-//! contract, the [`atomic_io`] / [`file_lock`] / [`attest`] file
-//! primitives that every binary's recorder layers on, and the
-//! [`state_root`] resolution chain. Per-domain observe / orient /
-//! decide / act / recorder layers live in the binaries that supply
-//! `K`.
+//! contract and the [`atomic_io`] / [`file_lock`] / [`attest`] /
+//! [`spawn`] primitives that every binary's recorder and act layers
+//! build on. State-root resolution lives in `ooda_state`. Per-domain
+//! observe / orient / decide / act / recorder layers live in the
+//! binaries that supply `K`.
 
 pub mod action;
 pub mod atomic_io;

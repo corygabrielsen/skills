@@ -457,7 +457,7 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
 
 /// Discriminated result of [`interruptible_sleep`]. The typed
 /// `Cancelled` variant forces callers to dispatch cancellation
-/// explicitly into [`finalize`]; the prior `?`-propagating `String`
+/// explicitly into `finalize`; the prior `?`-propagating `String`
 /// return tunnelled past the finalize step and left exit.json on
 /// the `in_progress` stub plus a leaked hook child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

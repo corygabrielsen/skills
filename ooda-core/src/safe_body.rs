@@ -1,6 +1,6 @@
 //! Length-capped free-form body for markdown emission.
 //!
-//! [`Witness::body`] and other free-form fields in
+//! [`crate::handoff_prompt::Witness::body`] and other free-form fields in
 //! [`crate::handoff_prompt`] are not constrained at construction —
 //! a multi-MB review body or paragraph propagates verbatim through
 //! the recorder's per-event JSONL writer, where a single `write_all`

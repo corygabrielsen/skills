@@ -6,7 +6,7 @@
 //! observation slice. The driver merges candidates across axes by
 //! phase-aware urgency. The trait is the minimum contract that any
 //! concern-level state machine must satisfy to participate in a
-//! [`super::Driver`] (forthcoming).
+//! per-binary driver (see each binary's `runner.rs`).
 //!
 //! # Why no projection method
 //!

@@ -4,7 +4,7 @@
 //! — e.g. a remote head SHA, an attestation cohort, a PR-side
 //! commit batch — rather than a per-iteration count or progress
 //! marker. The newtypes here lift those identifiers into types that
-//! implement [`GateIdentity`], so [`BlockerKey::typed`] structurally
+//! implement [`GateIdentity`], so [`crate::BlockerKey::typed`] structurally
 //! accepts them as the stability witness.
 //!
 //! Membership is "the identifier is bound to the gate's identity": a
@@ -14,7 +14,7 @@
 //! system is the audit boundary.
 //!
 //! `Display` writes the inner identifier verbatim. The renderer is
-//! the projection [`BlockerKey::typed`] reads, so the rendered form
+//! the projection [`crate::BlockerKey::typed`] reads, so the rendered form
 //! is the stability witness.
 
 use crate::blocker::GateIdentity;

@@ -33,7 +33,7 @@
 //! - `130` / `143` — `SIGINT` / `SIGTERM` per POSIX shell convention
 //!   (`128 + N`). Returned by the binary itself when the loop polls
 //!   the `SHUTDOWN_SIGNAL` atomic at an iteration boundary and exits
-//!   cleanly via [`Self::SignalSigint`] / [`Self::SignalSigterm`].
+//!   cleanly via [`ExitCode::SignalSigint`] / [`ExitCode::SignalSigterm`].
 //!   The shell synthesizes the same numbers on an uncaught signal,
 //!   so caller dispatch tables stay correct regardless of which
 //!   half of the contract produced the code.

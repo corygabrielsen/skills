@@ -217,7 +217,7 @@ impl ActionEffect {
     /// Full/Wait, returns the log (which is single-line by
     /// construction). Use this where the payload appears inline in
     /// another rendering — e.g. a dashboard line of the form
-    /// "Recommended: <kind>: <summary>" — and use
+    /// `Recommended: <kind>: <summary>` — and use
     /// [`Self::rendered_message`] when the caller needs the full
     /// body.
     #[must_use]

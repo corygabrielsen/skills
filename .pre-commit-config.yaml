@@ -53,6 +53,12 @@ repos:
         language: script
         files: ^.+/(Cargo\.toml|Cargo\.lock|src/.*\.rs|tests/.*\.rs)$
 
+      - id: rust-doc
+        name: Rust docs (cargo doc, warnings denied)
+        entry: scripts/check-rust-crates.sh doc
+        language: script
+        files: ^.+/(Cargo\.toml|Cargo\.lock|src/.*\.rs|tests/.*\.rs)$
+
       - id: mirror-invariants
         name: PR-side mirror invariants (byte-identity)
         entry: scripts/check-mirror-invariants.sh

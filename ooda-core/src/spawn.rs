@@ -3,7 +3,7 @@
 //! Wraps `Command::output()` such that the parent never blocks
 //! indefinitely on a stuck child AND never grows unbounded buffers
 //! from a child that emits gigabytes of output. On deadline elapsed,
-//! the child is `SIGKILL`ed via [`Child::kill`] and reaped, and the
+//! the child is `SIGKILL`ed via [`std::process::Child::kill`] and reaped, and the
 //! call returns [`SpawnError::Timeout`]. On either pipe's buffer
 //! growing past its per-stream cap, the helper kills + reaps the
 //! child and returns [`SpawnError::OutputTooLarge`].

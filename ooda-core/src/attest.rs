@@ -15,7 +15,7 @@
 //!   duration of the write. Two concurrent attest invocations against
 //!   the same path serialise; the loser observes the winner's bytes
 //!   on its next read. Read-then-decide-then-write callers that need
-//!   the read tied to the write should take a [`FileLock`] over the
+//!   the read tied to the write should take a [`crate::file_lock::FileLock`] over the
 //!   full RMW window externally — the per-write lock alone does not
 //!   close that gap.
 //! - **Total read**: a missing file is `Ok(None)`; malformed content

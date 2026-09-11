@@ -228,7 +228,7 @@ pub struct CommentReviewRef {
 /// through the generic `Actor` interface without the `[bot]`
 /// suffix — `"copilot-pull-request-reviewer"` on the wire,
 /// `"copilot-pull-request-reviewer[bot]"` via REST. Downstream
-/// classifiers (see [`crate::orient::thread::classify_author`],
+/// classifiers (see `crate::orient::thread::classify_author`,
 /// [`crate::ids::GitHubLogin::is_bot`]) treat the `[bot]` suffix
 /// as the structural bot marker. Every `CommentAuthor` that
 /// reaches those classifiers carries a login whose structural

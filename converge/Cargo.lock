@@ -77,7 +77,6 @@ name = "converge"
 version = "0.1.0"
 dependencies = [
  "ctrlc",
- "libc",
  "ooda-core",
  "serde",
  "serde_json",
@@ -249,6 +248,7 @@ name = "ooda-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
 ]

@@ -43,12 +43,12 @@
 //!
 //! # Kill discipline
 //!
-//! On timeout or overflow: `Child::kill()` (SIGKILL) followed by
-//! `Child::wait()` to reap the zombie. SIGTERM-then-SIGKILL is not
-//! used — the children this crate spawns (`gh`, `gt`, `git`,
+//! On timeout or overflow: `SIGKILL` to the process group, `wait` on
+//! the direct child, then a bounded wait until no member of the
+//! group is alive ([`kill_process_group`]). SIGTERM-then-SIGKILL is
+//! not used — the children this crate spawns (`gh`, `gt`, `git`,
 //! `codex`) have no cleanup invariant that depends on graceful
-//! shutdown, and stdlib does not expose SIGTERM without pulling in
-//! `libc`. The pragmatic choice keeps the helper dependency-free.
+//! shutdown.
 //!
 //! # stdout / stderr drain
 //!
@@ -122,16 +122,16 @@ pub enum SpawnError {
     /// owning the child).
     Wait(std::io::Error),
     /// The child did not exit within the deadline. The helper
-    /// attempted `Child::kill()` and reaped the zombie via
-    /// `Child::wait()`; `killed` records whether the kill syscall
-    /// itself succeeded (it can fail if the child raced to exit
-    /// between the deadline check and the kill).
+    /// `SIGKILL`ed the process group and reaped the child; `killed`
+    /// records whether the kill syscall itself succeeded (it can
+    /// fail if the group raced to exit between the deadline check
+    /// and the kill).
     Timeout { deadline: Duration, killed: bool },
     /// Reading the child's stdout or stderr pipe failed.
     Read(std::io::Error),
     /// One of the child pipes accumulated more bytes than its
-    /// per-stream cap. The helper attempted `Child::kill()` and
-    /// reaped the zombie; `killed` records whether the kill syscall
+    /// per-stream cap. The helper `SIGKILL`ed the process group and
+    /// reaped the child; `killed` records whether the kill syscall
     /// itself succeeded.
     OutputTooLarge {
         stream: Stream,
@@ -181,19 +181,74 @@ impl std::error::Error for SpawnError {
 /// Polling interval for `try_wait`. Tight enough that a sub-second
 /// child still completes within one tick of its actual exit; loose
 /// enough that a multi-second deadline doesn't pin a core.
+/// Bound on the wait for a `SIGKILL`ed group to have no live
+/// member. `SIGKILL` cannot be caught or ignored, so the wait covers
+/// scheduling latency only; a member parked in uninterruptible sleep
+/// past the bound is abandoned.
+const GROUP_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Poll interval for [`process_group_has_live_member`] inside
+/// [`kill_process_group`]. Members die within milliseconds of the
+/// signal, so the interval is short.
+const GROUP_EXIT_POLL: Duration = Duration::from_millis(5);
+
 /// `SIGKILL` the child's process group (ID = child PID by
-/// construction in [`run_with_limits`]), then reap the child.
-/// Returns whether the kill was delivered. Falls back to
-/// [`Child::kill`] if the PID does not fit an `i32`.
-fn kill_group(child: &mut Child) -> bool {
-    let killed = match i32::try_from(child.id()) {
+/// construction in [`run_with_limits`]), reap the child, and return
+/// once no member of the group is alive, bounded by a two-second
+/// wait. Returns whether the kill was delivered.
+/// Falls back to [`Child::kill`] if the PID does not fit an `i32`.
+///
+/// The signal reaches every member atomically and a member with a
+/// fatal signal pending cannot complete a `fork`, so the live set
+/// only shrinks after the kill: a `false` from
+/// [`process_group_has_live_member`] is final. Reaping the direct
+/// child does not reap grandchildren; those are reaped by their
+/// new parent (`init` or a subreaper) on its own schedule, which is
+/// why liveness rather than existence is the exit condition.
+pub fn kill_process_group(child: &mut Child) -> bool {
+    let group = child.id();
+    let killed = match i32::try_from(group) {
         // SAFETY: `killpg` takes plain integers and reports every
         // failure through its return value; no memory is touched.
         Ok(pgid) => (unsafe { libc::killpg(pgid, libc::SIGKILL) }) == 0,
         Err(_) => child.kill().is_ok(),
     };
     let _ = child.wait();
+    let deadline = Instant::now() + GROUP_EXIT_TIMEOUT;
+    while process_group_has_live_member(group) && Instant::now() < deadline {
+        thread::sleep(GROUP_EXIT_POLL);
+    }
     killed
+}
+
+/// `true` while any process in group `pgid` is alive. Zombie (`Z`)
+/// and dead (`X`) tasks awaiting their reaper are not alive: they
+/// hold no descriptors and cannot fork. Reads `/proc/<pid>/stat`
+/// for every entry; an entry that vanishes mid-scan is not alive.
+/// Without procfs the scan sees no members and returns `false`.
+#[must_use]
+pub fn process_group_has_live_member(pgid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|e| std::fs::read_to_string(e.path().join("stat")).ok())
+        .any(|stat| stat_is_live_member(&stat, pgid))
+}
+
+/// Decode one `/proc/<pid>/stat` record, `pid (comm) state ppid
+/// pgrp …`. `comm` may itself contain spaces and parentheses, so
+/// the fixed fields are read after the last `)`.
+fn stat_is_live_member(stat: &str, pgid: u32) -> bool {
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    let mut fields = rest.split_ascii_whitespace();
+    let state = fields.next();
+    let _ppid = fields.next();
+    let pgrp = fields.next().and_then(|s| s.parse::<u32>().ok());
+    pgrp == Some(pgid) && !matches!(state, None | Some("Z" | "X"))
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -283,7 +338,7 @@ pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output,
         // child gets reported as OutputTooLarge even if it raced
         // to exit between drain-thread overflow and try_wait.
         if stdout_overflow.load(Ordering::Acquire) {
-            let killed = kill_group(&mut child);
+            let killed = kill_process_group(&mut child);
             return Err(SpawnError::OutputTooLarge {
                 stream: Stream::Stdout,
                 limit: limits.max_stdout_bytes,
@@ -291,7 +346,7 @@ pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output,
             });
         }
         if stderr_overflow.load(Ordering::Acquire) {
-            let killed = kill_group(&mut child);
+            let killed = kill_process_group(&mut child);
             return Err(SpawnError::OutputTooLarge {
                 stream: Stream::Stderr,
                 limit: limits.max_stderr_bytes,
@@ -305,7 +360,7 @@ pub fn run_with_limits(cmd: &mut Command, limits: SpawnLimits) -> Result<Output,
             // SIGKILL the group; reap regardless so the OS
             // does not leak a zombie. The drain threads see
             // the pipe close and exit on their own.
-            let killed = kill_group(&mut child);
+            let killed = kill_process_group(&mut child);
             return Err(SpawnError::Timeout {
                 deadline: limits.deadline,
                 killed,
@@ -466,6 +521,69 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(2),
             "helper hung past deadline: elapsed={elapsed:?}",
+        );
+    }
+
+    #[test]
+    fn stat_record_live_member_decoding() {
+        assert!(stat_is_live_member(
+            "42 (sleep) S 41 41 41 0 -1 4194560",
+            41
+        ));
+        assert!(!stat_is_live_member(
+            "42 (sleep) Z 41 41 41 0 -1 4194560",
+            41
+        ));
+        assert!(!stat_is_live_member(
+            "42 (sleep) X 41 41 41 0 -1 4194560",
+            41
+        ));
+        assert!(!stat_is_live_member(
+            "42 (sleep) S 41 41 41 0 -1 4194560",
+            42
+        ));
+        assert!(stat_is_live_member("42 (a b) c) R 41 41 41 0 -1 0", 41));
+        assert!(!stat_is_live_member("garbage", 41));
+    }
+
+    #[test]
+    fn kill_process_group_returns_only_after_grandchild_is_dead() {
+        // The shell reports once its child exists, so the kill is
+        // exercised against a two-level tree rather than racing the
+        // fork. The marker is a fractional duration no other test
+        // uses; a /proc scan after the kill proves the grandchild
+        // is gone, and a zombie's empty cmdline cannot match it.
+        const MARKER: &str = "600.161803";
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("sleep {MARKER} & echo ready; wait"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn sh");
+        let mut ready = [0u8; 6];
+        child
+            .stdout
+            .take()
+            .expect("stdout piped")
+            .read_exact(&mut ready)
+            .expect("shell reports ready");
+        let pgid = child.id();
+        assert!(process_with_args_exists(&["sleep", MARKER]));
+        assert!(process_group_has_live_member(pgid));
+        let started = Instant::now();
+        assert!(kill_process_group(&mut child));
+        let elapsed = started.elapsed();
+        assert!(
+            !process_with_args_exists(&["sleep", MARKER]),
+            "grandchild `sleep {MARKER}` survived the group kill",
+        );
+        assert!(!process_group_has_live_member(pgid));
+        assert!(
+            elapsed < GROUP_EXIT_TIMEOUT,
+            "kill waited out the whole bound: {elapsed:?}",
         );
     }
 

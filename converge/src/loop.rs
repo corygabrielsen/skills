@@ -18,6 +18,10 @@ use crate::session::Session;
 use crate::session::now_iso;
 
 const MAX_POLLS_PER_ITER: u32 = 20;
+
+/// Budget for the `--hook` coprocess to drain its stdin and exit
+/// after converge closes the pipe at halt.
+const HOOK_FINISH_TIMEOUT: Duration = Duration::from_secs(5);
 const POST_FULL_REOBSERVE_MS: u64 = 15_000;
 
 /// 24-hour ceiling on a wait interval. Anything beyond this is operator
@@ -173,7 +177,7 @@ pub(crate) fn converge(opts: &ConvergeOpts, cancelled: &AtomicBool) -> Result<Ha
     let mut hook = opts
         .hook_cmd
         .as_deref()
-        .map(Hook::spawn)
+        .map(|cmd| Hook::spawn(cmd, HOOK_FINISH_TIMEOUT))
         .transpose()
         .map_err(|e| format!("cannot spawn hook: {e}"))?;
 

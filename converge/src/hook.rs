@@ -5,6 +5,7 @@
 //! events. Ordered delivery is guaranteed by the stdin stream.
 
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -28,19 +29,27 @@ pub(crate) struct Hook {
     /// `None` once [`Self::finish`] has consumed the child;
     /// [`Drop`] becomes a no-op past that point. Belt-and-braces
     /// against cancellation paths that drop the [`Hook`] without
-    /// calling [`Self::finish`] — the child is killed and reaped
-    /// rather than left as a zombie.
+    /// calling [`Self::finish`] — the process group is killed and
+    /// the child reaped rather than left as a zombie.
     child: Option<Child>,
 }
 
 impl Hook {
     /// Spawn the hook command via `sh -c` so shell features work.
+    ///
+    /// The shell is placed in a fresh process group whose ID equals
+    /// its PID. Every descendant the shell forks inherits the group,
+    /// so [`kill_group`] reaches the whole subtree: killing only the
+    /// shell would orphan its children, and an orphan that inherited
+    /// converge's stderr keeps that pipe open for the rest of its
+    /// lifetime.
     pub(crate) fn spawn(cmd: &str) -> std::io::Result<Self> {
         let child = Command::new("sh")
             .args(["-c", cmd])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
+            .process_group(0)
             .spawn()?;
         Ok(Self { child: Some(child) })
     }
@@ -98,8 +107,7 @@ impl Hook {
                         // converge's own shutdown can proceed. Both
                         // kill and the post-kill wait are best-
                         // effort; the parent has no recovery path.
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        kill_group(&mut child);
                         return;
                     }
                     std::thread::sleep(FINISH_POLL);
@@ -116,10 +124,24 @@ impl Drop for Hook {
     /// `finish` already consumed the child handle.
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child);
         }
     }
+}
+
+/// `SIGKILL` the child's process group, then reap the child. The
+/// group ID equals the child's PID by construction in
+/// [`Hook::spawn`]. Best-effort: `ESRCH` (group already gone) and
+/// `EPERM` are ignored, as is the reap result.
+fn kill_group(child: &mut Child) {
+    if let Ok(pgid) = i32::try_from(child.id()) {
+        // SAFETY: `killpg` takes plain integers and reports every
+        // failure through its return value; no memory is touched.
+        unsafe {
+            libc::killpg(pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.wait();
 }
 
 #[cfg(test)]
@@ -141,15 +163,35 @@ mod tests {
         );
     }
 
+    /// `true` once no process remains in group `pgid`. Signal 0
+    /// probes without delivering; `ESRCH` is the empty-group answer.
+    fn group_is_empty(pgid: i32) -> bool {
+        // SAFETY: signal 0 probes existence only; see `kill_group`.
+        let rc = unsafe { libc::killpg(pgid, 0) };
+        rc == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+
+    fn pgid_of(hook: &Hook) -> i32 {
+        let child = hook.child.as_ref().expect("child present before finish");
+        i32::try_from(child.id()).expect("PID fits in i32")
+    }
+
     #[test]
     fn finish_kills_hook_that_ignores_eof() {
         // A hook that never exits on its own must be killed at the
         // deadline; finish() must return within a small slack of the
-        // configured budget.
+        // configured budget. `sh -c "sleep 600"` forks `sleep` as a
+        // grandchild, so the post-finish assertion proves the whole
+        // group died, not just the shell.
         let hook = Hook::spawn("sleep 600").expect("spawn sleep");
+        let pgid = pgid_of(&hook);
         let started = Instant::now();
         hook.finish();
         let elapsed = started.elapsed();
+        assert!(
+            group_is_empty(pgid),
+            "process group {pgid} still has members after finish()"
+        );
         assert!(
             elapsed >= FINISH_TIMEOUT,
             "finish() returned {elapsed:?} before deadline {FINISH_TIMEOUT:?}",
@@ -159,6 +201,17 @@ mod tests {
             elapsed < FINISH_TIMEOUT + Duration::from_secs(2),
             "finish() overran budget by {:?}",
             elapsed.checked_sub(FINISH_TIMEOUT).unwrap_or_default(),
+        );
+    }
+
+    #[test]
+    fn drop_kills_whole_process_group() {
+        let hook = Hook::spawn("sleep 600").expect("spawn sleep");
+        let pgid = pgid_of(&hook);
+        drop(hook);
+        assert!(
+            group_is_empty(pgid),
+            "process group {pgid} still has members after drop"
         );
     }
 }

@@ -683,9 +683,6 @@ codex-review: Fix issues from iteration {N}
 
 Issues resolved:
 - CR-001: SQL injection in auth.js (major)
-
-Reviewed by: OpenAI Codex
-Fixed by: Claude
 EOF
 )"
 ```

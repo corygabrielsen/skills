@@ -64,7 +64,7 @@ pub type HaltReason   = ooda_core::HaltReason<ActionKind>;
 pub type Action       = ooda_core::Action<ActionKind>;
 ```
 
-`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
+`ActionEffect`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
 and the `ActionKindName` trait are re-exported from `ooda-core`.
 The suite-level `MultiOutcome` type stays per-binary — it's
 specific to `/ooda-prs`'s aggregate priority projection over N
@@ -501,8 +501,8 @@ The live binary serializes via `serde_json` without the
 **alphabetical by key**. Parse the records as JSON; do not rely on
 field position. Live alphabetical-order forms of the records below
 would be: keys sorted lexicographically (e.g. `action`, `blocker`,
-`exit`, `outcome`, `pr`, `prompt`, `slug` for HandoffAgent
-records).
+`exit`, `outcome`, `pr`, `pr_url`, `prompt`, `run_id`, `slug` for
+HandoffAgent records).
 
 ```jsonl
 {"slug":"acme/widget","pr":1,"pr_url":"https://github.com/acme/widget/pull/1","run_id":"20260517T142500Z-000000123-p4242","outcome":"DoneMerged","exit":0}
@@ -526,25 +526,26 @@ never carry `WouldAdvance`. Inspect-mode bundles carry no
 decision), every `Handoff*` variant, every terminal/`Paused`
 variant, and `BinaryError`.
 
-Schema (the `automation` field is rendered by `format_automation`,
-which delegates to `format_duration` for the `Wait{interval}` arm;
+Schema (the `effect` field is rendered by `format_effect`, which
+delegates to `format_duration` for the `Wait{interval}` arm;
 `format_duration` produces `<seconds>s`, `<minutes>m`, or
 `<minutes>m<seconds>s`, picking whichever form is non-redundant for
 the duration's value):
 
-| Field        | Type    | Always present? | Notes                                                                                                                                                                                                                                                                                                                                                                                                |
-| ------------ | ------- | :-------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `slug`       | string  |       yes       | `<owner>/<repo>`                                                                                                                                                                                                                                                                                                                                                                                     |
-| `pr`         | integer |       yes       | positive integer                                                                                                                                                                                                                                                                                                                                                                                     |
-| `pr_url`     | string  |       yes       | `https://github.com/<owner>/<repo>/pull/<pr>`                                                                                                                                                                                                                                                                                                                                                        |
-| `run_id`     | string  |       yes       | Opaque [`ooda_state`] run id. Joins the record back to `<state-root>/runs/<run-id>/events.jsonl`. Empty string when the per-PR recorder failed to open (the same condition that produced `Outcome::BinaryError` for the PR).                                                                                                                                                                         |
-| `outcome`    | string  |       yes       | variant name; **10 reachable values** in stdout: `DoneMerged`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`, `WouldAdvance`, `HandoffAgent`, `BinaryError`, `Paused`, `DoneClosed`, `SignalInterrupted`. `UsageError` is suite-level only and never appears here.                                                                                                                              |
-| `exit`       | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 70, 130, 143}` — the 1:1 mapping inherited from `/ooda-pr`, extended with the two `SignalInterrupted` codes. `64` does **not** appear in JSONL records (UsageError emits no stdout); a per-PR `SignalInterrupted` lands when a worker traps the shutdown signal mid-loop and folds into the suite-level priority projection (see Aggregate exit code). |
-| `action`     | string  |   conditional   | present iff `outcome ∈ {StuckRepeated, StuckCapReached, HandoffHuman, HandoffAgent, WouldAdvance}` — the `ActionKind::name()` (e.g. `"Rebase"`, `"AddressThreads"`)                                                                                                                                                                                                                                  |
-| `blocker`    | string  |   conditional   | same condition as `action` — the `BlockerKey` payload, a non-empty stable identifier. Typical values are ASCII with `:` and spaces (e.g. `"ci_fail: Build / test"`), but no surface form is contractual; consumers must not parse it.                                                                                                                                                                |
-| `prompt`     | string  |   conditional   | `outcome ∈ {HandoffAgent, HandoffHuman}` — verbatim agent/human prompt from `Action.description`. Multi-line content is JSON-string-escaped (literal `\n` in the JSON source, real newlines after `jq -r` decoding).                                                                                                                                                                                 |
-| `automation` | string  |   conditional   | `outcome = WouldAdvance` only. Reachable values are `"Full"` and `"Wait(<duration>)"` — `Decision::Execute` is structurally restricted to `{Full, Wait{..}}`, so `"Agent"` and `"Human"` cannot appear.                                                                                                                                                                                              |
-| `msg`        | string  |   conditional   | `outcome = BinaryError` only — single-line human-triage string (newlines flattened to spaces by the binary)                                                                                                                                                                                                                                                                                          |
+| Field              | Type    | Always present? | Notes                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ------- | :-------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `slug`             | string  |       yes       | `<owner>/<repo>`                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pr`               | integer |       yes       | positive integer                                                                                                                                                                                                                                                                                                                                                                                     |
+| `pr_url`           | string  |       yes       | `https://github.com/<owner>/<repo>/pull/<pr>`                                                                                                                                                                                                                                                                                                                                                        |
+| `run_id`           | string  |       yes       | Opaque [`ooda_state`] run id. Joins the record back to `<state-root>/runs/<run-id>/events.jsonl`. Empty string when the per-PR recorder failed to open (the same condition that produced `Outcome::BinaryError` for the PR).                                                                                                                                                                         |
+| `outcome`          | string  |       yes       | variant name; **10 reachable values** in stdout: `DoneMerged`, `StuckRepeated`, `StuckCapReached`, `HandoffHuman`, `WouldAdvance`, `HandoffAgent`, `BinaryError`, `Paused`, `DoneClosed`, `SignalInterrupted`. `UsageError` is suite-level only and never appears here.                                                                                                                              |
+| `exit`             | integer |       yes       | per-PR exit code in `{0, 1, 2, 3, 4, 5, 6, 7, 70, 130, 143}` — the 1:1 mapping inherited from `/ooda-pr`, extended with the two `SignalInterrupted` codes. `64` does **not** appear in JSONL records (UsageError emits no stdout); a per-PR `SignalInterrupted` lands when a worker traps the shutdown signal mid-loop and folds into the suite-level priority projection (see Aggregate exit code). |
+| `action`           | string  |   conditional   | present iff `outcome ∈ {StuckRepeated, StuckCapReached, HandoffHuman, HandoffAgent, WouldAdvance}` — the `ActionKind::name()` (e.g. `"Rebase"`, `"AddressThreads"`)                                                                                                                                                                                                                                  |
+| `blocker`          | string  |   conditional   | same condition as `action` — the `BlockerKey` payload, a non-empty stable identifier. Typical values are ASCII with `:` and spaces (e.g. `"ci_fail: Build / test"`), but no surface form is contractual; consumers must not parse it.                                                                                                                                                                |
+| `prompt`           | string  |   conditional   | `outcome ∈ {HandoffAgent, HandoffHuman}` — the rendered `HandoffAction.prompt` (dashboard preamble + per-action body, same bytes as the handoff blob). Multi-line content is JSON-string-escaped (literal `\n` in the JSON source, real newlines after `jq -r` decoding).                                                                                                                            |
+| `effect`           | string  |   conditional   | `outcome = WouldAdvance` only. Reachable values are `"Full"` and `"Wait(<duration>)"` — `Decision::Execute` is structurally restricted to `{Full, Wait{..}}`, so `"Agent"` and `"Human"` cannot appear.                                                                                                                                                                                              |
+| `msg`              | string  |   conditional   | `outcome = BinaryError` only — single-line human-triage string (newlines flattened to spaces by the binary)                                                                                                                                                                                                                                                                                          |
+| `signal_exit_code` | integer |   conditional   | `outcome = SignalInterrupted` only — the trapped signal's exit code (`130` or `143`), duplicated from `exit` so consumers pivoting on outcome tokens stay self-describing.                                                                                                                                                                                                                           |
 
 `UsageError` (parse failure) emits **no stdout** — `$? = 64` and
 the stderr usage block are sufficient. The JSONL stream is a clean
@@ -679,10 +680,11 @@ Per-PR, identical to `/ooda-pr`:
 
 - Each iteration runs `observe → orient → decide → act`.
 - `act` runs only for `Execute(action)` decisions
-  (`automation ∈ {Full, Wait}`); `Agent` / `Human` automations are
-  halts.
-- Stall detection on `(kind, blocker)` of consecutive non-Wait
-  actions.
+  (`effect ∈ {Full, Wait}`); `Agent` / `Human` effects are halts.
+- Stall detection on `StallKey = (kind name, blocker)` — payload-free
+  — of consecutive non-Wait actions. A `Full` effect declared
+  `Eventual(d)` is granted one synthetic `Wait(d)` on its first
+  repeat before a second repeat counts as a stall (see `/ooda-pr`).
 - Iteration cap (`--max-iter`) per-PR.
 
 Across PRs:
@@ -776,7 +778,7 @@ cargo build --release`. The `run` wrapper invokes this on demand
 for normal use.
 
 For deeper semantics — internal types (`Decision`, `HaltReason`,
-`Action`, `Automation`, `MultiOutcome`, `ProcessOutcome`), the
+`Action`, `ActionEffect`, `MultiOutcome`, `ProcessOutcome`), the
 orient axes, and the suite spawn loop's atomic-counter rolling
 concurrency — see `~/.claude/skills/ooda-prs/README.md`. The
 contract this SKILL describes (suite grammar, MultiOutcome,

@@ -686,8 +686,6 @@ Issues resolved:
 
 Reviewed by: OpenAI Codex
 Fixed by: Claude
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 EOF
 )"
 ```

@@ -151,8 +151,6 @@ Address review feedback
 
 - Fixed <issue 1>
 - Fixed <issue 2>
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 ```

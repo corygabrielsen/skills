@@ -83,6 +83,9 @@ pub(crate) fn drive(oriented: &OrientedState, pr: PullRequestNumber) -> Vec<Acti
         ci: &oriented.ci,
         copilot: oriented.copilot.as_ref(),
         threads: &oriented.threads,
+        review_class: &oriented.review_class,
+        review_class_attest_path: oriented.review_class_attest_path.as_deref(),
+        pr,
     }));
     out.extend(CopilotAxis.candidates(&CopilotObservation {
         report: oriented.copilot.as_ref(),

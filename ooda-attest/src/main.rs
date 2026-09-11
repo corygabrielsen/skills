@@ -29,10 +29,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use ooda_core::attest::{
-    AttestError, write_claude_review_atomic, write_closeout_atomic, write_doc_review_atomic,
-    write_pull_request_metadata_atomic,
+    AttestError, ReviewClassEntry, ReviewSite, validate_review_classes, write_claude_review_atomic,
+    write_closeout_atomic, write_doc_review_atomic, write_pull_request_metadata_atomic,
+    write_review_class_atomic,
 };
 use ooda_core::{SpawnError, SpawnLimits, run_with_limits};
 use ooda_state::resolve_state_root as resolve_ooda_state_root;
@@ -67,6 +68,7 @@ const PULL_REQUEST_METADATA_FILE: &str = "pr_meta_attest.json";
 const DOC_REVIEW_FILE: &str = "doc_review_attest.json";
 const CLAUDE_REVIEW_FILE: &str = "claude_review_attest.json";
 const CLOSEOUT_FILE: &str = "closeout_attest.json";
+const REVIEW_CLASS_FILE: &str = "review_class_attest.json";
 
 #[derive(Parser, Debug)]
 #[command(name = "ooda-attest", about = "Write OODA attestation files", version)]
@@ -147,6 +149,36 @@ enum SubCmd {
         #[arg(long)]
         repo_root: Option<PathBuf>,
     },
+
+    /// Attest that every issue class raised by review threads has
+    /// been swept across the working tree at current HEAD. Each
+    /// `--class` pairs positionally with the `--sites` at the same
+    /// position; a class with no sites is rejected.
+    #[command(name = "review-class")]
+    ReviewClass {
+        /// PR number (digits only).
+        #[arg(long)]
+        pr_id: String,
+
+        /// State-root directory; see `pr-meta`.
+        #[arg(long)]
+        state_root: Option<PathBuf>,
+
+        /// Target working tree; see `pr-meta`.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+
+        /// One-line name of an issue class the reviewers raised.
+        /// Repeat once per class.
+        #[arg(long = "class", action = ArgAction::Append, required = true)]
+        classes: Vec<String>,
+
+        /// Comma-separated `path:line` list for the `--class` at the
+        /// same position: every site the class was fixed or judged.
+        /// Repeat once per class.
+        #[arg(long = "sites", action = ArgAction::Append, required = true)]
+        sites: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -196,7 +228,58 @@ fn main() -> ExitCode {
             CLOSEOUT_FILE,
             write_closeout_atomic,
         ),
+        SubCmd::ReviewClass {
+            pr_id,
+            state_root,
+            repo_root,
+            classes,
+            sites,
+        } => {
+            let entries = match parse_review_classes(&classes, &sites) {
+                Ok(e) => e,
+                Err(msg) => return fail(EXIT_VALIDATION, &msg),
+            };
+            run_attest(
+                &pr_id,
+                state_root.as_deref(),
+                repo_root,
+                REVIEW_CLASS_FILE,
+                move |path, sha| write_review_class_atomic(path, sha, entries),
+            )
+        }
     }
+}
+
+/// Pair each `--class` with the `--sites` at the same position and
+/// parse the site lists. Validated here so a malformed witness list
+/// surfaces as a usage error before HEAD is read.
+fn parse_review_classes(
+    classes: &[String],
+    sites: &[String],
+) -> Result<Vec<ReviewClassEntry>, String> {
+    if classes.len() != sites.len() {
+        return Err(format!(
+            "--class and --sites must be paired: got {} --class and {} --sites",
+            classes.len(),
+            sites.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(classes.len());
+    for (class, site_list) in classes.iter().zip(sites) {
+        let parsed: Result<Vec<ReviewSite>, AttestError> = site_list
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ReviewSite::parse)
+            .collect();
+        let parsed = parsed.map_err(|e| format!("--class {class:?}: {e}"))?;
+        out.push(ReviewClassEntry {
+            class: class.trim().to_string(),
+            sites: parsed,
+        });
+    }
+    validate_review_classes(&out).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 fn run_attest<F, T>(
@@ -466,7 +549,46 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use super::{RepoRootError, is_valid_sha, resolve_repo_root_with_cwd, validate_pr_id};
+    use super::{
+        RepoRootError, is_valid_sha, parse_review_classes, resolve_repo_root_with_cwd,
+        validate_pr_id,
+    };
+
+    fn strings(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn parse_review_classes_pairs_positionally_and_splits_sites() {
+        let entries = parse_review_classes(
+            &strings(&["unwrap in lib", "missing context"]),
+            &strings(&["src/a.rs:1, src/b.rs:2", "src/c.rs:3"]),
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].class, "unwrap in lib");
+        assert_eq!(entries[0].sites.len(), 2);
+        assert_eq!(entries[0].sites[1].to_string(), "src/b.rs:2");
+        assert_eq!(entries[1].sites[0].line, 3);
+    }
+
+    #[test]
+    fn parse_review_classes_rejects_count_mismatch() {
+        let err = parse_review_classes(&strings(&["a", "b"]), &strings(&["x.rs:1"])).unwrap_err();
+        assert!(err.contains("paired"), "{err}");
+    }
+
+    #[test]
+    fn parse_review_classes_rejects_empty_site_list() {
+        let err = parse_review_classes(&strings(&["a"]), &strings(&[""])).unwrap_err();
+        assert!(err.contains("no sites"), "{err}");
+    }
+
+    #[test]
+    fn parse_review_classes_rejects_malformed_site() {
+        let err = parse_review_classes(&strings(&["a"]), &strings(&["x.rs"])).unwrap_err();
+        assert!(err.contains("path:line"), "{err}");
+    }
 
     #[test]
     fn validate_pr_id_accepts_digits() {

@@ -199,6 +199,7 @@ GitHubObservations =
   × doc_review             : DocReviewObservation                (attestation file + HEAD)
   × claude_review          : ClaudeReviewObservation             (attestation file + reviewer content)
   × closeout               : CloseoutObservation                 (attestation file + HEAD)
+  × review_class           : ReviewClassObservation              (attestation file; threads joined in orient)
   × branch_sync            : BranchSyncObservation               (local git, not gh)
 ```
 
@@ -375,6 +376,8 @@ OrientedState =
   × claude_review_attest_path : Option⟨PathBuf⟩
   × closeout                  : Closeout                    (attestation axis, convergence gate)
   × closeout_attest_path      : Option⟨PathBuf⟩
+  × review_class              : ReviewClass                 (attestation axis, content-keyed over every thread)
+  × review_class_attest_path  : Option⟨PathBuf⟩
   × branch_sync               : BranchSyncObservation       (passed through untransformed)
 ```
 
@@ -480,6 +483,14 @@ ClaudeReview        = NoActivity
                             latest_claude_url, inline_thread_count,
                             attested_at: Option⟨Timestamp⟩, head_sha}
 
+-- Content-keyed over every review thread, all authors. Resolution
+-- state is not the witness; the attestation must be newer than the
+-- newest thread, and it carries the enumerated sites per class.
+ReviewClass         = NoThreads
+                    ⊕ Attested{attested_at, class_count}
+                    ⊕ Fresh{latest_thread_at, fresh_thread_count,
+                            prior: Option⟨ReviewClassAttestation⟩}
+
 -- Codex review axis (ladder over [floor, ceiling]).
 CodexReviewReport =
     status            : CodexReviewStatus
@@ -547,7 +558,7 @@ witness loop-only halts (`Stalled`, `CapReached`).
 
 ```
 Action =
-    kind          : ActionKind     (sum over 39 variants)
+    kind          : ActionKind     (sum over 40 variants)
   × effect        : ActionEffect   (who runs it, fused with its payload)
   × target_effect : TargetEffect   (Blocks ⊕ Advances ⊕ Neutral)
   × urgency       : Urgency        (Pre ⊕ Mid(MidTier) ⊕ Post — total-ordered tier)
@@ -569,7 +580,7 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
            (payload-free — Action.stall_key() projects it)
 ```
 
-### `ActionKind` taxonomy (39 variants — the funnel basins, all payloads typed)
+### `ActionKind` taxonomy (40 variants — the funnel basins, all payloads typed)
 
 ```
                 ┌─ FixCi{check_name: CheckName}
@@ -609,6 +620,7 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
    Attest.  ┌─ SyncPullRequestMetadata{attest_path: PathBuf}   (SHA-keyed)
             ├─ ReviewDocs{attest_path: PathBuf}                (SHA-keyed)
             ├─ AddressClaudeReview{attest_path: PathBuf}       (content-keyed)
+            ├─ AttestReviewClass{attest_path: PathBuf}         (content-keyed — sweep witness with enumerated sites)
             └─ Closeout{attest_path: PathBuf}                  (convergence gate — Urgency::Post)
 
    Branch   ┌─ SyncGraphiteStack{from_sha: String, to_sha: String}   (Full — `gt sync`)

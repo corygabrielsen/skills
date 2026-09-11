@@ -17,6 +17,7 @@ pub(crate) mod cursor;
 pub(crate) mod doc_review;
 pub(crate) mod pull_request_metadata;
 pub(crate) mod required_checks;
+pub(crate) mod review_class;
 pub(crate) mod reviews;
 pub(crate) mod state;
 pub(crate) mod thread;
@@ -36,6 +37,7 @@ use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
 use cursor::{CursorReport, orient_cursor};
 use doc_review::{DocReview, orient_doc_review};
 use pull_request_metadata::{PullRequestMetadata, orient_pull_request_metadata};
+use review_class::{ReviewClass, orient_review_class};
 use reviews::ReviewSummary;
 use state::PullRequestProjection;
 use thread::ReviewThread;
@@ -114,6 +116,12 @@ pub(crate) struct OrientedState {
     pub closeout: Closeout,
     /// Attestation-file path for the closeout axis.
     pub closeout_attest_path: Option<std::path::PathBuf>,
+    /// Content-keyed attestation over every review thread: the sweep
+    /// of each issue class across the working tree. Fresh whenever a
+    /// thread is newer than the last attestation, resolved or not.
+    pub review_class: ReviewClass,
+    /// Attestation-file path for the review-class axis.
+    pub review_class_attest_path: Option<std::path::PathBuf>,
     /// Branch-sync observation passed through verbatim. The
     /// classification is purely deterministic from the upstream
     /// SHA delta and local-tool probes; no projection is needed,
@@ -214,6 +222,8 @@ pub(crate) fn orient(
     let claude_review_attest_path = obs.claude_review.attest_path.clone();
     let closeout = orient_closeout(&obs.closeout);
     let closeout_attest_path = obs.closeout.attest_path.clone();
+    let review_class = orient_review_class(&obs.review_class, &threads, copilot.as_ref());
+    let review_class_attest_path = obs.review_class.attest_path.clone();
 
     OrientedState {
         ci,
@@ -232,6 +242,8 @@ pub(crate) fn orient(
         claude_review_attest_path,
         closeout,
         closeout_attest_path,
+        review_class,
+        review_class_attest_path,
         branch_sync: obs.branch_sync.clone(),
     }
 }

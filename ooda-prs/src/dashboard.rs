@@ -23,6 +23,7 @@ use crate::orient::copilot::{CopilotReport, copilot_signal};
 use crate::orient::cursor::{CursorReport, cursor_signal};
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
+use crate::orient::review_class::ReviewClass;
 use ooda_core::MidTier;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
@@ -106,6 +107,7 @@ pub(crate) enum AxisName {
     PullRequestMetadata,
     DocReview,
     ClaudeReview,
+    ReviewClass,
 }
 
 impl AxisName {
@@ -117,6 +119,7 @@ impl AxisName {
             Self::PullRequestMetadata => "pr_meta",
             Self::DocReview => "doc_review",
             Self::ClaudeReview => "claude_review",
+            Self::ReviewClass => "review_class",
         }
     }
 }
@@ -134,7 +137,7 @@ pub(crate) struct Blocker {
 
 /// Per-consumer input slice for [`Dashboard::from_iteration`]. Each
 /// field declares a typed dep ref. The struct is the function
-/// signature reified; scope is exactly the six axes the dashboard
+/// signature reified; scope is exactly the seven axes the dashboard
 /// projects.
 pub(crate) struct DashboardInputs<'a> {
     pub ci: &'a CiReport,
@@ -143,6 +146,7 @@ pub(crate) struct DashboardInputs<'a> {
     pub pull_request_metadata: &'a PullRequestMetadata,
     pub doc_review: &'a DocReview,
     pub claude_review: &'a ClaudeReview,
+    pub review_class: &'a ReviewClass,
 }
 
 impl<'a> From<&'a crate::orient::OrientedState> for DashboardInputs<'a> {
@@ -154,6 +158,7 @@ impl<'a> From<&'a crate::orient::OrientedState> for DashboardInputs<'a> {
             pull_request_metadata: &o.pull_request_metadata,
             doc_review: &o.doc_review,
             claude_review: &o.claude_review,
+            review_class: &o.review_class,
         }
     }
 }
@@ -228,7 +233,50 @@ fn collect_signals(inputs: &DashboardInputs<'_>) -> Vec<AxisSignal> {
     out.push(pull_request_metadata_signal(inputs.pull_request_metadata));
     out.push(doc_review_signal(inputs.doc_review));
     out.push(claude_review_signal(inputs.claude_review));
+    out.push(review_class_signal(inputs.review_class));
     out
+}
+
+/// Project the review-class attestation axis onto a dashboard
+/// signal. No threads → `NotApplicable` (nothing to sweep);
+/// attested → Ok with the class count; fresh → Warn with the count
+/// of threads newer than the attestation.
+#[must_use]
+pub(crate) fn review_class_signal(state: &ReviewClass) -> AxisSignal {
+    let (icon, summary) = match state {
+        ReviewClass::NoThreads => (
+            SignalIcon::NotApplicable,
+            "review classes: no threads".to_string(),
+        ),
+        ReviewClass::Attested { class_count, .. } => (
+            SignalIcon::Ok,
+            format!("review classes attested ({})", class_noun(*class_count)),
+        ),
+        ReviewClass::Fresh {
+            fresh_thread_count, ..
+        } => (
+            SignalIcon::Warn,
+            format!(
+                "review classes unattested ({} since last sweep)",
+                crate::text::count(*fresh_thread_count, "thread"),
+            ),
+        ),
+    };
+    AxisSignal {
+        axis: AxisName::ReviewClass,
+        icon,
+        summary,
+    }
+}
+
+/// `class` takes an irregular plural the shared count helper does
+/// not produce.
+pub(crate) fn class_noun(n: usize) -> String {
+    if n == 1 {
+        "1 class".to_string()
+    } else {
+        format!("{n} classes")
+    }
 }
 
 /// Project the PR-metadata attestation axis onto a dashboard signal.
@@ -1420,6 +1468,44 @@ mod tests {
         let sig = claude_review_signal(&ClaudeReview::Addressed);
         assert_eq!(sig.icon, SignalIcon::Ok);
         assert!(sig.summary.contains("addressed"), "{}", sig.summary);
+    }
+
+    // ── ReviewClass signal projection ──────────────────────────────
+
+    #[test]
+    fn review_class_signal_no_threads_renders_not_applicable() {
+        let sig = review_class_signal(&ReviewClass::NoThreads);
+        assert_eq!(sig.icon, SignalIcon::NotApplicable);
+        assert_eq!(sig.axis, AxisName::ReviewClass);
+        assert!(sig.summary.contains("no threads"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn review_class_signal_attested_renders_ok_with_class_count() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let sig = review_class_signal(&ReviewClass::Attested {
+            attested_at: at,
+            class_count: 2,
+        });
+        assert_eq!(sig.icon, SignalIcon::Ok);
+        assert!(sig.summary.contains("2 classes"), "{}", sig.summary);
+    }
+
+    #[test]
+    fn review_class_signal_fresh_renders_warn_with_thread_count() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let sig = review_class_signal(&ReviewClass::Fresh {
+            latest_thread_at: at,
+            fresh_thread_count: 4,
+            prior: None,
+        });
+        assert_eq!(sig.icon, SignalIcon::Warn);
+        assert!(sig.summary.contains("unattested"), "{}", sig.summary);
+        assert!(sig.summary.contains("4 threads"), "{}", sig.summary);
     }
 
     #[test]

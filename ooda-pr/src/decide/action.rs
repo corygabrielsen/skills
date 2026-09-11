@@ -216,6 +216,17 @@ pub enum ActionKind {
         attest_path: std::path::PathBuf,
     },
 
+    // ── Review-class attestation ──
+    /// Every review thread is resolved but no attestation is newer
+    /// than the latest thread. Agent handoff: sweep each issue class
+    /// across the working tree and attest with enumerated sites. The
+    /// reviews axis folds the same attest step into `AddressThreads`
+    /// while threads are open; this variant gates the resolved-but-
+    /// unattested residue so a re-request cannot fire past it.
+    AttestReviewClass {
+        attest_path: std::path::PathBuf,
+    },
+
     // ── Closeout attestation ──
     /// Convergence-gate attestation. Emitted at the least-urgent
     /// tier so it wins only on global quiescence; the agent
@@ -287,6 +298,7 @@ impl ActionKindName for ActionKind {
             Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
             Self::ReviewDocs { .. } => "ReviewDocs",
             Self::AddressClaudeReview { .. } => "AddressClaudeReview",
+            Self::AttestReviewClass { .. } => "AttestReviewClass",
             Self::Closeout { .. } => "Closeout",
             Self::SyncGraphiteStack { .. } => "SyncGraphiteStack",
             Self::InvestigatePush { .. } => "InvestigatePush",

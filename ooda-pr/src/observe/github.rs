@@ -30,6 +30,7 @@ pub(crate) mod pull_request_metadata_attestation;
 pub(crate) mod pull_request_view;
 pub(crate) mod rate_limit;
 pub(crate) mod requested_reviewers;
+pub(crate) mod review_class_attest;
 pub(crate) mod review_threads;
 pub(crate) mod reviews;
 pub(crate) mod rulesets;
@@ -62,6 +63,7 @@ use pull_request_metadata_attestation::{
 use pull_request_view::{PullRequestState, PullRequestView, fetch_pull_request_view};
 use rate_limit::fetch_rate_limit_budget;
 use requested_reviewers::{RequestedReviewers, fetch_requested_reviewers};
+use review_class_attest::{ReviewClassObservation, observe_review_class};
 use review_threads::{
     ReviewThreadsResponse, empty_review_threads_response, fetch_all_review_threads,
 };
@@ -146,6 +148,10 @@ pub(crate) struct GitHubObservations {
     /// SHA-keyed attestation snapshot for closeout. No commit-count
     /// field — HEAD-equality is the only signal the axis carries.
     pub closeout: CloseoutObservation,
+    /// Content-keyed attestation snapshot for the review-class sweep.
+    /// The threads it is compared against are already in the bundle;
+    /// orient performs the join.
+    pub review_class: ReviewClassObservation,
     /// Branch-sync observation: divergence between the per-PR
     /// sticky head SHA and the live remote head, plus the
     /// graphite-availability probe results. Drives the
@@ -230,6 +236,7 @@ pub(crate) fn fetch_all(
         observe_pull_request_metadata(state_root, slug, pr, &pull_request_view.head_ref_oid);
     let doc_review = observe_doc_review(state_root, slug, pr, &pull_request_view.head_ref_oid);
     let closeout = observe_closeout(state_root, pr, &pull_request_view.head_ref_oid);
+    let review_class = observe_review_class(state_root, pr, &pull_request_view.head_ref_oid);
     // Branch-level fetches must target the protected root, not the
     // intermediate stack branch. Resolve before fan-out.
     let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pull_request_view.base_ref_name));
@@ -349,6 +356,7 @@ pub(crate) fn fetch_all(
             doc_review,
             claude_review,
             closeout,
+            review_class,
             branch_sync,
         })))
     })
@@ -440,6 +448,11 @@ fn terminal_observations(
             inline_thread_count: 0,
         },
         closeout: CloseoutObservation {
+            attestation: None,
+            head_sha: head_sha.clone(),
+            attest_path: None,
+        },
+        review_class: ReviewClassObservation {
             attestation: None,
             head_sha,
             attest_path: None,

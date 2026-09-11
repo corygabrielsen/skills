@@ -21,6 +21,7 @@ use crate::orient::copilot::{CopilotActivity, CopilotReport};
 use crate::orient::cursor::CursorReport;
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
+use crate::orient::review_class::ReviewClass;
 use crate::orient::reviews::ReviewSummary;
 use serde::Serialize;
 
@@ -36,6 +37,7 @@ pub(crate) struct RenderInputs<'a> {
     pub pull_request_metadata: &'a PullRequestMetadata,
     pub doc_review: &'a DocReview,
     pub claude_review: &'a ClaudeReview,
+    pub review_class: &'a ReviewClass,
 }
 
 impl<'a> From<&'a crate::orient::OrientedState> for RenderInputs<'a> {
@@ -52,6 +54,7 @@ impl<'a> From<&'a crate::orient::OrientedState> for RenderInputs<'a> {
             pull_request_metadata: &o.pull_request_metadata,
             doc_review: &o.doc_review,
             claude_review: &o.claude_review,
+            review_class: &o.review_class,
         }
     }
 }
@@ -105,6 +108,7 @@ pub(crate) fn render(
             pull_request_metadata: inputs.pull_request_metadata,
             doc_review: inputs.doc_review,
             claude_review: inputs.claude_review,
+            review_class: inputs.review_class,
         },
         candidates,
         decision,
@@ -126,6 +130,7 @@ pub(crate) fn render(
     let pr_meta = pull_request_metadata_line(inputs.pull_request_metadata);
     let doc_review = doc_review_line(inputs.doc_review);
     let claude_review = claude_review_line(inputs.claude_review);
+    let review_class = review_class_line(inputs.review_class);
     // Dedup key composition: per-axis lines (structural state) +
     // decision discriminant (which arm fired) + decision blocker
     // tagged with payload (which gate, with cardinality-bearing
@@ -133,7 +138,7 @@ pub(crate) fn render(
     // so wording-only changes do not break dedup; cardinality
     // changes travel through the payload tag instead.
     let dedup_key = format!(
-        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{doc_review}\n{claude_review}\n{}\n{}",
+        "{ci}\n{copilot}\n{cursor}\n{reviews}\n{pr_meta}\n{doc_review}\n{claude_review}\n{review_class}\n{}\n{}",
         decision_kind_tag(decision),
         decision_blocker_tag(decision),
     );
@@ -370,6 +375,22 @@ fn claude_review_line(claude_review: &ClaudeReview) -> String {
     }
 }
 
+fn review_class_line(review_class: &ReviewClass) -> String {
+    match review_class {
+        ReviewClass::NoThreads => "— Review classes · no threads".into(),
+        ReviewClass::Attested { class_count, .. } => format!(
+            "✅ Review classes · attested ({})",
+            crate::dashboard::class_noun(*class_count),
+        ),
+        ReviewClass::Fresh {
+            fresh_thread_count, ..
+        } => format!(
+            "⚠ Review classes · unattested ({} since last sweep)",
+            crate::text::count(*fresh_thread_count, "thread"),
+        ),
+    }
+}
+
 fn decision_kind_tag(d: &Decision) -> &'static str {
     match d {
         Decision::Execute(_) => "exec",
@@ -478,6 +499,8 @@ mod tests {
             claude_review_attest_path: None,
             closeout: crate::orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
+            review_class: ReviewClass::NoThreads,
+            review_class_attest_path: None,
             branch_sync: crate::observe::branch::BranchSyncObservation {
                 divergence: None,
                 branch_graphite_tracked: false,
@@ -779,6 +802,73 @@ mod tests {
         let line = claude_review_line(&o.claude_review);
         assert!(line.contains("Claude review · fresh"), "{line}");
         assert!(line.contains("2 inline threads"), "{line}");
+    }
+
+    // ── review_class_line ──
+
+    #[test]
+    fn review_class_line_no_threads_renders_dash() {
+        let o = empty_oriented();
+        assert_eq!(
+            review_class_line(&o.review_class),
+            "— Review classes · no threads"
+        );
+    }
+
+    #[test]
+    fn review_class_line_attested_renders_check_with_count() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let line = review_class_line(&ReviewClass::Attested {
+            attested_at: at,
+            class_count: 1,
+        });
+        assert_eq!(line, "✅ Review classes · attested (1 class)");
+    }
+
+    #[test]
+    fn review_class_line_fresh_renders_warn_with_thread_count() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let line = review_class_line(&ReviewClass::Fresh {
+            latest_thread_at: at,
+            fresh_thread_count: 2,
+            prior: None,
+        });
+        assert!(line.contains("unattested"), "{line}");
+        assert!(line.contains("2 threads"), "{line}");
+    }
+
+    #[test]
+    fn dedup_key_breaks_when_review_class_transitions() {
+        let mut o = empty_oriented();
+        let r1 = render(
+            &slug(),
+            pr(),
+            Some(1),
+            &RenderInputs::from(&o),
+            &[],
+            &Decision::Halt(DecisionHalt::Success),
+        );
+        let at = chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        o.review_class = ReviewClass::Fresh {
+            latest_thread_at: at,
+            fresh_thread_count: 1,
+            prior: None,
+        };
+        let r2 = render(
+            &slug(),
+            pr(),
+            Some(1),
+            &RenderInputs::from(&o),
+            &[],
+            &Decision::Halt(DecisionHalt::Success),
+        );
+        assert_ne!(r1.dedup_key, r2.dedup_key);
     }
 
     #[test]

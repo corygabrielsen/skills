@@ -1572,6 +1572,8 @@ mod tests {
             claude_review_attest_path: None,
             closeout: orient::closeout::Closeout::Synced,
             closeout_attest_path: None,
+            review_class: orient::review_class::ReviewClass::NoThreads,
+            review_class_attest_path: None,
             branch_sync: crate::observe::branch::BranchSyncObservation {
                 divergence: None,
                 branch_graphite_tracked: false,

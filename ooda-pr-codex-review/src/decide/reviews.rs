@@ -1,15 +1,23 @@
 //! Review-axis candidates.
 //!
-//! Three families: per-thread remediation (drives agent work on
-//! unresolved feedback), per-reviewer wait (bot and human), and
+//! Four families: per-thread remediation (drives agent work on
+//! unresolved feedback), the review-class attestation gate (the
+//! sweep witness that must be newer than every thread before the
+//! loop moves on), per-reviewer wait (bot and human), and
 //! decision-derived candidates that close the review loop
 //! (approval request, summary-only change-request).
 
-use crate::ids::{BlockerKey, Timestamp};
+use std::path::Path;
 
+use crate::ids::{BlockerKey, PullRequestNumber, Timestamp};
+
+use crate::act::review_class::{
+    build_attest_review_class_prompt, push_attest_step, push_prior_classes,
+};
 use crate::observe::github::pull_request_view::ReviewDecision;
 use crate::orient::ci::CiReport;
 use crate::orient::copilot::CopilotReport;
+use crate::orient::review_class::ReviewClass;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{
     BotName, FilePath, ReviewThread, ThreadAuthor, ThreadId, ThreadLocation, ThreadState,
@@ -29,13 +37,17 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
 
 /// Declared deps: own review report + CI report (for
 /// `ci_clean` gate) + bot-review-axis presence (for shadow
-/// filter) + threads.
+/// filter) + threads + review-class attestation report and path
+/// (for the class-sweep gate) + PR number (for prompt rendering).
 #[allow(clippy::too_many_lines)]
 pub(crate) fn candidates(
     reviews: &ReviewSummary,
     ci: &CiReport,
     copilot: Option<&CopilotReport>,
     threads: &[ReviewThread],
+    review_class: &ReviewClass,
+    review_class_attest_path: Option<&Path>,
+    pr: PullRequestNumber,
 ) -> Vec<Action> {
     let ci = &ci.summary;
     let mut out: Vec<Action> = Vec::new();
@@ -81,8 +93,14 @@ pub(crate) fn candidates(
         unresolved_threads.extend(synthesise_suppressed_threads(latest));
     }
 
-    if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads) {
-        let prompt = address_threads_prompt(&unresolved_threads);
+    let address_fired = if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads)
+    {
+        let prompt = address_threads_prompt(
+            &unresolved_threads,
+            review_class,
+            review_class_attest_path,
+            pr,
+        );
         out.push(Action {
             kind: ActionKind::AddressThreads {
                 threads: unresolved_threads,
@@ -96,6 +114,38 @@ pub(crate) fn candidates(
             // which is identical for live and outdated entries —
             // both demand per-thread agent judgment.
             blocker: BlockerKey::from_static("unresolved_threads"),
+        });
+        true
+    } else {
+        false
+    };
+
+    // Review-class gate. The GitHub resolved bit witnesses that the
+    // agent touched the reviewer's anchors; it does not witness that
+    // the issue class behind them was swept. This candidate holds
+    // the iteration at `BlockingFix` — ahead of every re-request and
+    // wait at the same tier by axis order, and ahead of `Post`
+    // closeout by construction — until an attestation newer than
+    // every thread exists. When `AddressThreads` fired the attest
+    // step already travels on that prompt; emitting both would
+    // double-instruct the same sweep.
+    if !address_fired
+        && matches!(review_class, ReviewClass::Fresh { .. })
+        && let Some(attest_path) = review_class_attest_path
+    {
+        out.push(Action {
+            kind: ActionKind::AttestReviewClass {
+                attest_path: attest_path.to_path_buf(),
+            },
+            effect: ActionEffect::Agent {
+                prompt: build_attest_review_class_prompt(pr, review_class, Some(attest_path)),
+            },
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
+            // Gate identity: "a thread is newer than the sweep
+            // attestation". Thread counts and timestamps travel on
+            // the report, never in the key.
+            blocker: BlockerKey::from_static("review_class_unattested"),
         });
     }
 
@@ -393,16 +443,20 @@ fn synthesise_suppressed_threads(
             // removes the underlying issue, after which Copilot's next
             // review (if any) renders a smaller `<details>` block.
             state: ThreadState::Live,
-            created_at: reviewed_at,
-            // Synthesised threads have no upstream comment row.
             originating_comment_id: None,
+            created_at: reviewed_at,
         });
     }
     out
 }
 
 #[allow(clippy::too_many_lines)]
-fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::HandoffPrompt {
+fn address_threads_prompt(
+    threads: &NonEmpty<ReviewThread>,
+    review_class: &ReviewClass,
+    review_class_attest_path: Option<&Path>,
+    pr: PullRequestNumber,
+) -> ooda_core::HandoffPrompt {
     use ooda_core::{HandoffPrompt, SingleLineString, Witness};
 
     let outdated_count = threads
@@ -559,6 +613,26 @@ fn address_threads_prompt(threads: &NonEmpty<ReviewThread>) -> ooda_core::Handof
         ));
     }
 
+    // The sweep witness. Resolving threads clears the reviewer's
+    // anchors; the attestation is what lets the loop proceed past
+    // this gate, and its enumerated sites are the evidence that
+    // Step 1 was carried out across the tree rather than at the
+    // anchors alone.
+    if let ReviewClass::Fresh {
+        prior: Some(prior), ..
+    } = review_class
+    {
+        push_prior_classes(&mut prompt, prior);
+    }
+    if review_class_attest_path.is_some() {
+        push_attest_step(
+            &mut prompt,
+            "Step 3 — attest the class sweep",
+            pr,
+            review_class_attest_path,
+        );
+    }
+
     prompt
 }
 
@@ -617,7 +691,221 @@ mod tests {
     }
 
     fn cands_with_threads(reviews: &ReviewSummary, threads: &[ReviewThread]) -> Vec<Action> {
-        candidates(reviews, &clean_ci(), None, threads)
+        candidates(
+            reviews,
+            &clean_ci(),
+            None,
+            threads,
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        )
+    }
+
+    fn pr() -> crate::ids::PullRequestNumber {
+        crate::ids::PullRequestNumber::parse("753").unwrap()
+    }
+
+    fn attest_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("/state/753/review_class_attest.json")
+    }
+
+    fn fresh_review_class(prior: Option<ooda_core::attest::ReviewClassAttestation>) -> ReviewClass {
+        ReviewClass::Fresh {
+            latest_thread_at: chrono::DateTime::parse_from_rfc3339("2026-05-02T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            fresh_thread_count: 1,
+            prior,
+        }
+    }
+
+    fn prior_attestation() -> ooda_core::attest::ReviewClassAttestation {
+        use ooda_core::attest::{REVIEW_CLASS_SCHEMA_VERSION, ReviewClassEntry, ReviewSite};
+        ooda_core::attest::ReviewClassAttestation {
+            attested_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            attested_at: chrono::DateTime::parse_from_rfc3339("2026-05-01T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            version: REVIEW_CLASS_SCHEMA_VERSION,
+            classes: vec![ReviewClassEntry {
+                class: "unwrap in library code".into(),
+                sites: vec![ReviewSite {
+                    path: "src/a.rs".into(),
+                    line: 12,
+                }],
+            }],
+        }
+    }
+
+    // ── review-class gate ──────────────────────────────────────────
+
+    #[test]
+    fn fresh_with_all_threads_resolved_emits_attest_review_class() {
+        // The state an instance-only fix leaves behind: anchors
+        // resolved, no sweep attested. The gate holds the iteration.
+        let threads = vec![resolved_thread("src/a.rs", 1, "done", "T_a")];
+        let path = attest_path();
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &threads,
+            &fresh_review_class(None),
+            Some(&path),
+            pr(),
+        );
+        assert_eq!(cs.len(), 1, "{cs:?}");
+        let ActionKind::AttestReviewClass { attest_path } = &cs[0].kind else {
+            panic!("expected AttestReviewClass, got {:?}", cs[0].kind);
+        };
+        assert_eq!(attest_path, &path);
+        assert!(matches!(cs[0].effect, ActionEffect::Agent { .. }));
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
+        assert_eq!(cs[0].blocker.as_str(), "review_class_unattested");
+        let rendered = cs[0].rendered_payload();
+        assert!(
+            rendered.contains("ooda-attest review-class --pr-id 753 --state-root /state"),
+            "{rendered}",
+        );
+    }
+
+    #[test]
+    fn fresh_with_unresolved_threads_folds_attest_step_into_address_threads() {
+        // Both gates open: one prompt, not two. AddressThreads
+        // carries the attest step; AttestReviewClass stays silent.
+        let threads = vec![live_thread("src/a.rs", 1, "x")];
+        let path = attest_path();
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &threads,
+            &fresh_review_class(None),
+            Some(&path),
+            pr(),
+        );
+        assert_eq!(cs.len(), 1, "{cs:?}");
+        assert!(matches!(cs[0].kind, ActionKind::AddressThreads { .. }));
+        let rendered = cs[0].rendered_payload();
+        assert!(
+            rendered.contains("Step 3 — attest the class sweep"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("ooda-attest review-class --pr-id 753 --state-root /state"),
+            "{rendered}",
+        );
+        // Step ordering: solve the class, resolve, then attest.
+        let s1 = rendered.find("Step 1").unwrap();
+        let s2 = rendered.find("Step 2").unwrap();
+        let s3 = rendered.find("Step 3").unwrap();
+        assert!(s1 < s2 && s2 < s3);
+    }
+
+    #[test]
+    fn address_threads_prompt_lists_prior_classes_when_re_armed() {
+        let threads = vec![live_thread("src/b.rs", 7, "again")];
+        let path = attest_path();
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &threads,
+            &fresh_review_class(Some(prior_attestation())),
+            Some(&path),
+            pr(),
+        );
+        let rendered = cs[0].rendered_payload();
+        assert!(
+            rendered.contains("Classes attested last round"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("unwrap in library code — src/a.rs:12"),
+            "{rendered}",
+        );
+    }
+
+    #[test]
+    fn address_threads_prompt_omits_attest_step_without_attest_path() {
+        // No state root ⇒ axis dormant ⇒ the prompt does not ask
+        // for a file that has nowhere to land.
+        let threads = vec![live_thread("src/a.rs", 1, "x")];
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &threads,
+            &fresh_review_class(None),
+            None,
+            pr(),
+        );
+        assert!(!cs[0].rendered_payload().contains("Step 3"));
+    }
+
+    #[test]
+    fn attested_emits_no_review_class_candidate() {
+        let threads = vec![resolved_thread("src/a.rs", 1, "done", "T_a")];
+        let path = attest_path();
+        let attested = ReviewClass::Attested {
+            attested_at: chrono::DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            class_count: 1,
+        };
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &threads,
+            &attested,
+            Some(&path),
+            pr(),
+        );
+        assert!(cs.is_empty(), "{cs:?}");
+    }
+
+    #[test]
+    fn fresh_without_attest_path_emits_no_review_class_candidate() {
+        let threads = vec![resolved_thread("src/a.rs", 1, "done", "T_a")];
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &threads,
+            &fresh_review_class(None),
+            None,
+            pr(),
+        );
+        assert!(cs.is_empty(), "{cs:?}");
+    }
+
+    #[test]
+    fn attest_review_class_outranks_request_approval_by_tier() {
+        // ReviewRequired + clean CI + all threads resolved would
+        // fire RequestApproval at BlockingHuman. The unattested
+        // sweep at BlockingFix must sort ahead of it so the loop
+        // does not solicit a re-review on an unswept tree.
+        let mut r = clean_reviews();
+        r.decision = Some(ReviewDecision::ReviewRequired);
+        let threads = vec![resolved_thread("src/a.rs", 1, "done", "T_a")];
+        let path = attest_path();
+        let mut cs = candidates(
+            &r,
+            &clean_ci(),
+            None,
+            &threads,
+            &fresh_review_class(None),
+            Some(&path),
+            pr(),
+        );
+        cs.sort_by_key(|a| a.urgency);
+        assert!(matches!(cs[0].kind, ActionKind::AttestReviewClass { .. }));
+        assert!(
+            cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::RequestApproval))
+        );
     }
 
     fn thread_in_state(
@@ -712,7 +1000,15 @@ mod tests {
                 body: "name drift".into(),
             },
         ]);
-        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
         let address = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }));
@@ -754,7 +1050,15 @@ mod tests {
             line: 12,
             body: "stale doc comment".into(),
         }]);
-        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
         let text = prompt_text(find_address_threads(&cs));
         assert!(
             !text.contains("resolveReviewThread"),
@@ -773,7 +1077,15 @@ mod tests {
             body: "stale doc comment".into(),
         }]);
         let host = vec![live_thread("src/host.rs", 5, "host-side issue")];
-        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &host);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &host,
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
         let text = prompt_text(find_address_threads(&cs));
         assert!(
             text.contains("resolveReviewThread"),
@@ -801,7 +1113,15 @@ mod tests {
             body: "stale doc comment".into(),
         }]);
         report.fresh = false;
-        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
         assert!(
             !cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
@@ -818,7 +1138,15 @@ mod tests {
             line: 1,
             body: "this one is unreachable".into(),
         }]);
-        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &[]);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
         assert!(
             cs.iter()
                 .all(|a| !matches!(a.kind, ActionKind::AddressThreads { .. })),
@@ -835,7 +1163,15 @@ mod tests {
             body: "from suppressed block".into(),
         }]);
         let inline = vec![live_thread("src/other.rs", 5, "from real review thread")];
-        let cs = candidates(&clean_reviews(), &clean_ci(), Some(&report), &inline);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &inline,
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
         match &cs[0].kind {
             ActionKind::AddressThreads { threads } => {
                 assert_eq!(
@@ -888,10 +1224,54 @@ mod tests {
     }
 
     #[test]
-    fn outdated_unresolved_threads_emit_address_threads() {
+    fn address_threads_prompt_includes_comment_id_when_present() {
+        // When the orient layer surfaces the originating comment's
+        // REST databaseId, the witness label carries `comment_id:`
+        // so the agent can hit the line-anchored-replies endpoint
+        // directly without a round-trip GraphQL fetch.
+        let r = clean_reviews();
+        let mut t = outdated_thread("src/foo.rs", 42, "review body", "T_outdated");
+        t.originating_comment_id = Some(3_377_501_272);
+        let cs = cands_with_threads(&r, &[t]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires");
+        let rendered = action.rendered_payload();
+        assert!(
+            rendered.contains("comment_id: 3377501272"),
+            "comment_id must appear in the witness label"
+        );
+        // Outdated branch also surfaces the replies endpoint recipe.
+        assert!(rendered.contains("comments/<comment_id>/replies"));
+    }
+
+    #[test]
+    fn address_threads_prompt_omits_comment_id_when_absent() {
+        // Defensive fallback when the wire doesn't carry databaseId
+        // (older fixtures): the witness label still renders, just
+        // without the comment_id field. The reply-path recipe still
+        // appears because the thread is outdated.
+        let r = clean_reviews();
+        let t = outdated_thread("src/foo.rs", 42, "review body", "T_outdated");
+        // originating_comment_id defaults to None via the helper.
+        let cs = cands_with_threads(&r, &[t]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires");
+        let rendered = action.rendered_payload();
+        assert!(!rendered.contains("comment_id:"));
+    }
+
+    #[test]
+    fn outdated_bot_threads_emit_address_threads() {
         // The upstream's outdated marker is positional only; the
-        // content may still apply. Per-thread agent judgment is
-        // still required, so the address-threads candidate fires.
+        // content may still apply. For bot-authored outdated
+        // threads, the agent can evaluate on merit, fix if the
+        // concern still applies, reply via the thread-comment
+        // surface, and resolve via GraphQL — no human verdict
+        // required. AddressThreads fires.
         let r = clean_reviews();
         let threads = vec![outdated_thread(
             "src/foo.rs",
@@ -903,8 +1283,94 @@ mod tests {
         let action = cs
             .iter()
             .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
-            .expect("AddressThreads must fire on outdated unresolved threads");
+            .expect("AddressThreads must fire on outdated bot threads");
         assert!(matches!(action.effect, ActionEffect::Agent { .. }));
+    }
+
+    #[test]
+    fn outdated_human_threads_are_excluded_from_address_threads() {
+        // Outdated human-authored threads are NOT agent-
+        // addressable: the agent should not unilaterally resolve
+        // a human's stale concern. The merge_eligibility axis
+        // handles them via `merge_blocked_threads` at
+        // BlockingHuman.
+        let r = clean_reviews();
+        let mut human_thread = outdated_thread("src/foo.rs", 42, "your concern", "T_human");
+        human_thread.author = ThreadAuthor::Human(crate::ids::GitHubLogin::parse("alice").unwrap());
+        let cs = cands_with_threads(&r, &[human_thread]);
+        assert!(
+            !cs.iter()
+                .any(|a| matches!(a.kind, ActionKind::AddressThreads { .. })),
+            "AddressThreads must NOT fire on outdated human threads; got {cs:?}"
+        );
+    }
+
+    #[test]
+    fn outdated_botname_other_included_in_address_threads() {
+        // The filter matches `ThreadAuthor::Bot(_)` — every BotName
+        // variant flows through, not just Copilot/Cursor. Verifies
+        // a graphite-app bot is included alongside the modeled
+        // two.
+        use crate::orient::thread::BotName;
+        let r = clean_reviews();
+        let mut t = outdated_thread("src/foo.rs", 1, "graphite says X", "T_graphite");
+        t.author = ThreadAuthor::Bot(BotName::Other(GitHubLogin::parse("graphite-app").unwrap()));
+        let cs = cands_with_threads(&r, &[t]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("graphite-app outdated must flow through AddressThreads");
+        let ActionKind::AddressThreads { threads } = &action.kind else {
+            panic!("expected AddressThreads");
+        };
+        assert_eq!(threads.len(), 1);
+    }
+
+    #[test]
+    fn live_human_plus_outdated_human_only_live_in_address_threads() {
+        // Live-human flows; outdated-human is filtered. The
+        // resulting AddressThreads payload should contain only
+        // the live-human entry — the outdated-human waits for
+        // merge_eligibility's BlockingHuman path.
+        let r = clean_reviews();
+        let mut live = live_thread("src/a.rs", 1, "live concern");
+        live.author = ThreadAuthor::Human(GitHubLogin::parse("alice").unwrap());
+        let mut outdated_h = outdated_thread("src/b.rs", 2, "stale concern", "T_outdated");
+        outdated_h.author = ThreadAuthor::Human(GitHubLogin::parse("alice").unwrap());
+        let cs = cands_with_threads(&r, &[live, outdated_h]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires for the live thread");
+        let ActionKind::AddressThreads { threads } = &action.kind else {
+            panic!("expected AddressThreads");
+        };
+        assert_eq!(threads.len(), 1);
+        assert!(
+            matches!(threads.first().author, ThreadAuthor::Human(_))
+                && threads.first().state == ThreadState::Live
+        );
+    }
+
+    #[test]
+    fn outdated_human_excluded_but_outdated_bot_included_in_mixed() {
+        // Mixed outdated set: AddressThreads fires with the bot
+        // entry only. The human's stale concern flows to
+        // merge_eligibility's human-handoff path.
+        let r = clean_reviews();
+        let mut human_thread = outdated_thread("src/a.rs", 1, "humans stale", "T_human");
+        human_thread.author = ThreadAuthor::Human(crate::ids::GitHubLogin::parse("alice").unwrap());
+        let bot_thread = outdated_thread("src/b.rs", 2, "bot stale", "T_bot");
+        let cs = cands_with_threads(&r, &[human_thread, bot_thread]);
+        let action = cs
+            .iter()
+            .find(|a| matches!(a.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads fires");
+        let ActionKind::AddressThreads { threads } = &action.kind else {
+            panic!("expected AddressThreads");
+        };
+        assert_eq!(threads.len(), 1, "only the bot thread should flow through");
+        assert!(matches!(threads.first().author, ThreadAuthor::Bot(_)));
     }
 
     #[test]
@@ -987,7 +1453,15 @@ mod tests {
     }
 
     fn cands_with_copilot(reviews: &ReviewSummary, copilot: Option<&CopilotReport>) -> Vec<Action> {
-        candidates(reviews, &clean_ci(), copilot, &[])
+        candidates(
+            reviews,
+            &clean_ci(),
+            copilot,
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        )
     }
 
     #[test]
@@ -1197,7 +1671,7 @@ mod tests {
             description: String::new(),
             link: String::new(),
         }];
-        let cs = candidates(&r, &ci, None, &[]);
+        let cs = candidates(&r, &ci, None, &[], &ReviewClass::NoThreads, None, pr());
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest))

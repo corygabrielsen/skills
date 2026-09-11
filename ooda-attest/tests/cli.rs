@@ -100,6 +100,137 @@ fn expected_closeout_path(state_root: &Path, pr_id: &str) -> PathBuf {
         .join("closeout_attest.json")
 }
 
+fn expected_review_class_path(state_root: &Path, pr_id: &str) -> PathBuf {
+    state_root
+        .canonicalize()
+        .unwrap()
+        .join(pr_id)
+        .join("review_class_attest.json")
+}
+
+// ─── review-class ───────────────────────────────────────────────
+
+#[test]
+fn review_class_happy_path_writes_classes_with_sites() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["review-class", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .args([
+            "--class",
+            "unwrap in library code",
+            "--sites",
+            "src/a.rs:12, src/b.rs:40",
+            "--class",
+            "missing error context",
+            "--sites",
+            "src/c.rs:3",
+        ])
+        .assert()
+        .success();
+
+    let path = expected_review_class_path(state_root.path(), "42");
+    let json = read_attestation(&path);
+    assert_eq!(json["attested_sha"].as_str().unwrap(), head);
+    assert_eq!(json["version"].as_u64().unwrap(), 1);
+    let classes = json["classes"].as_array().unwrap();
+    assert_eq!(classes.len(), 2);
+    assert_eq!(classes[0]["class"], "unwrap in library code");
+    assert_eq!(classes[0]["sites"].as_array().unwrap().len(), 2);
+    assert_eq!(classes[0]["sites"][1]["path"], "src/b.rs");
+    assert_eq!(classes[0]["sites"][1]["line"], 40);
+    assert_eq!(classes[1]["sites"][0]["line"], 3);
+}
+
+#[test]
+fn review_class_without_class_flag_is_rejected() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["review-class", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .assert()
+        .failure();
+    assert!(!expected_review_class_path(state_root.path(), "42").exists());
+}
+
+#[test]
+fn review_class_with_empty_sites_exits_64_and_writes_nothing() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["review-class", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .args(["--class", "unwrap in library code", "--sites", ""])
+        .assert()
+        .code(64)
+        .stderr(contains("no sites"));
+    assert!(!expected_review_class_path(state_root.path(), "42").exists());
+}
+
+#[test]
+fn review_class_with_unpaired_flags_exits_64() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["review-class", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .args(["--class", "a", "--class", "b", "--sites", "src/a.rs:1"])
+        .assert()
+        .code(64)
+        .stderr(contains("paired"));
+}
+
+#[test]
+fn review_class_with_malformed_site_exits_64() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    bin()
+        .current_dir(repo.path())
+        .args(["review-class", "--pr-id", "42", "--state-root"])
+        .arg(state_root.path())
+        .args(["--class", "a", "--sites", "src/a.rs"])
+        .assert()
+        .code(64)
+        .stderr(contains("path:line"));
+}
+
+#[test]
+fn review_class_second_run_overwrites_with_new_classes() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    for class in ["first", "second"] {
+        bin()
+            .current_dir(repo.path())
+            .args(["review-class", "--pr-id", "42", "--state-root"])
+            .arg(state_root.path())
+            .args(["--class", class, "--sites", "src/a.rs:1"])
+            .assert()
+            .success();
+    }
+    let json = read_attestation(&expected_review_class_path(state_root.path(), "42"));
+    let classes = json["classes"].as_array().unwrap();
+    assert_eq!(classes.len(), 1);
+    assert_eq!(classes[0]["class"], "second");
+}
+
 #[test]
 fn happy_path_writes_attestation_for_head() {
     let repo = TempDir::new().unwrap();

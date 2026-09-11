@@ -556,7 +556,7 @@ the stderr usage block are sufficient. The JSONL stream is a clean
 log lines as `/ooda-pr`:
 
 ```
-[iter N] <ActionKind> (<Automation>) blocker: <BlockerKey>     -- Execute decisions
+[iter N] <ActionKind> (<Effect>) blocker: <BlockerKey>     -- Execute decisions
 [iter N] halt: <DecisionHaltName>                              -- Success / Terminal halts (no action)
 [iter N] halt: <DecisionHaltName> blocker: <BlockerKey>        -- AgentNeeded / HumanNeeded halts
                                                                   (the action's blocker is appended)

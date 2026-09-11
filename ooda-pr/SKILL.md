@@ -65,7 +65,7 @@ pub type HaltReason   = ooda_core::HaltReason<ActionKind>;
 pub type Action       = ooda_core::Action<ActionKind>;
 ```
 
-`Automation`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
+`ActionEffect`, `Urgency`, `TargetEffect`, `BlockerKey`, `Terminal`,
 and the `ActionKindName` trait are re-exported from `ooda-core`
 directly. `ActionKind` is per-binary — this binary's variants
 cover the PR-merge domain (`FixCi`, `AddressThreads`, `Rebase`,
@@ -87,7 +87,7 @@ not the variant name.
 - `runner.rs::run_loop` — iteration sequencing, stall detection,
   cap detection. Each binary's runner diverges enough on
   side-effects / flock / refresh logic that lifting is premature.
-- `state.rs` — thin adapter over the shared `ooda-state` crate.
+- `recorder.rs` — thin adapter over the shared `ooda-state` crate.
   PR-specific event vocabulary (`action_started`,
   `status_comment_rendered`, `tool_call_finished`, …) lives here;
   the generic on-disk layout (events.jsonl + content-addressed
@@ -342,9 +342,9 @@ warnings/errors per the wrapper-diagnostics caveat above).
 Outcome's emission). Listed by emission site:
 
 - **Loop mode, per iteration** (interleaved in iteration order):
-  - `[iter N] <ActionKind> (<Automation>) blocker: <BlockerKey>` for Execute decisions
+  - `[iter N] <ActionKind> (<Effect>) blocker: <BlockerKey>` for Execute decisions
     — note the parentheses, distinct from the colon-separated
-    `WouldAdvance: <ActionKind>:<Automation>` header form (a
+    `WouldAdvance: <ActionKind>:<Effect>` header form (a
     single regex over both surfaces will mis-parse). Example:
     `[iter 3] WaitForCi (Wait(1m)) blocker: ci_pending: Build`.
   - `[iter N] halt: <DecisionHaltName>` for halts with no action
@@ -419,7 +419,7 @@ boundary, and `$?` remains the dispatch contract.
   possible if upstream payloads carry it. See the `BlockerKey`
   section for sample values and the consequences for parsing
   the `<ActionKind>:<BlockerKey>` projection.
-- `<Automation>` — `Full` or `Wait(<duration>)`. The renderer
+- `<Effect>` — `Full` or `Wait(<duration>)`. The renderer
   has arms for all 4 `Automation` variants, but `decide` routes
   `Agent`/`Human` to halts (`HandoffAgent` / `HandoffHuman`)
   before they could reach a `WouldAdvance`. Only `Full`/`Wait(_)`
@@ -450,7 +450,7 @@ always carries an `Action` and always emits the
 | :--: | ------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 |  0   | `DoneSucceeded`           | `DoneMerged`                                                                 | Stop. PR merged.                                                                                                                                                                                                                                                                                                                                                                                  |
 |  1   | `Paused`                  | `Paused`                                                                     | Stop driving. Internally maps from `DecisionHalt::Success` — per the source comment, "No actions to dispatch, no blockers — PR has reached its target state." The boundary name `Paused` reflects the operational meaning for the caller: stop driving, re-invoke later only if PR state may have changed (e.g., a reviewer acts, CI re-runs, auto-merge fires).                                  |
-|  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Automation>`                                    | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.                                            |
+|  2   | `WouldAdvance(action)`    | `WouldAdvance: <ActionKind>:<Effect>`                                        | **Inspect-only — not a halt.** Re-invoke without `inspect` to drive the action. Do **not** report `WouldAdvance` and stop; that's the most common agent error against this binary. The automation tells you what `act` would do (`Full` runs immediately; `Wait(d)` sleeps then re-observes). See "Driving discipline" for the full anti-pattern list.                                            |
 |  3   | `HandoffHuman(action)`    | `Hand off to human: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to handoff blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below). Re-invoke `/ooda-pr` after they resolve it.                                                                                                                                                                                            |
 |  4   | `HandoffAgent(action)`    | `Hand off to agent: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to handoff blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                   |
 |  5   | `DoneAborted`             | `DoneClosed`                                                                 | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                                                          |
@@ -693,10 +693,11 @@ output and inspects its `automation` field:
 | `Agent`          | `Halt(AgentNeeded(action))` | Loop exits with `Outcome::HandoffAgent(action)` (exit 4)               |
 | `Human`          | `Halt(HumanNeeded(action))` | Loop exits with `Outcome::HandoffHuman(action)` (exit 3)               |
 
-`automation` is a flat 4-variant enum on `Action`:
-`Full | Agent | Wait{interval: Duration} | Human`. There is no
-separate `Disposition` type — automation IS the dispatch
-selector.
+`effect` is a flat 4-variant enum on `Action`
+(`ActionEffect`): `Full{log, upstream} | Wait{interval, log} |
+Agent{prompt} | Human{prompt}`. There is no separate `Disposition`
+type — the effect IS the dispatch selector. The `<Effect>`
+placeholder in stderr headers renders the effect's variant name.
 
 If `decide` selects no candidate (no advancing actions
 available), the loop emits `Outcome::Paused` (exit 1).
@@ -708,33 +709,32 @@ The loop additionally exits if:
   (`StuckRepeated(action)` — exit 6). **Stall comparison rule:**
   the comparator's `prev` slot is structurally non-`Wait` (the
   runner only records non-`Wait` actions there). The comparator
-  is still invoked for `Wait` current iterations, but a `Wait`
-  current never matches a non-`Wait` `prev` (kinds differ), so
+  is still invoked for `Wait` current iterations, but a natural
+  `Wait` never matches a non-`Wait` `prev` (kinds differ), so
   `Wait` iterations are emergent-invisible to stall detection.
   Examples (with `A`, `B` as distinct `(kind, blocker)` pairs,
-  `W` for any `Wait`-automation action):
+  `W` for any `Wait`-effect action):
   - `Run(A), W, Run(A)` → trips `StuckRepeated(A)` (W invisible)
   - `Run(A), Run(B), Run(A)` → does not trip (`Run(B)` resets)
   - `W, W, W, ...` → never trips (W never enters comparison)
 
-  **Payload sensitivity.** "Same kind" means full structural
-  equality on the `ActionKind` enum value, **including any
-  payload fields**. This matters only for kinds that reach the
-  comparator — i.e., kinds with `Automation::Full` or
-  `Automation::Agent`, since `Wait` iterations are filtered out
-  via `last_non_wait` and `Human` iterations halt before
-  `act`/the next iteration's comparator. The Agent-automation
-  payload-bearing kinds in current source are:
-  `AddressThreads { threads }`, `AddressCopilotSuppressed {
-count }`, `ShortenTitle { current_len }`, `TriageWait {
-blocked_checks }`, `FixCi { check_name }`. If any of these
-  payloads mutates iter-to-iter even when the underlying
-  blocker is unchanged, kind equality fails and stall does not
-  trip — regardless of `BlockerKey`. So `BlockerKey` and the
-  kind's payload are two parallel stability axes; payload
-  mutation is a second source of stall-detection invisibility
-  (alongside `Wait`-automation kinds and `Human`-automation
-  halts which never reach the comparator at all).
+  **Eventual-consistency window.** A `Full` effect whose upstream
+  is declared `Eventual(d)` (e.g. a Copilot re-request, whose
+  effect GitHub may not reflect on the very next observe) is
+  granted exactly one propagation window on its first repeat: the
+  runner converts that iteration into a synthetic `Wait(d)` instead
+  of halting, and the iter-log shows the `Wait`. A second repeat of
+  the same `(kind, blocker)` after the window is a genuine stall
+  and trips `StuckRepeated`. A `Full` effect declared `Sync` gets
+  no window — its first repeat trips immediately. A different
+  non-`Wait` action in between re-arms the window.
+
+  **The key is payload-free.** "Same kind" means the same
+  `ActionKind::name()` — the bare variant name. Payload fields are
+  **not** part of the stall key: two `AddressThreads` actions with
+  different thread lists but the same blocker compare equal. The
+  only stability axis is `BlockerKey`; construction sites must not
+  embed varying counts or progress markers in it.
 
 - The iteration cap is hit (`StuckCapReached(action)` — exit 7).
   The action shown is the last action `act` ran successfully

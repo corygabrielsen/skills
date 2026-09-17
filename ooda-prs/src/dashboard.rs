@@ -1,9 +1,9 @@
 //! Tier-grouped dashboard projection.
 //!
 //! Projects one iteration's `(oriented, candidates, decision)` triple
-//! into a single typed structure that feeds three independent
-//! rendering surfaces (per-iteration files, handoff-prompt preamble,
-//! status comment). Renderers are pure functions over the projection.
+//! into a single typed structure that feeds two independent
+//! rendering surfaces (per-iteration files, handoff-prompt
+//! preamble). Renderers are pure functions over the projection.
 //!
 //! The driver-side decision type owns the executor signal; this
 //! type owns the human-facing structured snapshot. The two names
@@ -27,6 +27,7 @@ use crate::orient::review_class::ReviewClass;
 use ooda_core::MidTier;
 use ooda_core::{ActionKindName, NonEmpty, PromptSection, SingleLineString, Urgency};
 use serde::Serialize;
+#[cfg(test)]
 use std::fmt::Write;
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -472,93 +473,6 @@ impl Dashboard {
         out
     }
 
-    /// Render the PR status comment body. Same section order as the
-    /// per-iteration surface; tuned for the comment context (compact
-    /// headline, no effect-debug line). The caller supplies the
-    /// header (it depends on identifiers the projection does not
-    /// carry). Empty candidate list ⇒ empty body, leaving the
-    /// caller to substitute a halt summary.
-    ///
-    /// # Markdown escape discipline
-    ///
-    /// Interpolated fields (`action_name`, `blocker.tag`) currently
-    /// flow from typed sources: `ActionKindName::name` and
-    /// `BlockerKey::from_static` both return `&'static str`, so no
-    /// markdown-control character can reach the rendered body.
-    /// `action_log` is the one field whose source includes a
-    /// `HandoffPrompt.headline` path — today that headline is a
-    /// `SingleLineString` carrying only internally-built strings.
-    /// If a future caller threads user-controlled content
-    /// (review-thread body, claude review text) into `action_log`,
-    /// wrap it with [`ooda_core::md_escape::md_inline_escape`] at
-    /// the interpolation site.
-    pub(crate) fn render_status_comment(&self) -> String {
-        let Some(winner) = self.candidates.first() else {
-            return String::new();
-        };
-
-        let mut out = String::new();
-        writeln!(
-            out,
-            "**Recommended ({}):** {}: {}",
-            urgency_label(winner.urgency),
-            winner.action_name,
-            winner.action_log,
-        )
-        .expect("write to String");
-
-        let mut by_tier = tiers(&self.candidates);
-        if let Some(bucket) = by_tier.first_mut() {
-            bucket.candidates.remove(0);
-        }
-        if let Some(top) = by_tier.first()
-            && !top.candidates.is_empty()
-        {
-            out.push_str("\n**Also at this tier:**\n");
-            for c in &top.candidates {
-                writeln!(out, "- {}: {}", c.action_name, c.action_log).expect("write to String");
-            }
-        }
-
-        // Lower tiers render inline with italicised labels rather
-        // than as nested subheadings — the comment surface reads
-        // better as one bulleted block.
-        let lower: Vec<&TierBucket> = by_tier.iter().skip(1).collect();
-        if !lower.is_empty() {
-            out.push_str("\n**Queued (lower urgency):**\n");
-            for bucket in lower {
-                let label = urgency_label(bucket.urgency);
-                for c in &bucket.candidates {
-                    writeln!(out, "- _{label}_ — {}: {}", c.action_name, c.action_log)
-                        .expect("write to String");
-                }
-            }
-        }
-
-        if !self.signals.is_empty() {
-            out.push_str("\n**Signals:**\n");
-            for sig in &self.signals {
-                writeln!(
-                    out,
-                    "- {}: {} {}",
-                    sig.axis.as_str(),
-                    sig.icon.glyph(),
-                    sig.summary,
-                )
-                .expect("write to String");
-            }
-        }
-
-        if !self.blockers.is_empty() {
-            out.push_str("\n**Blockers:**\n");
-            for b in &self.blockers {
-                writeln!(out, "- `{}` — {}", b.tag, b.action_name).expect("write to String");
-            }
-        }
-
-        out
-    }
-
     /// Render the structured blocker list as a standalone surface.
     #[cfg(test)]
     pub(crate) fn render_blockers_md(&self) -> String {
@@ -941,167 +855,6 @@ mod tests {
         let md = d.render_next_md();
         eprintln!("---- next.md sample ----\n{md}---- end ----");
         assert!(md.contains("## Recommended (critical)"));
-    }
-
-    // ── Snapshot tests for status comment rendering ──────────────
-
-    #[test]
-    fn status_comment_empty_when_no_candidates() {
-        let d = Dashboard {
-            candidates: Vec::new(),
-            signals: Vec::new(),
-            blockers: Vec::new(),
-        };
-        assert_eq!(d.render_status_comment(), "");
-    }
-
-    #[test]
-    fn status_comment_single_winner_alone_in_tier() {
-        let d = dashboard_from_candidates(&[rerequest_copilot()]);
-        let body = d.render_status_comment();
-        assert!(
-            body.starts_with("**Recommended (critical):** RerequestCopilot: rerequest copilot\n"),
-            "{body}",
-        );
-        assert!(!body.contains("**Also at this tier:**"), "{body}");
-        assert!(!body.contains("**Queued"), "{body}");
-        assert!(!body.contains("**Signals:**"), "{body}");
-        // A non-empty candidate set always projects a Blockers
-        // section — even one candidate names one gate.
-        assert!(body.contains("**Blockers:**"), "{body}");
-        assert!(
-            body.contains("- `copilot:rerequest` — RerequestCopilot"),
-            "{body}",
-        );
-    }
-
-    #[test]
-    fn status_comment_winner_with_same_tier_alternative() {
-        let other = act(
-            ActionKind::Rebase,
-            Urgency::Mid(MidTier::Critical),
-            "state:rebase",
-            "rebase onto base",
-        );
-        let d = dashboard_from_candidates(&[rerequest_copilot(), other]);
-        let body = d.render_status_comment();
-        assert!(body.contains("**Recommended (critical):**"), "{body}");
-        assert!(body.contains("**Also at this tier:**"), "{body}");
-        assert!(body.contains("- Rebase: rebase onto base\n"), "{body}");
-        assert!(!body.contains("**Queued"), "{body}");
-    }
-
-    #[test]
-    fn status_comment_winner_with_lower_tier_candidate() {
-        let d = dashboard_from_candidates(&[rerequest_copilot(), wait_for_ci()]);
-        let body = d.render_status_comment();
-        assert!(body.contains("**Recommended (critical):**"), "{body}");
-        assert!(!body.contains("**Also at this tier:**"), "{body}");
-        assert!(body.contains("**Queued (lower urgency):**"), "{body}");
-        assert!(
-            body.contains("- _blocking wait_ — WaitForCi: wait for ci/build\n"),
-            "{body}",
-        );
-    }
-
-    #[test]
-    fn status_comment_all_sections_populated() {
-        let signals = vec![
-            AxisSignal {
-                axis: AxisName::Copilot,
-                icon: SignalIcon::Warn,
-                summary: "request received but no review yet (degraded)".into(),
-            },
-            AxisSignal {
-                axis: AxisName::Ci,
-                icon: SignalIcon::InFlight,
-                summary: "2 checks pending (worst: healthy)".into(),
-            },
-            AxisSignal {
-                axis: AxisName::Cursor,
-                icon: SignalIcon::Ok,
-                summary: "no findings".into(),
-            },
-        ];
-        let candidates_v: Vec<RankedCandidate> =
-            [rerequest_copilot(), wait_for_ci(), request_approval()]
-                .iter()
-                .map(RankedCandidate::from_action)
-                .collect();
-        let blockers = collect_blockers(&candidates_v);
-        let d = Dashboard {
-            candidates: candidates_v,
-            signals,
-            blockers,
-        };
-        let body = d.render_status_comment();
-        assert!(body.contains("**Recommended (critical):**"), "{body}");
-        assert!(body.contains("**Queued (lower urgency):**"), "{body}");
-        assert!(
-            body.contains("- _blocking wait_ — WaitForCi: wait for ci/build"),
-            "{body}",
-        );
-        assert!(
-            body.contains("- _blocking human_ — RequestApproval"),
-            "{body}",
-        );
-        assert!(body.contains("**Signals:**"), "{body}");
-        assert!(
-            body.contains("- copilot: ! request received but no review yet (degraded)"),
-            "{body}",
-        );
-        assert!(
-            body.contains("- ci: · 2 checks pending (worst: healthy)"),
-            "{body}",
-        );
-        assert!(body.contains("- cursor: ✓ no findings"), "{body}");
-        assert!(body.contains("**Blockers:**"), "{body}");
-        assert!(
-            body.contains("- `copilot:rerequest` — RerequestCopilot"),
-            "{body}",
-        );
-        assert!(body.contains("- `ci:wait` — WaitForCi"), "{body}");
-        assert!(
-            body.contains("- `review:approval` — RequestApproval"),
-            "{body}",
-        );
-    }
-
-    #[test]
-    fn status_comment_demo_print() {
-        // Visual inspection under --nocapture; the headline
-        // assertion is the binding contract.
-        let signals = vec![
-            AxisSignal {
-                axis: AxisName::Copilot,
-                icon: SignalIcon::Warn,
-                summary: "request received but no review yet (degraded)".into(),
-            },
-            AxisSignal {
-                axis: AxisName::Ci,
-                icon: SignalIcon::InFlight,
-                summary: "2 checks pending (worst: healthy)".into(),
-            },
-            AxisSignal {
-                axis: AxisName::Cursor,
-                icon: SignalIcon::Ok,
-                summary: "no findings".into(),
-            },
-        ];
-        let candidates_v: Vec<RankedCandidate> =
-            [rerequest_copilot(), wait_for_ci(), request_approval()]
-                .iter()
-                .map(RankedCandidate::from_action)
-                .collect();
-        let blockers = collect_blockers(&candidates_v);
-        let d = Dashboard {
-            candidates: candidates_v,
-            signals,
-            blockers,
-        };
-        let body = d.render_status_comment();
-        eprintln!("---- status comment sample ----\n{body}---- end ----");
-        assert!(body.contains("**Recommended (critical):**"));
     }
 
     // ── Snapshot tests for handoff preamble rendering ────────────

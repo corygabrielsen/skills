@@ -10,8 +10,6 @@ args:
     description: Optional subcommand. If used, must precede the two positionals; flags may come before it. Runs one observe/orient/decide pass; no act, no loop.
   - name: --max-iter N
     description: Loop iteration cap. Default 50; must be ≥1 (validation runs in all modes before mode dispatch; --max-iter 0 is rejected as UsageError even in inspect mode). Inspect mode runs exactly one pass and does not consult the cap value.
-  - name: --status-comment
-    description: Post a status comment to the PR each iteration. Deduped per-PR via the always-on state root.
   - name: --state-root PATH
     description: Override the always-on local state root for this invocation.
   - name: --repo-root PATH
@@ -89,7 +87,7 @@ not the variant name.
   side-effects / flock / refresh logic that lifting is premature.
 - `recorder.rs` — thin adapter over the shared `ooda-state` crate.
   PR-specific event vocabulary (`action_started`,
-  `status_comment_rendered`, `tool_call_finished`, …) lives here;
+  `action_finished`, `tool_call_finished`, …) lives here;
   the generic on-disk layout (events.jsonl + content-addressed
   blobs) is owned by `ooda-state`.
 - `decide/action.rs::ActionKind` and its `ActionKindName` impl.
@@ -238,27 +236,25 @@ owner/repo inspect`), "invalid repo slug: missing '/'" when a
   pre-scan: if either token appears anywhere in the argument
   list, usage is printed to stdout and the process exits 0
   before any other flag is parsed.
-- Repeating `--max-iter`, `--status-comment`, or `--trace` is a
-  `UsageError`. Repeating `--state-root` is also a `UsageError`.
+- Repeating `--max-iter` or `--trace` is a `UsageError`.
+  Repeating `--state-root` is also a `UsageError`.
 
 The `run` script rebuilds the release binary on demand and execs
 it. The wrapper invokes `cargo build --release --quiet`, so
 successful incremental rebuilds are silent; only warnings and
 errors reach stderr from cargo. Stderr emitted **before**
 ooda-pr starts (i.e. before any line documented in "Stderr
-surface" below) is wrapper / cargo diagnostic noise, not part
-of the binary's contract. The binary's own per-iteration logs,
-stack note, comment status lines, and final variant block
-**are** the contract — see "Stderr surface" for the full
-inventory. If the cargo build fails, `run` exits with cargo's
-exit code (typically 101 for compile error) and ooda-pr does
-not execute — treat such codes as `BinaryError`-equivalent
-(see catch-all).
+surface" below) is wrapper / cargo diagnostic noise, not part of
+the binary's contract. The binary's own per-iteration logs,
+stack note, and final variant block **are** the contract — see
+"Stderr surface" for the full inventory. If the cargo build
+fails, `run` exits with cargo's exit code (typically 101 for
+compile error) and ooda-pr does not execute — treat such codes
+as `BinaryError`-equivalent (see catch-all).
 
 | Flag                | Meaning                                                                                                                                                                                                                                                                                                                                             |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--max-iter N`      | Loop iteration cap. Default 50. Must be ≥1; `--max-iter 0` (or any non-integer / negative) is rejected as `UsageError` regardless of mode (validation runs before mode dispatch). Inspect mode runs exactly once and does not consult the cap value.                                                                                                |
-| `--status-comment`  | Post a status comment to the PR each iteration. Deduped per-PR under the always-on state root at `index/pr/<owner>/<repo>/<pr>/status-comment-dedup.json`; the hash input is the renderer's `dedup_key` field, so progress re-posts when the typed rendered state changes.                                                                          |
 | `--state-root PATH` | Override the always-on state root. Default resolution is `$OODA_STATE_HOME`, then `$XDG_STATE_HOME/ooda`, then `~/.local/state/ooda`, then `$TMPDIR/ooda`. One root per machine, shared by every OODA agent regardless of domain; domain identity (`pr`, `codex-review`, …) lives in events, not in the path.                                       |
 | `--repo-root PATH`  | Target working tree for every `gt` / `git` subprocess. Default: derive from CWD via `git rev-parse --show-toplevel`. Invocations from outside any git tree are rejected as `UsageError` unless `--repo-root` is supplied. Pinning is required so `gt sync` cannot rewrite a sibling repo's stack when the binary is invoked from elsewhere on disk. |
 | `--trace PATH`      | Also append the compact trace to PATH. Creates parent directories when needed. Each run appends a run header, binary-owned diagnostic lines, the final Outcome block, and `exit=<code>`. Trace-open failure emits `BinaryError` (exit 70). Later trace writes are best-effort and do not change the Outcome.                                        |
@@ -289,7 +285,8 @@ level, etc.) lives inside event records, not in the path:
 │   └── blobs/<sha>.<ext>     # content-addressed payloads
 ├── live/<run-id>             # empty marker; presence = active run
 └── index/pr/<owner>/<repo>/<pr>/
-    └── status-comment-dedup.json   # cross-run dedup memory
+    ├── last_seen_head.json         # sticky head SHA (branch-sync)
+    └── .action.lock                # advisory act-stage lock
 ```
 
 `<run-id>` is opaque (`<YYYYMMDDTHHMMSSZ>-<entropy>-p<pid>`); the
@@ -300,7 +297,7 @@ GitHub slug + PR number live in the `target` payload on the
 with a `kind` discriminator. Ooda-pr emits:
 
 - `run_started` — first event; `domain: "pr"`, `target` carries
-  forge / slug / pr / mode / max_iter / status_comment / cwd / argv.
+  forge / slug / pr / mode / max_iter / cwd / argv.
 - `iteration_observed` / `iteration_oriented` — references to a
   `blob` containing the JSON snapshot.
 - `iteration_decided` — carries `decision_kind` (e.g.
@@ -311,9 +308,9 @@ with a `kind` discriminator. Ooda-pr emits:
   variant name, `exit_code` carries the numeric exit. After this
   event the `live/<run-id>` marker is deleted.
 - `domain_specific` — catch-all for events the core vocabulary
-  doesn't model (observe lifecycle, status-comment lifecycle, raw
-  tool-call telemetry, action_started/finished). `kind_suffix`
-  names the event; `payload` is opaque JSON.
+  doesn't model (observe lifecycle, raw tool-call telemetry,
+  action_started/finished). `kind_suffix` names the event;
+  `payload` is opaque JSON.
 
 **Agent entrypoint.** To audit a run: pick the `runs/<run-id>/`
 directory (or watch `live/` for active runs), parse `events.jsonl`
@@ -367,9 +364,6 @@ Outcome's emission). Listed by emission site:
     `runs/<run-id>/blobs/<sha>.md` (pointed to by the stderr
     `  see:` line), `Stuck*` in the `:<BlockerKey>` projection,
     terminal/Paused with no payload.
-  - When `--status-comment` is set: `[iter N] comment: posted`,
-    `[iter N] comment: <PostError>`, or silently skipped on the
-    common dedup-no-change case. (See "comment lines" below.)
 - **Inspect mode, before the variant block** (at most one each,
   in this order):
   - `stack: <base> → <root>` if the PR's immediate base differs
@@ -378,8 +372,6 @@ Outcome's emission). Listed by emission site:
     note for context; loop mode does not emit it at all (it's
     static for a given PR, and per-iteration repetition would be
     noise).
-  - When `--status-comment` is set: `comment: posted`,
-    `comment: skipped (unchanged)`, or `comment: <PostError>`.
 - **Final variant block** (last emission, both modes): the
   Outcome header, optionally followed by a single pointer line
   `  see: <abs-path-to-handoff-blob>` (`Handoff*`) or the
@@ -392,16 +384,9 @@ The durable audit trail lives in `runs/<run-id>/events.jsonl` —
 structured, typed events rather than a free-form text trace.
 When `--trace PATH` is set, the binary additionally appends the
 compact human-readable trace lines (stack note, iteration log,
-comment status lines, final Outcome block, and `exit=<code>`)
-to that path as a compatibility sink. Stderr remains the binary
+final Outcome block, and `exit=<code>`) to that path as a
+compatibility sink. Stderr remains the binary
 boundary, and `$?` remains the dispatch contract.
-
-**Comment lines** (when `--status-comment` is set):
-
-| Mode    | Posted                     | Dedup skip                     | Error                           |
-| ------- | -------------------------- | ------------------------------ | ------------------------------- |
-| Inspect | `comment: posted`          | `comment: skipped (unchanged)` | `comment: <PostError>`          |
-| Loop    | `[iter N] comment: posted` | (silent — no line)             | `[iter N] comment: <PostError>` |
 
 **Stderr placeholders:**
 
@@ -455,7 +440,7 @@ always carries an `Action` and always emits the
 |  4   | `HandoffAgent(action)`    | `Hand off to agent: <prompt headline>` (followed by `  see: <path>` pointer) | Read the prompt body from the pointed-to handoff blob (`runs/<run-id>/blobs/<sha>.md`). Surface the handoff to the user (see "Surface to the user" below), then dispatch an agent with the prompt body as input. Re-invoke `/ooda-pr` after the agent finishes.                                                                                                                                   |
 |  5   | `DoneAborted`             | `DoneClosed`                                                                 | Stop. PR is closed without merge (e.g., abandoned). Treat per the caller's policy (often: notify owner).                                                                                                                                                                                                                                                                                          |
 |  6   | `StuckRepeated(action)`   | `StuckRepeated: <ActionKind>:<BlockerKey>`                                   | Do not auto-retry. Diagnose stderr; fix the underlying issue or escalate.                                                                                                                                                                                                                                                                                                                         |
-|  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                                 | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except `--status-comment` dedup).                                                                                                                                                                                              |
+|  7   | `StuckCapReached(action)` | `StuckCapReached: <ActionKind>:<BlockerKey>`                                 | Re-invoke with a higher `--max-iter`, or escalate. The action shown is the last action `act` ran successfully (Wait or non-Wait). Binary is stateless across runs (except the sticky head SHA).                                                                                                                                                                                                   |
 |  64  | `UsageError(msg)`         | `UsageError: <msg>` (followed by full usage block)                           | Fix the invocation. The usage block (same content as `--help` writes to stdout) is written to stderr immediately after the header, so callers don't need to re-invoke with `--help` to see syntax.                                                                                                                                                                                                |
 |  70  | `BinaryError(msg)`        | `BinaryError: <msg>`                                                         | BSD sysexits `EX_SOFTWARE`. Caught external failure (gh subprocess, network, IO). The msg is a single-line human-triage string; do not parse it. Retry once for transient cases or escalate per caller's policy. Distinct from uncaught panics — see catch-all.                                                                                                                                   |
 | 130  | `SignalInterrupted`       | `Interrupted: exit code 130`                                                 | `SIGINT` (`128 + 2`). The loop polls `SHUTDOWN_SIGNAL` at each iteration boundary; on a trapped signal it appends a terminal `run_halted` event, releases the live marker, prints the header, and exits 130 itself. Treat as clean shutdown, not a crash. The shell synthesizes the same `128 + 2` for an uncaught signal, so callers cannot distinguish trapped from kernel paths on `$?` alone. |
@@ -500,7 +485,8 @@ Each variant carries exactly the evidence its caller needs:
 - **`Paused`** carries no payload. Paused means decide selected
   no candidate action — there is no action to carry. Diagnostic
   context for "why no candidate" lives in the orient log
-  (surfaced via `--status-comment`), not in the Outcome.
+  (the `iteration_oriented` blob under `runs/<run-id>/`), not in
+  the Outcome.
 - **`UsageError(String)`** carries the parser's diagnostic, also
   newline-free.
 

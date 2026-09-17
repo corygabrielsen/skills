@@ -43,7 +43,7 @@ source before doing anything so the user can interrupt if wrong.
 ## Out of scope
 
 - Conversation transcripts (`*.jsonl`) — per-session by design
-- `runs/`, `status-comment/`, `blobs/` — keyed on forge+repo+PR; already
+- `runs/`, `index/`, `blobs/` — keyed on forge+repo+PR; already
   shared across project dirs via the state-root resolution chain
 - Pull mode (target → source), periodic sync, per-file merge UI
 

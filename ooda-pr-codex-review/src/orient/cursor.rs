@@ -211,25 +211,6 @@ pub(crate) struct CursorSeverityBreakdown {
     pub low: u32,
 }
 
-impl CursorSeverityBreakdown {
-    /// Compact severity rendering — non-zero buckets only, in
-    /// descending-severity order. Used by prompt and PR-comment
-    /// renderers.
-    pub(crate) fn nonzero_parts(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        if self.high > 0 {
-            out.push(format!("{} high", self.high));
-        }
-        if self.medium > 0 {
-            out.push(format!("{} medium", self.medium));
-        }
-        if self.low > 0 {
-            out.push(format!("{} low", self.low));
-        }
-        out
-    }
-}
-
 /// Reviewer-specific tier lattice. Distinct type from sibling
 /// reviewer tiers so cross-reviewer comparison is an explicit
 /// choice at every call site.

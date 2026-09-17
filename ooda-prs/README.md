@@ -18,7 +18,7 @@ see `src/`.
 
 ```
 ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder ⊕ dashboard
-    ⊕ comment ⊕ signal ⊕ outcome ⊕ multi_outcome ⊕ suite
+    ⊕ signal ⊕ outcome ⊕ multi_outcome ⊕ suite
         ⊕ ooda-core ⊕ ooda-state (sibling crates)
         ⊕ ooda-attest (companion binary — writes the attestation files
                        the attestation axes observe)
@@ -847,7 +847,6 @@ Args =
     mode           : Loop ⊕ Inspect
   × suite          : Suite
   × max_iter       : NonZeroU32           (default 50; ignored by inspect)
-  × status_comment : Bool
   × state_root     : Option⟨PathBuf⟩      (must exist and be a directory at parse time)
   × repo_root      : Option⟨PathBuf⟩
   × concurrency    : Option⟨u32⟩          (≥ 1 when given; None ⟹ |suite|)
@@ -917,11 +916,11 @@ contended.
 
 ```
 drive_one_pull_request(slug, pr, args, repo_root) =
-    recorder := Recorder::open{slug, pr, mode, max_iter, status_comment, state_root}
+    recorder := Recorder::open{slug, pr, mode, max_iter, state_root}
                 or return ProcessOutcome{slug, pr, run_id: "", BinaryError("recorder: …")}
     recorder.install_process_recorder()          -- thread-local tool-call sink
     outcome  := case args.mode of
-                    Inspect → run_inspect(slug, pr, args, repo_root, recorder)
+                    Inspect → run_inspect(slug, pr, repo_root, recorder)
                     Loop    → run_full(slug, pr, args, repo_root, recorder)
                 |> decorate_handoff_human(slug, pr, snapshot)
     handoff_path := case outcome of

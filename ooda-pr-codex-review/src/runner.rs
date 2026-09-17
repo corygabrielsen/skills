@@ -191,7 +191,7 @@ pub enum LoopError {
     /// Recorder-owned PR-scoped path could not be resolved (mutex
     /// poison). Surfaced explicitly rather than degrading to a
     /// cwd-relative fallback path that would silently collapse
-    /// distinct PRs onto a shared lock / dedup / sticky file.
+    /// distinct PRs onto a shared lock / sticky file.
     Recorder(crate::recorder::RecorderError),
 }
 

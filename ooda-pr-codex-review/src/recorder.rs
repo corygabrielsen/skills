@@ -5,7 +5,7 @@
 //!
 //! Sole persistence boundary for the per-PR loop with optional codex
 //! axis. Translates the binary's domain vocabulary (slug, PR,
-//! actions, decisions, outcomes, status comment, codex review) into
+//! actions, decisions, outcomes, codex review) into
 //! the domain-neutral `ooda_state` event protocol — `RunStarted`
 //! with `domain="pr"`, per-iteration `IterationObserved` /
 //! `IterationOriented` / `IterationDecided` events with blob refs,
@@ -185,7 +185,6 @@ pub(crate) struct RecorderConfig {
     pub pr: PullRequestNumber,
     pub mode: RunMode,
     pub max_iter: std::num::NonZeroU32,
-    pub status_comment: bool,
     pub state_root: Option<PathBuf>,
     #[allow(dead_code)] // mirror-shape compat; see struct doc
     pub legacy_trace: Option<PathBuf>,
@@ -220,7 +219,6 @@ impl Recorder {
             "pr": u64::from(cfg.pr),
             "mode": cfg.mode,
             "max_iter": cfg.max_iter.get(),
-            "status_comment": cfg.status_comment,
         });
         writer.start(EventBody::RunStarted {
             domain: PrDomain.name().to_string(),
@@ -282,7 +280,7 @@ impl Recorder {
 
     /// Cross-run PR-keyed workspace root: `<state-root>/workspaces/
     /// pr-codex-review/<slug>/<pr>/`. Act-side state (codex spawn
-    /// directories, comment dedup file) lives under this path,
+    /// directories) lives under this path,
     /// outside the run-opaque `runs/` tree.
     ///
     /// # Errors
@@ -301,18 +299,6 @@ impl Recorder {
             &inner.slug,
             inner.pr,
         ))
-    }
-
-    /// Path of the status-comment dedup file. Cross-run, PR-keyed —
-    /// lives under the workspace root, not inside a per-run dir.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RecorderError`] when [`Self::pr_workspace_root`]
-    /// fails. A cwd-relative fallback would silently collapse
-    /// distinct PRs onto a shared dedup file.
-    pub(crate) fn dedup_path(&self) -> Result<PathBuf, RecorderError> {
-        Ok(self.pr_workspace_root()?.join("status-comment.json"))
     }
 
     /// Per-PR advisory-lock sidecar target. Acquiring an
@@ -343,7 +329,7 @@ impl Recorder {
     /// current `headRefOid` against this sticky to detect drift; an
     /// unequal pair (with `pending = false`) is divergence (an
     /// out-of-band push). Path is per-`(slug, pr)`, parallel to
-    /// [`Self::dedup_path`] and [`Self::action_lock_path`].
+    /// [`Self::action_lock_path`].
     ///
     /// # Errors
     ///
@@ -545,46 +531,6 @@ impl Recorder {
                     "error": error,
                     "rate_limit_scope": scope,
                     "rate_limit_retry_after_secs": retry_after_secs,
-                }),
-            )
-        });
-    }
-
-    pub(crate) fn record_status_comment_rendered<T: Serialize>(
-        &self,
-        iteration: Option<u32>,
-        rendered: &T,
-        summary: impl Into<String>,
-    ) {
-        let summary = summary.into();
-        self.best_effort(|inner| {
-            let blob = inner.write_json_blob(rendered)?;
-            inner.append_domain(
-                DomainKind::StatusCommentRendered,
-                json!({
-                    "iteration": iteration,
-                    "summary": summary,
-                    "blob": blob,
-                }),
-            )
-        });
-    }
-
-    pub(crate) fn record_status_comment_result<T: Serialize>(
-        &self,
-        iteration: Option<u32>,
-        result: &T,
-        summary: impl Into<String>,
-    ) {
-        let summary = summary.into();
-        self.best_effort(|inner| {
-            let blob = inner.write_json_blob(result)?;
-            inner.append_domain(
-                DomainKind::StatusCommentResult,
-                json!({
-                    "iteration": iteration,
-                    "summary": summary,
-                    "blob": blob,
                 }),
             )
         });
@@ -1031,7 +977,6 @@ mod tests {
             pr: PullRequestNumber::new(7).unwrap(),
             mode: RunMode::Inspect,
             max_iter: std::num::NonZeroU32::new(1).unwrap(),
-            status_comment: false,
             state_root: Some(root.to_path_buf()),
             legacy_trace: None,
         })
@@ -1229,7 +1174,7 @@ mod tests {
         // degrading to an empty `PathBuf` (which `unwrap_or_default`
         // produced and which then joined to a cwd-relative sentinel
         // filename, silently collapsing distinct PRs onto a shared
-        // lock / dedup / sticky file).
+        // lock / sticky file).
         //
         // Poison the recorder's internal mutex by holding it while
         // a thread panics.
@@ -1247,7 +1192,6 @@ mod tests {
             recorder.action_lock_path().is_err(),
             "action_lock_path must surface mutex poison",
         );
-        assert!(recorder.dedup_path().is_err());
         assert!(recorder.last_seen_head_path().is_err());
         assert!(recorder.pr_workspace_root().is_err());
         let _ = std::fs::remove_dir_all(&root);

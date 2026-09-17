@@ -9,7 +9,6 @@ use std::time::Duration;
 
 mod act;
 mod axis_impls;
-mod comment;
 mod dashboard;
 mod decide;
 mod ids;
@@ -45,7 +44,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Suite grammar:\n  <suite>      ::= <group> ( ',' <group> )*\n  <group>      ::= <owner/repo>? <pr>+\n  <owner/repo>  — explicit slug for this group; if omitted, inherit from the prior\n                  group, else infer from cwd (`gh repo view --json nameWithOwner`).\n  <pr>          — positive integer.\n  Examples:\n    ooda-prs 42 45                              # cwd-slug, two PRs\n    ooda-prs acme/widget 42 43, acme/infra 100  # multi-slug; comma separates groups\n    ooda-prs acme/widget 42, 43                 # group 2 inherits acme/widget\n\
          \n\
-         Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --status-comment     post a status comment on each PR every iteration (deduped)\n  --state-root PATH    write always-on harness state under PATH\n  --repo-root PATH     target working tree for all `gt`/`git` invocations\n                       (default: derive from CWD via `git rev-parse --show-toplevel`)\n  -h, --help           show this help and exit\n\
+         Options:\n  --max-iter N         loop iteration cap per PR (default 50, must be ≥ 1; ignored by inspect)\n  --concurrency K      max in-flight PRs (default = |suite|, must be ≥ 1)\n  --state-root PATH    write always-on harness state under PATH\n  --repo-root PATH     target working tree for all `gt`/`git` invocations\n                       (default: derive from CWD via `git rev-parse --show-toplevel`)\n  -h, --help           show this help and exit\n\
          \n\
          Exit codes — aggregate priority projection over per-PR Outcomes:\n   0 all DoneMerged/Paused (no further action)\n   1 (unused at suite level — Paused folds into 0)\n   2 any WouldAdvance\n   3 any HandoffHuman\n   4 any HandoffAgent\n   5 any DoneClosed (closed without merge — distinct from merged)\n   6 any StuckRepeated\n   7 any StuckCapReached\n  64 UsageError\n  70 any BinaryError\n 130 any SignalInterrupted (SIGINT)\n 143 any SignalInterrupted (SIGTERM)\n\
          Priority order (highest first): UsageError > SignalInterrupted(SIGTERM=143) > SignalInterrupted(SIGINT=130) > BinaryError > HandoffAgent > HandoffHuman > StuckCapReached > StuckRepeated > WouldAdvance > DoneClosed > DoneMerged/Paused."
@@ -65,7 +64,6 @@ struct Args {
     /// (sequentially in this stage; parallelized later).
     suite: Vec<(RepoSlug, PullRequestNumber)>,
     max_iter: std::num::NonZeroU32,
-    status_comment: bool,
     state_root: Option<PathBuf>,
     /// Optional explicit override for the target working tree. When
     /// `None`, [`resolve_repo_root`] derives it from the process CWD
@@ -130,7 +128,6 @@ fn parse_args() -> Result<Args, ooda_core::SingleLineString> {
         mode,
         suite,
         max_iter: raw.max_iter,
-        status_comment: raw.status_comment,
         state_root: raw.state_root,
         repo_root: raw.repo_root,
         concurrency: raw.concurrency,
@@ -170,10 +167,6 @@ struct CliRaw {
     /// max in-flight PRs (must be ≥ 1; default = |suite|)
     #[arg(long, value_parser = parse_concurrency_value)]
     concurrency: Option<u32>,
-
-    /// post a status comment on each PR every iteration (deduped)
-    #[arg(long)]
-    status_comment: bool,
 
     /// always-on harness state root
     #[arg(long, value_parser = parse_existing_state_root)]
@@ -646,7 +639,6 @@ fn drive_one_pull_request(
         pr,
         mode: run_mode(args.mode),
         max_iter: args.max_iter,
-        status_comment: args.status_comment,
         state_root: args.state_root.clone(),
         legacy_trace: None,
     }) {
@@ -669,7 +661,7 @@ fn drive_one_pull_request(
     recorder.install_process_recorder();
     let run_id = recorder.run_id();
     let outcome = match args.mode {
-        Mode::Inspect => run_inspect(slug, pr, args, repo_root, &recorder),
+        Mode::Inspect => run_inspect(slug, pr, repo_root, &recorder),
         Mode::Loop => run_full(slug, pr, args, repo_root, &recorder),
     };
     let code = outcome.exit_code();
@@ -732,7 +724,6 @@ fn run_mode(mode: Mode) -> RunMode {
 fn run_inspect(
     slug: &RepoSlug,
     pr: PullRequestNumber,
-    args: &Args,
     repo_root: &Path,
     recorder: &Recorder,
 ) -> Outcome {
@@ -828,19 +819,6 @@ fn run_inspect(
         &candidate_actions,
         &decision,
     );
-    if args.status_comment {
-        let rendered = comment::render::render(
-            slug,
-            pr,
-            Some(1),
-            &comment::render::RenderInputs::from(&oriented),
-            &candidate_actions,
-            &decision,
-        );
-        recorder.record_status_comment_rendered(Some(1), &rendered, "inspect comment rendered");
-        let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(1));
-        log_post_result(slug, pr, "comment", true, r, Some(recorder));
-    }
     let snapshot = HandoffSnapshot {
         ci: oriented.ci.clone(),
         reviews: oriented.reviews.clone(),
@@ -916,30 +894,6 @@ fn run_full(
         let run_id = recorder.run_id();
         eprintln!("{} {line}", loop_prefix(slug, pr, Some(&run_id)));
         recorder.write_trace_line(&line);
-        if args.status_comment {
-            let rendered = comment::render::render(
-                slug,
-                pr,
-                Some(i),
-                &comment::render::RenderInputs::from(oriented),
-                candidate_actions,
-                d,
-            );
-            recorder.record_status_comment_rendered(
-                Some(i),
-                &rendered,
-                format!("[iter {i}] comment rendered"),
-            );
-            let r = comment::post::post_if_changed(slug, pr, &rendered, recorder, Some(i));
-            log_post_result(
-                slug,
-                pr,
-                &format!("[iter {i}] comment"),
-                false,
-                r,
-                Some(recorder),
-            );
-        }
     };
     let outcome = match run_loop(
         slug,
@@ -969,44 +923,6 @@ fn loop_prefix(slug: &RepoSlug, pr: PullRequestNumber, run_id: Option<&str>) -> 
     match run_id {
         Some(rid) if !rid.is_empty() => format!("[ooda-prs {slug}#{pr} run={rid}]"),
         _ => format!("[ooda-prs {slug}#{pr}]"),
-    }
-}
-
-fn log_post_result(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    prefix: &str,
-    verbose_skip: bool,
-    r: Result<bool, comment::post::PostError>,
-    recorder: Option<&Recorder>,
-) {
-    let line = post_result_line(prefix, verbose_skip, r);
-    if let Some(line) = line {
-        let run_id = recorder.map(Recorder::run_id);
-        eprintln!("{} {line}", loop_prefix(slug, pr, run_id.as_deref()));
-        if let Some(recorder) = recorder {
-            recorder.write_trace_line(&line);
-        }
-    }
-}
-
-fn post_result_line(
-    prefix: &str,
-    verbose_skip: bool,
-    r: Result<bool, comment::post::PostError>,
-) -> Option<String> {
-    match r {
-        Ok(true) => Some(format!("{prefix}: posted")),
-        Ok(false) if verbose_skip => Some(format!("{prefix}: skipped (unchanged)")),
-        Ok(false) => None,
-        // Single-line invariant on comment-event log lines:
-        // `SingleLineString` flattens embedded newlines that the
-        // upstream error type does not strip. Discharges the
-        // one-line-per-comment-event contract at the type level.
-        Err(e) => Some(format!(
-            "{prefix}: {}",
-            ooda_core::SingleLineString::new(e.to_string())
-        )),
     }
 }
 

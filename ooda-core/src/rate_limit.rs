@@ -142,7 +142,7 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted.len(), names.len());
         // No whitespace, no uppercase — these end up in
-        // status-comment lines and JSONL records.
+        // stderr trace lines and JSONL records.
         for n in &names {
             assert!(!n.contains(' '));
             assert_eq!(*n, n.to_lowercase().as_str());

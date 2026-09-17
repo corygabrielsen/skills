@@ -10,8 +10,6 @@ args:
     description: Per-PR loop iteration cap. Default 50; must be ≥1 (rejected with UsageError otherwise, even in inspect mode where the cap value is unused).
   - name: --concurrency K
     description: Maximum simultaneously-active PRs (workers). Parser default is None; None resolves to the suite size at the spawn loop (no cap). Must be ≥1; the unspecified-default case serializes as `null` in `manifest.json`.
-  - name: --status-comment
-    description: Post a status comment to each PR every iteration. Per-run deduped via the always-on state root.
   - name: --state-root PATH
     description: Override the always-on local state root for this invocation.
   - name: --repo-root PATH
@@ -215,7 +213,7 @@ sequence notation (Kleene-star over alternation) to capture this:
                                                the parser ("07" → 7).
 <flag>      ::= '--max-iter' POS_INT | '--concurrency' POS_INT
               | '--state-root' PATH | '--trace' PATH
-              | '--status-comment' | '-h' | '--help'
+              | '-h' | '--help'
 POS_INT     ::= [0-9]+                      -- parsed as u32 via
                                                `v.parse::<u32>()`, then
                                                rejected if value = 0
@@ -297,13 +295,12 @@ in real use (see "Calling discipline" above).
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--max-iter N`      | **Per-PR** iteration cap. Default 50. Must be ≥ 1. Inspect mode runs once per PR (cap unused, but `--max-iter 0` still rejects).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `--concurrency K`   | Maximum simultaneously-active PRs (workers). Default is the suite size (no cap). Must be ≥ 1; `K = 0` is rejected at the parser. `K > suite size` is silently clamped to the suite size. With `K < suite size`, `K` worker threads pull PRs from an atomic counter — a worker may handle multiple PRs sequentially while another is on its first PR.                                                                                                                                                                                                                                                                                                   |
-| `--status-comment`  | Post status comments to each PR every iteration. Per-run dedup at `<state-root>/runs/<run-id>/status_comment_dedup.json`. Dedup is scoped to a single run — re-invoking the binary opens a fresh run with no prior dedup memory.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `--state-root PATH` | Override the always-on state root. Resolution chain (first that yields a value wins): (1) `--state-root PATH` if given, (2) `$OODA_STATE_HOME` if set and **non-empty**, (3) `$XDG_STATE_HOME/ooda` if `$XDG_STATE_HOME` is set and non-empty, (4) `$HOME/.local/state/ooda` if `$HOME` is set and non-empty, (5) `std::env::temp_dir().join("ooda")` (e.g. `/tmp/ooda` on Linux). Empty env vars are treated as **unset** (a `=""` value falls through). The state root is **domain-agnostic** — one root per machine, shared by every OODA agent. PR identity lives only inside event records (`target.{forge,slug,pr}`), never in the on-disk path. |
 | `--repo-root PATH`  | Target working tree for every `gt` / `git` subprocess. Default: derive from CWD via `git rev-parse --show-toplevel`. Invocations from outside any git tree are rejected as `UsageError` unless `--repo-root` is supplied. One path covers the whole suite — `ooda-prs` drives many PRs but only one local working tree at a time. Pinning is required so `gt sync` cannot rewrite a sibling repo's stack when the binary is invoked from elsewhere on disk.                                                                                                                                                                                            |
 | `-h`, `--help`      | Print usage to stdout, exit 0. Pre-scan short-circuits all other validation including flag-repetition checks (`--help --help` exits 0).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 **Repeating a flag** (`--max-iter`, `--concurrency`,
-`--status-comment`, `--state-root`, `--repo-root`) is a `UsageError`, **except**
+`--state-root`, `--repo-root`) is a `UsageError`, **except**
 `-h` / `--help`, whose pre-scan short-circuits all parser
 validation.
 
@@ -324,9 +321,7 @@ records.
 <state-root>/
 ├── runs/<run-id>/
 │   ├── events.jsonl                 # source of truth (append-only)
-│   ├── blobs/<sha>.<ext>            # content-addressed payloads
-│   └── status_comment_dedup.json    # per-run mutable; present only
-│                                    # when --status-comment fires
+│   └── blobs/<sha>.<ext>            # content-addressed payloads
 └── live/<run-id>                    # empty marker; presence = "active"
 ```
 
@@ -358,8 +353,7 @@ in `ooda-state`. The `kind_suffix` distinguishes them at read time
 (`observe_started`, `observe_finished`, `action_started`,
 `action_finished`, `wait_started`, `wait_finished`,
 `tool_call_started`, `tool_call_finished`,
-`status_comment_rendered`, `status_comment_result`, `decision_envelope`,
-`dashboard`, `outcome`, `trace_line`).
+`decision_envelope`, `dashboard`, `outcome`, `trace_line`).
 
 ### Blobs
 
@@ -569,14 +563,6 @@ log lines as `/ooda-pr`:
 no action; `AgentNeeded` / `HumanNeeded` carry an `Action` whose
 blocker is appended in the second form.
 
-When `--status-comment` is set in **loop mode**, each iteration may
-also emit a comment-post log line: `[iter N] comment: posted` on a
-successful post, or `[iter N] comment: <PostError>` on failure.
-The dedup-skip case (no content change since last post) is **silent
-in loop mode** — no `[iter N] comment: skipped (unchanged)` line is
-emitted. (Inspect mode does emit `comment: skipped (unchanged)`
-because the post step there sets `verbose_skip = true`.)
-
 After the per-iteration lines, each PR emits its final variant
 block (the `Outcome` rendered the same way `/ooda-pr` renders it on
 exit — header line plus, for `Handoff*`, a single
@@ -592,9 +578,6 @@ lines at all. What can reach stderr in inspect mode:
 - An optional one-shot `stack: <base> → <root>` diagnostic when
   the PR's immediate base branch differs from the resolved stack
   root (suppressed when they match).
-- When `--status-comment` is set: a `comment: posted`,
-  `comment: skipped (unchanged)`, or `comment: <PostError>` line
-  emitted by the post step.
 - The final variant block (header + optional `  see: <path>`
   pointer line for `Handoff*` — prompt body lives in the
   per-run blob `<state-root>/runs/<run-id>/blobs/<sha>.md`,

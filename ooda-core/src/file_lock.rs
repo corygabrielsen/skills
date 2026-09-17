@@ -120,8 +120,8 @@ fn open_sidecar(sidecar: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).write(true).truncate(false);
     // Sidecar mode: the `.lock` file's NAME leaks the guarded-data
-    // identifier (e.g. status-comment.json.lock implies a
-    // status-comment.json sibling) to co-tenants on a 0o755 parent.
+    // identifier (e.g. last_seen_head.json.lock implies a
+    // last_seen_head.json sibling) to co-tenants on a 0o755 parent.
     // Land the sidecar at 0o600 so a directory walk does not expose
     // the lock-name even when the protected file is later secured.
     #[cfg(unix)]

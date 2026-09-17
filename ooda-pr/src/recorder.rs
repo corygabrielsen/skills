@@ -163,7 +163,6 @@ pub(crate) struct RecorderConfig {
     pub pr: PullRequestNumber,
     pub mode: RunMode,
     pub max_iter: std::num::NonZeroU32,
-    pub status_comment: bool,
     pub state_root: Option<PathBuf>,
     pub legacy_trace: Option<PathBuf>,
 }
@@ -204,7 +203,6 @@ impl Recorder {
             "pr": cfg.pr,
             "mode": cfg.mode,
             "max_iter": cfg.max_iter,
-            "status_comment": cfg.status_comment,
             "cwd": std::env::current_dir()
                 .map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string()),
             "argv": std::env::args().collect::<Vec<_>>(),
@@ -253,20 +251,6 @@ impl Recorder {
         }
     }
 
-    /// Per-PR dedup file for status comments. Lives outside the
-    /// per-run tree because dedup is a cross-run invariant: a fresh
-    /// run must observe prior runs' posted hashes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RecorderError`] when the per-PR index directory
-    /// cannot be created or the recorder mutex is poisoned. A
-    /// silent fallback to a cwd-relative path would collapse
-    /// distinct PRs onto a shared dedup file — fail loud instead.
-    pub(crate) fn dedup_path(&self) -> Result<PathBuf, RecorderError> {
-        Ok(self.pr_index_dir()?.join("status-comment-dedup.json"))
-    }
-
     /// Per-PR advisory-lock sidecar target. Acquiring an
     /// [`ooda_core::FileLock`] on this path at the act-stage boundary
     /// serialises concurrent OODA invocations against the same PR:
@@ -291,7 +275,7 @@ impl Recorder {
     /// current `headRefOid` against this sticky to detect drift; an
     /// unequal pair (with `pending = false`) is divergence (an
     /// out-of-band push). Path is per-`(slug, pr)`, parallel to
-    /// [`Self::dedup_path`] and [`Self::action_lock_path`].
+    /// [`Self::action_lock_path`].
     ///
     /// # Errors
     ///
@@ -328,8 +312,8 @@ impl Recorder {
     }
 
     /// Resolve the per-PR index directory, creating it if needed.
-    /// Shared core for [`Self::dedup_path`],
-    /// [`Self::action_lock_path`], and [`Self::last_seen_head_path`].
+    /// Shared core for [`Self::action_lock_path`] and
+    /// [`Self::last_seen_head_path`].
     /// Each failure mode (mutex poison, `create_dir_all`) propagates
     /// as a typed error.
     fn pr_index_dir(&self) -> Result<PathBuf, RecorderError> {
@@ -515,48 +499,6 @@ impl Recorder {
                     "error": error,
                     "rate_limit_scope": scope,
                     "rate_limit_retry_after_secs": retry_after_secs,
-                }),
-            ))?;
-            Ok(())
-        });
-    }
-
-    pub(crate) fn record_status_comment_rendered<T: Serialize>(
-        &self,
-        iteration: Option<u32>,
-        rendered: &T,
-        summary: impl Into<String>,
-    ) {
-        let summary = summary.into();
-        self.best_effort(|inner| {
-            let blob = inner.write_json_blob(rendered)?;
-            inner.writer.append(domain_specific(
-                DomainKind::StatusCommentRendered,
-                json!({
-                    "iteration": iteration,
-                    "summary": summary,
-                    "blob": blob,
-                }),
-            ))?;
-            Ok(())
-        });
-    }
-
-    pub(crate) fn record_status_comment_result<T: Serialize>(
-        &self,
-        iteration: Option<u32>,
-        result: &T,
-        summary: impl Into<String>,
-    ) {
-        let summary = summary.into();
-        self.best_effort(|inner| {
-            let blob = inner.write_json_blob(result)?;
-            inner.writer.append(domain_specific(
-                DomainKind::StatusCommentResult,
-                json!({
-                    "iteration": iteration,
-                    "summary": summary,
-                    "blob": blob,
                 }),
             ))?;
             Ok(())
@@ -858,7 +800,7 @@ fn open_append(path: &Path) -> Result<File, io::Error> {
 }
 
 /// Per-PR index directory: a stable per-`(slug, pr)` location for
-/// cross-run state (e.g. status-comment dedup). Lives under
+/// cross-run state (e.g. the sticky head SHA). Lives under
 /// `<state-root>/index/pr/<owner>/<repo>/<pr>/`, parallel to the
 /// run tree at `<state-root>/runs/`.
 ///
@@ -866,7 +808,7 @@ fn open_append(path: &Path) -> Result<File, io::Error> {
 /// `let _ = fs::create_dir_all(...)` swallowed perms / disk-full
 /// errors and returned a non-existent directory; downstream
 /// callers that joined a sentinel filename onto it (lock,
-/// dedup, sticky) ended up with paths that could not be created
+/// sticky) ended up with paths that could not be created
 /// and the caller saw a confusing "permission denied" on a path
 /// that looked correct.
 fn pr_index_path(
@@ -880,8 +822,8 @@ fn pr_index_path(
         .join(slug.owner().as_str())
         .join(slug.repo().as_str())
         .join(pr.to_string());
-    // 0o700 across the index tree — its leaf files (status-comment
-    // dedup hash, sticky head SHA, .action.lock sidecar) name the
+    // 0o700 across the index tree — its leaf files (sticky head
+    // SHA, .action.lock sidecar) name the
     // observed PR; a 0o755 ancestor leaks the PR identity to co-
     // tenants on the same machine.
     ooda_core::atomic_io::secure_create_dir_all(&dir)?;
@@ -1128,7 +1070,6 @@ mod tests {
             pr: PullRequestNumber::new(7).unwrap(),
             mode: RunMode::Inspect,
             max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
-            status_comment: false,
             state_root: Some(root.to_path_buf()),
             legacy_trace: None,
         })
@@ -1199,7 +1140,6 @@ mod tests {
             pr: PullRequestNumber::new(7).unwrap(),
             mode: RunMode::Inspect,
             max_iter: std::num::NonZeroU32::new(1).expect("1 is non-zero"),
-            status_comment: false,
             state_root: Some(root.clone()),
             legacy_trace: Some(PathBuf::from("/dev/full")),
         })
@@ -1327,8 +1267,7 @@ mod tests {
             result.is_err(),
             "action_lock_path must surface index-dir failure, got {result:?}",
         );
-        // Same shape for the sibling paths.
-        assert!(recorder.dedup_path().is_err());
+        // Same shape for the sibling path.
         assert!(recorder.last_seen_head_path().is_err());
         let _ = fs::remove_dir_all(root);
     }
@@ -1384,16 +1323,16 @@ mod tests {
     }
 
     #[test]
-    fn dedup_path_is_per_pr_and_cross_run() {
-        let root = temp_root("dedup");
-        let a = open_recorder(&root).dedup_path().unwrap();
-        let b = open_recorder(&root).dedup_path().unwrap();
-        // Two distinct runs on the same (slug, pr) share the dedup
-        // file: dedup is a cross-run invariant.
+    fn action_lock_path_is_per_pr_and_cross_run() {
+        let root = temp_root("action-lock-path");
+        let a = open_recorder(&root).action_lock_path().unwrap();
+        let b = open_recorder(&root).action_lock_path().unwrap();
+        // Two distinct runs on the same (slug, pr) share the lock
+        // file: serialisation is a cross-run invariant.
         assert_eq!(a, b);
         assert!(
             a.to_string_lossy().contains("index/pr/example/widgets/7"),
-            "dedup path lives under index/pr/<slug>/<pr>/, got {a:?}",
+            "lock path lives under index/pr/<slug>/<pr>/, got {a:?}",
         );
         let _ = fs::remove_dir_all(root);
     }

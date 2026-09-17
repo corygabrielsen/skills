@@ -8,7 +8,6 @@ use std::time::Duration;
 
 mod act;
 mod axis_impls;
-mod comment;
 mod dashboard;
 mod decide;
 mod ids;
@@ -39,7 +38,7 @@ fn print_usage(out: &mut dyn std::io::Write) {
          \n\
          Usage:\n  ooda-pr [options] <owner/repo> <pr>           run the loop (default)\n  ooda-pr [options] inspect <owner/repo> <pr>   one pass; print Outcome; exit\n\
          \n\
-         Options (must precede `inspect`):\n  --max-iter N        loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --status-comment    post a status comment on the PR each iteration (deduped)\n  --state-root PATH   harness state + attestation root (default: $OODA_STATE_HOME,\n                      else $XDG_STATE_HOME/ooda, else ~/.local/state/ooda)\n  --repo-root PATH    target working tree for all `gt`/`git` invocations\n                      (default: derive from CWD via `git rev-parse --show-toplevel`)\n  --trace PATH        also append the compact trace to PATH\n  -h, --help          show this help and exit\n\
+         Options (must precede `inspect`):\n  --max-iter N        loop iteration cap (default 50, must be ≥ 1; ignored by inspect)\n  --state-root PATH   harness state + attestation root (default: $OODA_STATE_HOME,\n                      else $XDG_STATE_HOME/ooda, else ~/.local/state/ooda)\n  --repo-root PATH    target working tree for all `gt`/`git` invocations\n                      (default: derive from CWD via `git rev-parse --show-toplevel`)\n  --trace PATH        also append the compact trace to PATH\n  -h, --help          show this help and exit\n\
          \n\
          Exit codes (stderr header — see SKILL.md for variant mapping):\n   0 DoneMerged       1 Paused             2 WouldAdvance      3 HandoffHuman\n   4 HandoffAgent     5 DoneClosed         6 StuckRepeated     7 StuckCapReached\n  64 UsageError      70 BinaryError      130 SignalInterrupted (SIGINT)\n 143 SignalInterrupted (SIGTERM)"
     );
@@ -56,7 +55,6 @@ struct Args {
     slug: RepoSlug,
     pr: PullRequestNumber,
     max_iter: std::num::NonZeroU32,
-    status_comment: bool,
     state_root: Option<PathBuf>,
     /// Optional explicit override for the target working tree. When
     /// `None`, [`resolve_repo_root`] derives it from the process CWD
@@ -145,7 +143,6 @@ fn parse_args() -> Result<Args, Outcome> {
         slug,
         pr,
         max_iter: raw.max_iter,
-        status_comment: raw.status_comment,
         state_root: raw.state_root,
         repo_root: raw.repo_root,
         trace: raw.trace,
@@ -188,10 +185,6 @@ struct CliRaw {
     /// loop iteration cap (must be ≥ 1; ignored by inspect)
     #[arg(long, value_parser = parse_max_iter_value, default_value_t = std::num::NonZeroU32::new(50).expect("50 is non-zero"))]
     max_iter: std::num::NonZeroU32,
-
-    /// post a status comment on the PR each iteration (deduped)
-    #[arg(long)]
-    status_comment: bool,
 
     /// always-on harness state root
     #[arg(long, value_parser = parse_existing_state_root)]
@@ -460,7 +453,6 @@ fn main() -> ProcessExitCode {
                 pr: args.pr,
                 mode: run_mode(args.mode),
                 max_iter: args.max_iter,
-                status_comment: args.status_comment,
                 state_root: args.state_root.clone(),
                 legacy_trace: args.trace.clone(),
             }) {
@@ -627,19 +619,6 @@ fn run_inspect(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
         &candidate_actions,
         &decision,
     );
-    if args.status_comment {
-        let rendered = comment::render::render(
-            &args.slug,
-            args.pr,
-            Some(1),
-            &comment::render::RenderInputs::from(&oriented),
-            &candidate_actions,
-            &decision,
-        );
-        recorder.record_status_comment_rendered(Some(1), &rendered, "inspect comment rendered");
-        let r = comment::post::post_if_changed(&args.slug, args.pr, &rendered, recorder, Some(1));
-        log_post_result(&args.slug, args.pr, "comment", true, r, Some(recorder));
-    }
     let snapshot = HandoffSnapshot {
         ci: oriented.ci.clone(),
         reviews: oriented.reviews.clone(),
@@ -714,31 +693,6 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
         let run_id = recorder.run_id();
         eprintln!("{} {line}", loop_prefix(&args.slug, args.pr, Some(&run_id)));
         recorder.write_trace_line(&line);
-        if args.status_comment {
-            let rendered = comment::render::render(
-                &args.slug,
-                args.pr,
-                Some(i),
-                &comment::render::RenderInputs::from(oriented),
-                candidate_actions,
-                d,
-            );
-            recorder.record_status_comment_rendered(
-                Some(i),
-                &rendered,
-                format!("[iter {i}] comment rendered"),
-            );
-            let r =
-                comment::post::post_if_changed(&args.slug, args.pr, &rendered, recorder, Some(i));
-            log_post_result(
-                &args.slug,
-                args.pr,
-                &format!("[iter {i}] comment"),
-                false,
-                r,
-                Some(recorder),
-            );
-        }
     };
     let outcome = match run_loop(
         &args.slug,
@@ -768,44 +722,6 @@ fn loop_prefix(slug: &RepoSlug, pr: PullRequestNumber, run_id: Option<&str>) -> 
     match run_id {
         Some(rid) if !rid.is_empty() => format!("[ooda-pr {slug}#{pr} run={rid}]"),
         _ => format!("[ooda-pr {slug}#{pr}]"),
-    }
-}
-
-fn log_post_result(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    prefix: &str,
-    verbose_skip: bool,
-    r: Result<bool, comment::post::PostError>,
-    recorder: Option<&Recorder>,
-) {
-    let line = post_result_line(prefix, verbose_skip, r);
-    if let Some(line) = line {
-        let run_id = recorder.map(Recorder::run_id);
-        eprintln!("{} {line}", loop_prefix(slug, pr, run_id.as_deref()));
-        if let Some(recorder) = recorder {
-            recorder.write_trace_line(&line);
-        }
-    }
-}
-
-fn post_result_line(
-    prefix: &str,
-    verbose_skip: bool,
-    r: Result<bool, comment::post::PostError>,
-) -> Option<String> {
-    match r {
-        Ok(true) => Some(format!("{prefix}: posted")),
-        Ok(false) if verbose_skip => Some(format!("{prefix}: skipped (unchanged)")),
-        Ok(false) => None,
-        // Single-line invariant on comment-event log lines:
-        // `SingleLineString` flattens embedded newlines that the
-        // upstream error type does not strip. Discharges the
-        // one-line-per-comment-event contract at the type level.
-        Err(e) => Some(format!(
-            "{prefix}: {}",
-            ooda_core::SingleLineString::new(e.to_string())
-        )),
     }
 }
 

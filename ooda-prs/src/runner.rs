@@ -182,7 +182,7 @@ pub enum LoopError {
     /// not be resolved (mutex poison, `create_dir_all` failure).
     /// Surfaced explicitly rather than degrading to a cwd-relative
     /// fallback path that would silently collapse distinct PRs
-    /// onto a shared lock / dedup / sticky file.
+    /// onto a shared lock / sticky file.
     Recorder(crate::recorder::RecorderError),
 }
 

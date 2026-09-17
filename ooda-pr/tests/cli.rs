@@ -11,7 +11,7 @@
 //!   * `UsageError(_)` → exit 64, single-line `UsageError: <msg>`
 //!     header on stderr followed by the usage text.
 //!   * Argument-parser invariants: positional shape, repeated
-//!     flags, removed `--comment`, `inspect` placement, `--max-iter`
+//!     flags, removed comment flags, `inspect` placement, `--max-iter`
 //!     validation.
 //!
 //! Each test asserts:
@@ -181,10 +181,16 @@ fn unknown_flag_is_usage_error() {
 }
 
 #[test]
-fn removed_comment_flag_is_usage_error() {
-    // Renamed to --status-comment in the v6 refactor; the old
-    // spelling must surface as UsageError so callers fail loudly.
+fn removed_comment_flags_are_usage_errors() {
+    // The PR status-comment surface was deleted: the driver never
+    // writes to the PR's comment stream. Both historical spellings
+    // must surface as UsageError so a caller that still passes one
+    // fails loudly instead of silently running without it.
     assert_usage_error(&["--comment", "owner/repo", "1"], "unexpected argument");
+    assert_usage_error(
+        &["--status-comment", "owner/repo", "1"],
+        "unexpected argument",
+    );
 }
 
 // ─── --max-iter validation ──────────────────────────────────────
@@ -251,17 +257,6 @@ fn max_iter_equals_form_accepted() {
     assert_ne!(
         code, 64,
         "--max-iter=5 must NOT be rejected as UsageError; stderr: {stderr}"
-    );
-}
-
-// ─── --status-comment validation ────────────────────────────────
-
-#[test]
-fn status_comment_repeated_rejected() {
-    // clap renders "the argument '--status-comment' cannot be used multiple times".
-    assert_usage_error(
-        &["--status-comment", "--status-comment", "owner/repo", "1"],
-        "cannot be used multiple times",
     );
 }
 

@@ -10,7 +10,7 @@ and exit-code taxonomy see `SKILL.md`. For implementation see `src/`.
 
 ```
 ids ⊕ observe ⊕ orient ⊕ decide ⊕ act ⊕ runner ⊕ recorder ⊕ dashboard
-    ⊕ comment ⊕ signal ⊕ outcome
+    ⊕ signal ⊕ outcome
         ⊕ ooda-core ⊕ ooda-state (sibling crates)
         ⊕ ooda-attest (companion binary — writes the attestation files
                        the attestation axes observe)
@@ -28,7 +28,7 @@ ExitCode = Outcome.exit_code()       (1:1 variant → code; see Outcome)
 
 `recorder.rs` is a thin adapter over the shared `ooda-state` crate.
 The PR-specific event vocabulary (`action_started`,
-`status_comment_rendered`, `tool_call_finished`, …) lives here;
+`action_finished`, `tool_call_finished`, …) lives here;
 the generic on-disk layout (events.jsonl plus content-addressed
 blobs) is owned by `ooda-state`. Invariants the underlying state
 model establishes:

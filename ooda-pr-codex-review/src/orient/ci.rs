@@ -66,6 +66,7 @@ impl CheckBucket {
     pub(crate) fn total(&self) -> usize {
         self.pass + self.fail() + self.pending()
     }
+    #[cfg(test)]
     pub(crate) fn failed_names(&self) -> Vec<&CheckName> {
         self.failed.iter().map(|f| &f.name).collect()
     }

@@ -200,8 +200,6 @@ impl DecisionKind {
 pub enum DomainKind {
     ObserveStarted,
     ObserveFinished,
-    StatusCommentRendered,
-    StatusCommentResult,
     ActionStarted,
     ActionFinished,
     WaitStarted,
@@ -222,8 +220,6 @@ impl DomainKind {
         match self {
             Self::ObserveStarted => "observe_started",
             Self::ObserveFinished => "observe_finished",
-            Self::StatusCommentRendered => "status_comment_rendered",
-            Self::StatusCommentResult => "status_comment_result",
             Self::ActionStarted => "action_started",
             Self::ActionFinished => "action_finished",
             Self::WaitStarted => "wait_started",

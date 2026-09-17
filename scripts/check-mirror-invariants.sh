@@ -50,8 +50,6 @@ STRICT_FILES=(
     "src/act/review_class.rs"
     "src/act/review_docs.rs"
     "src/act/sync_pull_request_metadata.rs"
-    "src/comment/post.rs"
-    "src/comment.rs"
     "src/dashboard.rs"
     "src/decide/branch_sync.rs"
     "src/decide/ci.rs"
@@ -181,7 +179,6 @@ diff_one() {
 # invariant but NOT the 3-way invariant — pr-codex-review extends the
 # decide axis with codex-review-specific logic.
 PARTIAL_MIRROR_FILES=(
-    "src/comment/render.rs"
     "src/decide/action.rs"
     "src/decide/reviews.rs"
     "src/decide.rs"

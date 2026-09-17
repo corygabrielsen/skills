@@ -461,6 +461,16 @@ mod tests {
             .any(|cmdline| cmdline == want)
     }
 
+    /// `sleep` duration unique to this test process, as
+    /// `<whole>.<pid>`. [`process_with_args_exists`] scans every
+    /// entry in `/proc`, so a constant marker lets one test process
+    /// observe a concurrent test process's `sleep` and fail on a
+    /// group it never killed. The pid makes the argv unique per
+    /// process while staying a valid fractional-second duration.
+    fn unique_marker(whole: u32) -> String {
+        format!("{whole}.{}", std::process::id())
+    }
+
     /// Default test limits: 10s deadline, 1 MiB caps. Loose enough
     /// that ordinary `fast_command` cases don't trip them.
     fn default_limits() -> SpawnLimits {
@@ -492,11 +502,11 @@ mod tests {
         // test runner under heavy parallelism would surface
         // zombies elsewhere.
         // dash forks `sleep` as a grandchild of the shell; the
-        // fractional duration is a marker no other test uses, so
-        // a /proc scan after the timeout proves the group died.
-        const MARKER: &str = "5.271828";
+        // per-process marker duration makes the argv unique, so a
+        // /proc scan after the timeout proves this group died.
+        let marker = unique_marker(5);
         let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg(format!("sleep {MARKER}"));
+        cmd.arg("-c").arg(format!("sleep {marker}"));
         let limits = SpawnLimits {
             deadline: Duration::from_millis(200),
             max_stdout_bytes: 1 << 20,
@@ -506,8 +516,8 @@ mod tests {
         let err = run_with_limits(&mut cmd, limits).expect_err("must time out");
         let elapsed = started.elapsed();
         assert!(
-            !process_with_args_exists(&["sleep", MARKER]),
-            "grandchild `sleep {MARKER}` survived the group kill",
+            !process_with_args_exists(&["sleep", &marker]),
+            "grandchild `sleep {marker}` survived the group kill",
         );
         match err {
             SpawnError::Timeout { deadline, killed } => {
@@ -553,10 +563,10 @@ mod tests {
         // fork. The marker is a fractional duration no other test
         // uses; a /proc scan after the kill proves the grandchild
         // is gone, and a zombie's empty cmdline cannot match it.
-        const MARKER: &str = "600.161803";
+        let marker = unique_marker(600);
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg(format!("sleep {MARKER} & echo ready; wait"))
+            .arg(format!("sleep {marker} & echo ready; wait"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -571,14 +581,14 @@ mod tests {
             .read_exact(&mut ready)
             .expect("shell reports ready");
         let pgid = child.id();
-        assert!(process_with_args_exists(&["sleep", MARKER]));
+        assert!(process_with_args_exists(&["sleep", &marker]));
         assert!(process_group_has_live_member(pgid));
         let started = Instant::now();
         assert!(kill_process_group(&mut child));
         let elapsed = started.elapsed();
         assert!(
-            !process_with_args_exists(&["sleep", MARKER]),
-            "grandchild `sleep {MARKER}` survived the group kill",
+            !process_with_args_exists(&["sleep", &marker]),
+            "grandchild `sleep {marker}` survived the group kill",
         );
         assert!(!process_group_has_live_member(pgid));
         assert!(

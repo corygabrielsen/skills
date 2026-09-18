@@ -207,31 +207,33 @@ pub(crate) struct CopilotReviewRound {
     pub ack_at: Option<Timestamp>,
     pub reviewed_at: Option<Timestamp>,
     pub commit: Option<GitCommitSha>,
-    /// Visible inline comment count: `max(stated, structural)` — the
-    /// body's stated "generated N" joined with the count of review
-    /// threads whose first comment belongs to this review. Two
-    /// channels with disjoint failure domains, same design as
+    /// Count of findings the review renders as inline review threads:
+    /// `max(stated, structural)` — the count stated on the body's
+    /// findings label joined with the count of review threads whose
+    /// first comment belongs to this review. Two channels with
+    /// disjoint failure domains, same design as
     /// `comments_suppressed`.
     pub comments_visible: u32,
-    /// Suppressed finding count: `max(|suppressed_comments|, stated
-    /// count)` per [`parse_copilot_review_body`]. Never less than
-    /// what either extraction channel attests.
+    /// Count of findings the review renders in the body rather than
+    /// as inline threads: `max(|suppressed_comments|, stated count)`
+    /// per [`parse_copilot_review_body`]. Never less than what either
+    /// extraction channel attests.
     pub comments_suppressed: u32,
-    /// Per-entry witnesses of the suppressed findings — file, line,
-    /// and body extracted from the review body's `<details>` blocks.
-    /// The host posts these as text only (not as inline review
-    /// threads), so they need a separate surface to drive agent
-    /// work. Extraction is structural (entry shape), while
+    /// Per-entry witnesses of the body-rendered findings — file,
+    /// line, and body extracted from the review body's `<details>`
+    /// blocks. The host posts these as text only (not as inline
+    /// review threads), so they need a separate surface to drive
+    /// agent work. Extraction is structural (entry shape), while
     /// `comments_suppressed` also reads the host's stated count via
     /// a lexical stem; the disjoint failure domains keep the count
     /// alive when the witness parse fails, and vice versa.
     pub suppressed_comments: Vec<SuppressedComment>,
 }
 
-/// One suppressed finding rendered in the review body's `<details>`
-/// block. Carries the witness (path + line + body) needed to drive
-/// an `AddressThreads` action that the host never posted as an
-/// inline review thread.
+/// One finding rendered in the review body's `<details>` block
+/// instead of as an inline review thread. Carries the witness (path +
+/// line + body) needed to drive an `AddressThreads` action for
+/// feedback the host never posted as a thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct SuppressedComment {
     pub path: String,
@@ -354,10 +356,9 @@ fn copilot_reviewer_events(events: &[IssueEvent]) -> Vec<&IssueEvent> {
 /// `suppressed` coheres with `suppressed_comments` by construction
 /// (see [`parse_copilot_review_body`]).
 pub(crate) struct ReviewBodySignals {
-    /// Stated channel only ("generated N"). The structural channel
-    /// (thread linkage) joins at round assembly in
-    /// [`correlate_rounds`], which sees the thread data this parser
-    /// does not.
+    /// Stated channel only. The structural channel (thread linkage)
+    /// joins at round assembly in [`correlate_rounds`], which sees
+    /// the thread data this parser does not.
     pub visible: u32,
     pub suppressed: u32,
     pub suppressed_comments: Vec<SuppressedComment>,
@@ -365,118 +366,362 @@ pub(crate) struct ReviewBodySignals {
 
 /// Parse a review body into its signals.
 ///
+/// # Host grammars
+///
+/// The host has rewritten this body's markup while keeping the same
+/// information, and both revisions remain readable on any PR whose
+/// history spans the change. Every anchor here is therefore a *shape*
+/// — element nesting, line delimiters, digit runs — never a sentence.
+/// The two shapes observed in the wild:
+///
+/// - **flat** — one `<details>` element holding a markdown heading per
+///   section, with `**path:line**`-headed entries under the heading
+///   that governs body-rendered findings.
+/// - **nested** — one `<details>` element per section; the section of
+///   body-rendered findings holds one nested `<details>` per finding,
+///   whose content opens with a `` `path:line` `` locator.
+///
+/// One walk covers both: [`details_blocks`] flattens the element tree
+/// and any block whose content carries locator lines yields entries.
+///
+/// # Channels
+///
 /// Suppressed findings have two extraction channels with disjoint
 /// failure domains:
 ///
-/// - **witnesses** — structural: entry-shaped content inside any
-///   `<summary>`-governed block ([`extract_suppressed_comments`]).
-///   Immune to summary-title rewording.
-/// - **stated count** — lexical stem: a parenthesized digit-run in a
-///   summary whose text contains `suppress`
-///   ([`stated_suppressed_count`]). Immune to entry-grammar drift.
+/// - **witnesses** — structural: locator-headed entries inside any
+///   `<details>` block ([`block_entries`]). Immune to
+///   section-title rewording.
+/// - **stated count** — lexical stem ([`stated_suppressed_count`]).
+///   Immune to entry-grammar drift.
 ///
 /// `suppressed = max(|witnesses|, stated)`: never less than what
-/// either channel attests, so a single-channel parse failure
-/// degrades the payload (count without witnesses, or vice versa)
-/// instead of silently reporting zero. The two channels share no
-/// anchor; only simultaneous drift of both surfaces can zero the
-/// signal.
-///
-/// Class invariant (counts): a digit-run immediately following the
-/// count anchor is the authoritative terminator. Surrounding-token
-/// matching admits false anchors when the body wording shifts; the
-/// digit-run does not.
+/// either channel attests, so a single-channel parse failure degrades
+/// the payload (count without witnesses, or vice versa) instead of
+/// silently reporting zero. The two channels share no anchor; only
+/// simultaneous drift of both surfaces can zero the signal.
 pub(crate) fn parse_copilot_review_body(body: &str) -> ReviewBodySignals {
-    let visible = if body.contains("generated no new comments") {
-        0
-    } else {
-        find_count(body, "generated ").unwrap_or(0)
-    };
-    let suppressed_comments = extract_suppressed_comments(body);
+    let blocks = details_blocks(body);
+    let suppressed_comments = block_entries(&blocks);
     let witnesses = u32::try_from(suppressed_comments.len()).unwrap_or(u32::MAX);
     ReviewBodySignals {
-        visible,
-        suppressed: witnesses.max(stated_suppressed_count(body)),
+        visible: stated_visible_count(body),
+        suppressed: witnesses.max(stated_suppressed_count(&blocks)),
         suppressed_comments,
     }
 }
 
-/// Parse the leading ASCII-digit run immediately after `prefix`.
-/// Digit-run termination is robust to parenthesized clarifiers and
-/// any tokens that follow the count region.
-fn find_count(body: &str, prefix: &str) -> Option<u32> {
-    let start = body.find(prefix)? + prefix.len();
-    let rest = &body[start..];
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse().ok()
-    }
+// ── Markup reduction ─────────────────────────────────────────────────
+
+/// Invisible formatting code points. The host renders paths with
+/// zero-width break opportunities between segments; they carry no path
+/// semantics and make the path unusable as a filesystem key, so every
+/// parsed path is filtered through [`strip_invisible`].
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00ad}' | '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
 }
 
-/// Enumerate `(summary text, governed content)` pairs: each
-/// `<summary>…</summary>` span paired with the content that follows
-/// it, up to the next `</details>` or end of body. Total — any body
-/// yields a (possibly empty) list; an unclosed `<summary>` ends
-/// enumeration.
-fn summary_blocks(body: &str) -> Vec<(&str, &str)> {
-    let mut out = Vec::new();
-    let mut cursor = 0;
-    while let Some(rel) = body[cursor..].find("<summary>") {
-        let summary_start = cursor + rel + "<summary>".len();
-        let Some(end_rel) = body[summary_start..].find("</summary>") else {
-            break;
-        };
-        let summary_end = summary_start + end_rel;
-        let content_start = summary_end + "</summary>".len();
-        let content_end = body[content_start..]
-            .find("</details>")
-            .map_or(body.len(), |i| content_start + i);
-        out.push((
-            &body[summary_start..summary_end],
-            &body[content_start..content_end],
-        ));
-        cursor = content_end;
+fn strip_invisible(s: &str) -> String {
+    s.chars().filter(|c| !is_invisible_format(*c)).collect()
+}
+
+/// Reduce markup-bearing text to the text it renders by dropping every
+/// `<…>` span. Total — an unterminated `<` consumes the rest of the
+/// input. Attribute values are dropped with their tag, so tag geometry
+/// contributes no digits to a count read off the reduced text.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for c in s.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
     }
     out
 }
 
-/// Extract per-comment witnesses from the review body.
-///
-/// Identification is structural, not lexical: a finding rendered in
-/// the body (`**path:line**` header + bullet body inside a
-/// `<summary>`-governed block) is by definition not materialized as
-/// an inline review thread — body-rendered findings are the
-/// suppressed set. The host owns the block's title prose and has
-/// reworded it; the entry grammar is the stable anchor, so blocks
-/// are classified by whether their content parses, never by title.
-///
-/// Returns an empty vec when no block content parses. The entry
-/// parser is lenient on whitespace and multi-line bodies (a body run
-/// continues until the next `**…**` header or the block close) and
-/// strict on the header shape (must end in `:<digits>**`).
-pub(crate) fn extract_suppressed_comments(body: &str) -> Vec<SuppressedComment> {
-    summary_blocks(body)
-        .into_iter()
-        .flat_map(|(_, content)| parse_suppressed_block(content))
-        .collect()
+/// A markdown ATX heading line.
+fn is_heading(line: &str) -> bool {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    (1..=6).contains(&hashes) && line[hashes..].starts_with(' ')
 }
 
-/// The host's stated suppressed count: the first digit-bearing
-/// parenthesized run in a `<summary>` whose text contains the stem
-/// `suppress` (ASCII case-insensitive). Stem matching survives
-/// sentence-level rewording ("Comments suppressed due to low
-/// confidence (N)" and "Suppressed comments (N)" both match).
-/// Degraded-signal channel: when entry extraction fails wholesale,
-/// the stated count still drives `comments_suppressed > 0` gates.
-fn stated_suppressed_count(body: &str) -> u32 {
-    summary_blocks(body)
-        .into_iter()
-        .filter(|(summary, _)| summary.to_ascii_lowercase().contains("suppress"))
-        .filter_map(|(summary, _)| paren_count(summary))
+// ── Element tree ─────────────────────────────────────────────────────
+
+/// One `<details>` element, flattened out of the body's element tree.
+struct DetailsBlock {
+    /// `<summary>` text with markup removed; empty when absent.
+    summary: String,
+    /// Content between `</summary>` and the matching `</details>`,
+    /// with nested `<details>` elements elided — each nested element
+    /// is flattened into its own [`DetailsBlock`].
+    content: String,
+    /// The block renders an in-page anchor link of its own. Findings
+    /// rendered as links are inline review threads, which the visible
+    /// channel counts; body-rendered findings never carry one.
+    linked: bool,
+}
+
+const DETAILS_CLOSE: &str = "</details>";
+
+/// Flatten the body's `<details>` elements. Total — a body with no
+/// elements yields an empty list, and an unclosed `<details>` governs
+/// to the end of the body.
+fn details_blocks(body: &str) -> Vec<DetailsBlock> {
+    let mut opens: Vec<usize> = Vec::new();
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(rel) = body[cursor..].find('<') {
+        let at = cursor + rel;
+        if body[at..].starts_with(DETAILS_CLOSE) {
+            if let Some(start) = opens.pop() {
+                out.push(details_block(&body[start..at]));
+            }
+            cursor = at + DETAILS_CLOSE.len();
+        } else if let Some(after) = open_details_end(&body[at..]) {
+            opens.push(at + after);
+            cursor = at + after;
+        } else {
+            cursor = at + 1;
+        }
+    }
+    for start in opens.into_iter().rev() {
+        out.push(details_block(&body[start..]));
+    }
+    out
+}
+
+/// Offset just past the `>` of a `<details …>` open tag at the head of
+/// `s`, or `None` when `s` does not open one.
+fn open_details_end(s: &str) -> Option<usize> {
+    const OPEN: &str = "<details";
+    let rest = s.strip_prefix(OPEN)?;
+    if !rest.starts_with('>') && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(OPEN.len() + rest.find('>')? + 1)
+}
+
+fn details_block(inner: &str) -> DetailsBlock {
+    let (summary, rest) = split_summary(inner);
+    let content = elide_nested_details(rest);
+    let linked = summary.contains("](#") || content.contains("](#");
+    DetailsBlock {
+        summary: strip_tags(summary).trim().to_string(),
+        content,
+        linked,
+    }
+}
+
+/// Split an element's own `<summary>` off its content. The summary is
+/// the element's first child; a `<summary>` appearing only after a
+/// nested `<details>` belongs to that nested element, not this one.
+fn split_summary(inner: &str) -> (&str, &str) {
+    const OPEN: &str = "<summary>";
+    const CLOSE: &str = "</summary>";
+    let nested_at = inner.find("<details").unwrap_or(inner.len());
+    let Some(open_at) = inner.find(OPEN).filter(|at| *at < nested_at) else {
+        return ("", inner);
+    };
+    let from = open_at + OPEN.len();
+    let Some(rel) = inner[from..].find(CLOSE) else {
+        return (&inner[from..], "");
+    };
+    (&inner[from..from + rel], &inner[from + rel + CLOSE.len()..])
+}
+
+/// Drop nested `<details>` elements from an element's content, so a
+/// block's content is the text it renders itself.
+fn elide_nested_details(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    let mut cursor = 0;
+    while let Some(rel) = s[cursor..].find('<') {
+        let at = cursor + rel;
+        if depth == 0 {
+            out.push_str(&s[cursor..at]);
+        }
+        if s[at..].starts_with(DETAILS_CLOSE) {
+            depth = depth.saturating_sub(1);
+            cursor = at + DETAILS_CLOSE.len();
+        } else if let Some(after) = open_details_end(&s[at..]) {
+            depth += 1;
+            cursor = at + after;
+        } else {
+            if depth == 0 {
+                out.push('<');
+            }
+            cursor = at + 1;
+        }
+    }
+    if depth == 0 {
+        out.push_str(&s[cursor..]);
+    }
+    out
+}
+
+// ── Entry witnesses ──────────────────────────────────────────────────
+
+/// Extract per-comment witnesses from the body's flattened blocks.
+///
+/// Identification is structural, not lexical: a finding rendered in
+/// the body is by definition not materialized as an inline review
+/// thread, so body-rendered entries are the suppressed set. The host
+/// owns the section titles and has reworded them; the entry shape is
+/// the stable anchor, so blocks are classified by whether their
+/// content parses, never by title.
+///
+/// Returns an empty vec when no block content parses.
+fn block_entries(blocks: &[DetailsBlock]) -> Vec<SuppressedComment> {
+    blocks.iter().flat_map(parse_block_entries).collect()
+}
+
+/// Parse one block's entries.
+///
+/// An entry opens at a locator line and runs to the next locator, to
+/// the next block-structure marker (a markdown heading or a bold
+/// label line), or to the block's end. The parser is lenient on
+/// whitespace and multi-line bodies and strict on the locator shape,
+/// so a non-entry line is skipped rather than misclassified. Entries
+/// left with an empty body are dropped.
+///
+/// A block whose content *opens* with a locator and whose summary
+/// states no count renders a single finding: the summary titles that
+/// finding, and joins its body, which is otherwise the only place the
+/// finding's headline would be lost. A summary that states a count
+/// titles a set — a section of findings — rather than any one entry,
+/// and stays out of every entry's body.
+fn parse_block_entries(block: &DetailsBlock) -> Vec<SuppressedComment> {
+    let mut out: Vec<SuppressedComment> = Vec::new();
+    let mut current: Option<(String, u32, Vec<String>)> = None;
+    let mut opens_with_locator: Option<bool> = None;
+    for raw_line in block.content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((path, line_no)) = parse_entry_locator(line) {
+            flush_entry(&mut current, &mut out);
+            current = Some((path, line_no, Vec::new()));
+            opens_with_locator.get_or_insert(true);
+            continue;
+        }
+        opens_with_locator.get_or_insert(false);
+        // Block-structure markers close the open entry: a heading or
+        // a bold label line starts the block's own scaffolding (its
+        // section titles and its per-review totals), which is not
+        // finding prose and must not reach an agent as such.
+        if is_heading(line) || bold_label(line).is_some() {
+            flush_entry(&mut current, &mut out);
+            continue;
+        }
+        if let Some((_, _, body_parts)) = current.as_mut() {
+            body_parts.push(line.strip_prefix("* ").unwrap_or(line).to_string());
+        }
+    }
+    flush_entry(&mut current, &mut out);
+    if opens_with_locator == Some(true)
+        && out.len() == 1
+        && !block.summary.is_empty()
+        && paren_count(&block.summary).is_none()
+        && let Some(entry) = out.first_mut()
+    {
+        entry.body = if entry.body.is_empty() {
+            block.summary.clone()
+        } else {
+            format!("{}\n\n{}", block.summary, entry.body)
+        };
+    }
+    out.retain(|c| !c.body.is_empty());
+    out
+}
+
+fn flush_entry(current: &mut Option<(String, u32, Vec<String>)>, out: &mut Vec<SuppressedComment>) {
+    if let Some((path, line, body_parts)) = current.take() {
+        out.push(SuppressedComment {
+            path,
+            line,
+            body: body_parts.join("\n").trim().to_string(),
+        });
+    }
+}
+
+/// Parse a standalone entry locator, returning `(path, line)`.
+///
+/// Two host grammars, one shape: the locator occupies the whole line,
+/// is delimited (bold `**…**` or code `` `…` ``), and ends in a
+/// trailing decimal run after the last `:`. Returns `None` for any
+/// other line shape.
+fn parse_entry_locator(line: &str) -> Option<(String, u32)> {
+    let inner = delimited(line, "**").or_else(|| delimited(line, "`"))?;
+    let colon = inner.rfind(':')?;
+    let (path, line_part) = inner.split_at(colon);
+    let line_no: u32 = line_part[1..].parse().ok()?;
+    let path = strip_invisible(path);
+    if path.is_empty() {
+        return None;
+    }
+    Some((path, line_no))
+}
+
+/// The span a line wraps in `delim`, when the line is exactly one such
+/// span.
+fn delimited<'a>(line: &'a str, delim: &str) -> Option<&'a str> {
+    let inner = line.strip_prefix(delim)?.strip_suffix(delim)?;
+    (!inner.is_empty() && !inner.contains(delim)).then_some(inner)
+}
+
+// ── Stated counts ────────────────────────────────────────────────────
+
+/// The host's stated count of body-rendered findings.
+///
+/// Degraded-signal channel: when entry extraction fails wholesale, the
+/// stated count still drives `comments_suppressed > 0` gates. Reading
+/// it needs a lexical anchor — no markup distinguishes a section of
+/// withheld findings from a section of skipped files — so this is the
+/// one place a host wording is matched, and the stem set is this
+/// channel's known failure surface. Both stems are observed in the
+/// wild: `suppress` under the flat grammar, `miss` under the nested
+/// one. Each block's summary and its own markdown headings are
+/// matched, because the host has stated the count in both positions.
+///
+/// Sections are disjoint, so qualifying blocks sum; within one block
+/// the positions restate a single count, so they max.
+///
+/// Blocks rendering in-page anchor links are excluded: those findings
+/// are inline review threads, counted by the visible channel.
+fn stated_suppressed_count(blocks: &[DetailsBlock]) -> u32 {
+    blocks
+        .iter()
+        .filter(|b| !b.linked)
+        .filter_map(block_stated_count)
+        .fold(0u32, u32::saturating_add)
+}
+
+/// Bold label lines are deliberately not matched: under the flat
+/// grammar the host partitions a section's total across bold labels
+/// inside the same block, so reading them would double-count against
+/// the heading that already states the total.
+fn block_stated_count(block: &DetailsBlock) -> Option<u32> {
+    const STEMS: &[&str] = &["suppress", "miss"];
+    std::iter::once(block.summary.as_str())
+        .chain(
+            block
+                .content
+                .lines()
+                .map(str::trim)
+                .filter(|l| is_heading(l)),
+        )
+        .filter(|text| {
+            let lower = text.to_ascii_lowercase();
+            STEMS.iter().any(|stem| lower.contains(stem))
+        })
+        .filter_map(paren_count)
         .max()
-        .unwrap_or(0)
 }
 
 /// Digit-run immediately after the first `(` that opens onto digits.
@@ -497,51 +742,62 @@ fn paren_count(summary: &str) -> Option<u32> {
     None
 }
 
-fn parse_suppressed_block(block: &str) -> Vec<SuppressedComment> {
-    let mut out: Vec<SuppressedComment> = Vec::new();
-    let mut current: Option<(String, u32, Vec<String>)> = None;
-    for raw_line in block.lines() {
-        let line = raw_line.trim();
-        if let Some((path, line_no)) = parse_entry_header(line) {
-            flush_entry(&mut current, &mut out);
-            current = Some((path, line_no, Vec::new()));
-            continue;
-        }
-        if line.is_empty() {
-            continue;
-        }
-        if let Some((_, _, body_parts)) = current.as_mut() {
-            let body_line = line.strip_prefix("* ").unwrap_or(line).to_string();
-            body_parts.push(body_line);
-        }
-    }
-    flush_entry(&mut current, &mut out);
-    out
+/// The host's stated count of findings rendered as inline review
+/// threads.
+///
+/// The weaker of this axis's two visible-count channels: the
+/// structural one joined in [`correlate_rounds`] counts threads by
+/// originating review id and is exact, where this one reads prose.
+/// It carries the signal when thread data is unavailable.
+///
+/// The anchor is the line shape — a bold label whose value carries
+/// digit runs — rather than any one sentence; the host has reworded
+/// the label across grammars while keeping the shape, so the stems
+/// `generated` (flat) and `finding` (nested) select the label and the
+/// shape does the rest. A severity breakdown renders the total as
+/// several runs on one line (`1 <high> · 1 <medium>`), so a line's
+/// runs sum; markup is stripped first so tag geometry contributes no
+/// digits.
+fn stated_visible_count(body: &str) -> u32 {
+    const STEMS: &[&str] = &["generated", "finding"];
+    body.lines()
+        .filter_map(bold_label)
+        .filter(|(label, _)| {
+            let lower = label.to_ascii_lowercase();
+            STEMS.iter().any(|stem| lower.contains(stem))
+        })
+        .map(|(_, value)| sum_digit_runs(&strip_tags(value)))
+        .max()
+        .unwrap_or(0)
 }
 
-fn flush_entry(current: &mut Option<(String, u32, Vec<String>)>, out: &mut Vec<SuppressedComment>) {
-    if let Some((path, line, body_parts)) = current.take() {
-        let body = body_parts.join("\n").trim().to_string();
-        if !body.is_empty() {
-            out.push(SuppressedComment { path, line, body });
-        }
-    }
+/// Split a `**label:** value` line into its label and value. Tolerates
+/// a leading list-item bullet.
+fn bold_label(line: &str) -> Option<(&str, &str)> {
+    let text = line.trim();
+    let text = text.strip_prefix("- ").unwrap_or(text);
+    let rest = text.strip_prefix("**")?;
+    let end = rest.find("**")?;
+    Some((rest[..end].trim_end_matches(':'), &rest[end + 2..]))
 }
 
-/// Parse a `**path:line**` header, returning `(path, line)` on
-/// success. The line number is the trailing decimal run after the
-/// last `:` inside the bolded span. Returns `None` for any other
-/// line shape — the parser silently skips those rather than misclassify.
-fn parse_entry_header(line: &str) -> Option<(String, u32)> {
-    let inner = line.strip_prefix("**")?.strip_suffix("**")?;
-    let colon = inner.rfind(':')?;
-    let (path, line_part) = inner.split_at(colon);
-    let line_str = &line_part[1..];
-    if path.is_empty() || line_str.is_empty() {
-        return None;
+/// Sum the ASCII digit runs in `s`.
+fn sum_digit_runs(s: &str) -> u32 {
+    let mut total = 0u32;
+    let mut run = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            run.push(c);
+        } else if !run.is_empty() {
+            total = total.saturating_add(run.parse().unwrap_or(0));
+            run.clear();
+        }
     }
-    let line_no: u32 = line_str.parse().ok()?;
-    Some((path.to_string(), line_no))
+    if run.is_empty() {
+        total
+    } else {
+        total.saturating_add(run.parse().unwrap_or(0))
+    }
 }
 
 // ── Timeline + rounds ────────────────────────────────────────────────
@@ -1217,6 +1473,10 @@ mod tests {
     /// in-flight event but well under the start/review timeouts, so
     /// health computation reports Healthy unless a test deliberately
     /// engineers a degraded scenario.
+    /// Review body stating no inline findings, in the host's current
+    /// label grammar.
+    const NO_FINDINGS: &str = "**Findings:** None";
+
     fn fixed_now() -> Timestamp {
         ts("2026-04-23T10:02:00Z")
     }
@@ -1311,44 +1571,196 @@ mod tests {
 
     // ── body parsing ──
 
+    /// Nested grammar, as the host emits it (observed 2026-09-18).
+    /// One `<details>` per section; the section of body-rendered
+    /// findings holds a nested `<details>` per finding, whose content
+    /// opens with a backticked locator. Rendered paths carry
+    /// zero-width break opportunities. One severity image is kept
+    /// intact: its geometry attributes are the false-digit hazard the
+    /// count channels must not read.
+    const NESTED_BODY: &str = "\
+## Copilot review overview
+
+### Needs a closer look
+
+Runtime validation is missing for bare units and rounding modes.
+
+**Review effort:** Balanced
+**Findings:** None
+
+<details>
+<summary><strong>Resolved since last review (2)</strong></summary>
+
+- [Validate Money units are bigint](#discussion_r4051316354)
+- [Validate rate ratio is bigint](#discussion_r4051316369)
+</details>
+
+<details>
+<summary><strong>Previously missed (2)</strong></summary>
+
+In code that hasn't changed since last review
+
+<details>
+<summary><img src=\"medium-v2.png\" alt=\"Medium severity\" width=\"62\" height=\"18\"> Validate units as bigint before formatting</summary>
+
+`services/\u{200b}shared/\u{200b}src/\u{200b}money.ts:531`
+
+This exported escape hatch bypasses the `bigint` validation used for `Money`.
+</details>
+
+<details>
+<summary><img src=\"medium-v2.png\" alt=\"Medium severity\" width=\"62\" height=\"18\"> Reject invalid rounding modes before fast-path return</summary>
+
+`services/\u{200b}shared/\u{200b}src/\u{200b}money.ts:949`
+
+An invalid runtime rounding value silently falls through as `half-even` on ties.
+</details>
+</details>
+";
+
+    /// Nested grammar, the round where findings landed as inline
+    /// threads: the severity breakdown splits the total across runs on
+    /// the findings label, and the section renders each finding as an
+    /// anchor link rather than as text.
+    const NESTED_LINKED_BODY: &str = "\
+## Copilot review overview
+
+### Changes recommended
+
+Structural inputs can bypass primitive validation.
+
+**Review effort:** Balanced
+**Findings:** 1 <picture><source srcset=\"high-v2-dark.svg\"><img src=\"high-v2.png\" alt=\"High severity\" width=\"62\" height=\"18\"></picture> \u{b7} 1 <picture><img src=\"medium-v2.png\" alt=\"Medium severity\" width=\"62\" height=\"18\"></picture>
+
+<details open>
+<summary><strong>Open (2)</strong></summary>
+
+- [Validate Money units are bigint](#discussion_r4051316354) \u{b7} New
+- [Validate rate ratio is bigint](#discussion_r4051316369) \u{b7} New
+</details>
+";
+
+    /// Flat grammar, as the host emitted it through 2026-09-18: one
+    /// `<details>` holding a markdown heading per section, bold-header
+    /// entries, and the per-review totals as bold label lines.
+    const FLAT_BODY: &str = "\
+### Changes recommended
+
+Checksum validation and implicit rounding need correction.
+
+<details>
+<summary>Review details</summary>
+
+### Suppressed comments (2)
+
+**services/shared/src/asset-id.ts:190**
+* Validate mixed-case EVM references before canonicalizing them.
+
+**services/shared/src/money.ts:446**
+* Normalize the bigint operands before converting to `number`.
+
+- **Files reviewed:** 5/6 changed files
+- **Comments generated:** 3
+- **Review effort level:** Balanced
+</details>
+";
+
     #[test]
-    fn parse_visible_count_from_review_body() {
-        let s = parse_copilot_review_body("Copilot reviewed and generated 3 comments. End.");
-        assert_eq!(s.visible, 3);
-    }
-    #[test]
-    fn parse_visible_count_singular() {
-        let s = parse_copilot_review_body("generated 1 comment.");
-        assert_eq!(s.visible, 1);
-    }
-    #[test]
-    fn parse_no_new_comments_zero_case() {
-        let s = parse_copilot_review_body("Copilot generated no new comments.");
+    fn nested_grammar_extracts_body_rendered_findings() {
+        let s = parse_copilot_review_body(NESTED_BODY);
         assert_eq!(s.visible, 0);
+        assert_eq!(s.suppressed, 2);
+        assert_eq!(s.suppressed_comments.len(), 2);
     }
+
     #[test]
-    fn parse_suppressed_count_old_wording() {
-        let s = parse_copilot_review_body(
-            "generated 2 comments.\n\
-             <details>\n<summary>Comments suppressed due to low confidence (5)</summary>\n\
-             </details>",
+    fn nested_grammar_strips_invisible_formatting_from_paths() {
+        // The host renders the path with zero-width break
+        // opportunities between segments. A witness carrying them is
+        // not a filesystem key and never matches a real file.
+        let s = parse_copilot_review_body(NESTED_BODY);
+        assert_eq!(
+            s.suppressed_comments[0].path,
+            "services/shared/src/money.ts"
         );
+        assert_eq!(s.suppressed_comments[0].line, 531);
+        assert_eq!(s.suppressed_comments[1].line, 949);
+    }
+
+    #[test]
+    fn nested_grammar_entry_body_carries_the_finding_title() {
+        // The finding's headline lives in the per-finding block's
+        // summary; without it the witness reaches an agent as
+        // rationale with no prescription.
+        let s = parse_copilot_review_body(NESTED_BODY);
+        assert_eq!(
+            s.suppressed_comments[0].body,
+            "Validate units as bigint before formatting\n\n\
+             This exported escape hatch bypasses the `bigint` validation used for `Money`."
+        );
+    }
+
+    #[test]
+    fn nested_grammar_sums_severity_runs_on_the_findings_label() {
+        // `1 <high> \u{b7} 1 <medium>` totals 2. Image geometry
+        // (width=62, height=18) sits inside tags and must not reach
+        // the digit scan.
+        let s = parse_copilot_review_body(NESTED_LINKED_BODY);
         assert_eq!(s.visible, 2);
-        assert_eq!(s.suppressed, 5);
     }
+
     #[test]
-    fn parse_suppressed_count_new_wording() {
-        // Wording observed 2026-08-07: the host renamed the block
-        // from "Comments suppressed due to low confidence (N)" to
-        // "Suppressed comments (N)". The stem match covers both.
-        let s = parse_copilot_review_body(
-            "generated no new comments.\n\
-             <details>\n<summary>Suppressed comments (8)</summary>\n\
-             </details>",
-        );
-        assert_eq!(s.visible, 0);
-        assert_eq!(s.suppressed, 8);
+    fn link_rendered_findings_are_not_counted_as_body_rendered() {
+        // A section whose findings render as anchor links is a set of
+        // inline review threads; the visible channel owns it.
+        let s = parse_copilot_review_body(NESTED_LINKED_BODY);
+        assert_eq!(s.suppressed, 0);
+        assert!(s.suppressed_comments.is_empty());
     }
+
+    #[test]
+    fn stem_matched_summary_over_links_does_not_state_a_suppressed_count() {
+        // Guard against double-counting: even a stem-matched section
+        // title contributes nothing while its findings render as
+        // links.
+        let body = "<details>\n<summary><strong>Previously missed (2)</strong></summary>\n\n\
+             - [First](#discussion_r1)\n- [Second](#discussion_r2)\n</details>";
+        assert_eq!(parse_copilot_review_body(body).suppressed, 0);
+    }
+
+    #[test]
+    fn flat_grammar_extracts_body_rendered_findings() {
+        let s = parse_copilot_review_body(FLAT_BODY);
+        assert_eq!(s.visible, 3);
+        assert_eq!(s.suppressed, 2);
+        assert_eq!(s.suppressed_comments.len(), 2);
+        assert_eq!(
+            s.suppressed_comments[0].path,
+            "services/shared/src/asset-id.ts"
+        );
+        assert_eq!(s.suppressed_comments[0].line, 190);
+    }
+
+    #[test]
+    fn entry_body_stops_at_the_blocks_own_scaffolding() {
+        // The per-review totals follow the last entry inside the same
+        // block. Appending them to that entry's body ships the
+        // block's bookkeeping to an agent as if it were the finding.
+        let s = parse_copilot_review_body(FLAT_BODY);
+        assert_eq!(
+            s.suppressed_comments[1].body,
+            "Normalize the bigint operands before converting to `number`."
+        );
+    }
+
+    #[test]
+    fn unrelated_bold_labels_do_not_state_a_visible_count() {
+        // `Files reviewed: 5/6` is a bold label line carrying digit
+        // runs; only a findings label states the count.
+        let body = "- **Files reviewed:** 5/6 changed files\n- **Review effort level:** Balanced";
+        assert_eq!(parse_copilot_review_body(body).visible, 0);
+    }
+
     #[test]
     fn parse_returns_zero_when_neither_pattern_present() {
         let s = parse_copilot_review_body("nothing matches here");
@@ -1356,22 +1768,60 @@ mod tests {
         assert_eq!(s.suppressed, 0);
         assert!(s.suppressed_comments.is_empty());
     }
+
     #[test]
-    fn parse_suppressed_with_nested_paren_still_extracts_count() {
-        // Regression: old find(suffix) returned at the inner `)`
-        // and parsed "5 of 12" → 0. Digit-run terminator avoids it.
+    fn parse_suppressed_count_old_wording() {
+        // Wording observed before 2026-08-07. Bodies predating a host
+        // rewording stay readable: a PR's round history spans them.
         let s = parse_copilot_review_body(
-            "<summary>Comments suppressed due to low confidence (5 of 12 hidden)</summary>",
+            "<details>\n\
+             <summary>Comments suppressed due to low confidence (5)</summary>\n\
+             </details>",
         );
         assert_eq!(s.suppressed, 5);
     }
+
+    #[test]
+    fn parse_suppressed_count_new_wording() {
+        // Wording observed 2026-08-07: the host renamed the block
+        // from "Comments suppressed due to low confidence (N)" to
+        // "Suppressed comments (N)". The stem match covers both.
+        let s = parse_copilot_review_body(
+            "<details>\n<summary>Suppressed comments (8)</summary>\n</details>",
+        );
+        assert_eq!(s.suppressed, 8);
+    }
+
+    #[test]
+    fn parse_suppressed_with_nested_paren_still_extracts_count() {
+        // Regression: old find(suffix) returned at the inner `)`
+        // and parsed "5 of 12" \u{2192} 0. Digit-run terminator avoids it.
+        let s = parse_copilot_review_body(
+            "<details>\n\
+             <summary>Comments suppressed due to low confidence (5 of 12 hidden)</summary>\n\
+             </details>",
+        );
+        assert_eq!(s.suppressed, 5);
+    }
+
     #[test]
     fn parse_skips_digit_free_paren_before_count() {
         let s = parse_copilot_review_body(
-            "<summary>Suppressed comments (low confidence) (4)</summary>",
+            "<details>\n<summary>Suppressed comments (low confidence) (4)</summary>\n</details>",
         );
         assert_eq!(s.suppressed, 4);
     }
+
+    #[test]
+    fn suppressed_sections_sum_across_blocks() {
+        // Distinct sections hold distinct findings; within one block
+        // the summary and a heading restate a single count.
+        let body = "<details>\n<summary>Suppressed comments (2)</summary>\n\n\
+             ### Suppressed comments (2)\n</details>\n\
+             <details>\n<summary>Previously missed (3)</summary>\n</details>";
+        assert_eq!(parse_copilot_review_body(body).suppressed, 5);
+    }
+
     #[test]
     fn suppressed_count_is_max_of_witnesses_and_stated() {
         // Stated exceeds parsed witnesses (one entry malformed):
@@ -1391,6 +1841,7 @@ mod tests {
         assert_eq!(s.suppressed_comments.len(), 2);
         assert_eq!(s.suppressed, 2);
     }
+
     #[test]
     fn suppressed_witnesses_survive_title_rewording() {
         // Structural channel: entries parse regardless of what the
@@ -1402,6 +1853,7 @@ mod tests {
         assert_eq!(s.suppressed_comments.len(), 2);
         assert_eq!(s.suppressed, 2);
     }
+
     #[test]
     fn suppressed_count_survives_entry_grammar_drift() {
         // Lexical channel: when no entry parses, a stem-matched
@@ -1412,6 +1864,7 @@ mod tests {
         assert!(s.suppressed_comments.is_empty());
         assert_eq!(s.suppressed, 8);
     }
+
     #[test]
     fn foreign_details_block_is_not_a_false_positive() {
         // A details block with neither entry-shaped content nor a
@@ -1426,7 +1879,7 @@ mod tests {
     // ── suppressed-entry extraction ──
 
     const SAMPLE_DETAILS: &str = "\
-generated 0 comments.
+**Findings:** None
 
 <details>
 <summary>Comments suppressed due to low confidence (2)</summary>
@@ -1442,12 +1895,16 @@ generated 0 comments.
 
     #[test]
     fn extract_suppressed_returns_empty_when_no_block_present() {
-        assert!(extract_suppressed_comments("generated 3 comments.").is_empty());
+        assert!(
+            parse_copilot_review_body("**Findings:** 3")
+                .suppressed_comments
+                .is_empty()
+        );
     }
 
     #[test]
     fn extract_suppressed_parses_two_entries_from_sample_block() {
-        let entries = extract_suppressed_comments(SAMPLE_DETAILS);
+        let entries = parse_copilot_review_body(SAMPLE_DETAILS).suppressed_comments;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].path, "src/core/config/src/impls/consensus.rs");
         assert_eq!(entries[0].line, 16);
@@ -1461,10 +1918,11 @@ generated 0 comments.
 
     #[test]
     fn extract_suppressed_drops_header_with_non_numeric_line() {
-        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+        let body = "<details>\n\
+                    <summary>Comments suppressed due to low confidence (1)</summary>\n\n\
                     **src/x.rs:bogus**\n* should be skipped\n\
-                    **src/y.rs:7**\n* this one is kept\n";
-        let entries = extract_suppressed_comments(body);
+                    **src/y.rs:7**\n* this one is kept\n</details>";
+        let entries = parse_copilot_review_body(body).suppressed_comments;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "src/y.rs");
         assert_eq!(entries[0].line, 7);
@@ -1472,34 +1930,52 @@ generated 0 comments.
 
     #[test]
     fn extract_suppressed_skips_empty_bodies() {
-        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+        let body = "<details>\n\
+                    <summary>Comments suppressed due to low confidence (1)</summary>\n\n\
                     **src/x.rs:1**\n\n\
-                    **src/y.rs:2**\n* real body\n";
-        let entries = extract_suppressed_comments(body);
+                    **src/y.rs:2**\n* real body\n</details>";
+        let entries = parse_copilot_review_body(body).suppressed_comments;
         assert_eq!(entries.len(), 1, "header-only entry must not survive");
         assert_eq!(entries[0].path, "src/y.rs");
     }
 
     #[test]
     fn extract_suppressed_concatenates_multi_line_body() {
-        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+        let body = "<details>\n\
+                    <summary>Comments suppressed due to low confidence (1)</summary>\n\n\
                     **src/x.rs:1**\n\
                     * first line\n\
-                    continuation\n";
-        let entries = extract_suppressed_comments(body);
+                    continuation\n</details>";
+        let entries = parse_copilot_review_body(body).suppressed_comments;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].body, "first line\ncontinuation");
     }
 
     #[test]
     fn extract_suppressed_stops_at_details_close() {
-        let body = "<summary>Comments suppressed due to low confidence (1)</summary>\n\n\
+        let body = "<details>\n\
+                    <summary>Comments suppressed due to low confidence (1)</summary>\n\n\
                     **src/x.rs:1**\n* before close\n\
                     </details>\n\
                     **src/y.rs:2**\n* outside block — must be ignored\n";
-        let entries = extract_suppressed_comments(body);
+        let entries = parse_copilot_review_body(body).suppressed_comments;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "src/x.rs");
+    }
+
+    #[test]
+    fn nested_blocks_do_not_leak_into_their_parents_content() {
+        // A parent's content is the text it renders itself; each
+        // nested element is flattened into its own block. Without the
+        // elision a parent would re-parse its children's entries.
+        let body = "<details>\n<summary>Outer (1)</summary>\n\n\
+             intro prose\n\n\
+             <details>\n<summary>Inner</summary>\n\n\
+             **src/a.rs:1**\n* only finding\n</details>\n</details>";
+        let entries = parse_copilot_review_body(body).suppressed_comments;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "src/a.rs");
+        assert_eq!(entries[0].body, "Inner\n\nonly finding");
     }
 
     #[test]
@@ -1532,7 +2008,7 @@ generated 0 comments.
     #[test]
     fn visible_count_survives_prose_drift_via_thread_linkage() {
         // The body's stated channel yields nothing (hypothetical
-        // rewording of "generated N comments"); the structural
+        // rewording of the findings label); the structural
         // channel counts threads whose first comment links back to
         // this review's numeric id.
         use crate::observe::github::review_threads::{
@@ -1683,7 +2159,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated 0 comments.",
+            NO_FINDINGS,
         )];
         let r = orient_copilot_test(
             enabled(),
@@ -1764,7 +2240,7 @@ generated 0 comments.
         let reviews = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated 0 comments.",
+            NO_FINDINGS,
         )];
         let reqs = RequestedReviewers {
             users: vec![RequestedUser {
@@ -1826,7 +2302,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated 0 comments.",
+            NO_FINDINGS,
         )];
         let r = orient_copilot_test(
             enabled(),
@@ -1852,7 +2328,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated 0 comments.",
+            NO_FINDINGS,
         )];
         let r = orient_copilot_test(
             enabled(),
@@ -1886,12 +2362,8 @@ generated 0 comments.
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let revs = vec![
-            copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "generated 1 comment."),
-            copilot_review(
-                HEAD_SHA,
-                "2026-04-23T10:10:00Z",
-                "generated no new comments.",
-            ),
+            copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "**Findings:** 1"),
+            copilot_review(HEAD_SHA, "2026-04-23T10:10:00Z", NO_FINDINGS),
         ];
         let r = orient_copilot_test(
             enabled(),
@@ -1934,8 +2406,8 @@ generated 0 comments.
             "copilot-pull-request-reviewer[bot]",
         )];
         let revs = vec![
-            copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "generated 0 comments."),
-            copilot_review(HEAD_SHA, "2026-04-23T10:10:00Z", "generated 0 comments."),
+            copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", NO_FINDINGS),
+            copilot_review(HEAD_SHA, "2026-04-23T10:10:00Z", NO_FINDINGS),
         ];
         let r = orient_copilot_test(
             enabled(),
@@ -1969,7 +2441,7 @@ generated 0 comments.
         let reviews = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:00:00Z",
-            "generated 1 comment.",
+            "**Findings:** 1",
         )];
         let events = vec![
             req_event("2026-04-23T11:00:00Z", "copilot-pull-request-reviewer[bot]"),
@@ -2009,7 +2481,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated no new comments.",
+            NO_FINDINGS,
         )];
         let r = orient_copilot_test(
             enabled(),
@@ -2038,7 +2510,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated 3 comments about the migration.",
+            "**Findings:** 3",
         )];
         let r = orient_copilot_test(
             enabled(),
@@ -2060,11 +2532,7 @@ generated 0 comments.
             req_event("2026-04-23T10:00:00Z", "copilot-pull-request-reviewer[bot]"),
             ack_event("2026-04-23T10:01:00Z"),
         ];
-        let revs = vec![copilot_review(
-            OLD_SHA,
-            "2026-04-23T10:05:00Z",
-            "generated no new comments.",
-        )];
+        let revs = vec![copilot_review(OLD_SHA, "2026-04-23T10:05:00Z", NO_FINDINGS)];
         let r = orient_copilot_test(
             enabled(),
             &events,
@@ -2087,7 +2555,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated 2 comments.\n\
+            "**Findings:** 2\n\
              <details>\n<summary>Suppressed comments (3)</summary>\n</details>",
         )];
         let r = orient_copilot_test(
@@ -2111,7 +2579,7 @@ generated 0 comments.
         let revs = vec![copilot_review(
             HEAD_SHA,
             "2026-04-23T10:05:00Z",
-            "generated no new comments.",
+            NO_FINDINGS,
         )];
         let threads = ReviewThreadsResponse {
             data: ReviewThreadsData {
@@ -2167,12 +2635,8 @@ generated 0 comments.
             ack_event("2026-04-23T11:01:00Z"),
         ];
         let revs = vec![
-            copilot_review(OLD_SHA, "2026-04-23T10:05:00Z", "generated 1 comment."),
-            copilot_review(
-                HEAD_SHA,
-                "2026-04-23T11:05:00Z",
-                "generated no new comments.",
-            ),
+            copilot_review(OLD_SHA, "2026-04-23T10:05:00Z", "**Findings:** 1"),
+            copilot_review(HEAD_SHA, "2026-04-23T11:05:00Z", NO_FINDINGS),
         ];
         let r = orient_copilot_test(
             enabled(),

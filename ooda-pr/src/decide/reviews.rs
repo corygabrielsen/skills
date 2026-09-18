@@ -72,12 +72,12 @@ pub(crate) fn candidates(
         .cloned()
         .collect();
 
-    // Copilot suppresses low-confidence findings from being posted as
-    // inline review threads — it only renders them as text inside a
-    // `<details>` block at the tail of the review body. The orient
-    // axis extracts those entries onto `CopilotReviewRound`; synthesise
-    // them as `ReviewThread` rows here so they flow through the same
-    // `AddressThreads` action the agent already knows how to discharge.
+    // Some Copilot findings never become inline review threads — the
+    // reviewer renders them as text inside a `<details>` block in the
+    // review body instead. The orient axis extracts those entries onto
+    // `CopilotReviewRound`; synthesise them as `ReviewThread` rows here
+    // so they flow through the same `AddressThreads` action the agent
+    // already knows how to discharge.
     //
     // Staleness gate: only synthesise when `copilot.fresh` (latest
     // round's review-commit equals current HEAD). When the agent has
@@ -403,14 +403,14 @@ fn request_approval_prompt(reviews: &ReviewSummary) -> HandoffPrompt {
 /// witnesses, class-of-issue generalization directive, optional
 /// outdated-judgment directive, and the resolve-template with
 /// idempotency note.
-/// Synthesise `ReviewThread` rows from a Copilot round's suppressed
-/// low-confidence entries. The host posts these as text only and
+/// Synthesise `ReviewThread` rows from a Copilot round's
+/// body-rendered entries. The host posts these as text only and
 /// never assigns them stable node ids; this layer mints synthetic
 /// ids that are deterministic within a (PR, SHA, path, line) tuple so
 /// the stall classifier's gate identity stays stable across iterations.
 /// Entries whose path is not a valid `FilePath` (control bytes, leading
 /// slash, etc.) are dropped at this boundary rather than propagated.
-/// Id prefix for threads minted from suppressed findings. Minted ids
+/// Id prefix for threads minted from body-rendered findings. Minted ids
 /// are not host GraphQL node ids: the resolve mutation does not
 /// apply to them, and the prompt renderer partitions the resolve
 /// step on this prefix.
@@ -2233,7 +2233,7 @@ mod tests {
         let report = copilot_report_with_suppressed(vec![SuppressedComment {
             path: "src/a.rs".into(),
             line: 42,
-            body: "low-confidence finding".into(),
+            body: "body-rendered finding".into(),
         }]);
         let history = vec![thread_at(
             "src/a.rs",

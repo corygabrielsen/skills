@@ -182,9 +182,10 @@ pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
                     kind: ActionKind::AddressCopilotSuppressed { count: suppressed },
                     effect: ActionEffect::Agent {
                         prompt: ooda_core::HandoffPrompt::new(format!(
-                            "Copilot flagged {}. Investigate and push fixes for any \
-                         that are real — the next review may clear them.",
-                            crate::text::count(suppressed as usize, "low-confidence finding"),
+                            "Copilot reported {} in its review body without opening a \
+                         review thread. Investigate and push fixes for any that are \
+                         real — the next review may clear them.",
+                            crate::text::count(suppressed as usize, "finding"),
                         )),
                     },
                     target_effect: TargetEffect::Advances,

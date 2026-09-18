@@ -86,17 +86,26 @@ pub(crate) fn candidates(
     // their synthetic IDs have no `resolveReviewThread` path so the
     // loop would surface phantom threads on every iteration. Wait
     // for Copilot's next review of HEAD before re-emitting.
+    //
+    // The synthesised rows also join the review history below. A
+    // suppressed finding is a review flagging that file, so omitting
+    // it would undercount the file it names by one, most visibly on
+    // the suppressed witness itself.
+    let mut history: Vec<ReviewThread> = threads.to_vec();
     if let Some(copilot) = copilot
         && copilot.fresh
         && let Some(latest) = copilot.rounds.last()
     {
-        unresolved_threads.extend(synthesise_suppressed_threads(latest));
+        let suppressed = synthesise_suppressed_threads(latest);
+        history.extend(suppressed.iter().cloned());
+        unresolved_threads.extend(suppressed);
     }
 
     let address_fired = if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads)
     {
         let prompt = address_threads_prompt(
             &unresolved_threads,
+            &history,
             review_class,
             review_class_attest_path,
             pr,
@@ -450,57 +459,79 @@ fn synthesise_suppressed_threads(
     out
 }
 
-#[allow(clippy::too_many_lines)]
-fn address_threads_prompt(
-    threads: &NonEmpty<ReviewThread>,
-    review_class: &ReviewClass,
-    review_class_attest_path: Option<&Path>,
-    pr: PullRequestNumber,
-) -> ooda_core::HandoffPrompt {
-    use ooda_core::{HandoffPrompt, SingleLineString, Witness};
+/// Append the outdated-thread guidance: how to judge whether moved
+/// feedback still applies, and the reply path that works when the
+/// line anchor is gone.
+fn push_outdated_step(prompt: &mut ooda_core::HandoffPrompt) {
+    prompt.push_heading(3, "Step 1a — outdated threads only");
+    prompt.push_paragraph(
+        "GitHub's `isOutdated` flag is positional, not content-relevance: \
+         the diff hunk that anchored the thread has moved (typically due \
+         to a refactor or rebase), so the comment no longer renders \
+         inline, but the logical feedback may still apply to the current \
+         code. For each outdated thread, locate the current code that the \
+         comment is about (often near the original `path:line` after a \
+         small refactor; sometimes elsewhere) and decide whether the \
+         feedback still applies. If it does, address it as you would a \
+         live thread. If it does not, post a brief reply explaining why.",
+    );
+    prompt.push_paragraph(
+        "**Reply path for outdated / null-line threads** — the \
+         line-anchored suggestion API is unavailable, but a thread reply \
+         via the comment-replies endpoint works. The endpoint is keyed \
+         by the originating comment's REST `comment_id` (shown in each \
+         entry above when known), not by line:",
+    );
+    prompt.push_code(
+        "bash",
+        "gh api repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies \
+         -f body='<your reply text>'",
+    );
+}
 
-    let outdated_count = threads
-        .iter()
-        .filter(|t| t.state == ThreadState::Outdated)
-        .count();
-    let live_count = threads.len() - outdated_count;
-
-    let headline = if outdated_count > 0 && live_count > 0 {
-        format!(
-            "Address {} ({} live, {} outdated).",
-            crate::text::count(threads.len(), "unresolved review thread"),
-            live_count,
-            outdated_count,
-        )
-    } else if outdated_count > 0 {
-        format!(
-            "Address {} (all outdated; anchors moved since the comments were authored).",
-            crate::text::count(threads.len(), "unresolved review thread"),
-        )
+/// English ordinal for a small positive count: 1st, 2nd, 3rd, 4th,
+/// with the 11th/12th/13th exception.
+fn ordinal(n: usize) -> String {
+    let suffix = if (11..=13).contains(&(n % 100)) {
+        "th"
     } else {
-        format!(
-            "Address {}.",
-            crate::text::count(threads.len(), "unresolved review thread"),
-        )
+        match n % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        }
     };
+    format!("{n}{suffix}")
+}
 
-    let mut prompt = HandoffPrompt::new(headline);
-
-    let by_author = count_by_author(threads);
-    if !by_author.is_empty() {
-        let bits: Vec<String> = by_author
-            .iter()
-            .map(|(author, count)| {
-                format!("**{}:** {}", author, crate::text::count(*count, "issue"))
-            })
-            .collect();
-        prompt.push_paragraph(format!("{}.", bits.join(" · ")));
+/// Headline for the address-threads prompt. Names the live/outdated
+/// split only when it is mixed; an all-outdated set says so, because
+/// the anchors having moved changes how each thread is located.
+fn address_headline(total: usize, live: usize, outdated: usize) -> String {
+    let counted = crate::text::count(total, "unresolved review thread");
+    if outdated > 0 && live > 0 {
+        format!("Address {counted} ({live} live, {outdated} outdated).")
+    } else if outdated > 0 {
+        format!("Address {counted} (all outdated; anchors moved since the comments were authored).")
+    } else {
+        format!("Address {counted}.")
     }
+}
 
-    // `enumerate_map_ref` carries the non-empty invariant through
-    // the map structurally; no runtime cardinality check is
-    // needed at the output boundary.
-    let witnesses = threads.enumerate_map_ref(|i, t| {
+/// Build one witness per unresolved thread, tagging any whose file an
+/// earlier review has already flagged. The tag states the count and
+/// nothing else; what a repeat means is the reader's call.
+///
+/// `enumerate_map_ref` carries the non-empty invariant through the map
+/// structurally; no runtime cardinality check is needed at the output
+/// boundary.
+fn thread_witnesses(
+    threads: &NonEmpty<ReviewThread>,
+    history: &[ReviewThread],
+) -> NonEmpty<ooda_core::Witness> {
+    use ooda_core::SingleLineString;
+    threads.enumerate_map_ref(|i, t| {
         let tag = match t.state {
             ThreadState::Outdated => "    [outdated]",
             // Live renders unadorned; Resolved cannot reach here
@@ -511,14 +542,21 @@ fn address_threads_prompt(
             .originating_comment_id
             .map(|id| format!("    comment_id: {id}"))
             .unwrap_or_default();
+        let reviews = crate::orient::thread::reviews_flagging_path(history, &t.location.path);
+        let repeat_field = if reviews > 1 {
+            format!("    [{} review to flag this file]", ordinal(reviews))
+        } else {
+            String::new()
+        };
         let label = SingleLineString::new(format!(
-            "{}. {} @ {}{}    thread_id: {}{}",
+            "{}. {} @ {}{}    thread_id: {}{}{}",
             i + 1,
             t.author,
             t.location,
             tag,
             t.id,
             comment_id_field,
+            repeat_field,
         ));
         let body = t
             .body
@@ -531,8 +569,43 @@ fn address_threads_prompt(
             body: body.into(),
             url: None,
         }
-    });
-    prompt.push_witnesses(witnesses);
+    })
+}
+
+/// `threads` is the unresolved work. `history` is every thread on the
+/// PR, resolved and outdated included, plus the current round's
+/// suppressed findings — the record of how many reviews have flagged
+/// each file.
+fn address_threads_prompt(
+    threads: &NonEmpty<ReviewThread>,
+    history: &[ReviewThread],
+    review_class: &ReviewClass,
+    review_class_attest_path: Option<&Path>,
+    pr: PullRequestNumber,
+) -> ooda_core::HandoffPrompt {
+    use ooda_core::HandoffPrompt;
+
+    let outdated_count = threads
+        .iter()
+        .filter(|t| t.state == ThreadState::Outdated)
+        .count();
+    let live_count = threads.len() - outdated_count;
+
+    let mut prompt =
+        HandoffPrompt::new(address_headline(threads.len(), live_count, outdated_count));
+
+    let by_author = count_by_author(threads);
+    if !by_author.is_empty() {
+        let bits: Vec<String> = by_author
+            .iter()
+            .map(|(author, count)| {
+                format!("**{}:** {}", author, crate::text::count(*count, "issue"))
+            })
+            .collect();
+        prompt.push_paragraph(format!("{}.", bits.join(" · ")));
+    }
+
+    prompt.push_witnesses(thread_witnesses(threads, history));
 
     prompt.push_heading(3, "Step 1 — solve the class, not the instance");
     prompt.push_paragraph(
@@ -543,30 +616,7 @@ fn address_threads_prompt(
     );
 
     if outdated_count > 0 {
-        prompt.push_heading(3, "Step 1a — outdated threads only");
-        prompt.push_paragraph(
-            "GitHub's `isOutdated` flag is positional, not content-relevance: \
-             the diff hunk that anchored the thread has moved (typically due \
-             to a refactor or rebase), so the comment no longer renders \
-             inline, but the logical feedback may still apply to the current \
-             code. For each outdated thread, locate the current code that the \
-             comment is about (often near the original `path:line` after a \
-             small refactor; sometimes elsewhere) and decide whether the \
-             feedback still applies. If it does, address it as you would a \
-             live thread. If it does not, post a brief reply explaining why.",
-        );
-        prompt.push_paragraph(
-            "**Reply path for outdated / null-line threads** — the \
-             line-anchored suggestion API is unavailable, but a thread reply \
-             via the comment-replies endpoint works. The endpoint is keyed \
-             by the originating comment's REST `comment_id` (shown in each \
-             entry above when known), not by line:",
-        );
-        prompt.push_code(
-            "bash",
-            "gh api repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies \
-             -f body='<your reply text>'",
-        );
+        push_outdated_step(&mut prompt);
     }
 
     // Synthetic (suppressed-finding) threads carry minted ids, not
@@ -928,6 +978,20 @@ mod tests {
             created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             originating_comment_id: None,
         }
+    }
+
+    /// Same shape as [`thread_in_state`] with an explicit submission
+    /// instant, so a test can place threads in distinct review rounds.
+    fn thread_at(
+        path: &str,
+        line: u32,
+        state: ThreadState,
+        id: &str,
+        created_at: &str,
+    ) -> ReviewThread {
+        let mut t = thread_in_state(path, line, "body", state, id);
+        t.created_at = Timestamp::parse(created_at).unwrap();
+        t
     }
 
     fn live_thread(path: &str, line: u32, body: &str) -> ReviewThread {
@@ -1990,6 +2054,211 @@ mod tests {
         assert!(
             rendered.contains("Step 1a"),
             "outdated sub-step should be labeled Step 1a: {rendered}",
+        );
+    }
+
+    // ─── repeat-location marker ─────────────────────────────────────
+
+    /// Render the `AddressThreads` prompt for `history`, whose live
+    /// threads are the work.
+    fn prompt_for(history: &[ReviewThread]) -> String {
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            history,
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
+        cs.iter()
+            .find(|c| matches!(c.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads emitted")
+            .rendered_payload()
+    }
+
+    #[test]
+    fn first_finding_at_a_path_carries_no_repeat_marker() {
+        let rendered = prompt_for(&[thread_at(
+            "src/a.rs",
+            1,
+            ThreadState::Live,
+            "T_1",
+            "2026-04-23T10:00:00Z",
+        )]);
+        assert!(!rendered.contains("review to flag this file"), "{rendered}");
+    }
+
+    #[test]
+    fn resolved_thread_from_an_earlier_round_makes_the_live_one_a_repeat() {
+        // The earlier finding was addressed and its anchor resolved.
+        // That is exactly the state the marker exists to surface: the
+        // path already took a fix and the reviewer came back.
+        let rendered = prompt_for(&[
+            thread_at(
+                "src/a.rs",
+                1,
+                ThreadState::Resolved,
+                "T_old",
+                "2026-04-23T10:00:00Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                7,
+                ThreadState::Live,
+                "T_new",
+                "2026-04-23T11:00:00Z",
+            ),
+        ]);
+        assert!(
+            rendered.contains("[2nd review to flag this file]"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn several_findings_in_one_round_are_one_round() {
+        // A review that flags three issues in a file must not read as
+        // three rounds; that would fire the marker on a first pass.
+        let rendered = prompt_for(&[
+            thread_at(
+                "src/a.rs",
+                1,
+                ThreadState::Live,
+                "T_1",
+                "2026-04-23T10:00:00Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                2,
+                ThreadState::Live,
+                "T_2",
+                "2026-04-23T10:00:05Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                3,
+                ThreadState::Live,
+                "T_3",
+                "2026-04-23T10:00:41Z",
+            ),
+        ]);
+        assert!(!rendered.contains("review to flag this file"), "{rendered}");
+    }
+
+    #[test]
+    fn only_the_repeating_witness_is_marked() {
+        let rendered = prompt_for(&[
+            thread_at(
+                "src/a.rs",
+                1,
+                ThreadState::Resolved,
+                "T_old",
+                "2026-04-23T10:00:00Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                7,
+                ThreadState::Live,
+                "T_new",
+                "2026-04-23T11:00:00Z",
+            ),
+            thread_at(
+                "src/b.rs",
+                3,
+                ThreadState::Live,
+                "T_b",
+                "2026-04-23T11:00:00Z",
+            ),
+        ]);
+        // Exactly one witness carries a marker: the repeating path.
+        assert_eq!(
+            rendered.matches("review to flag this file").count(),
+            1,
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("src/b.rs:3    thread_id: T_b\n"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn repeat_count_rises_with_each_further_round() {
+        let rendered = prompt_for(&[
+            thread_at(
+                "src/a.rs",
+                1,
+                ThreadState::Resolved,
+                "T_1",
+                "2026-04-23T10:00:00Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                2,
+                ThreadState::Resolved,
+                "T_2",
+                "2026-04-23T11:00:00Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                3,
+                ThreadState::Resolved,
+                "T_3",
+                "2026-04-23T12:00:00Z",
+            ),
+            thread_at(
+                "src/a.rs",
+                4,
+                ThreadState::Live,
+                "T_4",
+                "2026-04-23T13:00:00Z",
+            ),
+        ]);
+        assert!(
+            rendered.contains("[4th review to flag this file]"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_suppressed_finding_counts_as_a_review_of_the_file_it_names() {
+        use crate::orient::copilot::SuppressedComment;
+        // One earlier review already flagged this file and its thread
+        // was resolved. Copilot's latest review raises a suppressed
+        // finding in the same file. The suppressed witness is the
+        // second review to flag it, and must say so — before this was
+        // wired, suppressed rows were witnesses but never history, so
+        // the row undercounted its own file.
+        let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            path: "src/a.rs".into(),
+            line: 42,
+            body: "low-confidence finding".into(),
+        }]);
+        let history = vec![thread_at(
+            "src/a.rs",
+            1,
+            ThreadState::Resolved,
+            "T_old",
+            "2026-04-23T09:00:00Z",
+        )];
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &history,
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
+        let rendered = cs
+            .iter()
+            .find(|c| matches!(c.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads emitted")
+            .rendered_payload();
+        assert!(
+            rendered.contains("[2nd review to flag this file]"),
+            "{rendered}"
         );
     }
 }

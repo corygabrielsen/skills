@@ -231,6 +231,41 @@ fn classify_author(login: &GitHubLogin) -> ThreadAuthor {
     }
 }
 
+/// Number of distinct reviews that have flagged `path`, counting
+/// every thread state — a resolved or outdated anchor is the history
+/// this measures.
+///
+/// Scope is the file, not the line. Two observations force that. The
+/// host reports no line at HEAD for most review comments once an edit
+/// moves the anchor, so a line key would be absent exactly where the
+/// history is deepest. And a given line almost never draws a second
+/// review: the reviewer returns to the same file at a different line
+/// each round, so a line-keyed count would read 1 beside nearly every
+/// finding.
+///
+/// This is NOT the PR's review-round number. A PR on its eighth round
+/// whose third review touched this file counts three.
+///
+/// Reviews are approximated by distinct minute of `created_at`,
+/// because the orient model carries no review id: one review flagging
+/// five issues in a file is one review, not five. Two reviewers
+/// submitting inside the same minute collapse into one.
+///
+/// The result is a lower bound, never an overstatement. Copilot's
+/// suppressed findings are recoverable only for the latest round, so
+/// a file flagged by suppressed entries in earlier rounds carries no
+/// trace of them here.
+pub(crate) fn reviews_flagging_path(threads: &[ReviewThread], path: &FilePath) -> usize {
+    let mut minutes: Vec<i64> = threads
+        .iter()
+        .filter(|t| &t.location.path == path)
+        .map(|t| t.created_at.at().timestamp().div_euclid(60))
+        .collect();
+    minutes.sort_unstable();
+    minutes.dedup();
+    minutes.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +482,39 @@ mod tests {
         let mut w = wire(false, false, "src/foo.rs", Some(1), "alice", "x");
         w.path = "src/foo\nrs".into();
         assert!(ReviewThread::from_wire(&w).is_none());
+    }
+
+    fn at_path(path: &str, created_at: &str) -> ReviewThread {
+        ReviewThread {
+            id: ThreadId::new("T".to_string()).unwrap(),
+            author: ThreadAuthor::Bot(BotName::Copilot),
+            location: ThreadLocation {
+                path: FilePath::new(path).unwrap(),
+                line: Some(1),
+            },
+            body: "b".into(),
+            state: ThreadState::Live,
+            created_at: Timestamp::parse(created_at).unwrap(),
+            originating_comment_id: None,
+        }
+    }
+
+    #[test]
+    fn reviews_flagging_path_is_zero_for_an_untouched_file() {
+        let threads = vec![at_path("src/a.rs", "2026-04-23T10:00:00Z")];
+        let other = FilePath::new("src/b.rs").unwrap();
+        assert_eq!(reviews_flagging_path(&threads, &other), 0);
+    }
+
+    #[test]
+    fn reviews_flagging_path_collapses_one_submission() {
+        let threads = vec![
+            at_path("src/a.rs", "2026-04-23T10:00:00Z"),
+            at_path("src/a.rs", "2026-04-23T10:00:59Z"),
+            at_path("src/a.rs", "2026-04-23T10:05:00Z"),
+            at_path("src/b.rs", "2026-04-23T11:00:00Z"),
+        ];
+        let a = FilePath::new("src/a.rs").unwrap();
+        assert_eq!(reviews_flagging_path(&threads, &a), 2);
     }
 }

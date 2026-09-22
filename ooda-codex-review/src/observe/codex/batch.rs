@@ -44,6 +44,11 @@
 //! - **Zero-exit-without-verdict is a binary error**: a slot that
 //!   exited successfully but produced no verdict marker or an empty
 //!   body fails the scan — a clean exit must produce a verdict.
+//! - **A stated refusal is a verdict, not a fault**: the reviewer
+//!   declines over-budget runs by exiting non-zero and naming the
+//!   cause in its log. That is an answer about the reviewer, not a
+//!   malfunction of this binary, so it classifies as a verdict. A
+//!   non-zero exit that states no cause still fails the scan.
 //! - **`completed == expected` is required for `Complete`**:
 //!   `completed < expected` keeps the batch in `Running`;
 //!   `completed > expected` surfaces as `InconsistentState` so a
@@ -229,10 +234,23 @@ pub(crate) fn scan_batch(
         };
         let code = read_exit_status(exit_path)?;
         if code != 0 {
-            return Err(io::Error::other(format!(
-                "codex review slot {slot} exited {code}; see {}",
-                p.display()
-            )));
+            // A non-zero exit is not automatically a protocol
+            // violation: the reviewer refuses over-budget runs this
+            // way, and a refusal is an answer. Recognised refusals
+            // become verdicts; an exit that states no cause still
+            // fails the scan, so an unrecognised one is loud.
+            let Some(refusal) = verdict::extract_refusal(&body_text) else {
+                return Err(io::Error::other(format!(
+                    "codex review slot {slot} exited {code} without stating a reason; see {}",
+                    p.display()
+                )));
+            };
+            verdicts.push(VerdictRecord {
+                slot,
+                class: VerdictClass::Declined,
+                body: refusal,
+            });
+            continue;
         }
         let verdict_body = match extracted {
             None => {
@@ -456,6 +474,45 @@ mod tests {
     }
 
     #[test]
+    fn stated_refusal_on_nonzero_exit_is_a_declined_verdict() {
+        // The reviewer refuses over-budget runs by exiting 1 and
+        // naming the cause. Raising that as a scan failure reports
+        // this binary as broken when nothing here is.
+        let dir = temp_batch_dir("refusal");
+        fs::write(
+            dir.join("low-1.log"),
+            "user\nchanges against 'master'\n\
+             ERROR: You've hit your usage limit. Visit \
+             https://chatgpt.com/codex/settings/usage to purchase more credits \
+             or try again at 6:52 PM.\ncodex\nReview was interrupted.\n",
+        )
+        .unwrap();
+        fs::write(dir.join("low-1.exit"), "1\n").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap();
+        let BatchState::Complete { verdicts } = s else {
+            panic!("a terminal refusal completes the batch; got {s:?}");
+        };
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].class, VerdictClass::Declined);
+        assert!(verdicts[0].body.contains("usage limit"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unexplained_nonzero_exit_still_fails_the_scan() {
+        // Fails closed: an exit that states no cause is the
+        // protocol violation it always was, and is also where a
+        // reworded refusal lands.
+        let dir = temp_batch_dir("unexplained");
+        fs::write(dir.join("low-1.log"), "user\nsome output\n").unwrap();
+        fs::write(dir.join("low-1.exit"), "1\n").unwrap();
+        let err = scan_batch(&dir, CodexReasoningLevel::Low, 1, None)
+            .expect_err("unexplained non-zero exit must fail the scan");
+        assert!(err.to_string().contains("without stating a reason"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn empty_dir_is_not_started() {
         let dir = temp_batch_dir("empty");
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();
@@ -618,6 +675,8 @@ mod tests {
 
     #[test]
     fn nonzero_exit_status_is_binary_error_instead_of_running_forever() {
+        // Holds for an exit that states no cause. A stated refusal
+        // is classified instead — see the declined-verdict test.
         let dir = temp_batch_dir("nonzero-exit");
         fs::write(dir.join("low-1.log"), "error: unexpected argument '--pr'\n").unwrap();
         fs::write(dir.join("low-1.exit"), "2\n").unwrap();

@@ -159,6 +159,17 @@ pub enum ActionKind {
         level: CodexReasoningLevel,
         reason: String,
     },
+
+    /// Halt because the reviewer declined to run and said why —
+    /// an exhausted usage or spend budget. Nothing in the working
+    /// tree causes it and nothing here clears it, so the loop
+    /// reports the reviewer's own message (retry time included)
+    /// rather than treating the refusal as a fault of its own.
+    /// Human automation.
+    ReviewerDeclined {
+        level: CodexReasoningLevel,
+        reason: String,
+    },
 }
 
 impl ActionKind {
@@ -185,6 +196,7 @@ impl ActionKindName for ActionKind {
             Self::RequestCriteriaRefinement => "RequestCriteriaRefinement",
             Self::TestsFailedTriage => "TestsFailedTriage",
             Self::BatchStateInconsistent { .. } => "BatchStateInconsistent",
+            Self::ReviewerDeclined { .. } => "ReviewerDeclined",
         }
     }
 }

@@ -46,6 +46,15 @@ pub(crate) enum CodexReviewStatus {
         level: CodexReasoningLevel,
         verdicts: Vec<VerdictRecord>,
     },
+    /// Batch at `level` ended because the reviewer declined to run
+    /// and said why — an exhausted usage or spend budget. Distinct
+    /// from `Address`: no slot looked at the code, so there is no
+    /// issue set, and distinct from `Inconsistent`: nothing is
+    /// stale. `reason` is the reviewer's own message.
+    Declined {
+        level: CodexReasoningLevel,
+        reason: String,
+    },
     /// Stale state observed at `level` (more completed slots than
     /// expected — stray log file or mismatched caller `n`). No safe
     /// auto-recovery; surface for human resolution.
@@ -131,6 +140,15 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
                     completed: u32::try_from(completed_verdicts.len())
                         .expect("batch verdict count fits in u32"),
                 },
+                // A refusal takes precedence over the address fork:
+                // the reviewer never looked at the code, so the
+                // verdict set names no issues to hand an actor.
+                BatchState::Complete { verdicts } if let Some(reason) = first_refusal(verdicts) => {
+                    CodexReviewStatus::Declined {
+                        level: lvl_obs.level,
+                        reason: reason.to_string(),
+                    }
+                }
                 BatchState::Complete { verdicts } => CodexReviewStatus::Address {
                     level: lvl_obs.level,
                     verdicts: verdicts.clone(),
@@ -151,6 +169,15 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
             }
         }
     }
+}
+
+/// The first stated refusal in the batch, if any. Slots share one
+/// account, so one refusal characterises the batch.
+fn first_refusal(verdicts: &[VerdictRecord]) -> Option<&str> {
+    verdicts
+        .iter()
+        .find(|v| matches!(v.class, VerdictClass::Declined))
+        .map(|v| v.body.as_str())
 }
 
 fn all_clean(verdicts: &[VerdictRecord]) -> bool {

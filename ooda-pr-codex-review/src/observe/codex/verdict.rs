@@ -59,6 +59,10 @@ pub(crate) fn extract_verdict(log: &str) -> Option<String> {
 /// - **Absence is a valid output**: a slot the loop gave up on maps
 ///   to `Abandoned` — never synthesized by [`classify`], only by
 ///   batch projection over pending slots.
+/// - **Refusal is a valid output**: a slot whose reviewer declined
+///   to run maps to `Declined` — never synthesized by [`classify`]
+///   either, only by the batch scan reading a stated refusal off a
+///   non-zero exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum VerdictClass {
@@ -78,6 +82,52 @@ pub(crate) enum VerdictClass {
     /// resolvers can distinguish "review ran and was inconclusive"
     /// from "review never completed".
     Abandoned,
+    /// The reviewer declined to run and said so: it exited non-zero
+    /// having stated a budget refusal rather than reporting on the
+    /// code. Distinct from `Abandoned`, which is the absence of any
+    /// terminal signal — here the reviewer answered, and the answer
+    /// was that no review is coming. Counts as not-clean, so a
+    /// sample containing one never claims fixed point; the body
+    /// carries the reviewer's own message, retry time included.
+    Declined,
+}
+
+/// The reviewer's own refusal line, when the log states that it
+/// declined to run rather than reporting on the code.
+///
+/// The reviewer writes refusals to its error channel as `ERROR:`
+/// lines. Recognition pairs that line shape with evidence the
+/// message is a budget refusal rather than any other error — two
+/// sub-channels with disjoint drift:
+///
+/// - **stems** — the budget nouns the message is built around.
+/// - **remediation target** — the vendor's usage or billing page,
+///   named by URL path rather than by sentence, which survives any
+///   rewording of the prose around it.
+///
+/// The line is returned verbatim: it carries the reviewer's own
+/// account of the refusal, including when to retry, and nothing
+/// re-derived here would improve on it.
+///
+/// Returns `None` for a log stating no refusal — including a
+/// non-zero exit with some other cause, which the batch scan then
+/// raises as the protocol violation it is.
+pub(crate) fn extract_refusal(log: &str) -> Option<String> {
+    log.lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("ERROR:") && states_budget_refusal(l))
+        .map(str::to_string)
+}
+
+fn states_budget_refusal(line: &str) -> bool {
+    /// Budget nouns. Observed 2026-06-06: "You've hit your usage
+    /// limit … to purchase more credits or try again at 6:52 PM."
+    const STEMS: &[&str] = &["usage limit", "rate limit", "quota", "credits"];
+    /// Path segments naming the vendor page the refusal points at.
+    const REMEDIATION_PATHS: &[&str] = &["/usage", "/billing"];
+    let lower = line.to_ascii_lowercase();
+    STEMS.iter().any(|stem| lower.contains(stem))
+        || REMEDIATION_PATHS.iter().any(|path| lower.contains(path))
 }
 
 /// Classify a verdict body.
@@ -164,6 +214,70 @@ fn matches_clean_phrasing(normalized: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reviewer log from an over-budget run, as captured at
+    /// `runs/20260606T230607Z-*/scratch/xhigh-1.log`. Every slot in
+    /// that batch exited 1 with this shape.
+    const REFUSAL_LOG: &str = "\
+OpenAI Codex v0.133.0
+--------
+model: gpt-5.5
+reasoning effort: xhigh
+--------
+user
+changes against 'master'
+ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 6:52 PM.
+codex
+Review was interrupted. Please re-run /review and wait for it to complete.
+ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 6:52 PM.
+";
+
+    #[test]
+    fn refusal_extracts_the_reviewers_own_line() {
+        let refusal = extract_refusal(REFUSAL_LOG).expect("log states a refusal");
+        assert!(refusal.starts_with("ERROR:"));
+        assert!(refusal.contains("usage limit"));
+        // Verbatim: the retry time is the one actionable fact in
+        // the message and nothing here could re-derive it.
+        assert!(refusal.contains("try again at 6:52 PM"));
+    }
+
+    #[test]
+    fn refusal_outranks_the_misleading_verdict_body() {
+        // The refusing run still emits a verdict marker, and the
+        // body under it reads like an ordinary inconclusive review.
+        // Classifying that body would report the reviewer as having
+        // looked at the code.
+        let body = extract_verdict(REFUSAL_LOG).expect("marker present");
+        assert_eq!(classify(&body), VerdictClass::Indeterminate);
+        assert!(extract_refusal(REFUSAL_LOG).is_some());
+    }
+
+    #[test]
+    fn refusal_absent_from_an_ordinary_log() {
+        assert!(extract_refusal("thinking\ncodex\nNo issues found\n").is_none());
+    }
+
+    #[test]
+    fn refusal_requires_the_error_line_shape() {
+        // Prose quoting the stem is not the reviewer's error
+        // channel — only a line the reviewer wrote there attests.
+        assert!(extract_refusal("codex\nThe usage limit code path is untested.\n").is_none());
+    }
+
+    #[test]
+    fn unexplained_error_is_not_a_refusal() {
+        // Fails closed: the batch scan raises this as the protocol
+        // violation it is rather than recording a verdict.
+        assert!(extract_refusal("ERROR: connection reset by peer\n").is_none());
+    }
+
+    #[test]
+    fn refusal_survives_rewording_via_the_remediation_link() {
+        // Disjoint sub-channel: the sentence can change freely
+        // while still pointing at the vendor's usage page.
+        assert!(extract_refusal("ERROR: see https://chatgpt.com/codex/settings/usage\n").is_some());
+    }
 
     #[test]
     fn extract_returns_none_when_marker_absent() {

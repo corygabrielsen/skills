@@ -304,8 +304,10 @@ BatchState =
 
 PendingSlot   = slot: u32 × log_mtime: SystemTime × log_bytes: u64    (slot without `.exit`)
 VerdictRecord = slot: u32 × body: String × class: VerdictClass
-VerdictClass  = Clean ⊕ HasIssues ⊕ Indeterminate ⊕ Abandoned
+VerdictClass  = Clean ⊕ HasIssues ⊕ Indeterminate ⊕ Abandoned ⊕ Declined
                 (Abandoned is never produced by classify — only by project_abandoning_pending)
+                (Declined is never produced by classify — only by the batch scan, off a
+                 non-zero exit whose log states a budget refusal; body = the reviewer's line)
 
 ALIVE_THRESHOLD = 90s
 ```
@@ -340,6 +342,11 @@ classify : String → VerdictClass                 -- empty → Clean; structura
 project_abandoning_pending : CodexObservations × reason → CodexObservations
     Running{pending, completed} ↦ Complete{ completed ⊎ pending.map(Abandoned{reason}) }   (sorted by slot)
     other                      ↦ unchanged
+
+extract_refusal : String → Option⟨String⟩        -- an `ERROR:`-prefixed line carrying a budget
+                                                 -- stem or a usage/billing URL path, verbatim
+                                                 -- Abandoned = no terminal signal;
+                                                 -- Declined   = terminal signal, no review
 ```
 
 **Identity gate is the whole invalidation mechanism.** A batch is
@@ -616,6 +623,7 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
    Codex    ┌─ RunCodexReviewBatch{level: CodexReasoningLevel, n: u32}            Full{Eventual(60s)}, Critical,     Advances
    review   ├─ AwaitCodexReviewBatch{level: CodexReasoningLevel, pending: u32}    Wait{30s},          BlockingWait, Blocks
    axis     ├─ AddressCodexReviewBatch{level: CodexReasoningLevel, count: u32}    Agent,              BlockingFix,  Blocks
+            ├─ CodexReviewDeclined{level: CodexReasoningLevel, reason}            Human,              BlockingHuman, Blocks
             └─ CodexReviewBatchInconsistent{level: CodexReasoningLevel, reason}   Human,              Pathology,    Blocks
 
    Attest.  ┌─ SyncPullRequestMetadata{attest_path: PathBuf}   (SHA-keyed)
@@ -638,9 +646,13 @@ codex_review::candidates : CodexReviewReport → Vec⟨Action⟩       (|result|
     Address{level, verdicts}   ↦ [AddressCodexReviewBatch{level, count: |issues|}]
                                   issues = verdicts.filter(class ∈ {HasIssues, Indeterminate, Abandoned})
                                   prompt.witnesses = issues.map(slot ↦ body)      (≥ 1 by precondition)
+    Declined{level, reason}    ↦ [CodexReviewDeclined{level, reason}]
+                                  reason = body of the first Declined verdict
+                                  orient emits Declined ahead of Address: no slot read the
+                                  code, so the verdict set names no issues to hand an actor
     Inconsistent{level, reason}↦ [CodexReviewBatchInconsistent{level, reason}]
 
-blocker = BlockerKey::typed("codex_review_{runbatch|await|address|inconsistent}", level)
+blocker = BlockerKey::typed("codex_review_{runbatch|await|address|declined|inconsistent}", level)
 ```
 
 `AddressCodexReviewBatch` shares `BlockingFix` with

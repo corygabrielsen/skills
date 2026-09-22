@@ -122,7 +122,7 @@ BatchState =
 
 PendingSlot   = { slot: u32, log_mtime: SystemTime, log_bytes: u64 }
 VerdictRecord = { slot: u32, body: String, class: VerdictClass }
-VerdictClass  = Clean | HasIssues | Indeterminate | Abandoned
+VerdictClass  = Clean | HasIssues | Indeterminate | Abandoned | Declined
 
 ALIVE_THRESHOLD = 90s
 ```
@@ -156,6 +156,15 @@ structural marker (`- [p1]`…`[p3]`, `review comment:`,
 by `classify`; only by `BatchState::project_abandoning_pending`,
 which maps `Running` to a synthetic `Complete` with one
 `Abandoned` verdict per pending slot.
+
+`Declined` is not produced by `classify` either: the batch scan emits
+it when a slot exits non-zero and `extract_refusal` recognises a
+stated budget refusal in its log, with the reviewer's own line as the
+body. A non-zero exit stating no recognised cause still fails the
+scan. The two are distinct terminal states — `Abandoned` is the
+absence of any signal, `Declined` is the reviewer answering that no
+review is coming — and the refusal outranks the verdict body, which
+on a refusing run reads like an ordinary inconclusive review.
 
 ## O = orient
 
@@ -210,6 +219,7 @@ ActionKind                                 effect               target    urgenc
   AddressBatch { issue_count, level }      Agent                Blocks    BlockingFix     address:<level>
   Retrospective { level }                  Agent                Advances  BlockingFix     retro:<level>
   BatchStateInconsistent { level, reason } Human                Blocks    Pathology       inconsistent:<level>
+  ReviewerDeclined { level, reason }       Human                Blocks    BlockingHuman   reviewer_declined:<level>
   TestsFailedTriage                        Human                Blocks    BlockingHuman   address-failed
   ParseVerdicts { level }                  declared; no constructor (parsing is implicit in observe)
   AdvanceLevel { from, to }                declared; no constructor
@@ -234,10 +244,16 @@ match (batch_state, current_level == ceiling):
   (NotStarted,                    _)     → Execute(RunReviews { level, n: expected })
   (Running,                       _)     → Execute(AwaitReviews { level, pending: expected − completed })
   (InconsistentState { reason },  _)     → Halt(HumanNeeded(BatchStateInconsistent { level, reason }))
+  (Complete { ∃ Declined },       _)     → Halt(HumanNeeded(ReviewerDeclined { level, reason }))
+      reason = body of the first Declined verdict — the reviewer's own message
+      precedence: a declined slot means no slot read the code, so neither the
+      fixed-point claim nor the address fork has a basis, and climbing the
+      ladder would spend the rest of the budget on runs that will refuse
   (Complete { ∀ Clean },          true)  → Halt(Terminal(Succeeded))          -- codex fixed point
   (Complete { ∀ Clean },          false) → Halt(AgentNeeded(Retrospective { level }))
   (Complete { otherwise },        _)     → Halt(AgentNeeded(AddressBatch { issue_count, level }))
       issue_count = #{ v | v.class ∈ { HasIssues, Indeterminate, Abandoned } }
+      (Declined cannot reach here — the guarded arm above takes the batch)
 ```
 
 `Terminal(Aborted)` and `Success` have no producer in this crate's

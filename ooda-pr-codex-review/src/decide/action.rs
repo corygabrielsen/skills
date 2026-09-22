@@ -223,6 +223,16 @@ pub enum ActionKind {
     /// log file from a prior batch). No safe auto-recovery; routes
     /// to a human resolver. The carried `reason` text is surfaced
     /// in the prompt.
+    /// Halt because the reviewer declined to run and said why —
+    /// an exhausted usage or spend budget. Nothing in the working
+    /// tree causes it and nothing here clears it, so the loop
+    /// reports the reviewer's own message (retry time included)
+    /// rather than treating the refusal as a fault of its own.
+    CodexReviewDeclined {
+        level: crate::ids::CodexReasoningLevel,
+        reason: String,
+    },
+
     CodexReviewBatchInconsistent {
         level: crate::ids::CodexReasoningLevel,
         reason: String,
@@ -336,6 +346,7 @@ impl ActionKindName for ActionKind {
             Self::RunCodexReviewBatch { .. } => "RunCodexReviewBatch",
             Self::AwaitCodexReviewBatch { .. } => "AwaitCodexReviewBatch",
             Self::AddressCodexReviewBatch { .. } => "AddressCodexReviewBatch",
+            Self::CodexReviewDeclined { .. } => "CodexReviewDeclined",
             Self::CodexReviewBatchInconsistent { .. } => "CodexReviewBatchInconsistent",
             Self::SyncPullRequestMetadata { .. } => "SyncPullRequestMetadata",
             Self::ReviewDocs { .. } => "ReviewDocs",

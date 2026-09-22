@@ -58,6 +58,9 @@ pub(crate) fn candidates(report: &CodexReviewReport) -> Vec<Action> {
             let count = u32::try_from(issues.len()).expect("codex issue count fits in u32");
             vec![mk_address(*level, count, &issues)]
         }
+        CodexReviewStatus::Declined { level, reason } => {
+            vec![mk_declined(*level, reason)]
+        }
         CodexReviewStatus::Inconsistent { level, reason } => {
             vec![mk_inconsistent(*level, reason)]
         }
@@ -109,6 +112,30 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingWait),
         blocker: BlockerKey::typed("codex_review_await", &level),
+    }
+}
+
+/// Reviewer-refusal halt. The prompt states the reviewer's own
+/// message and nothing more: it already names the cause and, when
+/// the reviewer supplies one, the retry time. No recovery step is
+/// prescribed because none exists inside the working tree.
+fn mk_declined(level: CodexReasoningLevel, reason: &str) -> Action {
+    use ooda_core::HandoffPrompt;
+    Action {
+        kind: ActionKind::CodexReviewDeclined {
+            level,
+            reason: reason.to_string(),
+        },
+        effect: ActionEffect::Human {
+            prompt: HandoffPrompt::new(format!(
+                "`codex review` declined to run at level {}, so no review was \
+                 produced. The reviewer reported: {reason}",
+                level.as_str(),
+            )),
+        },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        blocker: BlockerKey::typed("codex_review_declined", &level),
     }
 }
 
@@ -298,6 +325,27 @@ mod tests {
         assert!(candidates(&r).is_empty());
     }
 
+    #[test]
+    fn declined_batch_halts_instead_of_addressing() {
+        // The reviewer never looked at the code, so the verdict set
+        // names no issues. Routing a refusal into the address fork
+        // invents work from an empty sample.
+        let cs = candidates(&report(CodexReviewStatus::Declined {
+            level: CodexReasoningLevel::Low,
+            reason: "ERROR: You've hit your usage limit. … try again at 6:52 PM.".into(),
+        }));
+        assert_eq!(cs.len(), 1);
+        assert!(matches!(cs[0].kind, ActionKind::CodexReviewDeclined { .. }));
+        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
+        assert_eq!(cs[0].blocker.as_str(), "codex_review_declined:low");
+        let ActionEffect::Human { prompt } = &cs[0].effect else {
+            panic!("expected a human handoff");
+        };
+        // The retry time is the one actionable fact and only the
+        // reviewer knows it.
+        assert!(format!("{prompt:?}").contains("6:52 PM"));
+    }
+
     // Property test for the status → candidate-shape mapping.
     // Exhaustive match in `expected_codex_review_axis_behavior`
     // enforces the contract at compile time; adding a new
@@ -311,6 +359,7 @@ mod tests {
         EmitRunBatch,
         EmitAwaitBatch,
         EmitAddressBatch,
+        EmitDeclined,
         EmitInconsistent,
     }
 
@@ -320,6 +369,7 @@ mod tests {
             CodexReviewStatus::Spawn { .. } => CodexReviewAxisBehavior::EmitRunBatch,
             CodexReviewStatus::Await { .. } => CodexReviewAxisBehavior::EmitAwaitBatch,
             CodexReviewStatus::Address { .. } => CodexReviewAxisBehavior::EmitAddressBatch,
+            CodexReviewStatus::Declined { .. } => CodexReviewAxisBehavior::EmitDeclined,
             CodexReviewStatus::Inconsistent { .. } => CodexReviewAxisBehavior::EmitInconsistent,
         }
     }
@@ -343,6 +393,10 @@ mod tests {
                     class: VerdictClass::HasIssues,
                 }],
             },
+            CodexReviewStatus::Declined {
+                level: CodexReasoningLevel::High,
+                reason: "ERROR: You've hit your usage limit.".into(),
+            },
             CodexReviewStatus::Inconsistent {
                 level: CodexReasoningLevel::High,
                 reason: "stray log".into(),
@@ -362,6 +416,9 @@ mod tests {
                 }
                 (ActionKind::AddressCodexReviewBatch { .. }, ActionEffect::Agent { .. }) => {
                     CodexReviewAxisBehavior::EmitAddressBatch
+                }
+                (ActionKind::CodexReviewDeclined { .. }, ActionEffect::Human { .. }) => {
+                    CodexReviewAxisBehavior::EmitDeclined
                 }
                 (ActionKind::CodexReviewBatchInconsistent { .. }, ActionEffect::Human { .. }) => {
                     CodexReviewAxisBehavior::EmitInconsistent
@@ -383,7 +440,7 @@ mod tests {
         let statuses = all_codex_review_statuses();
         assert_eq!(
             statuses.len(),
-            5,
+            6,
             "`all_codex_review_statuses` must include one sample per \
              `CodexReviewStatus` variant; adding a new variant requires \
              adding both an arm in `expected_codex_review_axis_behavior` \

@@ -264,11 +264,12 @@ level N+1 next iteration.
 
 ### New `ActionKind` variants
 
-| Variant                                 | Automation  | Urgency        | Effect                                                                                                 |
-| --------------------------------------- | ----------- | -------------- | ------------------------------------------------------------------------------------------------------ |
-| `RunCodexReviewBatch{level, n}`         | `Full`      | `Critical`     | Spawn `n` codex subprocesses; write `head_sha.txt`; return immediately. Stamped with current head SHA. |
-| `AwaitCodexReviewBatch{level, pending}` | `Wait{30s}` | `BlockingWait` | Sleep + re-observe; interleaves with PR's own waits.                                                   |
-| `AddressCodexReviewBatch{level, count}` | `Agent`     | `BlockingFix`  | `HandoffAgent` with the verdict bodies bundled into the prompt (per-slot, deduped via `Urgency` sort). |
+| Variant                                 | Automation  | Urgency         | Effect                                                                                                              |
+| --------------------------------------- | ----------- | --------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `RunCodexReviewBatch{level, n}`         | `Full`      | `Critical`      | Spawn `n` codex subprocesses; write `head_sha.txt`; return immediately. Stamped with current head SHA.              |
+| `AwaitCodexReviewBatch{level, pending}` | `Wait{30s}` | `BlockingWait`  | Sleep + re-observe; interleaves with PR's own waits.                                                                |
+| `AddressCodexReviewBatch{level, count}` | `Agent`     | `BlockingFix`   | `HandoffAgent` with the verdict bodies bundled into the prompt (per-slot, deduped via `Urgency` sort).              |
+| `CodexReviewDeclined{level, reason}`    | `Human`     | `BlockingHuman` | `HandoffHuman` quoting the reviewer's own refusal — it declined to run (budget exhausted) so no slot read the code. |
 
 `Critical` urgency on `RunCodexReviewBatch` preempts everything
 else — when the codex axis has work to spawn, it goes first.
@@ -277,7 +278,10 @@ else — when the codex axis has work to spawn, it goes first.
 waits naturally serialize through the same Urgency sort.
 `BlockingFix` on `AddressCodexReviewBatch` competes with
 `AddressThreads` / `FixCi` — codex issues get the same priority
-class as PR review thread issues.
+class as PR review thread issues. `CodexReviewDeclined` takes
+precedence over `AddressCodexReviewBatch` at the orient layer, not
+by urgency: a declined batch has no issue set to address, so the
+`Address` status is never constructed for it.
 
 ### Head-SHA-keyed batch directories
 

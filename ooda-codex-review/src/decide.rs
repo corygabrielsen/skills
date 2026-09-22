@@ -92,6 +92,14 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
         BatchState::InconsistentState { reason, .. } => {
             mk_batch_state_inconsistent(oriented.current_level, reason)
         }
+        // Precedence over every other Complete arm: a declined slot
+        // means the reviewer never looked at the code, so neither
+        // the fixed-point claim nor the address fork has a basis.
+        // Climbing the ladder would only spend the remaining budget
+        // on runs that will refuse for the same reason.
+        BatchState::Complete { verdicts } if let Some(reason) = first_refusal(verdicts) => {
+            mk_reviewer_declined(oriented.current_level, reason)
+        }
         BatchState::Complete { verdicts } if all_clean(verdicts) => {
             // All-clean at ceiling is the terminal fixed point.
             // All-clean below ceiling defers to retrospective
@@ -106,6 +114,8 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
             // `Abandoned` is counted alongside `HasIssues` /
             // `Indeterminate` so a partial sample with abandoned
             // pending slots never silently claims fixed point.
+            // `Declined` cannot reach here — the guarded arm above
+            // takes any batch containing one.
             let has_issues_count = u32::try_from(
                 verdicts
                     .iter()
@@ -131,6 +141,16 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
 /// is presumed to still be making forward progress.
 fn is_alive(mtime: SystemTime, now: SystemTime, threshold: Duration) -> bool {
     now.duration_since(mtime).is_ok_and(|d| d <= threshold)
+}
+
+/// The first stated refusal in the batch, if any. Slots share one
+/// account, so one refusal characterises the batch — reporting the
+/// first is reporting all of them.
+fn first_refusal(verdicts: &[VerdictRecord]) -> Option<&str> {
+    verdicts
+        .iter()
+        .find(|v| matches!(v.class, VerdictClass::Declined))
+        .map(|v| v.body.as_str())
 }
 
 fn all_clean(verdicts: &[VerdictRecord]) -> bool {
@@ -222,6 +242,29 @@ fn mk_batch_state_inconsistent(level: CodexReasoningLevel, reason: &str) -> Acti
     }
 }
 
+/// Reviewer-refusal halt. The prompt states the reviewer's own
+/// message and nothing more: it already names the cause and, when
+/// the reviewer supplies one, the retry time. No recovery step is
+/// prescribed because none exists inside the working tree.
+fn mk_reviewer_declined(level: CodexReasoningLevel, reason: &str) -> Action {
+    Action {
+        kind: ActionKind::ReviewerDeclined {
+            level,
+            reason: reason.to_string(),
+        },
+        effect: ActionEffect::Human {
+            prompt: ooda_core::HandoffPrompt::new(format!(
+                "`codex review` declined to run at level {}, so no review \
+                 was produced. The reviewer reported: {reason}",
+                level.as_str(),
+            )),
+        },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        blocker: BlockerKey::typed("reviewer_declined", &level),
+    }
+}
+
 fn mk_retrospective(level: CodexReasoningLevel) -> Action {
     Action {
         kind: ActionKind::Retrospective { level },
@@ -300,6 +343,74 @@ mod tests {
             }
             other @ Decision::Halt(_) => panic!("expected Execute(RunReviews), got {other:?}"),
         }
+    }
+
+    /// Verdict record carrying the reviewer's stated refusal.
+    fn declined(slot: u32) -> VerdictRecord {
+        VerdictRecord {
+            slot,
+            body: "ERROR: You've hit your usage limit. Visit \
+                   https://chatgpt.com/codex/settings/usage to purchase more \
+                   credits or try again at 6:52 PM."
+                .to_string(),
+            class: VerdictClass::Declined,
+        }
+    }
+
+    #[test]
+    fn declined_batch_halts_instead_of_addressing() {
+        // The reviewer never looked at the code, so there is no
+        // issue batch to hand to an actor. Routing a refusal into
+        // the address fork invents work from an empty sample.
+        let bs = BatchState::Complete {
+            verdicts: vec![declined(1), declined(2), declined(3)],
+        };
+        let o = oriented(bs, CodexReasoningLevel::Low, 3);
+        match decide(&o) {
+            Decision::Halt(DecisionHalt::HumanNeeded(h)) => {
+                assert!(matches!(h.kind, ActionKind::ReviewerDeclined { .. }));
+                assert_eq!(h.urgency, Urgency::Mid(MidTier::BlockingHuman));
+            }
+            other => panic!("expected a ReviewerDeclined handoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_declined_slot_halts_a_partial_batch() {
+        // The slots share one account, so a single refusal means
+        // the rest of the ladder will refuse too. Addressing the
+        // clean remainder and climbing would spend what is left of
+        // the budget on runs that cannot run.
+        let bs = BatchState::Complete {
+            verdicts: vec![
+                record(1, VerdictClass::Clean),
+                record(2, VerdictClass::HasIssues),
+                declined(3),
+            ],
+        };
+        let o = oriented(bs, CodexReasoningLevel::Low, 3);
+        match decide(&o) {
+            Decision::Halt(DecisionHalt::HumanNeeded(h)) => {
+                assert!(matches!(h.kind, ActionKind::ReviewerDeclined { .. }));
+            }
+            other => panic!("expected a ReviewerDeclined handoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declined_prompt_carries_the_reviewers_own_message() {
+        // The retry time is the one actionable fact and only the
+        // reviewer knows it.
+        let bs = BatchState::Complete {
+            verdicts: vec![declined(1)],
+        };
+        let o = oriented(bs, CodexReasoningLevel::Low, 3);
+        let Decision::Halt(DecisionHalt::HumanNeeded(h)) = decide(&o) else {
+            panic!("expected a handoff");
+        };
+        let rendered = format!("{:?}", h.prompt);
+        assert!(rendered.contains("usage limit"));
+        assert!(rendered.contains("6:52 PM"));
     }
 
     #[test]

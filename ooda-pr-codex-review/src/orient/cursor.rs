@@ -15,13 +15,21 @@
 //!   typed lifecycle state, not an absence. Repo-level absence and
 //!   per-PR declination are distinct variants so post-hoc analysis
 //!   can tell them apart.
+//! - **Terminal-signal is not in-flight**: a run that reached a
+//!   terminal state without producing a review answered the
+//!   question — no review is coming at this HEAD. That is a
+//!   different state from having no terminal signal at all, and
+//!   collapsing the two makes every stall prompt claim a timeout
+//!   that did not happen.
 //! - **Domain-honest shape**: the activity lattice diverges from
 //!   request-driven reviewer axes by design — when domains diverge,
 //!   accept divergence rather than force a meta-structure.
 
 use crate::ids::{GitCommitSha, GitHubLogin, Timestamp};
+use crate::observe::github::comments::IssueComment;
 use crate::observe::github::cursor_status::{
-    CheckRunConclusion, CheckRunStatus, CheckSuiteStatus, CursorCheckSuite, CursorStatus,
+    CheckRunConclusion, CheckRunStatus, CheckSuiteStatus, CursorCheckRun, CursorCheckSuite,
+    CursorStatus,
 };
 use crate::observe::github::pull_request_view::PullRequestAuthor;
 use crate::observe::github::review_threads::ReviewThreadsResponse;
@@ -104,11 +112,39 @@ pub(crate) enum CursorActivity {
     /// Per-PR declination — distinct from repo-level absence so
     /// post-hoc analysis can identify which class of refusal fired.
     Skipped(SkipReason),
-    /// Suite (and optionally run) is in flight. Health is binary;
-    /// see [`InFlightHealth`].
+    /// Suite (and optionally run) is in flight, with no terminal
+    /// signal yet. Health is binary; see [`InFlightHealth`].
     InFlight(InFlightHealth),
-    /// Run reached a terminal state on this HEAD.
+    /// The reviewer reached a terminal state on this HEAD without
+    /// producing a review. Distinct from `InFlight(Failed)`, which
+    /// is the *absence* of a terminal signal: here the reviewer
+    /// answered, and the answer was that no review is coming.
+    Unavailable(UnavailableReason),
+    /// Run reached a terminal state on this HEAD with a review.
     Reviewed(ReviewedState),
+}
+
+/// Why a terminal run produced no review.
+///
+/// The split exists because the two reasons differ in scope and in
+/// what, if anything, discharges them — and therefore in whether the
+/// axis may gate the PR at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum UnavailableReason {
+    /// The reviewer reported its account-level usage or spend budget
+    /// exhausted. Account-scoped rather than per-PR: no push and no
+    /// in-repo action changes it, and the reviewer re-runs and
+    /// re-fails on every push until the budget resets. The axis does
+    /// not gate on it — gating would halt every iteration on a
+    /// condition the loop cannot influence — and the dashboard row
+    /// carries the fact into the closeout handoff instead.
+    BudgetExhausted,
+    /// The run terminated without producing a review and without
+    /// naming budget as the cause. Gated: an unexplained terminal
+    /// failure is worth a human look, and this is also where a
+    /// reworded budget notice lands if the classifier stops
+    /// recognising it — failing loudly rather than passing silently.
+    RunFailed,
 }
 
 // Variants are emitted selectively — `AuthorClass` is the only one
@@ -172,6 +208,14 @@ pub(crate) fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboar
         CursorActivity::InFlight(InFlightHealth::Failed) => (
             SignalIcon::Failed,
             "check_suite stalled — escalating".to_string(),
+        ),
+        CursorActivity::Unavailable(UnavailableReason::BudgetExhausted) => (
+            SignalIcon::NotApplicable,
+            "budget exhausted — no review at this HEAD".to_string(),
+        ),
+        CursorActivity::Unavailable(UnavailableReason::RunFailed) => (
+            SignalIcon::Failed,
+            "run terminated without a review — escalating".to_string(),
         ),
         CursorActivity::Reviewed(ReviewedState::Clean) => {
             (SignalIcon::Ok, "no findings".to_string())
@@ -247,6 +291,7 @@ pub(crate) fn orient_cursor(
     reviews: &[PullRequestReview],
     threads: &ReviewThreadsResponse,
     cursor_status: &CursorStatus,
+    comments: &[IssueComment],
     author: Option<&PullRequestAuthor>,
     head: &GitCommitSha,
     now: Timestamp,
@@ -264,7 +309,7 @@ pub(crate) fn orient_cursor(
     let thread_summary = count_bot_threads(threads, latest_reviewed_at.as_ref(), is_cursor);
     let severity = count_severity(threads);
     let has_review_row_at_head = reviews_at_head(reviews, head);
-    let activity = derive_activity(cursor_status, author, has_review_row_at_head, now);
+    let activity = derive_activity(cursor_status, comments, author, has_review_row_at_head, now);
     let tier = score_tier(&rounds, &thread_summary, cursor_status);
     let fresh = is_fresh(&rounds, head);
     let suite_created_at = cursor_status.suite.as_ref().map(|s| s.created_at);
@@ -441,6 +486,7 @@ fn is_fresh(rounds: &[CursorReviewRound], head: &GitCommitSha) -> bool {
 
 fn derive_activity(
     cursor_status: &CursorStatus,
+    comments: &[IssueComment],
     author: Option<&PullRequestAuthor>,
     has_review_row_at_head: bool,
     now: Timestamp,
@@ -451,13 +497,17 @@ fn derive_activity(
     let Some(suite) = cursor_status.suite.as_ref() else {
         return classify_no_suite(author);
     };
+    // Terminal-refusal cause, resolved once for every arm that needs
+    // it. Both channels are scoped to this HEAD by the suite anchor.
+    let unavailable =
+        || classify_unavailable(cursor_status.run.as_ref(), comments, suite.created_at);
 
     match cursor_status.run.as_ref() {
         // No child run yet — the canonical stuck-suite signature.
-        None => classify_suite_without_run(suite, now),
+        None => classify_suite_without_run(suite, &unavailable, now),
         Some(run) => match (run.status, run.conclusion) {
             (CheckRunStatus::Completed, Some(concl)) => {
-                classify_completed(concl, has_review_row_at_head)
+                classify_completed(concl, has_review_row_at_head, &unavailable)
             }
             // Eventual-consistency window: status reaches a terminal
             // value before conclusion populates. Treated as still-
@@ -489,12 +539,17 @@ fn classify_no_suite(author: Option<&PullRequestAuthor>) -> CursorActivity {
     }
 }
 
-fn classify_suite_without_run(suite: &CursorCheckSuite, now: Timestamp) -> CursorActivity {
+fn classify_suite_without_run(
+    suite: &CursorCheckSuite,
+    unavailable: &dyn Fn() -> UnavailableReason,
+    now: Timestamp,
+) -> CursorActivity {
     match suite.status {
-        // Suite terminal without ever spawning a run is a backend-
-        // cancellation signature — no run means no possible review
-        // on this HEAD. Failed by construction.
-        CheckSuiteStatus::Completed => CursorActivity::InFlight(InFlightHealth::Failed),
+        // Suite terminal without ever spawning a run — no run means
+        // no possible review on this HEAD. Terminal, so not in
+        // flight; the cause comes from the timeline channel, which
+        // is the only one that survives a run that never existed.
+        CheckSuiteStatus::Completed => CursorActivity::Unavailable(unavailable()),
         // Still-pending suite: classify by the stall threshold from
         // suite creation.
         CheckSuiteStatus::Queued | CheckSuiteStatus::InProgress | CheckSuiteStatus::Unknown => {
@@ -507,13 +562,15 @@ fn classify_suite_without_run(suite: &CursorCheckSuite, now: Timestamp) -> Curso
     }
 }
 
-// The neutral arm is overloaded — findings-posted vs backend-cancel
-// share the same wire value. Disambiguate via the co-located-review-
-// row predicate: presence witnesses findings, absence routes to
-// failure.
+// The neutral arm is overloaded — findings-posted vs no-review-
+// produced share the same wire value. Disambiguate via the
+// co-located-review-row predicate: presence witnesses findings,
+// absence witnesses a terminal refusal whose cause the output and
+// timeline channels supply.
 fn classify_completed(
     conclusion: CheckRunConclusion,
     has_review_row_at_head: bool,
+    unavailable: &dyn Fn() -> UnavailableReason,
 ) -> CursorActivity {
     match conclusion {
         CheckRunConclusion::Success => {
@@ -527,13 +584,13 @@ fn classify_completed(
             if has_review_row_at_head {
                 CursorActivity::Reviewed(ReviewedState::HasFindings)
             } else {
-                CursorActivity::InFlight(InFlightHealth::Failed)
+                CursorActivity::Unavailable(unavailable())
             }
         }
         CheckRunConclusion::Failure
         | CheckRunConclusion::TimedOut
         | CheckRunConclusion::Cancelled
-        | CheckRunConclusion::StartupFailure => CursorActivity::InFlight(InFlightHealth::Failed),
+        | CheckRunConclusion::StartupFailure => CursorActivity::Unavailable(unavailable()),
         // Reviewer-declined-to-act conclusions. Collapse to Clean so
         // the loop does not loop on a non-actionable signal.
         CheckRunConclusion::Skipped
@@ -541,6 +598,72 @@ fn classify_completed(
         | CheckRunConclusion::Stale
         | CheckRunConclusion::Unknown => CursorActivity::Reviewed(ReviewedState::Clean),
     }
+}
+
+// ── Terminal-refusal cause ───────────────────────────────────────────
+
+/// Classify why a terminal run produced no review.
+///
+/// Two channels carrying the same statement in two locations, so
+/// neither surface's disappearance zeroes the signal:
+///
+/// - **run output** — the host's `output` fields on the check run.
+///   Absent when the suite terminated without ever spawning a run.
+/// - **PR timeline** — an issue comment authored by the reviewer at
+///   or after `since`. Survives a run that never existed, and is
+///   already observed for other axes, so it costs no call.
+///
+/// The `since` anchor is the suite-creation time, which scopes both
+/// channels to the current HEAD: a budget notice from a previous
+/// push must not classify this one.
+///
+/// Defaults to [`UnavailableReason::RunFailed`], which gates. A
+/// refusal we cannot attribute is reported, never waved through.
+fn classify_unavailable(
+    run: Option<&CursorCheckRun>,
+    comments: &[IssueComment],
+    since: Timestamp,
+) -> UnavailableReason {
+    let from_output = run.is_some_and(|r| states_budget_exhaustion(&r.output.prose()));
+    let from_timeline = comments.iter().any(|c| {
+        is_cursor(c.user.login.as_str())
+            && c.created_at >= since
+            && states_budget_exhaustion(&c.body)
+    });
+    if from_output || from_timeline {
+        UnavailableReason::BudgetExhausted
+    } else {
+        UnavailableReason::RunFailed
+    }
+}
+
+/// Whether a refusal notice attributes itself to an exhausted usage
+/// or spend budget.
+///
+/// The reviewer states this in prose only — no conclusion value, no
+/// annotation, no typed field distinguishes it from any other
+/// terminal error — so this is the axis's one wording-dependent
+/// anchor and the known failure surface of the classification. Two
+/// sub-channels with disjoint drift:
+///
+/// - **stems** — the budget nouns the notice is built around.
+/// - **remediation target** — the notice links the operator to the
+///   vendor's billing surface, which is named by URL path rather
+///   than by sentence and survives any rewording of the prose
+///   around it.
+///
+/// Recognition fails closed: an unrecognised notice classifies as
+/// `RunFailed` and gates.
+fn states_budget_exhaustion(prose: &str) -> bool {
+    /// Budget nouns. Observed 2026-09-18: "usage limit reached",
+    /// "hit a usage or spend limit", "increase usage limits".
+    const STEMS: &[&str] = &["usage limit", "spend limit", "usage or spend", "quota"];
+    /// Path segments naming a billing surface on the remediation
+    /// link the notice carries.
+    const BILLING_PATHS: &[&str] = &["/spending", "/billing", "/usage"];
+    let lower = prose.to_ascii_lowercase();
+    STEMS.iter().any(|stem| lower.contains(stem))
+        || BILLING_PATHS.iter().any(|path| lower.contains(path))
 }
 
 /// Classify in-flight health against the most-specific timing
@@ -564,7 +687,9 @@ fn in_flight_health_from_run_anchor(
 mod tests {
     use super::*;
     use crate::ids::GitHubLogin;
-    use crate::observe::github::cursor_status::{CursorCheckRun, CursorCheckSuite, CursorStatus};
+    use crate::observe::github::cursor_status::{
+        CursorCheckRun, CursorCheckSuite, CursorRunOutput, CursorStatus,
+    };
     use crate::observe::github::pull_request_view::PullRequestAuthor;
     use crate::observe::github::review_threads::{
         CommentAuthor, PageInfo, ReviewRequestsPage, ReviewThread, ReviewThreadsData,
@@ -631,6 +756,23 @@ mod tests {
         conclusion: Option<CheckRunConclusion>,
         started_at: Option<&str>,
     ) -> CursorStatus {
+        status_with_run_output(
+            suite_status,
+            suite_created_at,
+            run_status,
+            conclusion,
+            started_at,
+            CursorRunOutput::default(),
+        )
+    }
+    fn status_with_run_output(
+        suite_status: CheckSuiteStatus,
+        suite_created_at: &str,
+        run_status: CheckRunStatus,
+        conclusion: Option<CheckRunConclusion>,
+        started_at: Option<&str>,
+        output: CursorRunOutput,
+    ) -> CursorStatus {
         CursorStatus {
             suite: Some(CursorCheckSuite {
                 status: suite_status,
@@ -640,7 +782,51 @@ mod tests {
                 status: run_status,
                 conclusion,
                 started_at: started_at.map(ts),
+                output,
             }),
+        }
+    }
+    /// Call the axis with an empty timeline. Most cases exercise the
+    /// run-output channel; the timeline channel has its own tests.
+    fn orient_cursor_test(
+        reviews: &[PullRequestReview],
+        threads: &ReviewThreadsResponse,
+        cursor_status: &CursorStatus,
+        author: Option<&PullRequestAuthor>,
+        head: &GitCommitSha,
+        now: Timestamp,
+    ) -> Option<CursorReport> {
+        orient_cursor(reviews, threads, cursor_status, &[], author, head, now)
+    }
+    /// Reviewer run output carrying the budget-refusal notice as the
+    /// host emits it (observed 2026-09-18).
+    fn budget_output() -> CursorRunOutput {
+        CursorRunOutput {
+            title: "Error".into(),
+            summary: "**Result:** Bugbot failed to run".into(),
+            text: "Bugbot couldn't run - usage limit reached\n\nBugbot is counted against \
+                   Cursor usage for this user or team, and this run hit a usage or spend \
+                   limit."
+                .into(),
+        }
+    }
+    /// Reviewer run output for a terminal failure that names no cause.
+    fn opaque_failure_output() -> CursorRunOutput {
+        CursorRunOutput {
+            title: "Error".into(),
+            summary: "**Result:** Bugbot failed to run".into(),
+            text: "An unexpected error occurred.".into(),
+        }
+    }
+    fn cursor_comment(at: &str, body: &str) -> IssueComment {
+        IssueComment {
+            id: 1,
+            user: crate::observe::github::comments::CommentUser {
+                login: GitHubLogin::parse("cursor[bot]").unwrap(),
+            },
+            body: body.into(),
+            created_at: ts(at),
+            html_url: String::new(),
         }
     }
     fn empty_threads() -> ReviewThreadsResponse {
@@ -785,13 +971,13 @@ mod tests {
 
     #[test]
     fn returns_none_when_no_signal_at_all() {
-        let r = orient_cursor(&[], &empty_threads(), &empty_status(), None, &head(), now());
+        let r = orient_cursor_test(&[], &empty_threads(), &empty_status(), None, &head(), now());
         assert!(r.is_none());
     }
 
     #[test]
     fn returns_some_when_suite_exists() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_suite_only(CheckSuiteStatus::Queued, "2026-04-23T10:00:00Z"),
@@ -805,7 +991,7 @@ mod tests {
     #[test]
     fn returns_some_when_round_exists() {
         let revs = vec![cursor_review(HEAD_SHA, "2026-04-23T10:00:00Z", "")];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &empty_status(),
@@ -820,7 +1006,7 @@ mod tests {
 
     #[test]
     fn no_suite_with_human_author_is_not_applicable() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &empty_status(),
@@ -834,7 +1020,7 @@ mod tests {
 
     #[test]
     fn no_suite_with_bot_author_is_skipped_author_class() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &empty_status(),
@@ -851,7 +1037,7 @@ mod tests {
     #[test]
     fn suite_queued_within_threshold_is_in_flight_healthy() {
         // Suite created 5min ago, now=10:05 → 5min < 15min threshold.
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_suite_only(CheckSuiteStatus::Queued, "2026-04-23T10:00:00Z"),
@@ -869,7 +1055,7 @@ mod tests {
     #[test]
     fn suite_queued_past_threshold_is_in_flight_failed() {
         // Suite created 30min before now → past 15min threshold.
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_suite_only(CheckSuiteStatus::Queued, "2026-04-23T09:35:00Z"),
@@ -883,7 +1069,7 @@ mod tests {
 
     #[test]
     fn run_in_progress_within_threshold_is_healthy() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -907,7 +1093,7 @@ mod tests {
     #[test]
     fn run_in_progress_past_run_threshold_is_failed() {
         // Run started 30min ago → past threshold from per-run anchor.
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -928,7 +1114,7 @@ mod tests {
     #[test]
     fn run_pending_without_started_at_falls_back_to_suite_created_at() {
         // No started_at; suite created 20min ago → past threshold.
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -950,7 +1136,7 @@ mod tests {
 
     #[test]
     fn completed_success_with_no_review_row_is_clean() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -975,7 +1161,7 @@ mod tests {
             "2026-04-23T10:02:00Z",
             "Cursor found 2 potential issues",
         )];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &status_with_run(
@@ -1003,7 +1189,7 @@ mod tests {
             "2026-04-23T10:02:00Z",
             "found 1 potential issue",
         )];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &status_with_run(
@@ -1025,10 +1211,11 @@ mod tests {
     }
 
     #[test]
-    fn completed_neutral_without_review_row_is_in_flight_failed() {
-        // Backend cancel signature: completed neutral with no review
-        // row on this commit. Disambiguation says Failed, not Clean.
-        let r = orient_cursor(
+    fn completed_neutral_without_review_row_is_unavailable_not_in_flight() {
+        // Terminal refusal: completed neutral with no review row on
+        // this commit. The run answered, so it is not in flight —
+        // and with no cause stated it fails closed to RunFailed.
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -1043,15 +1230,18 @@ mod tests {
             now(),
         )
         .unwrap();
-        assert_eq!(r.activity, CursorActivity::InFlight(InFlightHealth::Failed),);
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+        );
     }
 
     #[test]
-    fn completed_neutral_with_review_row_only_at_old_sha_is_failed() {
+    fn completed_neutral_with_review_row_only_at_old_sha_is_unavailable() {
         // Review row exists but on an old SHA — not the current HEAD.
         // The disambiguator must reject it.
         let revs = vec![cursor_review(OLD_SHA, "2026-04-22T10:00:00Z", "old")];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &status_with_run(
@@ -1066,12 +1256,15 @@ mod tests {
             now(),
         )
         .unwrap();
-        assert_eq!(r.activity, CursorActivity::InFlight(InFlightHealth::Failed),);
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+        );
     }
 
     #[test]
-    fn completed_failure_is_in_flight_failed() {
-        let r = orient_cursor(
+    fn completed_failure_is_unavailable() {
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -1086,12 +1279,15 @@ mod tests {
             now(),
         )
         .unwrap();
-        assert_eq!(r.activity, CursorActivity::InFlight(InFlightHealth::Failed),);
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+        );
     }
 
     #[test]
     fn completed_skipped_collapses_to_clean() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -1110,10 +1306,11 @@ mod tests {
     }
 
     #[test]
-    fn suite_completed_without_child_run_is_failed() {
-        // Suite reached `completed` with no child run ever spawned —
-        // backend cancellation signature.
-        let r = orient_cursor(
+    fn suite_completed_without_child_run_is_unavailable() {
+        // Suite reached `completed` with no child run ever spawned.
+        // Terminal, so not in flight; with no run there is no output
+        // channel and no timeline notice, so it fails closed.
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_suite_only(CheckSuiteStatus::Completed, "2026-04-23T10:00:00Z"),
@@ -1122,7 +1319,150 @@ mod tests {
             now(),
         )
         .unwrap();
-        assert_eq!(r.activity, CursorActivity::InFlight(InFlightHealth::Failed),);
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+        );
+    }
+
+    // ── terminal-refusal cause ──
+
+    #[test]
+    fn budget_notice_in_run_output_classifies_as_budget_exhausted() {
+        // The run answered in seconds and named the cause. Nothing
+        // pushed to this PR changes it, so the axis must not treat
+        // it as a stall.
+        let r = orient_cursor_test(
+            &[],
+            &empty_threads(),
+            &status_with_run_output(
+                CheckSuiteStatus::Completed,
+                "2026-04-23T10:00:00Z",
+                CheckRunStatus::Completed,
+                Some(CheckRunConclusion::Neutral),
+                Some("2026-04-23T10:01:00Z"),
+                budget_output(),
+            ),
+            Some(&human_author()),
+            &head(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::BudgetExhausted),
+        );
+    }
+
+    #[test]
+    fn budget_notice_on_the_timeline_classifies_without_run_output() {
+        // Second channel: the reviewer posts the same notice as an
+        // issue comment. It is the only channel that survives a
+        // suite that terminated without ever spawning a run.
+        let comments = vec![cursor_comment(
+            "2026-04-23T10:01:00Z",
+            "<h3>Bugbot couldn't run - usage limit reached</h3>",
+        )];
+        let r = orient_cursor(
+            &[],
+            &empty_threads(),
+            &status_suite_only(CheckSuiteStatus::Completed, "2026-04-23T10:00:00Z"),
+            &comments,
+            Some(&human_author()),
+            &head(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::BudgetExhausted),
+        );
+    }
+
+    #[test]
+    fn budget_notice_from_a_previous_head_does_not_classify_this_run() {
+        // The suite anchor scopes the timeline channel to this HEAD.
+        // A notice predating the suite belongs to an earlier push.
+        let comments = vec![cursor_comment(
+            "2026-04-23T09:00:00Z",
+            "Bugbot couldn't run - usage limit reached",
+        )];
+        let r = orient_cursor(
+            &[],
+            &empty_threads(),
+            &status_with_run_output(
+                CheckSuiteStatus::Completed,
+                "2026-04-23T10:00:00Z",
+                CheckRunStatus::Completed,
+                Some(CheckRunConclusion::Neutral),
+                Some("2026-04-23T10:01:00Z"),
+                opaque_failure_output(),
+            ),
+            &comments,
+            Some(&human_author()),
+            &head(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+        );
+    }
+
+    #[test]
+    fn budget_notice_from_another_author_is_ignored() {
+        // Any account can paste the reviewer's notice into a
+        // comment; only the reviewer's own attests its state.
+        let mut c = cursor_comment(
+            "2026-04-23T10:01:00Z",
+            "Bugbot couldn't run - usage limit reached",
+        );
+        c.user.login = GitHubLogin::parse("alice").unwrap();
+        let r = orient_cursor(
+            &[],
+            &empty_threads(),
+            &status_suite_only(CheckSuiteStatus::Completed, "2026-04-23T10:00:00Z"),
+            &[c],
+            Some(&human_author()),
+            &head(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.activity,
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+        );
+    }
+
+    #[test]
+    fn budget_stems_cover_the_observed_notice() {
+        assert!(states_budget_exhaustion(
+            "Bugbot couldn't run - usage limit reached"
+        ));
+        assert!(states_budget_exhaustion(
+            "this run hit a usage or spend limit"
+        ));
+        assert!(states_budget_exhaustion("review and increase usage limits"));
+        assert!(states_budget_exhaustion("monthly QUOTA exceeded"));
+    }
+
+    #[test]
+    fn budget_remediation_link_carries_the_signal_without_a_stem() {
+        // Disjoint sub-channel: the notice can be reworded freely
+        // while still pointing the operator at a billing surface.
+        assert!(states_budget_exhaustion(
+            "An admin can adjust this at https://www.cursor.com/dashboard/spending"
+        ));
+    }
+
+    #[test]
+    fn unrecognised_refusal_fails_closed() {
+        // Neither channel recognises the cause. The axis reports
+        // rather than waves through — this is where a reworded
+        // budget notice lands, and it must be loud.
+        assert!(!states_budget_exhaustion("An unexpected error occurred."));
+        assert!(!states_budget_exhaustion(""));
     }
 
     // ── body parsing ──
@@ -1165,7 +1505,7 @@ mod tests {
 
     #[test]
     fn tier_platinum_when_completed_success() {
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &empty_threads(),
             &status_with_run(
@@ -1186,7 +1526,7 @@ mod tests {
     #[test]
     fn tier_silver_when_suite_queued_with_prior_round() {
         let revs = vec![cursor_review(OLD_SHA, "2026-04-23T09:00:00Z", "")];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &status_suite_only(CheckSuiteStatus::Queued, "2026-04-23T10:00:00Z"),
@@ -1202,7 +1542,7 @@ mod tests {
     fn tier_bronze_when_unresolved_threads_present() {
         let revs = vec![cursor_review(HEAD_SHA, "2026-04-23T10:00:00Z", "")];
         let threads = threads_with(vec![cursor_thread(false, "**High Severity** issue")]);
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &threads,
             &status_with_run(
@@ -1224,7 +1564,7 @@ mod tests {
     #[test]
     fn tier_gold_when_round_exists_but_no_active_suite() {
         let revs = vec![cursor_review(OLD_SHA, "2026-04-23T09:00:00Z", "")];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &empty_status(),
@@ -1247,7 +1587,7 @@ mod tests {
             cursor_thread(false, "**Low Severity** thing"),
             cursor_thread(true, "**High Severity** but resolved"),
         ]);
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &[],
             &threads,
             &status_with_run(
@@ -1275,7 +1615,7 @@ mod tests {
             cursor_review(OLD_SHA, "2026-04-23T11:00:00Z", "found 2 potential issues"),
             cursor_review(HEAD_SHA, "2026-04-23T10:00:00Z", "found 0 potential issues"),
         ];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &empty_status(),
@@ -1294,7 +1634,7 @@ mod tests {
     #[test]
     fn fresh_true_when_latest_review_at_head() {
         let revs = vec![cursor_review(HEAD_SHA, "2026-04-23T10:00:00Z", "")];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &empty_status(),
@@ -1309,7 +1649,7 @@ mod tests {
     #[test]
     fn fresh_false_when_latest_review_at_old_sha() {
         let revs = vec![cursor_review(OLD_SHA, "2026-04-23T10:00:00Z", "")];
-        let r = orient_cursor(
+        let r = orient_cursor_test(
             &revs,
             &empty_threads(),
             &empty_status(),

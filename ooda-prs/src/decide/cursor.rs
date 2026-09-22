@@ -10,7 +10,9 @@
 
 use crate::ids::BlockerKey;
 
-use crate::orient::cursor::{CursorActivity, CursorReport, InFlightHealth, ReviewedState};
+use crate::orient::cursor::{
+    CursorActivity, CursorReport, InFlightHealth, ReviewedState, UnavailableReason,
+};
 
 use super::action::{Action, ActionEffect, ActionKind, MidTier, TargetEffect, Urgency};
 
@@ -41,7 +43,17 @@ pub(crate) fn candidates(report: &CursorReport) -> Vec<Action> {
             });
         }
         CursorActivity::InFlight(InFlightHealth::Failed) => {
-            out.push(failed_escalation(report));
+            out.push(stall_escalation(report));
+        }
+        CursorActivity::Unavailable(UnavailableReason::BudgetExhausted) => {
+            // Account-scoped refusal. No push and no in-repo action
+            // changes it, and the reviewer is not a required check,
+            // so gating here would halt every iteration on a
+            // condition the loop cannot influence. The dashboard
+            // row carries the fact into the closeout handoff.
+        }
+        CursorActivity::Unavailable(UnavailableReason::RunFailed) => {
+            out.push(run_failed_escalation(report));
         }
         CursorActivity::Reviewed(ReviewedState::Clean) => {
             // Reviewed with no findings.
@@ -54,15 +66,20 @@ pub(crate) fn candidates(report: &CursorReport) -> Vec<Action> {
     out
 }
 
-/// Stall escalation. Payload-free (this axis has a single failure
-/// mode) and driver-side-effect-free — the runner routes this
-/// directly to its terminal human handoff outcome.
+/// Stall escalation — no terminal signal within the threshold.
+/// Driver-side-effect-free; the runner routes this directly to its
+/// terminal human handoff outcome.
 ///
 /// The prompt is enriched from the report's existing projection:
 /// suite-open timestamp (when known) and the per-PR round count
 /// situate the failure in the axis's history. No new observation
 /// is required.
-fn failed_escalation(report: &CursorReport) -> Action {
+///
+/// Reaching this arm means the reviewer never answered. A reviewer
+/// that answered and declined routes to [`run_failed_escalation`],
+/// whose prompt claims no timeout — the two were one arm until the
+/// stall prompt started firing on runs that terminated in seconds.
+fn stall_escalation(report: &CursorReport) -> Action {
     let stall_min = crate::orient::cursor::STALL_TIMEOUT.num_minutes();
     let headline = format!(
         "Cursor Bugbot has not produced a review within {stall_min} minutes of the suite \
@@ -107,13 +124,53 @@ fn failed_escalation(report: &CursorReport) -> Action {
     }
 }
 
+/// Terminal-refusal escalation — the run answered, produced no
+/// review, and did not attribute the failure to budget.
+///
+/// The prompt states only what the run reported. No timeout is
+/// claimed and no service-status check is prescribed: the reviewer
+/// responded, so neither is warranted, and a prompt that asserts
+/// either sends a human to look for a stall that did not occur.
+fn run_failed_escalation(report: &CursorReport) -> Action {
+    let mut prompt = ooda_core::HandoffPrompt::new(
+        "Cursor Bugbot's run terminated without producing a review at this HEAD.",
+    );
+
+    prompt.push_paragraph(
+        "The run reached a terminal state and reported no review. It did not          attribute the failure to an exhausted usage or spend budget, which is          the one cause this axis recognises and tolerates — so either the run          genuinely failed, or the reviewer reworded its budget notice."
+            .to_string(),
+    );
+
+    prompt.push_paragraph(
+        "Cursor auto-runs on every push and there is no rerequest API, so the          next commit retries this on its own. Read the run's output on the PR's          checks tab for the reviewer's own account of the failure."
+            .to_string(),
+    );
+
+    if let Some(created_at) = report.suite_created_at {
+        prompt.push_paragraph(format!("Suite opened at: {created_at}."));
+    }
+    prompt.push_paragraph(format!(
+        "Prior Cursor review rounds on this PR: {} (tier: {}).",
+        report.rounds.len(),
+        report.tier.slug(),
+    ));
+
+    Action {
+        kind: ActionKind::EscalateCursorRunFailed,
+        effect: ActionEffect::Human { prompt },
+        target_effect: TargetEffect::Blocks,
+        urgency: Urgency::Mid(MidTier::BlockingHuman),
+        blocker: BlockerKey::from_static("cursor_run_failed"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::orient::bot_threads::BotThreadSummary;
     use crate::orient::cursor::{
         CursorActivity, CursorReport, CursorSeverityBreakdown, CursorTier, InFlightHealth,
-        ReviewedState, SkipReason,
+        ReviewedState, SkipReason, UnavailableReason,
     };
     use ooda_core::MidTier;
 
@@ -154,6 +211,52 @@ mod tests {
         assert_eq!(cs.len(), 1);
         assert!(matches!(cs[0].kind, ActionKind::WaitForCursorReview));
         assert!(matches!(cs[0].effect, ActionEffect::Wait { .. }));
+    }
+
+    #[test]
+    fn budget_exhausted_yields_no_candidate() {
+        // The axis does not gate on an account-scoped refusal: no
+        // push and no in-repo action discharges it, so a blocker
+        // here would halt every iteration permanently.
+        assert!(
+            candidates(&report(
+                CursorActivity::Unavailable(UnavailableReason::BudgetExhausted),
+                CursorTier::Bronze,
+            ))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn run_failed_emits_escalation_under_its_own_blocker() {
+        let cs = candidates(&report(
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+            CursorTier::Bronze,
+        ));
+        assert_eq!(cs.len(), 1);
+        assert!(matches!(cs[0].kind, ActionKind::EscalateCursorRunFailed));
+        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
+        // Distinct from the stall blocker: the stall comparator must
+        // separate "never answered" from "answered and declined".
+        assert_eq!(cs[0].blocker.as_str(), "cursor_run_failed");
+    }
+
+    #[test]
+    fn run_failed_prompt_claims_no_timeout() {
+        // Regression: the stall prompt fired on runs that terminated
+        // in seconds, asserting a 15-minute timeout that never
+        // happened and sending humans to a service-status page.
+        let cs = candidates(&report(
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
+            CursorTier::Bronze,
+        ));
+        let ActionEffect::Human { prompt } = &cs[0].effect else {
+            panic!("expected a human handoff");
+        };
+        let rendered = format!("{prompt:?}");
+        assert!(!rendered.contains("minutes"));
+        assert!(!rendered.contains("stalled"));
+        assert!(!rendered.contains("cursor.com/status"));
     }
 
     #[test]
@@ -206,6 +309,7 @@ mod tests {
         NoCandidate,
         EmitWaitForReview,
         EmitEscalateStalled,
+        EmitEscalateRunFailed,
     }
 
     fn expected_cursor_axis_behavior(activity: &CursorActivity) -> CursorAxisBehavior {
@@ -220,6 +324,14 @@ mod tests {
             CursorActivity::InFlight(InFlightHealth::Failed) => {
                 CursorAxisBehavior::EmitEscalateStalled
             }
+            // Account-scoped and not remediable from this PR: the
+            // one terminal refusal the axis tolerates.
+            CursorActivity::Unavailable(UnavailableReason::BudgetExhausted) => {
+                CursorAxisBehavior::NoCandidate
+            }
+            CursorActivity::Unavailable(UnavailableReason::RunFailed) => {
+                CursorAxisBehavior::EmitEscalateRunFailed
+            }
             CursorActivity::Reviewed(ReviewedState::Clean) => CursorAxisBehavior::NoCandidate,
             CursorActivity::Reviewed(ReviewedState::HasFindings) => CursorAxisBehavior::NoCandidate,
         }
@@ -233,6 +345,8 @@ mod tests {
             CursorActivity::Skipped(SkipReason::Unknown),
             CursorActivity::InFlight(InFlightHealth::Healthy),
             CursorActivity::InFlight(InFlightHealth::Failed),
+            CursorActivity::Unavailable(UnavailableReason::BudgetExhausted),
+            CursorActivity::Unavailable(UnavailableReason::RunFailed),
             CursorActivity::Reviewed(ReviewedState::Clean),
             CursorActivity::Reviewed(ReviewedState::HasFindings),
         ]
@@ -248,6 +362,9 @@ mod tests {
                 (ActionKind::EscalateCursorStalled, ActionEffect::Human { .. }) => {
                     CursorAxisBehavior::EmitEscalateStalled
                 }
+                (ActionKind::EscalateCursorRunFailed, ActionEffect::Human { .. }) => {
+                    CursorAxisBehavior::EmitEscalateRunFailed
+                }
                 (kind, effect) => {
                     panic!("cursor axis emitted unexpected (kind, effect): {kind:?}, {effect:?}")
                 }
@@ -262,15 +379,16 @@ mod tests {
     #[test]
     fn cursor_axis_property_holds_for_every_activity() {
         let activities = all_cursor_activities();
-        // Length sentinel: 1 + 3 + 2 + 2 = 8 across the activity
-        // cross-product. A new variant in any constituent enum
-        // requires updating both the sample list and the sentinel.
+        // Length sentinel: 1 + 3 + 2 + 2 + 2 = 10 across the
+        // activity cross-product. A new variant in any constituent
+        // enum requires updating both the sample list and the
+        // sentinel.
         assert_eq!(
             activities.len(),
-            8,
+            10,
             "Sample enumeration must cover NotApplicable + every \
              Skipped reason + every in-flight health + every \
-             reviewed state.",
+             unavailable reason + every reviewed state.",
         );
         for activity in activities {
             let r = report(activity.clone(), CursorTier::Bronze);

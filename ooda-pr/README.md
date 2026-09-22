@@ -452,7 +452,8 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
 
    Bot tier ┌─ RerequestCopilot{symptom: Option⟨Symptom⟩}  ⊕ EscalateCopilotFailed{symptom: Symptom}
    advance  ├─ WaitForCopilotAck  ⊕ WaitForCopilotReview  ⊕ AddressCopilotSuppressed{count: ℕ}
-            └─ WaitForCursorReview  ⊕ EscalateCursorStalled
+            ├─ WaitForCursorReview  ⊕ EscalateCursorStalled
+            └─ EscalateCursorRunFailed
 
    Pending  ┌─ WaitForBotReview{reviewers: NonEmpty⟨GitHubLogin⟩}    ← bots only
    review.  └─ WaitForHumanReview{reviewers: NonEmpty⟨Reviewer⟩}     ← user|team sum

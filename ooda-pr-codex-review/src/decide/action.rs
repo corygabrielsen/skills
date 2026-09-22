@@ -170,6 +170,11 @@ pub enum ActionKind {
     /// this axis has a single failure mode, so there is no symptom
     /// discriminator to carry.
     EscalateCursorStalled,
+    /// Cursor's run reached a terminal state without producing a
+    /// review and without naming an exhausted budget as the cause.
+    /// Hand off to a human. Payload-free: the reviewer's own account
+    /// of the failure lives on the run, not in this kind.
+    EscalateCursorRunFailed,
 
     // ── Pending reviewers ──
     /// Bot reviewers always have logins (no `Team` variant).
@@ -324,6 +329,7 @@ impl ActionKindName for ActionKind {
             Self::AddressCopilotSuppressed { .. } => "AddressCopilotSuppressed",
             Self::WaitForCursorReview => "WaitForCursorReview",
             Self::EscalateCursorStalled => "EscalateCursorStalled",
+            Self::EscalateCursorRunFailed => "EscalateCursorRunFailed",
             Self::WaitForBotReview { .. } => "WaitForBotReview",
             Self::WaitForHumanReview { .. } => "WaitForHumanReview",
             Self::WaitForRateLimit { .. } => "WaitForRateLimit",

@@ -1063,6 +1063,7 @@ mod tests {
         use crate::orient::copilot::{CopilotReviewRound, InFlightHealth as CopilotHealth};
         use crate::orient::cursor::{
             InFlightHealth as CursorHealth, ReviewedState as CursorReviewedState, SkipReason,
+            UnavailableReason as CursorUnavailableReason,
         };
 
         let ts = Timestamp::parse("2024-01-01T00:00:00Z").unwrap();
@@ -1139,6 +1140,19 @@ mod tests {
         assert_eq!(sig.icon, SignalIcon::InFlight);
         let sig = cursor_signal(&CursorActivity::InFlight(CursorHealth::Failed))
             .expect("InFlight Failed emits");
+        assert_eq!(sig.icon, SignalIcon::Failed);
+        let sig = cursor_signal(&CursorActivity::Unavailable(
+            CursorUnavailableReason::BudgetExhausted,
+        ))
+        .expect(
+            "budget exhaustion must surface — it is the only record that the \
+                 reviewer did not run at this HEAD once the axis stops gating",
+        );
+        assert_eq!(sig.icon, SignalIcon::NotApplicable);
+        let sig = cursor_signal(&CursorActivity::Unavailable(
+            CursorUnavailableReason::RunFailed,
+        ))
+        .unwrap();
         assert_eq!(sig.icon, SignalIcon::Failed);
         let sig = cursor_signal(&CursorActivity::Reviewed(CursorReviewedState::Clean))
             .expect("Reviewed Clean emits");

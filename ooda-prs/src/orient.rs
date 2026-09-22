@@ -182,6 +182,7 @@ pub(crate) fn orient(
         &obs.reviews,
         &obs.review_threads_page,
         &obs.cursor_status,
+        &obs.issue_comments,
         obs.pull_request_view.author.as_ref(),
         &obs.pull_request_view.head_ref_oid,
         now,

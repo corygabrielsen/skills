@@ -61,6 +61,18 @@ struct CheckRunWire {
     conclusion: Option<CheckRunConclusion>,
     #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
     started_at: Option<Timestamp>,
+    #[serde(default)]
+    output: Option<CheckRunOutputWire>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct CheckRunOutputWire {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// Suite status. The canonical stall is a long-Queued suite with no
@@ -133,6 +145,39 @@ pub(crate) struct CursorCheckRun {
     /// Absent when the run was created but never started. The
     /// orient layer falls back to the suite anchor.
     pub started_at: Option<Timestamp>,
+    /// Host-reported run output. The conclusion alone is
+    /// overloaded — a run that declines to review and a run that
+    /// reviewed cleanly share wire values — and the reviewer states
+    /// the cause of a refusal only here.
+    pub output: CursorRunOutput,
+}
+
+/// Run output, host schema. Absent fields decode to empty so the
+/// orient layer scans one total surface rather than three Options.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub(crate) struct CursorRunOutput {
+    pub title: String,
+    pub summary: String,
+    pub text: String,
+}
+
+impl CursorRunOutput {
+    /// Every prose field joined, for classifiers that read the
+    /// output as one body. Which field carries a given statement is
+    /// the host's choice and has no contract.
+    pub(crate) fn prose(&self) -> String {
+        format!("{} {} {}", self.title, self.summary, self.text)
+    }
+}
+
+impl From<CheckRunOutputWire> for CursorRunOutput {
+    fn from(w: CheckRunOutputWire) -> Self {
+        Self {
+            title: w.title.unwrap_or_default(),
+            summary: w.summary.unwrap_or_default(),
+            text: w.text.unwrap_or_default(),
+        }
+    }
 }
 
 /// Fetch the suite (and optional run) for the given HEAD. Two
@@ -193,6 +238,7 @@ fn fetch_cursor_check_run(
             status: r.status,
             conclusion: r.conclusion,
             started_at: r.started_at,
+            output: r.output.unwrap_or_default().into(),
         }))
 }
 
@@ -251,6 +297,49 @@ mod tests {
             Some(CheckRunConclusion::Neutral),
         );
         assert!(env.check_runs[0].started_at.is_some());
+    }
+
+    #[test]
+    fn check_run_output_decodes_all_prose_fields() {
+        // The reviewer states a terminal refusal in `output`; the
+        // conclusion alone cannot distinguish it from a clean review.
+        let json = r####"{
+            "total_count": 1,
+            "check_runs": [
+                {
+                    "status": "completed",
+                    "conclusion": "neutral",
+                    "started_at": "2026-04-23T10:01:00Z",
+                    "output": {
+                        "title": "Error",
+                        "summary": "**Result:** Bugbot failed to run",
+                        "text": "### Bugbot couldn't run - usage limit reached"
+                    }
+                }
+            ]
+        }"####;
+        let env: CheckRunsEnvelope = serde_json::from_str(json).unwrap();
+        let out: CursorRunOutput = env.check_runs[0].output.clone().unwrap().into();
+        assert_eq!(out.title, "Error");
+        assert!(out.summary.contains("failed to run"));
+        assert!(out.text.contains("usage limit reached"));
+        assert!(out.prose().contains("Error"));
+        assert!(out.prose().contains("usage limit reached"));
+    }
+
+    #[test]
+    fn check_run_absent_output_decodes_to_empty_prose() {
+        let json = r#"{
+            "total_count": 1,
+            "check_runs": [
+                {"status":"completed","conclusion":"success","started_at":"2026-04-23T10:01:00Z"}
+            ]
+        }"#;
+        let env: CheckRunsEnvelope = serde_json::from_str(json).unwrap();
+        assert!(env.check_runs[0].output.is_none());
+        let out: CursorRunOutput = env.check_runs[0].output.clone().unwrap_or_default().into();
+        assert_eq!(out, CursorRunOutput::default());
+        assert!(out.prose().trim().is_empty());
     }
 
     #[test]

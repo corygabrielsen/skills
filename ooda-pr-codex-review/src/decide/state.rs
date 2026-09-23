@@ -295,6 +295,7 @@ mod tests {
 
     fn live_thread_with_line(path: &str, line: u32, body: &str, id: &str) -> ReviewThread {
         ReviewThread {
+            severity: None,
             id: ThreadId::new(id.to_string()).unwrap(),
             author: ThreadAuthor::Bot(BotName::Copilot),
             location: ThreadLocation {

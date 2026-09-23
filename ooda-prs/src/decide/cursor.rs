@@ -169,8 +169,8 @@ mod tests {
     use super::*;
     use crate::orient::bot_threads::BotThreadSummary;
     use crate::orient::cursor::{
-        CursorActivity, CursorReport, CursorSeverityBreakdown, CursorTier, InFlightHealth,
-        ReviewedState, SkipReason, UnavailableReason,
+        CursorActivity, CursorReport, CursorTier, InFlightHealth, ReviewedState, SkipReason,
+        UnavailableReason,
     };
     use ooda_core::MidTier;
 
@@ -179,7 +179,7 @@ mod tests {
             activity,
             rounds: vec![],
             threads: BotThreadSummary::default(),
-            severity: CursorSeverityBreakdown::default(),
+            severity: crate::orient::thread::SeverityBreakdown::default(),
             tier,
             fresh: false,
             suite_created_at: None,
@@ -417,7 +417,7 @@ mod tests {
             activity,
             rounds,
             threads: BotThreadSummary::default(),
-            severity: CursorSeverityBreakdown::default(),
+            severity: crate::orient::thread::SeverityBreakdown::default(),
             tier,
             fresh: false,
             suite_created_at,

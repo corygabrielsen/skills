@@ -535,6 +535,7 @@ mod tests {
 
     fn live_thread(id: &str) -> ReviewThread {
         ReviewThread {
+            severity: None,
             id: ThreadId::new(id.to_string()).unwrap(),
             author: ThreadAuthor::Bot(BotName::Copilot),
             location: ThreadLocation {

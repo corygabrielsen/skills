@@ -227,7 +227,7 @@ fn collect_signals(inputs: &DashboardInputs<'_>) -> Vec<AxisSignal> {
         out.push(sig);
     }
     if let Some(c) = inputs.cursor
-        && let Some(sig) = cursor_signal(&c.activity)
+        && let Some(sig) = cursor_signal(&c.activity, c.severity)
     {
         out.push(sig);
     }
@@ -1061,14 +1061,12 @@ mod tests {
         use crate::observe::github::workflow_runs::WorkflowRunId;
         use crate::orient::ci::{CheckHealth, CiActivity, PendingCheck, ResolvedState};
         use crate::orient::copilot::{CopilotReviewRound, InFlightHealth as CopilotHealth};
-        use crate::orient::cursor::{
-            InFlightHealth as CursorHealth, ReviewedState as CursorReviewedState, SkipReason,
-            UnavailableReason as CursorUnavailableReason,
-        };
+        use crate::orient::thread::SeverityBreakdown;
 
         let ts = Timestamp::parse("2024-01-01T00:00:00Z").unwrap();
         let sha = GitCommitSha::parse(&"a".repeat(40)).unwrap();
         let round = CopilotReviewRound {
+            severity: SeverityBreakdown::default(),
             round: 1,
             requested_at: ts,
             ack_at: None,
@@ -1129,36 +1127,67 @@ mod tests {
         }))
         .expect("Resolved MissingRequired emits");
         assert_eq!(sig.icon, SignalIcon::Warn);
+    }
+
+    /// Cursor half of the projection table. Split from its sibling
+    /// only for length; the two together cover every axis variant,
+    /// and each match is exhaustive over its own axis.
+    #[test]
+    fn cursor_signal_projection_table_matches_spec() {
+        use crate::orient::cursor::{
+            InFlightHealth as CursorHealth, ReviewedState as CursorReviewedState, SkipReason,
+            UnavailableReason as CursorUnavailableReason,
+        };
+        use crate::orient::thread::SeverityBreakdown;
 
         // NotApplicable is the only non-emitting Cursor state.
-        assert!(cursor_signal(&CursorActivity::NotApplicable).is_none());
-        let sig = cursor_signal(&CursorActivity::Skipped(SkipReason::AuthorClass))
-            .expect("Skipped emits");
+        assert!(
+            cursor_signal(&CursorActivity::NotApplicable, SeverityBreakdown::default()).is_none()
+        );
+        let sig = cursor_signal(
+            &CursorActivity::Skipped(SkipReason::AuthorClass),
+            SeverityBreakdown::default(),
+        )
+        .expect("Skipped emits");
         assert_eq!(sig.icon, SignalIcon::NotApplicable);
-        let sig = cursor_signal(&CursorActivity::InFlight(CursorHealth::Healthy))
-            .expect("InFlight Healthy emits");
+        let sig = cursor_signal(
+            &CursorActivity::InFlight(CursorHealth::Healthy),
+            SeverityBreakdown::default(),
+        )
+        .expect("InFlight Healthy emits");
         assert_eq!(sig.icon, SignalIcon::InFlight);
-        let sig = cursor_signal(&CursorActivity::InFlight(CursorHealth::Failed))
-            .expect("InFlight Failed emits");
+        let sig = cursor_signal(
+            &CursorActivity::InFlight(CursorHealth::Failed),
+            SeverityBreakdown::default(),
+        )
+        .expect("InFlight Failed emits");
         assert_eq!(sig.icon, SignalIcon::Failed);
-        let sig = cursor_signal(&CursorActivity::Unavailable(
-            CursorUnavailableReason::BudgetExhausted,
-        ))
+        let sig = cursor_signal(
+            &CursorActivity::Unavailable(CursorUnavailableReason::BudgetExhausted),
+            SeverityBreakdown::default(),
+        )
         .expect(
             "budget exhaustion must surface — it is the only record that the \
                  reviewer did not run at this HEAD once the axis stops gating",
         );
         assert_eq!(sig.icon, SignalIcon::NotApplicable);
-        let sig = cursor_signal(&CursorActivity::Unavailable(
-            CursorUnavailableReason::RunFailed,
-        ))
+        let sig = cursor_signal(
+            &CursorActivity::Unavailable(CursorUnavailableReason::RunFailed),
+            SeverityBreakdown::default(),
+        )
         .unwrap();
         assert_eq!(sig.icon, SignalIcon::Failed);
-        let sig = cursor_signal(&CursorActivity::Reviewed(CursorReviewedState::Clean))
-            .expect("Reviewed Clean emits");
+        let sig = cursor_signal(
+            &CursorActivity::Reviewed(CursorReviewedState::Clean),
+            SeverityBreakdown::default(),
+        )
+        .expect("Reviewed Clean emits");
         assert_eq!(sig.icon, SignalIcon::Ok);
-        let sig = cursor_signal(&CursorActivity::Reviewed(CursorReviewedState::HasFindings))
-            .expect("Reviewed HasFindings emits");
+        let sig = cursor_signal(
+            &CursorActivity::Reviewed(CursorReviewedState::HasFindings),
+            SeverityBreakdown::default(),
+        )
+        .expect("Reviewed HasFindings emits");
         assert_eq!(sig.icon, SignalIcon::Warn);
     }
 

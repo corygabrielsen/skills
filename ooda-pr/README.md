@@ -336,13 +336,31 @@ CursorReport =
     activity         : CursorActivity
   × rounds           : Vec⟨CursorReviewRound⟩
   × threads          : BotThreadSummary
-  × severity         : CursorSeverityBreakdown
+  × severity         : SeverityBreakdown         -- shared with the Copilot axis
   × tier             : CursorTier
   × fresh            : Bool
   × suite_created_at : Option⟨Timestamp⟩
 
 CursorActivity =
     NotApplicable ⊕ Skipped(SkipReason) ⊕ InFlight(InFlightHealth) ⊕ Reviewed(ReviewedState)
+
+Severity          = Low ⊕ Medium ⊕ High                 (ordered least-to-most severe)
+SeverityBreakdown = high: ℕ × medium: ℕ × low: ℕ
+
+One scale across both bot reviewers: each publishes the same three
+rungs on its own surface, and the witness a reader acts on is the
+same either way. The grammar that reads a rung stays in each axis —
+Cursor writes it into the thread body, Copilot renders it as an icon
+on the review body and writes nothing into the thread — but the
+projection lands on this one type, so the witness tag and the
+dashboard census render identically for both.
+
+A rung reaches an actor two ways: `ReviewThread.severity` tags each
+witness in the AddressThreads prompt (`@ src/a.rs:1    [High]`), and
+the per-round census drives the dashboard row (`2 findings — 1 high,
+1 medium`). Unranked findings render untagged rather than with a
+placeholder rung.
+
 
 CopilotTier  = Bronze ⊕ Silver ⊕ Gold ⊕ Platinum
 CursorTier   = Bronze ⊕ Silver ⊕ Gold ⊕ Platinum

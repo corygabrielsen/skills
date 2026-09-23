@@ -34,6 +34,7 @@ use crate::observe::github::rulesets::CopilotCodeReviewParams;
 use serde::Serialize;
 
 use super::bot_threads::{BotThreadSummary, count_bot_threads};
+use super::thread::{Severity, SeverityBreakdown};
 
 // ── Identity ─────────────────────────────────────────────────────────
 
@@ -125,6 +126,16 @@ pub(crate) enum CopilotActivity {
 /// `None` so the dashboard does not emit a row for a dormant axis.
 pub(crate) fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
+    // Rung census of the latest round, appended to whatever the
+    // stage summary says. Same rendering the sibling bot axis uses.
+    let census = match activity {
+        CopilotActivity::Reviewed { latest } if !latest.severity.is_empty() => Some(format!(
+            "{} — {}",
+            crate::text::count(latest.severity.total() as usize, "finding"),
+            latest.severity.census(),
+        )),
+        _ => None,
+    };
     let (icon, summary) = match activity {
         CopilotActivity::Idle => return None,
         CopilotActivity::Requested {
@@ -156,10 +167,14 @@ pub(crate) fn copilot_signal(activity: &CopilotActivity) -> Option<crate::dashbo
         } => (SignalIcon::Failed, "review stalled — escalating"),
         CopilotActivity::Reviewed { .. } => (SignalIcon::Ok, "review complete"),
     };
+    let (icon, summary) = match census {
+        Some(census) => (SignalIcon::Warn, census),
+        None => (icon, summary.to_string()),
+    };
     Some(AxisSignal {
         axis: AxisName::Copilot,
         icon,
-        summary: summary.to_string(),
+        summary,
     })
 }
 
@@ -228,6 +243,11 @@ pub(crate) struct CopilotReviewRound {
     /// a lexical stem; the disjoint failure domains keep the count
     /// alive when the witness parse fails, and vice versa.
     pub suppressed_comments: Vec<SuppressedComment>,
+    /// Per-rung census of the findings this review reports as open,
+    /// off the body's findings label. Same type the sibling bot
+    /// axis reports, so the dashboard renders both identically —
+    /// see the shared-scale invariant on [`super::thread::Severity`].
+    pub severity: SeverityBreakdown,
 }
 
 /// One finding rendered in the review body's `<details>` block
@@ -239,6 +259,11 @@ pub(crate) struct SuppressedComment {
     pub path: String,
     pub line: u32,
     pub body: String,
+    /// Rung the reviewer assigned this finding, read off the icon
+    /// it renders beside the title. `None` under grammars that
+    /// publish no rung, and for a rung this parse did not
+    /// recognise — unranked, never guessed.
+    pub severity: Option<Severity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -362,6 +387,8 @@ pub(crate) struct ReviewBodySignals {
     pub visible: u32,
     pub suppressed: u32,
     pub suppressed_comments: Vec<SuppressedComment>,
+    /// Rung census of the findings the body reports as open.
+    pub severity: SeverityBreakdown,
 }
 
 /// Parse a review body into its signals.
@@ -408,6 +435,7 @@ pub(crate) fn parse_copilot_review_body(body: &str) -> ReviewBodySignals {
         visible: stated_visible_count(body),
         suppressed: witnesses.max(stated_suppressed_count(&blocks)),
         suppressed_comments,
+        severity: stated_severity_census(body),
     }
 }
 
@@ -456,6 +484,11 @@ fn is_heading(line: &str) -> bool {
 struct DetailsBlock {
     /// `<summary>` text with markup removed; empty when absent.
     summary: String,
+    /// Rung read off the summary's markup, before [`strip_tags`]
+    /// reduces it to text. The rung lives only inside the tag — in
+    /// the icon's URL and its alt text — so it has to be taken
+    /// here or it is gone.
+    severity: Option<Severity>,
     /// Content between `</summary>` and the matching `</details>`,
     /// with nested `<details>` elements elided — each nested element
     /// is flattened into its own [`DetailsBlock`].
@@ -512,9 +545,145 @@ fn details_block(inner: &str) -> DetailsBlock {
     let linked = summary.contains("](#") || content.contains("](#");
     DetailsBlock {
         summary: strip_tags(summary).trim().to_string(),
+        severity: severity_of_markup(summary),
         content,
         linked,
     }
+}
+
+/// Read a finding's rung off the icon the host renders beside its
+/// title.
+///
+/// The rung is never text: it is an image, and it survives only in
+/// two attributes of that image — the URL naming the rung as a path
+/// slug, and the alt text naming it for a screen reader. Two
+/// channels with independent drift, and neither survives
+/// [`strip_tags`], so both are read from the raw markup.
+///
+/// The URL channel is tried first: a path slug is machine-facing
+/// and changes only when the asset is renamed, where alt text is
+/// prose and can be reworded. Returns `None` when neither names a
+/// rung — unranked, never the nearest guess.
+fn severity_of_markup(markup: &str) -> Option<Severity> {
+    severity_from_icon_path(markup).or_else(|| severity_from_alt_text(markup))
+}
+
+/// Rung named by the icon's URL: the last path segment before the
+/// file extension opens with the rung, e.g. `…/high-v2-light.svg`.
+fn severity_from_icon_path(markup: &str) -> Option<Severity> {
+    let lower = markup.to_ascii_lowercase();
+    ["high", "medium", "low"]
+        .into_iter()
+        .filter_map(|rung| {
+            lower
+                .find(&format!("/{rung}-"))
+                .map(|at| (at, Severity::parse_rung(rung)))
+        })
+        .min_by_key(|&(at, _)| at)
+        .and_then(|(_, sev)| sev)
+}
+
+/// Rung named by the image's alt text, e.g. `alt="High severity"`.
+/// The leading word of the attribute value is the rung.
+fn severity_from_alt_text(markup: &str) -> Option<Severity> {
+    let lower = markup.to_ascii_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find("alt=\"") {
+        let value = &rest[at + "alt=\"".len()..];
+        let end = value.find('"').unwrap_or(value.len());
+        let value = &value[..end];
+        if value.contains("severity")
+            && let Some(sev) = value
+                .split_whitespace()
+                .next()
+                .and_then(Severity::parse_rung)
+        {
+            return Some(sev);
+        }
+        rest = &rest[at + 1..];
+    }
+    None
+}
+
+/// Rung census the body states for its open findings.
+///
+/// The findings label is a list of `<count> <icon>` pairs, one per
+/// populated rung, separated by prose (`1 <high> · 1 <medium>`).
+/// Counts and rungs are read on separate passes and zipped: the
+/// counts are the digit runs of the label reduced to text, and the
+/// rungs are the icon elements in document order. Reading a count
+/// from the text immediately preceding each icon fails, because the
+/// rung is named inside the element while the count sits outside
+/// it — a single-rung label (`3 <picture>…medium…</picture>`) then
+/// scores 1 instead of 3.
+///
+/// An icon with no count of its own stands for one finding, so the
+/// census never reports fewer findings than the label shows icons.
+fn stated_severity_census(body: &str) -> SeverityBreakdown {
+    let mut out = SeverityBreakdown::default();
+    let Some(value) = body
+        .lines()
+        .filter_map(bold_label)
+        .find(|(label, _)| label.to_ascii_lowercase().contains("finding"))
+        .map(|(_, value)| value)
+    else {
+        return out;
+    };
+    let counts = digit_runs(&strip_tags(value));
+    for (i, rung) in icon_rungs(value).into_iter().enumerate() {
+        let count = counts.get(i).copied().unwrap_or(1);
+        for _ in 0..count {
+            out.add(rung);
+        }
+    }
+    out
+}
+
+/// Rung of each icon element in `markup`, in document order.
+///
+/// A `<picture>` and the `<source>` / `<img>` tags inside it are one
+/// icon naming one rung; counting each tag separately would multiply
+/// every rung by the number of fallbacks the host happens to emit.
+fn icon_rungs(markup: &str) -> Vec<Severity> {
+    const PICTURE_CLOSE: &str = "</picture>";
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(rel) = markup[cursor..].find('<') {
+        let at = cursor + rel;
+        let Some(close) = markup[at..].find('>') else {
+            break;
+        };
+        let element_end = if markup[at..].starts_with("<picture") {
+            markup[at..]
+                .find(PICTURE_CLOSE)
+                .map_or(markup.len(), |i| at + i + PICTURE_CLOSE.len())
+        } else {
+            at + close + 1
+        };
+        if let Some(rung) = severity_of_markup(&markup[at..element_end]) {
+            out.push(rung);
+        }
+        cursor = element_end;
+    }
+    out
+}
+
+/// ASCII digit runs in `s`, in order.
+fn digit_runs(s: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut run = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            run.push(c);
+        } else if !run.is_empty() {
+            out.extend(run.parse::<u32>().ok());
+            run.clear();
+        }
+    }
+    if !run.is_empty() {
+        out.extend(run.parse::<u32>().ok());
+    }
+    out
 }
 
 /// Split an element's own `<summary>` off its content. The summary is
@@ -626,15 +795,20 @@ fn parse_block_entries(block: &DetailsBlock) -> Vec<SuppressedComment> {
     flush_entry(&mut current, &mut out);
     if opens_with_locator == Some(true)
         && out.len() == 1
-        && !block.summary.is_empty()
         && paren_count(&block.summary).is_none()
         && let Some(entry) = out.first_mut()
     {
-        entry.body = if entry.body.is_empty() {
-            block.summary.clone()
-        } else {
-            format!("{}\n\n{}", block.summary, entry.body)
-        };
+        // The summary titles and ranks this one finding. A summary
+        // that states a count titles a set instead, and its rung —
+        // if any — belongs to no single entry.
+        entry.severity = block.severity;
+        if !block.summary.is_empty() {
+            entry.body = if entry.body.is_empty() {
+                block.summary.clone()
+            } else {
+                format!("{}\n\n{}", block.summary, entry.body)
+            };
+        }
     }
     out.retain(|c| !c.body.is_empty());
     out
@@ -646,6 +820,10 @@ fn flush_entry(current: &mut Option<(String, u32, Vec<String>)>, out: &mut Vec<S
             path,
             line,
             body: body_parts.join("\n").trim().to_string(),
+            // Attached by the caller when the block renders one
+            // finding; an entry-list block publishes no per-entry
+            // rung.
+            severity: None,
         });
     }
 }
@@ -915,6 +1093,7 @@ fn correlate_rounds(
         round.comments_visible = signals.visible.max(structural_visible(rev));
         round.comments_suppressed = signals.suppressed;
         round.suppressed_comments = signals.suppressed_comments;
+        round.severity = signals.severity;
     };
 
     for point in timeline {
@@ -950,6 +1129,7 @@ fn correlate_rounds(
                     comments_visible: 0,
                     comments_suppressed: 0,
                     suppressed_comments: Vec::new(),
+                    severity: SeverityBreakdown::default(),
                 });
                 paired = false;
             }
@@ -1014,6 +1194,7 @@ fn synthetic_round(
         comments_visible: signals.visible.max(structural_visible),
         comments_suppressed: signals.suppressed,
         suppressed_comments: signals.suppressed_comments,
+        severity: signals.severity,
     }
 }
 
@@ -1685,6 +1866,93 @@ Checksum validation and implicit rounding need correction.
         );
         assert_eq!(s.suppressed_comments[0].line, 531);
         assert_eq!(s.suppressed_comments[1].line, 949);
+    }
+
+    #[test]
+    fn nested_grammar_ranks_each_body_rendered_finding() {
+        // The rung lives only inside the icon tag, which the count
+        // channels strip wholesale to keep tag geometry out of the
+        // digit scan. Reading it has to happen before that.
+        let s = parse_copilot_review_body(NESTED_BODY);
+        assert_eq!(s.suppressed_comments[0].severity, Some(Severity::Medium));
+        assert_eq!(s.suppressed_comments[1].severity, Some(Severity::Medium));
+    }
+
+    #[test]
+    fn severity_reads_from_the_icon_url_and_from_the_alt_text() {
+        // Two channels on the same element with independent drift.
+        // Either alone carries the rung.
+        assert_eq!(
+            severity_of_markup("<img src=\"…/copilot-code-review/high-v2-light.png\">"),
+            Some(Severity::High),
+        );
+        assert_eq!(
+            severity_of_markup("<img src=\"…/opaque.png\" alt=\"Low severity\">"),
+            Some(Severity::Low),
+        );
+        // Neither channel names a rung: unranked, never guessed.
+        assert_eq!(severity_of_markup("<img src=\"…/opaque.png\">"), None);
+        assert_eq!(severity_of_markup("plain title"), None);
+    }
+
+    #[test]
+    fn findings_label_yields_the_rung_census() {
+        // `1 <high> · 1 <medium>` is the per-rung split that the
+        // visible count collapses to a sum. Image geometry sits
+        // inside the tags and must not be read as a count.
+        let s = parse_copilot_review_body(NESTED_LINKED_BODY);
+        assert_eq!(s.severity.high, 1);
+        assert_eq!(s.severity.medium, 1);
+        assert_eq!(s.severity.low, 0);
+        assert_eq!(s.severity.total(), s.visible);
+        assert_eq!(s.severity.census(), "1 high, 1 medium");
+    }
+
+    #[test]
+    fn a_single_rung_label_keeps_its_count() {
+        // Regression, caught replaying the live corpus: the rung is
+        // named inside the icon element while the count sits
+        // outside it, so reading the text immediately before the
+        // rung-bearing tag finds the wrapper, not the count, and
+        // scores every single-rung label as 1.
+        let body = "**Findings:** 3 <picture><source srcset=\"…/medium-v2-dark.svg\">\
+                    <img src=\"…/medium-v2.png\" alt=\"Medium severity\"></picture>";
+        let s = parse_copilot_review_body(body);
+        assert_eq!(s.visible, 3);
+        assert_eq!(s.severity.census(), "3 medium");
+        assert_eq!(s.severity.total(), s.visible);
+    }
+
+    #[test]
+    fn a_pictures_fallbacks_are_one_icon_naming_one_rung() {
+        // <picture> wraps as many <source> fallbacks as the host
+        // cares to emit. Counting each tag would multiply the rung
+        // by the number of fallbacks.
+        assert_eq!(
+            icon_rungs(
+                "1 <picture><source srcset=\"…/high-v2-dark.svg\">\
+                 <source srcset=\"…/high-v2-light.svg\">\
+                 <img src=\"…/high-v2.png\" alt=\"High severity\"></picture>"
+            ),
+            vec![Severity::High],
+        );
+    }
+
+    #[test]
+    fn findings_label_census_is_empty_when_no_findings_are_open() {
+        let s = parse_copilot_review_body(NESTED_BODY);
+        assert!(s.severity.is_empty());
+    }
+
+    #[test]
+    fn a_section_summary_rung_does_not_rank_its_entries() {
+        // A summary stating a count titles a set. Whatever icon it
+        // carries ranks the set, not any one entry inside it.
+        let body = "<details>\n<summary>Suppressed comments (2)</summary>\n\n\
+             **src/a.rs:1**\n* first\n\n**src/b.rs:2**\n* second\n</details>";
+        let s = parse_copilot_review_body(body);
+        assert_eq!(s.suppressed_comments.len(), 2);
+        assert!(s.suppressed_comments.iter().all(|c| c.severity.is_none()));
     }
 
     #[test]

@@ -37,6 +37,7 @@ use crate::observe::github::reviews::PullRequestReview;
 use serde::Serialize;
 
 use super::bot_threads::{BotThreadSummary, count_bot_threads};
+use super::thread::{Severity, SeverityBreakdown};
 
 // ── Identity ─────────────────────────────────────────────────────────
 
@@ -94,7 +95,11 @@ pub(crate) struct CursorReport {
     /// not yet submitted a review at any HEAD on this PR.
     pub rounds: Vec<CursorReviewRound>,
     pub threads: BotThreadSummary,
-    pub severity: CursorSeverityBreakdown,
+    /// Per-rung census of this reviewer's live findings. Same type
+    /// the sibling bot axis reports, so the dashboard renders both
+    /// identically — see the shared-scale invariant on
+    /// [`super::thread::Severity`].
+    pub severity: SeverityBreakdown,
     pub tier: CursorTier,
     /// Latest review observed at HEAD (`latest.commit == head`).
     pub fresh: bool,
@@ -194,7 +199,10 @@ pub(crate) enum ReviewedState {
 /// Project the activity into a dashboard signal. `NotApplicable`
 /// returns `None` so the dashboard does not emit a row when the
 /// reviewer is silent on this PR.
-pub(crate) fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboard::AxisSignal> {
+pub(crate) fn cursor_signal(
+    activity: &CursorActivity,
+    severity: SeverityBreakdown,
+) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
     let (icon, summary) = match activity {
         CursorActivity::NotApplicable => return None,
@@ -220,9 +228,20 @@ pub(crate) fn cursor_signal(activity: &CursorActivity) -> Option<crate::dashboar
         CursorActivity::Reviewed(ReviewedState::Clean) => {
             (SignalIcon::Ok, "no findings".to_string())
         }
-        CursorActivity::Reviewed(ReviewedState::HasFindings) => {
-            (SignalIcon::Warn, "findings to address".to_string())
-        }
+        CursorActivity::Reviewed(ReviewedState::HasFindings) => (
+            SignalIcon::Warn,
+            // Rung census of the live findings, rendered exactly as
+            // the sibling bot axis renders its own.
+            if severity.is_empty() {
+                "findings to address".to_string()
+            } else {
+                format!(
+                    "{} — {}",
+                    crate::text::count(severity.total() as usize, "finding"),
+                    severity.census(),
+                )
+            },
+        ),
     };
     Some(AxisSignal {
         axis: AxisName::Cursor,
@@ -246,13 +265,6 @@ pub(crate) struct CursorReviewRound {
     pub reviewed_at: Timestamp,
     pub commit: GitCommitSha,
     pub findings_count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-pub(crate) struct CursorSeverityBreakdown {
-    pub high: u32,
-    pub medium: u32,
-    pub low: u32,
 }
 
 /// Reviewer-specific tier lattice. Distinct type from sibling
@@ -343,11 +355,16 @@ pub(crate) fn parse_findings_count(body: &str) -> u32 {
 
 /// Extract the leading severity tag from a thread body.
 ///
+/// This reviewer writes the rung into the comment itself, as a bold
+/// span opening the body. The thread projection calls this for
+/// threads it attributes here; the grammar stays in this axis
+/// because the surface is this reviewer's choice.
+///
 /// Class invariant: positional-earliest literal wins. Delimiter-
 /// shape matching (find an opener, expect a literal between
 /// closers) admits false anchors from any other emphasis span;
 /// positional-min over literal scans is robust to that.
-fn parse_severity(body: &str) -> Option<Severity> {
+pub(crate) fn parse_severity(body: &str) -> Option<Severity> {
     [
         ("**High Severity**", Severity::High),
         ("**Medium Severity**", Severity::Medium),
@@ -357,13 +374,6 @@ fn parse_severity(body: &str) -> Option<Severity> {
     .filter_map(|(needle, sev)| body.find(needle).map(|pos| (pos, *sev)))
     .min_by_key(|&(pos, _)| pos)
     .map(|(_, sev)| sev)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Severity {
-    High,
-    Medium,
-    Low,
 }
 
 // ── Round correlation ────────────────────────────────────────────────
@@ -404,8 +414,8 @@ fn reviews_at_head(reviews: &[PullRequestReview], head: &GitCommitSha) -> bool {
 
 // ── Severity counting ────────────────────────────────────────────────
 
-fn count_severity(threads: &ReviewThreadsResponse) -> CursorSeverityBreakdown {
-    let mut s = CursorSeverityBreakdown::default();
+fn count_severity(threads: &ReviewThreadsResponse) -> SeverityBreakdown {
+    let mut s = SeverityBreakdown::default();
     for t in &threads.data.repository.pull_request.review_threads.nodes {
         if t.is_resolved {
             continue;
@@ -419,11 +429,8 @@ fn count_severity(threads: &ReviewThreadsResponse) -> CursorSeverityBreakdown {
         if !is_cursor(author.login.as_str()) {
             continue;
         }
-        match parse_severity(&first.body) {
-            Some(Severity::High) => s.high += 1,
-            Some(Severity::Medium) => s.medium += 1,
-            Some(Severity::Low) => s.low += 1,
-            None => {}
+        if let Some(sev) = parse_severity(&first.body) {
+            s.add(sev);
         }
     }
     s

@@ -447,6 +447,7 @@ fn synthesise_suppressed_threads(
                 line: Some(c.line),
             },
             body: c.body.clone(),
+            severity: c.severity,
             // Live — actionable. The host never marks these resolved;
             // the gate stays open until the agent pushes a fix that
             // removes the underlying issue, after which Copilot's next
@@ -548,12 +549,20 @@ fn thread_witnesses(
         } else {
             String::new()
         };
+        // The reviewer's own rung, unweighted. An actor addressing
+        // several findings triages between them; a count elsewhere
+        // cannot tell it which of these lines is the high one.
+        let severity_tag = t
+            .severity
+            .map(|s| format!("    [{}]", s.label()))
+            .unwrap_or_default();
         let label = SingleLineString::new(format!(
-            "{}. {} @ {}{}    thread_id: {}{}{}",
+            "{}. {} @ {}{}{}    thread_id: {}{}{}",
             i + 1,
             t.author,
             t.location,
             tag,
+            severity_tag,
             t.id,
             comment_id_field,
             repeat_field,
@@ -967,6 +976,7 @@ mod tests {
     ) -> ReviewThread {
         use crate::orient::thread::{BotName, FilePath, ThreadId, ThreadLocation};
         ReviewThread {
+            severity: None,
             id: ThreadId::new(id.to_string()).unwrap(),
             author: ThreadAuthor::Bot(BotName::Copilot),
             location: ThreadLocation {
@@ -1023,6 +1033,7 @@ mod tests {
             CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotReviewRound, CopilotTier,
         };
         let round = CopilotReviewRound {
+            severity: crate::orient::thread::SeverityBreakdown::default(),
             round: 1,
             requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             ack_at: Some(Timestamp::parse("2026-04-23T10:01:00Z").unwrap()),
@@ -1054,11 +1065,13 @@ mod tests {
         use crate::orient::copilot::SuppressedComment;
         let report = copilot_report_with_suppressed(vec![
             SuppressedComment {
+                severity: None,
                 path: "src/lib.rs".into(),
                 line: 12,
                 body: "stale doc comment".into(),
             },
             SuppressedComment {
+                severity: None,
                 path: "src/lib.rs".into(),
                 line: 30,
                 body: "name drift".into(),
@@ -1110,6 +1123,7 @@ mod tests {
     fn all_synthetic_threads_prompt_omits_resolve_mutation() {
         use crate::orient::copilot::SuppressedComment;
         let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            severity: None,
             path: "src/lib.rs".into(),
             line: 12,
             body: "stale doc comment".into(),
@@ -1136,6 +1150,7 @@ mod tests {
     fn mixed_threads_prompt_partitions_resolve_step() {
         use crate::orient::copilot::SuppressedComment;
         let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            severity: None,
             path: "src/lib.rs".into(),
             line: 12,
             body: "stale doc comment".into(),
@@ -1172,6 +1187,7 @@ mod tests {
         // Copilot's next review of HEAD before re-emitting.
         use crate::orient::copilot::SuppressedComment;
         let mut report = copilot_report_with_suppressed(vec![SuppressedComment {
+            severity: None,
             path: "src/lib.rs".into(),
             line: 12,
             body: "stale doc comment".into(),
@@ -1198,6 +1214,7 @@ mod tests {
         use crate::orient::copilot::SuppressedComment;
         // Leading `/` fails FilePath::new; entry is dropped, not raised.
         let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            severity: None,
             path: "/abs/path.rs".into(),
             line: 1,
             body: "this one is unreachable".into(),
@@ -1222,6 +1239,7 @@ mod tests {
     fn suppressed_entries_merge_with_inline_threads_into_single_action() {
         use crate::orient::copilot::SuppressedComment;
         let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            severity: None,
             path: "src/lib.rs".into(),
             line: 42,
             body: "from suppressed block".into(),
@@ -2222,6 +2240,47 @@ mod tests {
     }
 
     #[test]
+    fn witness_label_carries_the_reviewers_rung() {
+        // An actor addressing several findings triages between
+        // them; a count on the dashboard cannot say which of these
+        // lines is the high one.
+        use crate::orient::copilot::SuppressedComment;
+        use crate::orient::thread::Severity;
+        let report = copilot_report_with_suppressed(vec![
+            SuppressedComment {
+                severity: Some(Severity::High),
+                path: "src/a.rs".into(),
+                line: 1,
+                body: "first".into(),
+            },
+            SuppressedComment {
+                severity: None,
+                path: "src/b.rs".into(),
+                line: 2,
+                body: "second".into(),
+            },
+        ]);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            Some(&report),
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            pr(),
+        );
+        let rendered = cs
+            .iter()
+            .find(|c| matches!(c.kind, ActionKind::AddressThreads { .. }))
+            .expect("AddressThreads emitted")
+            .rendered_payload();
+        assert!(rendered.contains("src/a.rs:1    [High]"), "{rendered}");
+        // Unranked findings render without a tag rather than with a
+        // placeholder rung.
+        assert!(rendered.contains("src/b.rs:2    thread_id:"), "{rendered}");
+    }
+
+    #[test]
     fn a_suppressed_finding_counts_as_a_review_of_the_file_it_names() {
         use crate::orient::copilot::SuppressedComment;
         // One earlier review already flagged this file and its thread
@@ -2231,6 +2290,7 @@ mod tests {
         // wired, suppressed rows were witnesses but never history, so
         // the row undercounted its own file.
         let report = copilot_report_with_suppressed(vec![SuppressedComment {
+            severity: None,
             path: "src/a.rs".into(),
             line: 42,
             body: "body-rendered finding".into(),

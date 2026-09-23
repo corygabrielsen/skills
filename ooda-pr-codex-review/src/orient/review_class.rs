@@ -135,6 +135,7 @@ mod tests {
 
     fn thread(created: &str, state: ThreadState) -> ReviewThread {
         ReviewThread {
+            severity: None,
             id: ThreadId::new("t").unwrap(),
             author: ThreadAuthor::Bot(BotName::Copilot),
             location: ThreadLocation {
@@ -244,6 +245,7 @@ mod tests {
             CopilotActivity, CopilotRepoConfig, CopilotReviewRound, CopilotTier, SuppressedComment,
         };
         let round = CopilotReviewRound {
+            severity: crate::orient::thread::SeverityBreakdown::default(),
             round: 1,
             requested_at: Timestamp::parse(reviewed_at).unwrap(),
             ack_at: None,
@@ -253,6 +255,7 @@ mod tests {
             comments_suppressed: u32::try_from(n).unwrap(),
             suppressed_comments: (0..n)
                 .map(|i| SuppressedComment {
+                    severity: None,
                     path: "src/a.rs".into(),
                     line: u32::try_from(i).unwrap() + 1,
                     body: "s".into(),

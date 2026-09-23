@@ -312,6 +312,7 @@ mod tests {
 
     fn round_at_head() -> CopilotReviewRound {
         CopilotReviewRound {
+            severity: crate::orient::thread::SeverityBreakdown::default(),
             round: 1,
             requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             ack_at: Some(Timestamp::parse("2026-04-23T10:01:00Z").unwrap()),

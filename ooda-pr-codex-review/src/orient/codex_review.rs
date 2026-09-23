@@ -47,10 +47,9 @@ pub(crate) enum CodexReviewStatus {
         verdicts: Vec<VerdictRecord>,
     },
     /// Batch at `level` ended because the reviewer declined to run
-    /// and said why — an exhausted usage or spend budget. Distinct
-    /// from `Address`: no slot looked at the code, so there is no
-    /// issue set, and distinct from `Inconsistent`: nothing is
-    /// stale. `reason` is the reviewer's own message.
+    /// and said why. Not `Address` — no slot read the code, so there
+    /// is no issue set — and not `Inconsistent`: nothing is stale.
+    /// `reason` is the reviewer's own message.
     Declined {
         level: CodexReasoningLevel,
         reason: String,
@@ -140,9 +139,8 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
                     completed: u32::try_from(completed_verdicts.len())
                         .expect("batch verdict count fits in u32"),
                 },
-                // A refusal takes precedence over the address fork:
-                // the reviewer never looked at the code, so the
-                // verdict set names no issues to hand an actor.
+                // Precedes the address fork: no slot read the code,
+                // so the verdict set names no issues to hand an actor.
                 BatchState::Complete { verdicts } if let Some(reason) = first_refusal(verdicts) => {
                     CodexReviewStatus::Declined {
                         level: lvl_obs.level,
@@ -171,8 +169,8 @@ pub(crate) fn orient_codex_review(obs: &CodexObservations) -> CodexReviewReport 
     }
 }
 
-/// The first stated refusal in the batch, if any. Slots share one
-/// account, so one refusal characterises the batch.
+/// The first stated refusal in the batch. Slots share one account,
+/// so one refusal characterises the batch.
 fn first_refusal(verdicts: &[VerdictRecord]) -> Option<&str> {
     verdicts
         .iter()

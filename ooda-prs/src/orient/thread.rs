@@ -16,10 +16,10 @@
 //!   threads so prompts carry the source text directly, with no
 //!   secondary round-trip to the host needed to render them.
 //! - **One severity scale across reviewers**: each bot reviewer
-//!   ranks its own findings on its own surface, but the witness a
-//!   reader acts on is the same one either way, so the projection
-//!   lands on a single [`Severity`] here. The scale is shared; the
-//!   grammar that reads it stays in each reviewer's axis.
+//!   ranks on its own surface, but the witness a reader acts on is
+//!   the same either way, so the projection lands on a single
+//!   [`Severity`]. The scale is shared; the grammar reading it stays
+//!   in each reviewer's axis.
 
 use crate::ids::{GitHubLogin, IdError, Timestamp};
 use crate::observe::github::review_threads::ReviewThread as WireThread;
@@ -226,13 +226,9 @@ impl ReviewThread {
     }
 }
 
-/// Reviewer-assigned severity of a finding.
-///
-/// Ordered least-to-most severe so `max` and sorts read the obvious
-/// way. Both bot reviewers publish the same three rungs; neither
-/// publishes a numeric score, so no finer scale is available to
-/// model and inventing one would assert precision the source does
-/// not carry.
+/// Reviewer-assigned severity of a finding, ordered least-to-most
+/// severe. Both bot reviewers publish these three rungs and no
+/// numeric score.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Severity {
     Low,
@@ -250,9 +246,7 @@ impl Severity {
         }
     }
 
-    /// Parse a bare rung name, ASCII-case-insensitively. Total over
-    /// the three rungs; `None` for anything else, so an unrecognised
-    /// rung reports as unranked rather than as the nearest guess.
+    /// Parse a bare rung name, ASCII-case-insensitively.
     pub fn parse_rung(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "low" => Some(Self::Low),
@@ -260,12 +254,6 @@ impl Severity {
             "high" => Some(Self::High),
             _ => None,
         }
-    }
-}
-
-impl std::fmt::Display for Severity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.label())
     }
 }
 
@@ -297,10 +285,8 @@ impl SeverityBreakdown {
         *slot = slot.saturating_add(1);
     }
 
-    /// Compact rung census, most severe first, omitting empty rungs:
-    /// `2 high, 1 low`. Empty when no rung is populated — callers
-    /// gate on [`Self::is_empty`] rather than rendering an empty
-    /// parenthetical.
+    /// Rung census, most severe first, empty rungs omitted:
+    /// `2 high, 1 low`. Empty string when nothing is populated.
     pub(crate) fn census(self) -> String {
         [
             (self.high, "high"),
@@ -316,13 +302,9 @@ impl SeverityBreakdown {
 }
 
 /// Read the reviewer's rung off a thread's originating comment.
-///
-/// Dispatch only: each reviewer's grammar stays in its own axis,
-/// because the surface the rung is written on is the reviewer's
-/// choice and drifts with it. Copilot ranks its findings on the
-/// review body rather than in the comment, so its threads carry no
-/// rung here — the copilot axis attaches it to the witnesses it
-/// synthesises instead.
+/// Dispatch only; each grammar stays in its own axis. Copilot ranks
+/// on the review body, not in the comment, so its threads carry no
+/// rung here — that axis ranks the witnesses it synthesises.
 fn severity_of(author: &ThreadAuthor, body: &str) -> Option<Severity> {
     match author {
         ThreadAuthor::Bot(BotName::Cursor) => crate::orient::cursor::parse_severity(body),

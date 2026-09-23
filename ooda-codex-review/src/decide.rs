@@ -92,11 +92,10 @@ pub(crate) fn decide(oriented: &OrientedState) -> Decision {
         BatchState::InconsistentState { reason, .. } => {
             mk_batch_state_inconsistent(oriented.current_level, reason)
         }
-        // Precedence over every other Complete arm: a declined slot
-        // means the reviewer never looked at the code, so neither
-        // the fixed-point claim nor the address fork has a basis.
-        // Climbing the ladder would only spend the remaining budget
-        // on runs that will refuse for the same reason.
+        // Precedes every other Complete arm: no slot read the code,
+        // so neither the fixed-point claim nor the address fork has
+        // a basis, and climbing the ladder would spend the rest of
+        // the budget on runs that will refuse the same way.
         BatchState::Complete { verdicts } if let Some(reason) = first_refusal(verdicts) => {
             mk_reviewer_declined(oriented.current_level, reason)
         }
@@ -143,9 +142,8 @@ fn is_alive(mtime: SystemTime, now: SystemTime, threshold: Duration) -> bool {
     now.duration_since(mtime).is_ok_and(|d| d <= threshold)
 }
 
-/// The first stated refusal in the batch, if any. Slots share one
-/// account, so one refusal characterises the batch — reporting the
-/// first is reporting all of them.
+/// The first stated refusal in the batch. Slots share one account,
+/// so one refusal characterises the batch.
 fn first_refusal(verdicts: &[VerdictRecord]) -> Option<&str> {
     verdicts
         .iter()
@@ -242,10 +240,10 @@ fn mk_batch_state_inconsistent(level: CodexReasoningLevel, reason: &str) -> Acti
     }
 }
 
-/// Reviewer-refusal halt. The prompt states the reviewer's own
-/// message and nothing more: it already names the cause and, when
-/// the reviewer supplies one, the retry time. No recovery step is
-/// prescribed because none exists inside the working tree.
+/// Reviewer-refusal halt. The prompt carries the reviewer's own
+/// message and nothing more — it already names the cause and the
+/// retry time — and prescribes no recovery, because none exists
+/// inside the working tree.
 fn mk_reviewer_declined(level: CodexReasoningLevel, reason: &str) -> Action {
     Action {
         kind: ActionKind::ReviewerDeclined {

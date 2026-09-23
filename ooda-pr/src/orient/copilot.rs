@@ -222,31 +222,19 @@ pub(crate) struct CopilotReviewRound {
     pub ack_at: Option<Timestamp>,
     pub reviewed_at: Option<Timestamp>,
     pub commit: Option<GitCommitSha>,
-    /// Count of findings the review renders as inline review threads:
-    /// `max(stated, structural)` — the count stated on the body's
-    /// findings label joined with the count of review threads whose
-    /// first comment belongs to this review. Two channels with
-    /// disjoint failure domains, same design as
-    /// `comments_suppressed`.
+    /// Findings the review renders as inline threads:
+    /// `max(stated label, threads originated by this review)`.
     pub comments_visible: u32,
-    /// Count of findings the review renders in the body rather than
-    /// as inline threads: `max(|suppressed_comments|, stated count)`
-    /// per [`parse_copilot_review_body`]. Never less than what either
-    /// extraction channel attests.
+    /// Findings the review renders in the body instead:
+    /// `max(|suppressed_comments|, stated count)`. Never less than
+    /// what either channel attests.
     pub comments_suppressed: u32,
-    /// Per-entry witnesses of the body-rendered findings — file,
-    /// line, and body extracted from the review body's `<details>`
-    /// blocks. The host posts these as text only (not as inline
-    /// review threads), so they need a separate surface to drive
-    /// agent work. Extraction is structural (entry shape), while
-    /// `comments_suppressed` also reads the host's stated count via
-    /// a lexical stem; the disjoint failure domains keep the count
-    /// alive when the witness parse fails, and vice versa.
+    /// Witnesses of those body-rendered findings. The host posts
+    /// them as text only, so they need their own surface to drive
+    /// agent work — see `decide::reviews::synthesise_suppressed_threads`.
     pub suppressed_comments: Vec<SuppressedComment>,
-    /// Per-rung census of the findings this review reports as open,
-    /// off the body's findings label. Same type the sibling bot
-    /// axis reports, so the dashboard renders both identically —
-    /// see the shared-scale invariant on [`super::thread::Severity`].
+    /// Rung census of the findings this review reports as open,
+    /// off the body's findings label.
     pub severity: SeverityBreakdown,
 }
 
@@ -259,10 +247,8 @@ pub(crate) struct SuppressedComment {
     pub path: String,
     pub line: u32,
     pub body: String,
-    /// Rung the reviewer assigned this finding, read off the icon
-    /// it renders beside the title. `None` under grammars that
-    /// publish no rung, and for a rung this parse did not
-    /// recognise — unranked, never guessed.
+    /// Rung the reviewer assigned, read off the icon beside the
+    /// title. `None` is unranked, never the nearest rung.
     pub severity: Option<Severity>,
 }
 
@@ -393,40 +379,21 @@ pub(crate) struct ReviewBodySignals {
 
 /// Parse a review body into its signals.
 ///
-/// # Host grammars
+/// Two host grammars are live, and a PR's round history spans both:
 ///
-/// The host has rewritten this body's markup while keeping the same
-/// information, and both revisions remain readable on any PR whose
-/// history spans the change. Every anchor here is therefore a *shape*
-/// — element nesting, line delimiters, digit runs — never a sentence.
-/// The two shapes observed in the wild:
+/// - **flat** — one `<details>`, a markdown heading per section,
+///   `**path:line**`-headed entries.
+/// - **nested** — one `<details>` per section, one nested
+///   `<details>` per finding, content opening with a
+///   `` `path:line` `` locator.
 ///
-/// - **flat** — one `<details>` element holding a markdown heading per
-///   section, with `**path:line**`-headed entries under the heading
-///   that governs body-rendered findings.
-/// - **nested** — one `<details>` element per section; the section of
-///   body-rendered findings holds one nested `<details>` per finding,
-///   whose content opens with a `` `path:line` `` locator.
+/// [`details_blocks`] flattens the tree so one walk covers both; a
+/// block yields entries iff its content carries locator lines.
 ///
-/// One walk covers both: [`details_blocks`] flattens the element tree
-/// and any block whose content carries locator lines yields entries.
-///
-/// # Channels
-///
-/// Suppressed findings have two extraction channels with disjoint
-/// failure domains:
-///
-/// - **witnesses** — structural: locator-headed entries inside any
-///   `<details>` block ([`block_entries`]). Immune to
-///   section-title rewording.
-/// - **stated count** — lexical stem ([`stated_suppressed_count`]).
-///   Immune to entry-grammar drift.
-///
-/// `suppressed = max(|witnesses|, stated)`: never less than what
-/// either channel attests, so a single-channel parse failure degrades
-/// the payload (count without witnesses, or vice versa) instead of
-/// silently reporting zero. The two channels share no anchor; only
-/// simultaneous drift of both surfaces can zero the signal.
+/// `suppressed = max(|witnesses|, stated)` joins two channels with
+/// disjoint failure domains — entry shape ([`block_entries`]) and
+/// lexical stem ([`stated_suppressed_count`]) — so one channel
+/// failing degrades the payload rather than zeroing it.
 pub(crate) fn parse_copilot_review_body(body: &str) -> ReviewBodySignals {
     let blocks = details_blocks(body);
     let suppressed_comments = block_entries(&blocks);
@@ -442,9 +409,8 @@ pub(crate) fn parse_copilot_review_body(body: &str) -> ReviewBodySignals {
 // ── Markup reduction ─────────────────────────────────────────────────
 
 /// Invisible formatting code points. The host renders paths with
-/// zero-width break opportunities between segments; they carry no path
-/// semantics and make the path unusable as a filesystem key, so every
-/// parsed path is filtered through [`strip_invisible`].
+/// zero-width break opportunities between segments; a path carrying
+/// them is not a filesystem key.
 fn is_invisible_format(c: char) -> bool {
     matches!(c,
         '\u{00ad}' | '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
@@ -454,18 +420,17 @@ fn strip_invisible(s: &str) -> String {
     s.chars().filter(|c| !is_invisible_format(*c)).collect()
 }
 
-/// Reduce markup-bearing text to the text it renders by dropping every
-/// `<…>` span. Total — an unterminated `<` consumes the rest of the
-/// input. Attribute values are dropped with their tag, so tag geometry
-/// contributes no digits to a count read off the reduced text.
+/// Text a markup span renders, every `<…>` dropped. Total — an
+/// unterminated `<` consumes the rest. Attribute values go with
+/// their tag, so tag geometry reaches no count read off the result.
 fn strip_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut depth = 0usize;
+    let mut in_tag = false;
     for c in s.chars() {
         match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(c),
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
             _ => {}
         }
     }
@@ -484,10 +449,8 @@ fn is_heading(line: &str) -> bool {
 struct DetailsBlock {
     /// `<summary>` text with markup removed; empty when absent.
     summary: String,
-    /// Rung read off the summary's markup, before [`strip_tags`]
-    /// reduces it to text. The rung lives only inside the tag — in
-    /// the icon's URL and its alt text — so it has to be taken
-    /// here or it is gone.
+    /// Rung read off the summary's raw markup. It lives only
+    /// inside the tag, which [`strip_tags`] drops.
     severity: Option<Severity>,
     /// Content between `</summary>` and the matching `</details>`,
     /// with nested `<details>` elements elided — each nested element
@@ -551,25 +514,15 @@ fn details_block(inner: &str) -> DetailsBlock {
     }
 }
 
-/// Read a finding's rung off the icon the host renders beside its
-/// title.
-///
-/// The rung is never text: it is an image, and it survives only in
-/// two attributes of that image — the URL naming the rung as a path
-/// slug, and the alt text naming it for a screen reader. Two
-/// channels with independent drift, and neither survives
-/// [`strip_tags`], so both are read from the raw markup.
-///
-/// The URL channel is tried first: a path slug is machine-facing
-/// and changes only when the asset is renamed, where alt text is
-/// prose and can be reworded. Returns `None` when neither names a
-/// rung — unranked, never the nearest guess.
+/// Rung of the icon rendered beside a finding's title, read off two
+/// attributes of the same image. The URL is tried first: a path slug
+/// is machine-facing where alt text is prose. `None` is unranked,
+/// never the nearest rung.
 fn severity_of_markup(markup: &str) -> Option<Severity> {
     severity_from_icon_path(markup).or_else(|| severity_from_alt_text(markup))
 }
 
-/// Rung named by the icon's URL: the last path segment before the
-/// file extension opens with the rung, e.g. `…/high-v2-light.svg`.
+/// Rung opening the icon's filename, e.g. `…/high-v2-light.svg`.
 fn severity_from_icon_path(markup: &str) -> Option<Severity> {
     let lower = markup.to_ascii_lowercase();
     ["high", "medium", "low"]
@@ -577,48 +530,36 @@ fn severity_from_icon_path(markup: &str) -> Option<Severity> {
         .filter_map(|rung| {
             lower
                 .find(&format!("/{rung}-"))
-                .map(|at| (at, Severity::parse_rung(rung)))
+                .zip(Severity::parse_rung(rung))
         })
         .min_by_key(|&(at, _)| at)
-        .and_then(|(_, sev)| sev)
+        .map(|(_, rung)| rung)
 }
 
-/// Rung named by the image's alt text, e.g. `alt="High severity"`.
-/// The leading word of the attribute value is the rung.
+/// Rung opening the image's alt text, e.g. `alt="High severity"`.
 fn severity_from_alt_text(markup: &str) -> Option<Severity> {
-    let lower = markup.to_ascii_lowercase();
-    let mut rest = lower.as_str();
-    while let Some(at) = rest.find("alt=\"") {
-        let value = &rest[at + "alt=\"".len()..];
-        let end = value.find('"').unwrap_or(value.len());
-        let value = &value[..end];
-        if value.contains("severity")
-            && let Some(sev) = value
+    markup
+        .to_ascii_lowercase()
+        .split("alt=\"")
+        .skip(1)
+        .filter_map(|attr| attr.split('"').next())
+        .filter(|value| value.contains("severity"))
+        .find_map(|value| {
+            value
                 .split_whitespace()
                 .next()
                 .and_then(Severity::parse_rung)
-        {
-            return Some(sev);
-        }
-        rest = &rest[at + 1..];
-    }
-    None
+        })
 }
 
 /// Rung census the body states for its open findings.
 ///
 /// The findings label is a list of `<count> <icon>` pairs, one per
-/// populated rung, separated by prose (`1 <high> · 1 <medium>`).
-/// Counts and rungs are read on separate passes and zipped: the
-/// counts are the digit runs of the label reduced to text, and the
-/// rungs are the icon elements in document order. Reading a count
-/// from the text immediately preceding each icon fails, because the
-/// rung is named inside the element while the count sits outside
-/// it — a single-rung label (`3 <picture>…medium…</picture>`) then
-/// scores 1 instead of 3.
-///
-/// An icon with no count of its own stands for one finding, so the
-/// census never reports fewer findings than the label shows icons.
+/// populated rung (`1 <high> · 1 <medium>`). Counts and rungs are
+/// read on separate passes and zipped — the rung is named inside
+/// the icon element while its count sits outside it, so neither can
+/// be read relative to the other. An icon with no count of its own
+/// stands for one finding.
 fn stated_severity_census(body: &str) -> SeverityBreakdown {
     let mut out = SeverityBreakdown::default();
     let Some(value) = body
@@ -639,11 +580,9 @@ fn stated_severity_census(body: &str) -> SeverityBreakdown {
     out
 }
 
-/// Rung of each icon element in `markup`, in document order.
-///
-/// A `<picture>` and the `<source>` / `<img>` tags inside it are one
-/// icon naming one rung; counting each tag separately would multiply
-/// every rung by the number of fallbacks the host happens to emit.
+/// Rung of each icon element in `markup`, in document order. A
+/// `<picture>` and its `<source>` / `<img>` fallbacks are one icon
+/// naming one rung, never one per tag.
 fn icon_rungs(markup: &str) -> Vec<Severity> {
     const PICTURE_CLOSE: &str = "</picture>";
     let mut out = Vec::new();
@@ -735,16 +674,13 @@ fn elide_nested_details(s: &str) -> String {
 
 // ── Entry witnesses ──────────────────────────────────────────────────
 
-/// Extract per-comment witnesses from the body's flattened blocks.
+/// Per-comment witnesses across the body's flattened blocks.
 ///
-/// Identification is structural, not lexical: a finding rendered in
-/// the body is by definition not materialized as an inline review
-/// thread, so body-rendered entries are the suppressed set. The host
-/// owns the section titles and has reworded them; the entry shape is
-/// the stable anchor, so blocks are classified by whether their
-/// content parses, never by title.
-///
-/// Returns an empty vec when no block content parses.
+/// A finding rendered in the body is by construction not
+/// materialized as an inline thread, so body-rendered entries are
+/// the suppressed set. Blocks are classified by whether their
+/// content parses, never by title: the host owns the titles and has
+/// reworded them.
 fn block_entries(blocks: &[DetailsBlock]) -> Vec<SuppressedComment> {
     blocks.iter().flat_map(parse_block_entries).collect()
 }
@@ -752,18 +688,15 @@ fn block_entries(blocks: &[DetailsBlock]) -> Vec<SuppressedComment> {
 /// Parse one block's entries.
 ///
 /// An entry opens at a locator line and runs to the next locator, to
-/// the next block-structure marker (a markdown heading or a bold
-/// label line), or to the block's end. The parser is lenient on
-/// whitespace and multi-line bodies and strict on the locator shape,
-/// so a non-entry line is skipped rather than misclassified. Entries
-/// left with an empty body are dropped.
+/// a block-structure marker (heading or bold label), or to the
+/// block's end. Lenient on whitespace and multi-line bodies, strict
+/// on the locator shape: a non-entry line is skipped, never
+/// misclassified. An entry left with an empty body is dropped.
 ///
-/// A block whose content *opens* with a locator and whose summary
-/// states no count renders a single finding: the summary titles that
-/// finding, and joins its body, which is otherwise the only place the
-/// finding's headline would be lost. A summary that states a count
-/// titles a set — a section of findings — rather than any one entry,
-/// and stays out of every entry's body.
+/// A block that opens with a locator and whose summary states no
+/// count renders one finding, and that summary titles and ranks it.
+/// A summary stating a count titles a set instead, and belongs to no
+/// single entry.
 fn parse_block_entries(block: &DetailsBlock) -> Vec<SuppressedComment> {
     let mut out: Vec<SuppressedComment> = Vec::new();
     let mut current: Option<(String, u32, Vec<String>)> = None;
@@ -780,10 +713,9 @@ fn parse_block_entries(block: &DetailsBlock) -> Vec<SuppressedComment> {
             continue;
         }
         opens_with_locator.get_or_insert(false);
-        // Block-structure markers close the open entry: a heading or
-        // a bold label line starts the block's own scaffolding (its
-        // section titles and its per-review totals), which is not
-        // finding prose and must not reach an agent as such.
+        // The block's own scaffolding — section titles, per-review
+        // totals — is not finding prose and must not reach an actor
+        // as such.
         if is_heading(line) || bold_label(line).is_some() {
             flush_entry(&mut current, &mut out);
             continue;
@@ -798,9 +730,6 @@ fn parse_block_entries(block: &DetailsBlock) -> Vec<SuppressedComment> {
         && paren_count(&block.summary).is_none()
         && let Some(entry) = out.first_mut()
     {
-        // The summary titles and ranks this one finding. A summary
-        // that states a count titles a set instead, and its rung —
-        // if any — belongs to no single entry.
         entry.severity = block.severity;
         if !block.summary.is_empty() {
             entry.body = if entry.body.is_empty() {
@@ -820,9 +749,7 @@ fn flush_entry(current: &mut Option<(String, u32, Vec<String>)>, out: &mut Vec<S
             path,
             line,
             body: body_parts.join("\n").trim().to_string(),
-            // Attached by the caller when the block renders one
-            // finding; an entry-list block publishes no per-entry
-            // rung.
+            // Set by the caller for a single-finding block.
             severity: None,
         });
     }
@@ -855,23 +782,16 @@ fn delimited<'a>(line: &'a str, delim: &str) -> Option<&'a str> {
 
 // ── Stated counts ────────────────────────────────────────────────────
 
-/// The host's stated count of body-rendered findings.
+/// The host's stated count of body-rendered findings — the degraded
+/// channel, carrying `comments_suppressed > 0` when entry extraction
+/// fails wholesale.
 ///
-/// Degraded-signal channel: when entry extraction fails wholesale, the
-/// stated count still drives `comments_suppressed > 0` gates. Reading
-/// it needs a lexical anchor — no markup distinguishes a section of
-/// withheld findings from a section of skipped files — so this is the
-/// one place a host wording is matched, and the stem set is this
-/// channel's known failure surface. Both stems are observed in the
-/// wild: `suppress` under the flat grammar, `miss` under the nested
-/// one. Each block's summary and its own markdown headings are
-/// matched, because the host has stated the count in both positions.
-///
-/// Sections are disjoint, so qualifying blocks sum; within one block
-/// the positions restate a single count, so they max.
-///
-/// Blocks rendering in-page anchor links are excluded: those findings
-/// are inline review threads, counted by the visible channel.
+/// No markup separates a section of withheld findings from a section
+/// of skipped files, so this is the one place a host wording is
+/// matched; the stem set is the channel's failure surface. Sections
+/// are disjoint, so qualifying blocks sum. Blocks rendering in-page
+/// anchor links are excluded — those findings are inline threads,
+/// which the visible channel counts.
 fn stated_suppressed_count(blocks: &[DetailsBlock]) -> u32 {
     blocks
         .iter()
@@ -921,21 +841,13 @@ fn paren_count(summary: &str) -> Option<u32> {
 }
 
 /// The host's stated count of findings rendered as inline review
-/// threads.
+/// threads — the weaker of this axis's two visible-count channels,
+/// carrying the signal when thread data is unavailable. The
+/// structural one joined in [`correlate_rounds`] is exact.
 ///
-/// The weaker of this axis's two visible-count channels: the
-/// structural one joined in [`correlate_rounds`] counts threads by
-/// originating review id and is exact, where this one reads prose.
-/// It carries the signal when thread data is unavailable.
-///
-/// The anchor is the line shape — a bold label whose value carries
-/// digit runs — rather than any one sentence; the host has reworded
-/// the label across grammars while keeping the shape, so the stems
-/// `generated` (flat) and `finding` (nested) select the label and the
-/// shape does the rest. A severity breakdown renders the total as
-/// several runs on one line (`1 <high> · 1 <medium>`), so a line's
-/// runs sum; markup is stripped first so tag geometry contributes no
-/// digits.
+/// The anchor is the line shape, a bold label whose value carries
+/// digit runs; the stems only select the label. A severity
+/// breakdown splits the total across runs on that line, so they sum.
 fn stated_visible_count(body: &str) -> u32 {
     const STEMS: &[&str] = &["generated", "finding"];
     body.lines()
@@ -944,7 +856,7 @@ fn stated_visible_count(body: &str) -> u32 {
             let lower = label.to_ascii_lowercase();
             STEMS.iter().any(|stem| lower.contains(stem))
         })
-        .map(|(_, value)| sum_digit_runs(&strip_tags(value)))
+        .map(|(_, value)| digit_runs(&strip_tags(value)).iter().sum())
         .max()
         .unwrap_or(0)
 }
@@ -957,25 +869,6 @@ fn bold_label(line: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix("**")?;
     let end = rest.find("**")?;
     Some((rest[..end].trim_end_matches(':'), &rest[end + 2..]))
-}
-
-/// Sum the ASCII digit runs in `s`.
-fn sum_digit_runs(s: &str) -> u32 {
-    let mut total = 0u32;
-    let mut run = String::new();
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            run.push(c);
-        } else if !run.is_empty() {
-            total = total.saturating_add(run.parse().unwrap_or(0));
-            run.clear();
-        }
-    }
-    if run.is_empty() {
-        total
-    } else {
-        total.saturating_add(run.parse().unwrap_or(0))
-    }
 }
 
 // ── Timeline + rounds ────────────────────────────────────────────────

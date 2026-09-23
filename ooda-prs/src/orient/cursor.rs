@@ -95,10 +95,7 @@ pub(crate) struct CursorReport {
     /// not yet submitted a review at any HEAD on this PR.
     pub rounds: Vec<CursorReviewRound>,
     pub threads: BotThreadSummary,
-    /// Per-rung census of this reviewer's live findings. Same type
-    /// the sibling bot axis reports, so the dashboard renders both
-    /// identically — see the shared-scale invariant on
-    /// [`super::thread::Severity`].
+    /// Rung census of this reviewer's live findings.
     pub severity: SeverityBreakdown,
     pub tier: CursorTier,
     /// Latest review observed at HEAD (`latest.commit == head`).
@@ -129,26 +126,21 @@ pub(crate) enum CursorActivity {
     Reviewed(ReviewedState),
 }
 
-/// Why a terminal run produced no review.
-///
-/// The split exists because the two reasons differ in scope and in
-/// what, if anything, discharges them — and therefore in whether the
-/// axis may gate the PR at all.
+/// Why a terminal run produced no review. The two reasons differ in
+/// scope and in what discharges them, and so in whether the axis may
+/// gate at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum UnavailableReason {
-    /// The reviewer reported its account-level usage or spend budget
-    /// exhausted. Account-scoped rather than per-PR: no push and no
-    /// in-repo action changes it, and the reviewer re-runs and
-    /// re-fails on every push until the budget resets. The axis does
-    /// not gate on it — gating would halt every iteration on a
-    /// condition the loop cannot influence — and the dashboard row
-    /// carries the fact into the closeout handoff instead.
+    /// The reviewer reported its account budget exhausted.
+    /// Account-scoped, not per-PR: nothing pushed here changes it,
+    /// and the reviewer re-runs and re-fails on every push until the
+    /// budget resets. Ungated — a blocker here would halt every
+    /// iteration on a condition the loop cannot influence — with the
+    /// dashboard row carrying the fact into closeout.
     BudgetExhausted,
-    /// The run terminated without producing a review and without
-    /// naming budget as the cause. Gated: an unexplained terminal
-    /// failure is worth a human look, and this is also where a
-    /// reworded budget notice lands if the classifier stops
-    /// recognising it — failing loudly rather than passing silently.
+    /// The run terminated without a review and without naming budget
+    /// as the cause. Gated, and also where a reworded budget notice
+    /// lands: unrecognised refusals fail loudly.
     RunFailed,
 }
 
@@ -353,12 +345,9 @@ pub(crate) fn parse_findings_count(body: &str) -> u32 {
     digits.parse().unwrap_or(0)
 }
 
-/// Extract the leading severity tag from a thread body.
-///
-/// This reviewer writes the rung into the comment itself, as a bold
-/// span opening the body. The thread projection calls this for
-/// threads it attributes here; the grammar stays in this axis
-/// because the surface is this reviewer's choice.
+/// Extract the leading severity tag from a thread body. This
+/// reviewer writes the rung into the comment itself, as a bold span
+/// opening the body.
 ///
 /// Class invariant: positional-earliest literal wins. Delimiter-
 /// shape matching (find an opener, expect a literal between
@@ -611,21 +600,15 @@ fn classify_completed(
 
 /// Classify why a terminal run produced no review.
 ///
-/// Two channels carrying the same statement in two locations, so
-/// neither surface's disappearance zeroes the signal:
+/// The reviewer states the cause in two places — the check run's
+/// `output`, and an issue comment of its own — so neither surface
+/// disappearing zeroes the signal. The timeline channel is the only
+/// one that survives a suite that never spawned a run, and costs no
+/// call: those comments are already observed.
 ///
-/// - **run output** — the host's `output` fields on the check run.
-///   Absent when the suite terminated without ever spawning a run.
-/// - **PR timeline** — an issue comment authored by the reviewer at
-///   or after `since`. Survives a run that never existed, and is
-///   already observed for other axes, so it costs no call.
-///
-/// The `since` anchor is the suite-creation time, which scopes both
-/// channels to the current HEAD: a budget notice from a previous
-/// push must not classify this one.
-///
-/// Defaults to [`UnavailableReason::RunFailed`], which gates. A
-/// refusal we cannot attribute is reported, never waved through.
+/// `since` is the suite-creation time, scoping both channels to this
+/// HEAD. Defaults to [`UnavailableReason::RunFailed`], which gates:
+/// an unattributable refusal is reported, never waved through.
 fn classify_unavailable(
     run: Option<&CursorCheckRun>,
     comments: &[IssueComment],
@@ -647,26 +630,16 @@ fn classify_unavailable(
 /// Whether a refusal notice attributes itself to an exhausted usage
 /// or spend budget.
 ///
-/// The reviewer states this in prose only — no conclusion value, no
-/// annotation, no typed field distinguishes it from any other
-/// terminal error — so this is the axis's one wording-dependent
-/// anchor and the known failure surface of the classification. Two
-/// sub-channels with disjoint drift:
-///
-/// - **stems** — the budget nouns the notice is built around.
-/// - **remediation target** — the notice links the operator to the
-///   vendor's billing surface, which is named by URL path rather
-///   than by sentence and survives any rewording of the prose
-///   around it.
-///
-/// Recognition fails closed: an unrecognised notice classifies as
-/// `RunFailed` and gates.
+/// No conclusion value, annotation or typed field separates this
+/// from any other terminal error, so it is the axis's one
+/// wording-dependent anchor and the failure surface of the
+/// classification. Two sub-channels drift independently: the budget
+/// nouns, and the billing surface the notice links to, named by URL
+/// path rather than by sentence.
 fn states_budget_exhaustion(prose: &str) -> bool {
-    /// Budget nouns. Observed 2026-09-18: "usage limit reached",
-    /// "hit a usage or spend limit", "increase usage limits".
+    /// Observed 2026-09-18: "usage limit reached", "hit a usage or
+    /// spend limit", "increase usage limits".
     const STEMS: &[&str] = &["usage limit", "spend limit", "usage or spend", "quota"];
-    /// Path segments naming a billing surface on the remediation
-    /// link the notice carries.
     const BILLING_PATHS: &[&str] = &["/spending", "/billing", "/usage"];
     let lower = prose.to_ascii_lowercase();
     STEMS.iter().any(|stem| lower.contains(stem))

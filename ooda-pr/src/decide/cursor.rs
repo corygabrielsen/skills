@@ -46,11 +46,7 @@ pub(crate) fn candidates(report: &CursorReport) -> Vec<Action> {
             out.push(stall_escalation(report));
         }
         CursorActivity::Unavailable(UnavailableReason::BudgetExhausted) => {
-            // Account-scoped refusal. No push and no in-repo action
-            // changes it, and the reviewer is not a required check,
-            // so gating here would halt every iteration on a
-            // condition the loop cannot influence. The dashboard
-            // row carries the fact into the closeout handoff.
+            // Ungated by construction — see the variant's doc.
         }
         CursorActivity::Unavailable(UnavailableReason::RunFailed) => {
             out.push(run_failed_escalation(report));
@@ -125,24 +121,25 @@ fn stall_escalation(report: &CursorReport) -> Action {
 }
 
 /// Terminal-refusal escalation — the run answered, produced no
-/// review, and did not attribute the failure to budget.
-///
-/// The prompt states only what the run reported. No timeout is
-/// claimed and no service-status check is prescribed: the reviewer
-/// responded, so neither is warranted, and a prompt that asserts
-/// either sends a human to look for a stall that did not occur.
+/// review, and did not attribute the failure to budget. The prompt
+/// claims no timeout and prescribes no service-status check: the
+/// reviewer responded, so neither is warranted.
 fn run_failed_escalation(report: &CursorReport) -> Action {
     let mut prompt = ooda_core::HandoffPrompt::new(
         "Cursor Bugbot's run terminated without producing a review at this HEAD.",
     );
 
     prompt.push_paragraph(
-        "The run reached a terminal state and reported no review. It did not          attribute the failure to an exhausted usage or spend budget, which is          the one cause this axis recognises and tolerates — so either the run          genuinely failed, or the reviewer reworded its budget notice."
+        "The run reported no review and did not name an exhausted usage or \
+         spend budget, the one cause this axis tolerates. Either it genuinely \
+         failed, or the reviewer reworded that notice."
             .to_string(),
     );
 
     prompt.push_paragraph(
-        "Cursor auto-runs on every push and there is no rerequest API, so the          next commit retries this on its own. Read the run's output on the PR's          checks tab for the reviewer's own account of the failure."
+        "Cursor auto-runs on every push and has no rerequest API, so the next \
+         commit retries on its own. The run's output on the PR's checks tab \
+         carries the reviewer's own account of the failure."
             .to_string(),
     );
 

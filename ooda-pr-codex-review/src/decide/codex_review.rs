@@ -115,10 +115,10 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
     }
 }
 
-/// Reviewer-refusal halt. The prompt states the reviewer's own
-/// message and nothing more: it already names the cause and, when
-/// the reviewer supplies one, the retry time. No recovery step is
-/// prescribed because none exists inside the working tree.
+/// Reviewer-refusal halt. The prompt carries the reviewer's own
+/// message and nothing more — it already names the cause and the
+/// retry time — and prescribes no recovery, because none exists
+/// inside the working tree.
 fn mk_declined(level: CodexReasoningLevel, reason: &str) -> Action {
     use ooda_core::HandoffPrompt;
     Action {

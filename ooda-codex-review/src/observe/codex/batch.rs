@@ -234,11 +234,7 @@ pub(crate) fn scan_batch(
         };
         let code = read_exit_status(exit_path)?;
         if code != 0 {
-            // A non-zero exit is not automatically a protocol
-            // violation: the reviewer refuses over-budget runs this
-            // way, and a refusal is an answer. Recognised refusals
-            // become verdicts; an exit that states no cause still
-            // fails the scan, so an unrecognised one is loud.
+            // Per the stated-refusal invariant above.
             let Some(refusal) = verdict::extract_refusal(&body_text) else {
                 return Err(io::Error::other(format!(
                     "codex review slot {slot} exited {code} without stating a reason; see {}",

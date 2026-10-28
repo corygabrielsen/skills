@@ -417,10 +417,13 @@ fn build_logged_codex_command(
     // would race against in-flight observe passes that would read
     // empty bytes and fail to parse. `umask 077` is the durable fix:
     // any file the shell creates lands at 0o600 without changing
-    // when it is created.
+    // when it is created. The exit status is written to a sibling
+    // `.exit.tmp` and renamed into place, so `.exit` appears only
+    // with its content: a scan never reads it half-written. The
+    // scan's suffix match ignores the `.tmp` name.
     cmd.arg("-c")
         .arg(
-            r#"umask 077; "$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH"; exit "$code""#,
+            r#"umask 077; "$@" > "$OODA_LOG_PATH" 2>&1; code=$?; printf '%s\n' "$code" > "$OODA_EXIT_PATH.tmp" && mv -f "$OODA_EXIT_PATH.tmp" "$OODA_EXIT_PATH"; exit "$code""#,
         )
         .arg("ooda-pr-codex-review-child")
         .arg(codex_bin)
@@ -437,6 +440,23 @@ fn should_preflight_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapper_publishes_the_exit_status_whole() {
+        let dir = std::env::temp_dir().join(format!("codex-wrapper-exit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("low-1.log");
+        let exit = dir.join("low-1.exit");
+        let status =
+            build_logged_codex_command(std::path::Path::new("/bin/false"), &[], &log, &exit)
+                .status()
+                .unwrap();
+        assert!(!status.success());
+        assert_eq!(std::fs::read_to_string(&exit).unwrap(), "1\n");
+        assert!(!dir.join("low-1.exit.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn build_codex_args_renders_review_base_and_reasoning() {

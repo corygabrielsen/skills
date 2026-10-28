@@ -509,6 +509,19 @@ mod tests {
     }
 
     #[test]
+    fn unpublished_exit_status_leaves_the_slot_pending() {
+        // The wrapper writes `.exit.tmp` and renames it into place;
+        // a scan between the two must see a running slot, never a
+        // half-written completion.
+        let dir = temp_batch_dir("unpublished-exit");
+        fs::write(dir.join("low-1.log"), "user\nreviewing\n").unwrap();
+        fs::write(dir.join("low-1.exit.tmp"), "").unwrap();
+        let s = scan_batch(&dir, CodexReasoningLevel::Low, 1, None).unwrap();
+        assert!(matches!(s, BatchState::Running { .. }), "{s:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn empty_dir_is_not_started() {
         let dir = temp_batch_dir("empty");
         let s = scan_batch(&dir, CodexReasoningLevel::Low, 3, None).unwrap();

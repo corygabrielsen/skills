@@ -477,9 +477,11 @@ const APPROVAL_GLYPH: char = '\u{1f7e2}';
 /// whose prose has no heading above it states no verdict.
 ///
 /// A heading is a verdict iff the prelude carries a comment marker or
-/// the heading leads with a glyph. Two channels with disjoint failure
-/// domains: either alone survives a format revision that drops the
-/// other. The pre-verdict overview format carries neither.
+/// the heading leads with a glyph: a non-ASCII, non-alphanumeric
+/// character once emphasis and code markup are stripped. Two channels
+/// with disjoint failure domains: either alone survives a format
+/// revision that drops the other. The pre-verdict overview format
+/// carries neither.
 fn stated_verdict(body: &str) -> Option<StatedVerdict> {
     let prelude = body.find("<details").map_or(body, |at| &body[..at]);
     let mut marked = false;
@@ -505,14 +507,23 @@ fn stated_verdict(body: &str) -> Option<StatedVerdict> {
             continue;
         }
         if is_heading(&line) {
-            heading = Some(strip_tags(line.trim_start_matches('#')).trim().to_string());
+            let text = strip_tags(line.trim_start_matches('#'));
+            heading = Some(
+                text.trim()
+                    .trim_matches(|c: char| matches!(c, '*' | '_' | '`'))
+                    .trim()
+                    .to_string(),
+            );
             continue;
         }
         heading.as_ref()?;
         assessment.push(line);
     }
     let heading = heading?;
-    let glyph_led = heading.chars().next().is_some_and(|c| !c.is_alphanumeric());
+    let glyph_led = heading
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_ascii() && !c.is_alphanumeric());
     if !marked && !glyph_led {
         return None;
     }
@@ -582,6 +593,9 @@ struct DetailsBlock {
     /// rendered as links are inline review threads, which the visible
     /// channel counts; body-rendered findings never carry one.
     linked: bool,
+    /// The block holds nested `<details>` elements: a section whose
+    /// entries are findings, not a finding itself.
+    nests: bool,
 }
 
 const DETAILS_CLOSE: &str = "</details>";
@@ -628,11 +642,13 @@ fn details_block(inner: &str) -> DetailsBlock {
     let (summary, rest) = split_summary(inner);
     let content = elide_nested_details(rest);
     let linked = summary.contains("](#") || content.contains("](#");
+    let nests = rest.contains("<details");
     DetailsBlock {
         summary: strip_tags(summary).trim().to_string(),
         severity: severity_of_markup(summary),
         content,
         linked,
+        nests,
     }
 }
 
@@ -940,7 +956,11 @@ fn block_stated_count(block: &DetailsBlock) -> Option<u32> {
             let lower = text.to_ascii_lowercase();
             STEMS.iter().any(|stem| lower.contains(stem))
         })
-        .filter_map(|text| paren_count(text).or_else(|| leading_count(text)))
+        .filter_map(|text| {
+            // A leading digit run states a count only on a section
+            // label; a finding's own title can open with a number.
+            paren_count(text).or_else(|| block.nests.then(|| leading_count(text)).flatten())
+        })
         .max()
 }
 
@@ -1993,6 +2013,40 @@ Stub-only validation leaves custody-signer provisioning unverified against real 
             let v = parse_copilot_review_body(body).verdict.unwrap();
             assert_eq!(v.stance, VerdictStance::Concern, "{body}");
         }
+    }
+
+    #[test]
+    fn emphasis_around_the_heading_does_not_hide_the_glyph() {
+        let v = parse_copilot_review_body("### **\u{1f7e2} Approval recommended**\n\nFine.\n")
+            .verdict
+            .unwrap();
+        assert_eq!(v.stance, VerdictStance::Approve);
+        assert_eq!(v.heading, "\u{1f7e2} Approval recommended");
+    }
+
+    #[test]
+    fn ascii_punctuation_is_not_a_glyph() {
+        for heading in [
+            "**Overview**",
+            "`summary`",
+            "[Overview](x)",
+            "(draft) notes",
+        ] {
+            let body = format!("## {heading}\n\nProse.\n");
+            assert!(
+                parse_copilot_review_body(&body).verdict.is_none(),
+                "{heading}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_finding_title_opening_with_digits_is_not_a_count() {
+        let body = "<details>\n<summary><strong>1 previously missed issue</strong></summary>\n\n\
+                    <details>\n<summary>404 page misses auth check</summary>\n\n\
+                    `src/a.rs:3`\n\nBody.\n</details>\n</details>\n";
+        let s = parse_copilot_review_body(body);
+        assert_eq!(s.suppressed, 1);
     }
 
     #[test]

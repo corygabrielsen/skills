@@ -3,10 +3,11 @@
 //!
 //! # Invariants
 //!
-//! - **Latest reviewed round only**: the pending obligation is drawn
-//!   from the last round that carries a review, at HEAD or not. A
-//!   newer review supersedes an unanswered older one; a request still
-//!   in flight supersedes nothing.
+//! - **Latest stated verdict only**: the pending obligation is drawn
+//!   from the last round whose review states a verdict, at HEAD or
+//!   not. A newer verdict supersedes an unanswered older one; a
+//!   request still in flight, or a review stating none, supersedes
+//!   nothing.
 //! - **Id-keyed discharge**: an entry discharges exactly the review it
 //!   names. A review submitted after an entry was written is never
 //!   discharged by it.
@@ -33,6 +34,9 @@ pub(crate) struct CopilotVerdictReport {
     /// Escalated entries, each with the verdict it answers when that
     /// review is still among the observed rounds.
     pub escalated: Vec<Escalation>,
+    /// The attestation file exists but failed to read; escalations
+    /// and answers in it are unknown.
+    pub unreadable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -51,19 +55,17 @@ impl CopilotVerdictReport {
     }
 }
 
-/// Join the latest reviewed round's verdict and every escalation
-/// against the recorded entries.
+/// Join the latest stated verdict and every escalation against the
+/// recorded entries. A review stating no verdict (an error body, an
+/// unrecognised grammar) supersedes nothing, as an in-flight round
+/// supersedes nothing.
 #[must_use]
 pub(crate) fn orient_copilot_verdict(
     obs: &CopilotVerdictObservation,
     copilot: Option<&CopilotReport>,
 ) -> CopilotVerdictReport {
     let rounds = copilot.map_or(&[][..], |c| c.rounds.as_slice());
-    let latest = rounds
-        .iter()
-        .rev()
-        .find(|r| r.reviewed_at.is_some())
-        .and_then(|r| r.verdict.clone());
+    let latest = rounds.iter().rev().find_map(|r| r.verdict.clone());
     let attestation = obs.attestation.as_ref();
     let latest_entry = latest
         .as_ref()
@@ -86,6 +88,7 @@ pub(crate) fn orient_copilot_verdict(
         latest,
         latest_entry,
         escalated,
+        unreadable: obs.unreadable.clone(),
     }
 }
 
@@ -95,7 +98,12 @@ pub(crate) fn copilot_verdict_signal(
     report: &CopilotVerdictReport,
 ) -> Option<crate::dashboard::AxisSignal> {
     use crate::dashboard::{AxisName, AxisSignal, SignalIcon};
-    let (icon, summary) = if let Some(e) = report.escalated.first() {
+    let (icon, summary) = if report.unreadable.is_some() {
+        (
+            SignalIcon::Failed,
+            "attestation file unreadable".to_string(),
+        )
+    } else if let Some(e) = report.escalated.first() {
         (
             SignalIcon::Failed,
             format!(
@@ -113,7 +121,12 @@ pub(crate) fn copilot_verdict_signal(
             }
             (Some(entry), _) => (
                 SignalIcon::Ok,
-                format!("{} — {}: {}", v.heading, entry.disposition, entry.note),
+                format!(
+                    "{} — {}: {}",
+                    v.heading,
+                    entry.disposition,
+                    one_line(&entry.note, NOTE_SIGNAL_CHARS)
+                ),
             ),
         }
     };
@@ -122,6 +135,22 @@ pub(crate) fn copilot_verdict_signal(
         icon,
         summary,
     })
+}
+
+/// Longest note excerpt a dashboard line carries.
+const NOTE_SIGNAL_CHARS: usize = 80;
+
+/// `text` on one line — whitespace runs collapsed — cut to `max`
+/// characters with an ellipsis.
+fn one_line(text: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let mut cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+        cut.push('…');
+        cut
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +227,7 @@ mod tests {
                 entries,
             }),
             attest_path: None,
+            unreadable: None,
         }
     }
 
@@ -243,6 +273,16 @@ mod tests {
         let c = report(vec![
             round(1, true, Some(verdict(7, VerdictStance::Concern))),
             round(2, false, None),
+        ]);
+        let r = orient_copilot_verdict(&obs(vec![]), Some(&c));
+        assert_eq!(r.pending().unwrap().review_id, 7);
+    }
+
+    #[test]
+    fn review_stating_no_verdict_supersedes_nothing() {
+        let c = report(vec![
+            round(1, true, Some(verdict(7, VerdictStance::Concern))),
+            round(2, true, None),
         ]);
         let r = orient_copilot_verdict(&obs(vec![]), Some(&c));
         assert_eq!(r.pending().unwrap().review_id, 7);
@@ -299,11 +339,39 @@ mod tests {
             &CopilotVerdictObservation {
                 attestation: None,
                 attest_path: None,
+                unreadable: None,
             },
             None,
         );
         assert_eq!(r, CopilotVerdictReport::default());
         assert!(copilot_verdict_signal(&r).is_none());
+    }
+
+    #[test]
+    fn signal_note_is_one_bounded_line() {
+        let c = report(vec![round(
+            1,
+            true,
+            Some(verdict(7, VerdictStance::Concern)),
+        )]);
+        let mut e = entry(7, VerdictDisposition::NoChange);
+        e.note = format!("first line\nsecond\t{}", "x".repeat(200));
+        let s = copilot_verdict_signal(&orient_copilot_verdict(&obs(vec![e]), Some(&c))).unwrap();
+        assert!(!s.summary.contains('\n'), "{}", s.summary);
+        assert!(s.summary.ends_with('…'), "{}", s.summary);
+        assert!(s.summary.contains("first line second"), "{}", s.summary);
+    }
+
+    #[test]
+    fn unreadable_attestation_signals_failure() {
+        let mut o = obs(vec![]);
+        o.attestation = None;
+        o.unreadable = Some("parse error".into());
+        let r = orient_copilot_verdict(&o, None);
+        assert_eq!(
+            copilot_verdict_signal(&r).unwrap().icon,
+            crate::dashboard::SignalIcon::Failed
+        );
     }
 
     #[test]

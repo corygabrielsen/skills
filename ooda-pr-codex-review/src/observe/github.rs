@@ -468,6 +468,7 @@ fn terminal_observations(
         copilot_verdict: CopilotVerdictObservation {
             attestation: None,
             attest_path: None,
+            unreadable: None,
         },
         // Terminal PRs skip branch-sync detection: the branch is
         // either merged or closed, so out-of-band pushes carry no

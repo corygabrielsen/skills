@@ -1558,6 +1558,7 @@ mod tests {
             &CopilotVerdictObservation {
                 attestation: None,
                 attest_path: Some(attest_path.clone()),
+                unreadable: None,
             },
             Some(&copilot),
         );

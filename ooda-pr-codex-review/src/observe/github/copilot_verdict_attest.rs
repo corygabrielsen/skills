@@ -1,7 +1,8 @@
 //! Observation for the reviewer-verdict attestation axis.
 //!
-//! Same protocol shape as the sibling attestation observations:
-//! attestation read, malformed-file degradation to absence. Id-keyed:
+//! Attestation read. Unlike the sibling observations a malformed file
+//! does not degrade to absence: it holds escalations that absence
+//! would silently discharge, so the read error is carried. Id-keyed:
 //! orient joins each entry to the review it names, so neither HEAD
 //! nor the clock carries signal here.
 
@@ -18,6 +19,8 @@ const COPILOT_VERDICT_FILE: &str = "copilot_verdict_attest.json";
 pub(crate) struct CopilotVerdictObservation {
     pub attestation: Option<CopilotVerdictAttestation>,
     pub attest_path: Option<PathBuf>,
+    /// Why an existing file failed to read or validate.
+    pub unreadable: Option<String>,
 }
 
 /// Compose the attestation file path. Shared with the prompt-
@@ -38,12 +41,15 @@ pub(crate) fn observe_copilot_verdict(
     pr: PullRequestNumber,
 ) -> CopilotVerdictObservation {
     let path = state_root.map(|root| copilot_verdict_attest_path(root, pr));
-    let attestation = path
-        .as_deref()
-        .and_then(|p| read_copilot_verdict(p).ok().flatten());
+    let (attestation, unreadable) = match path.as_deref().map(read_copilot_verdict) {
+        None | Some(Ok(None)) => (None, None),
+        Some(Ok(Some(a))) => (Some(a), None),
+        Some(Err(e)) => (None, Some(e.to_string())),
+    };
     CopilotVerdictObservation {
         attestation,
         attest_path: path,
+        unreadable,
     }
 }
 
@@ -80,16 +86,14 @@ mod tests {
     }
 
     #[test]
-    fn malformed_file_degrades_to_absence() {
+    fn malformed_file_is_carried_as_unreadable() {
         let dir = tempfile::tempdir().unwrap();
         let path = copilot_verdict_attest_path(dir.path(), pr());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"{not json").unwrap();
-        assert!(
-            observe_copilot_verdict(Some(dir.path()), pr())
-                .attestation
-                .is_none()
-        );
+        let obs = observe_copilot_verdict(Some(dir.path()), pr());
+        assert!(obs.attestation.is_none());
+        assert!(obs.unreadable.is_some());
     }
 
     #[test]

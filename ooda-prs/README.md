@@ -473,7 +473,7 @@ witness loop-only halts (`Stalled`, `CapReached`).
 
 ```
 Action =
-    kind          : ActionKind     (sum over 39 variants)
+    kind          : ActionKind     (sum over 40 variants)
   × effect        : ActionEffect   (who runs it, fused with its payload)
   × target_effect : TargetEffect   (Blocks ⊕ Advances ⊕ Neutral)
   × urgency       : Urgency        (Pre ⊕ Mid(MidTier) ⊕ Post — total-ordered tier)
@@ -497,7 +497,7 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
            (payload-free — Action.stall_key() projects it)
 ```
 
-### `ActionKind` taxonomy (39 variants — the funnel basins, all payloads typed)
+### `ActionKind` taxonomy (40 variants — the funnel basins, all payloads typed)
 
 ```
                 ┌─ FixCi{check_name: CheckName}
@@ -536,6 +536,7 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
             ├─ AttestReviewClass{attest_path: PathBuf}         (content-keyed — sweep witness with enumerated sites)
             ├─ ResolveCopilotVerdict{review_id: u64, attest_path: PathBuf}          (id-keyed — Agent, BlockingFix)
             ├─ DecideEscalatedCopilotVerdict{review_id: u64, attest_path: PathBuf}  (id-keyed — Human, BlockingHuman)
+            ├─ RepairCopilotVerdictAttestation{attest_path: PathBuf}                    (Human, BlockingHuman — file unreadable)
             └─ Closeout{attest_path: PathBuf}                  (convergence gate — Urgency::Post)
 
    Branch   ┌─ SyncGraphiteStack{from_sha: String, to_sha: String}   (Full — `gt sync`)

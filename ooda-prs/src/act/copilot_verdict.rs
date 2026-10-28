@@ -1,29 +1,49 @@
 //! Handoff-prompt composition for reviewer-verdict obligations.
 //!
-//! Three consumers. The reviews axis frames every address-threads
-//! prompt with the latest verdict's assessment and, while that verdict
-//! is unanswered, appends the attest step, so the threads are read as
-//! instances of the assessment and answered with it. The standalone
-//! prompt fires when the verdict is unanswered and no threads carry
-//! it. The escalation prompt hands a recorded escalation to a human.
+//! Three consumers. The reviews axis frames an address-threads prompt
+//! carrying Copilot threads with the latest verdict's assessment and,
+//! while that verdict is unanswered, appends the attest step, so the
+//! threads are read as instances of the assessment and answered with
+//! it. The standalone prompt fires when the verdict is unanswered and
+//! no Copilot threads carry it. The escalation prompt hands recorded
+//! escalations to a human.
 
 use std::path::Path;
 
 use ooda_core::{HandoffPrompt, NonEmpty, SafeUrl, SingleLineString, Witness};
 
 use crate::ids::PullRequestNumber;
-use crate::orient::copilot::CopilotVerdict;
+use ooda_core::attest::{CopilotVerdictEntry, VerdictDisposition};
+
+use crate::orient::copilot::{CopilotVerdict, VerdictStance};
 use crate::orient::copilot_verdict::Escalation;
 
-/// Append the verdict as the frame the threads that follow are read
-/// through.
-pub(crate) fn push_verdict_frame(prompt: &mut HandoffPrompt, verdict: &CopilotVerdict) {
+/// Append the verdict as the frame Copilot's threads are read
+/// through, worded by its standing: an unanswered concern is work, a
+/// recorded or escalated one and an approval are context.
+pub(crate) fn push_verdict_frame(
+    prompt: &mut HandoffPrompt,
+    verdict: &CopilotVerdict,
+    entry: Option<&CopilotVerdictEntry>,
+) {
     prompt.push_heading(3, "Copilot's overall assessment");
     prompt.push_witnesses(NonEmpty::singleton(verdict_witness(verdict)));
-    prompt.push_paragraph(
-        "The threads below are instances of this assessment. Fix the \
-         concern it names, not only the anchored lines.",
-    );
+    prompt.push_paragraph(match (entry, verdict.stance) {
+        (None, VerdictStance::Concern) => "The Copilot threads below are instances of this \
+             assessment. Fix the concern it names, not only the anchored lines."
+            .to_string(),
+        (None, VerdictStance::Approve) => {
+            "Copilot recommends approval; the threads below are its remaining findings.".to_string()
+        }
+        (Some(e), _) if e.disposition == VerdictDisposition::Escalate => format!(
+            "Escalated to a human, who decides it: {}. Do not act on the assessment.",
+            e.note
+        ),
+        (Some(e), _) => format!(
+            "Recorded as `{}`: {}. Shown for context.",
+            e.disposition, e.note
+        ),
+    });
 }
 
 /// Append the attest step shared by the standalone prompt and the
@@ -43,10 +63,15 @@ pub(crate) fn push_verdict_attest_step(
          calls for a change, and the note says why. `escalate`: only a \
          human can decide, and the note says what they must decide.",
     );
-    prompt.push_code("bash", cli_invocation(pr, verdict.review_id, attest_path));
+    prompt.push_code(
+        "bash",
+        cli_invocation(pr, verdict.review_id, AGENT_DISPOSITIONS, attest_path),
+    );
     prompt.push_paragraph(
         "The entry answers this review only. The loop re-issues this \
-         handoff until it exists; a later review raises its own.",
+         handoff until it exists; a later review raises its own. Never \
+         re-record a review already escalated: that decision belongs to \
+         a human.",
     );
 }
 
@@ -117,13 +142,36 @@ pub(crate) fn build_decide_escalated_prompt(
         }
     });
     prompt.push_witnesses(witnesses);
-    prompt.push_heading(3, "Record the decision");
-    prompt.push_code(
-        "bash",
-        cli_invocation(pr, escalations.first().entry.review_id, attest_path),
-    );
+    prompt.push_heading(3, "Record each decision");
+    let invocations: Vec<String> = escalations
+        .as_slice()
+        .iter()
+        .map(|e| cli_invocation(pr, e.entry.review_id, HUMAN_DISPOSITIONS, attest_path))
+        .collect();
+    prompt.push_code("bash", invocations.join("\n\n"));
     prompt
 }
+
+/// Build the human handoff for an attestation file that fails to read.
+#[must_use]
+pub(crate) fn build_repair_attestation_prompt(attest_path: &Path, error: &str) -> HandoffPrompt {
+    let mut prompt = HandoffPrompt::new("Copilot verdict attestation is unreadable.");
+    prompt.push_paragraph(format!(
+        "`{}` exists but fails to read: {error}. The answers and \
+         escalations it records are unknown, and `ooda-attest \
+         copilot-verdict` refuses to overwrite it. Repair the file, or \
+         remove it to discard every recorded answer.",
+        attest_path.display()
+    ));
+    prompt
+}
+
+/// Dispositions an agent may record.
+const AGENT_DISPOSITIONS: &str = "patched|no-change|escalate";
+
+/// Dispositions that settle an escalation; escalating again would
+/// leave it pending.
+const HUMAN_DISPOSITIONS: &str = "patched|no-change";
 
 fn verdict_witness(verdict: &CopilotVerdict) -> Witness {
     Witness {
@@ -141,7 +189,12 @@ fn verdict_witness(verdict: &CopilotVerdict) -> Witness {
     }
 }
 
-fn cli_invocation(pr: PullRequestNumber, review_id: u64, attest_path: Option<&Path>) -> String {
+fn cli_invocation(
+    pr: PullRequestNumber,
+    review_id: u64,
+    dispositions: &str,
+    attest_path: Option<&Path>,
+) -> String {
     let root = match attest_path.and_then(state_root_from_attest_path) {
         Some(state_root) => state_root.display().to_string(),
         None => "<absolute path to OODA state root; report back if you do not \
@@ -150,7 +203,7 @@ fn cli_invocation(pr: PullRequestNumber, review_id: u64, attest_path: Option<&Pa
     };
     format!(
         "ooda-attest copilot-verdict --pr-id {pr} --state-root {root} \\\n  \
-         --review {review_id} --disposition <patched|no-change|escalate> \\\n  \
+         --review {review_id} --disposition <{dispositions}> \\\n  \
          --note \"<the decision's grounds>\""
     )
 }

@@ -248,6 +248,12 @@ pub enum ActionKind {
         review_id: u64,
         attest_path: std::path::PathBuf,
     },
+    /// The reviewer-verdict attestation file exists but fails to read
+    /// or validate, so its answers and escalations are unknown and no
+    /// new entry can be written. Human handoff: repair or remove it.
+    RepairCopilotVerdictAttestation {
+        attest_path: std::path::PathBuf,
+    },
 
     // ── Closeout attestation ──
     /// Convergence-gate attestation. Emitted at the least-urgent
@@ -324,6 +330,7 @@ impl ActionKindName for ActionKind {
             Self::AttestReviewClass { .. } => "AttestReviewClass",
             Self::ResolveCopilotVerdict { .. } => "ResolveCopilotVerdict",
             Self::DecideEscalatedCopilotVerdict { .. } => "DecideEscalatedCopilotVerdict",
+            Self::RepairCopilotVerdictAttestation { .. } => "RepairCopilotVerdictAttestation",
             Self::Closeout { .. } => "Closeout",
             Self::SyncGraphiteStack { .. } => "SyncGraphiteStack",
             Self::InvestigatePush { .. } => "InvestigatePush",

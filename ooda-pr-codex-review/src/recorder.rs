@@ -602,14 +602,21 @@ impl Recorder {
     }
 
     /// `elapsed` is the measured duration of the wait, not the
-    /// interval the action requested.
-    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action, elapsed: Duration) {
+    /// interval the action requested; `ended` is why it stopped.
+    pub(crate) fn record_wait_end(
+        &self,
+        iteration: u32,
+        action: &Action,
+        elapsed: Duration,
+        ended: &ooda_core::wait::WaitEnd,
+    ) {
         self.best_effort(|inner| {
             let interval_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
             inner.writer.append(EventBody::IterationWaited {
                 iteration,
                 action_kind: action.kind.name().to_string(),
                 interval_ms,
+                ended: ended.clone(),
             })?;
             inner.append_domain(
                 DomainKind::WaitFinished,
@@ -1131,7 +1138,14 @@ mod tests {
             log: "Waiting".into(),
             wake: ooda_core::Wake::OnChange,
         });
-        recorder.record_wait_end(1, &action, Duration::from_millis(30_012));
+        recorder.record_wait_end(
+            1,
+            &action,
+            Duration::from_millis(30_012),
+            &ooda_core::wait::WaitEnd::Changed {
+                source: "reviews".into(),
+            },
+        );
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
 
         let events_text = read_events(&root);
@@ -1141,6 +1155,10 @@ mod tests {
         );
         assert!(
             events_text.contains(r#""interval_ms":30012"#),
+            "{events_text}"
+        );
+        assert!(
+            events_text.contains(r#""ended":{"kind":"changed","source":"reviews"}"#),
             "{events_text}"
         );
         let _ = std::fs::remove_dir_all(&root);

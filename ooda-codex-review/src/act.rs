@@ -100,15 +100,20 @@ impl std::error::Error for ActError {
     }
 }
 
+/// What [`act`] did: applied a side effect, or waited and ended for
+/// the stated reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Acted {
+    Applied,
+    Waited(WaitEnd),
+}
+
 /// Dispatch one action against `ctx`. See module doc for the
 /// per-effect behaviour table.
-pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
+pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<Acted, ActError> {
     match &action.effect {
-        ActionEffect::Wait { interval, wake, .. } => {
-            wait(*interval, *wake);
-            Ok(())
-        }
-        ActionEffect::Full { .. } => dispatch_full(action, ctx),
+        ActionEffect::Wait { interval, wake, .. } => Ok(Acted::Waited(wait(*interval, *wake))),
+        ActionEffect::Full { .. } => dispatch_full(action, ctx).map(|()| Acted::Applied),
         ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
             Err(ActError::UnsupportedAutomation)
         }

@@ -50,7 +50,7 @@ EventBody =
   ⊕ IterationDecided  { iteration, decision_kind }
   ⊕ IterationHandoff  { iteration, variant, action_kind, blob }
   ⊕ IterationExecuted { iteration, action_kind, success }
-  ⊕ IterationWaited   { iteration, action_kind, interval_ms }
+  ⊕ IterationWaited   { iteration, action_kind, interval_ms, ended: WaitEnd }
   ⊕ RunHalted         { outcome, exit_code }          ← terminal
   ⊕ RunStalled        { last_action }                 ← terminal
   ⊕ RunCapReached     { last_action }                 ← terminal

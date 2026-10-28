@@ -368,7 +368,7 @@ otherwise → Halted(CapReached(last_attempted))
 (`Execute` ⇒ `kind.name()`; halts ⇒ `ooda_state::DecisionKind`
 tokens `Halt::Success`, `Halt::Terminal(Succeeded)`,
 `Halt::Terminal(Aborted)`, `Halt::AgentNeeded`,
-`Halt::HumanNeeded`), `IterationWaited { action_kind, interval_ms }`
+`Halt::HumanNeeded`), `IterationWaited { action_kind, interval_ms, ended }`
 for Wait effects, and `IterationExecuted { action_kind, success }`
 otherwise, `success` recorded before an act error bubbles. Sink
 write failures are swallowed; the exit code is the authoritative

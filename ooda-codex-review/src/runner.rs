@@ -34,8 +34,8 @@ use std::num::NonZeroU32;
 
 use ooda_state::{DecisionKind, EventBody, RunWriter};
 
-use crate::act::{ActContext, ActError, act};
-use crate::decide::action::{Action, ActionEffect, CodexReasoningLevel};
+use crate::act::{ActContext, ActError, Acted, act};
+use crate::decide::action::{Action, CodexReasoningLevel};
 use crate::decide::decide;
 use crate::decide::decision::{Decision, DecisionHalt, HaltReason, Terminal};
 use crate::ids::{RepoId, ReviewTarget};
@@ -143,30 +143,35 @@ impl<'a> EventSink<'a> {
     }
 
     /// `elapsed` is the measured duration of `act`; for a wait it is
-    /// recorded in place of the interval the action requested.
-    fn acted(&mut self, iter: u32, action: &Action, success: bool, elapsed: std::time::Duration) {
-        let body = match &action.effect {
-            ActionEffect::Wait { .. } => EventBody::IterationWaited {
+    /// recorded in place of the interval the action requested,
+    /// beside why the wait ended.
+    fn acted(
+        &mut self,
+        iter: u32,
+        action: &Action,
+        outcome: &Result<Acted, ActError>,
+        elapsed: std::time::Duration,
+    ) {
+        let body = match outcome {
+            Ok(Acted::Waited(ended)) => EventBody::IterationWaited {
                 iteration: iter,
                 action_kind: action.kind.name().to_string(),
                 interval_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+                ended: ended.clone(),
             },
-            ActionEffect::Full { .. } | ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
-                // `acted` is emitted regardless of the act stage's
-                // result; `success` reflects whether `act()` returned
-                // Ok. A failed act (spawn error, `NotImplemented`,
-                // `UnsupportedTarget`) records `success: false` here
-                // BEFORE the loop bubbles the error and finalize lands
-                // the terminal `RunHalted` — readers tailing
-                // `events.jsonl` (cockpit, projection) can distinguish
-                // "decided then act-failed" from "decided then never
-                // attempted".
-                EventBody::IterationExecuted {
-                    iteration: iter,
-                    action_kind: action.kind.name().to_string(),
-                    success,
-                }
-            }
+            // Emitted regardless of the act stage's result; `success`
+            // reflects whether `act()` returned Ok. A failed act
+            // (spawn error, `NotImplemented`, `UnsupportedTarget`)
+            // records `success: false` here BEFORE the loop bubbles
+            // the error and finalize lands the terminal `RunHalted` —
+            // readers tailing `events.jsonl` (cockpit, projection) can
+            // distinguish "decided then act-failed" from "decided then
+            // never attempted".
+            Ok(Acted::Applied) | Err(_) => EventBody::IterationExecuted {
+                iteration: iter,
+                action_kind: action.kind.name().to_string(),
+                success: outcome.is_ok(),
+            },
         };
         let _ = self.writer.append(body);
     }
@@ -471,8 +476,7 @@ fn run_iter(
             // tried".
             let started = std::time::Instant::now();
             let act_result = act(&action, ctx);
-            let success = act_result.is_ok();
-            events.acted(iter, &action, success, started.elapsed());
+            events.acted(iter, &action, &act_result, started.elapsed());
             act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))
         }
@@ -482,6 +486,7 @@ fn run_iter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decide::action::ActionEffect;
     use crate::ids::{BranchName, RepoId};
     use crate::observe::codex::VerdictClass;
     use crate::observe::codex::batch::{BatchState, VerdictRecord};
@@ -620,7 +625,12 @@ mod tests {
             urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::BlockingWait),
             blocker: ooda_core::BlockerKey::from_static("await"),
         };
-        sink.acted(1, &action, true, std::time::Duration::from_millis(30_417));
+        sink.acted(
+            1,
+            &action,
+            &Ok(Acted::Waited(ooda_core::wait::WaitEnd::Elapsed)),
+            std::time::Duration::from_millis(30_417),
+        );
         let run = std::fs::read_dir(tmp.path().join("runs"))
             .unwrap()
             .next()
@@ -628,6 +638,7 @@ mod tests {
             .unwrap();
         let body = std::fs::read_to_string(run.path().join("events.jsonl")).unwrap();
         assert!(body.contains(r#""interval_ms":30417"#), "{body}");
+        assert!(body.contains(r#""ended":{"kind":"elapsed"}"#), "{body}");
     }
 
     // ── iter-1 guaranteed run ──

@@ -422,11 +422,13 @@ pub enum EventBody {
         success: bool,
     },
     /// A wait was performed. `interval_ms` is the elapsed wall
-    /// time of the wait (not the requested duration).
+    /// time of the wait (not the requested duration); `ended` is why
+    /// it stopped.
     IterationWaited {
         iteration: u32,
         action_kind: String,
         interval_ms: u64,
+        ended: ooda_core::wait::WaitEnd,
     },
     /// Run reached a terminal state via the normal decision path.
     RunHalted { outcome: String, exit_code: i32 },

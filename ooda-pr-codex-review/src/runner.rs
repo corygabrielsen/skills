@@ -23,7 +23,7 @@
 
 use std::num::NonZeroU32;
 
-use crate::act::{ActContext, ActError, act};
+use crate::act::{ActContext, ActError, Acted, act};
 use crate::axis_impls::branch_sync::BranchSyncAxis;
 use crate::axis_impls::ci::{CiAxis, CiObservation};
 use crate::axis_impls::claude_review::{ClaudeReviewAxis, ClaudeReviewObservation};
@@ -527,13 +527,13 @@ fn run_iter(
             recorder.record_wait_start(iter, &action);
             let started = std::time::Instant::now();
             let act_result = act(&action, ctx);
-            if act_result.is_ok() {
-                recorder.record_wait_end(iter, &action, started.elapsed());
+            if let Ok(Acted::Waited(ended)) = &act_result {
+                recorder.record_wait_end(iter, &action, started.elapsed(), ended);
             }
             recorder.record_action_end(
                 iter,
                 &action,
-                act_result.as_ref().copied().map_err(ToString::to_string),
+                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
             );
             act_result.map_err(LoopError::Act)?;
             return Ok(IterStep::Executed(action));
@@ -596,13 +596,13 @@ fn run_iter(
             }
             let started = std::time::Instant::now();
             let act_result = act(&action, ctx);
-            if is_wait && act_result.is_ok() {
-                recorder.record_wait_end(iter, &action, started.elapsed());
+            if let Ok(Acted::Waited(ended)) = &act_result {
+                recorder.record_wait_end(iter, &action, started.elapsed(), ended);
             }
             recorder.record_action_end(
                 iter,
                 &action,
-                act_result.as_ref().copied().map_err(ToString::to_string),
+                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
             );
             act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))

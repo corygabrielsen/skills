@@ -124,21 +124,26 @@ pub(crate) struct ActContext {
     pub repo_root: PathBuf,
 }
 
+/// What [`act`] did: applied a side effect, or waited and ended for
+/// the stated reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Acted {
+    Applied,
+    Waited(WaitEnd),
+}
+
 /// Realise one action's side effect; the caller re-iterates on Ok.
 ///
 /// `Full` actions acquire the per-PR action lock before dispatching;
 /// `Wait` actions skip it (sleeping has no side effect); handoff
 /// arms never reach this stage.
-pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
+pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<Acted, ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => {
             let _lock = FileLock::acquire(&ctx.action_lock_path).map_err(ActError::Lock)?;
-            run_full(&action.kind, ctx)
+            run_full(&action.kind, ctx).map(|()| Acted::Applied)
         }
-        ActionEffect::Wait { interval, wake, .. } => {
-            wait(*interval, *wake);
-            Ok(())
-        }
+        ActionEffect::Wait { interval, wake, .. } => Ok(Acted::Waited(wait(*interval, *wake))),
         ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
             Err(ActError::UnsupportedAutomation)
         }

@@ -342,7 +342,7 @@ Each line is a typed event with a `kind` discriminator:
 | `iteration_oriented` | `iteration`, `blob` (oriented snapshot)                               |
 | `iteration_decided`  | `iteration`, `decision_kind`                                          |
 | `iteration_executed` | `iteration`, `action_kind`                                            |
-| `iteration_waited`   | `iteration`, `action_kind`, `interval_ms`                             |
+| `iteration_waited`   | `iteration`, `action_kind`, `interval_ms` (elapsed), `ended`          |
 | `iteration_handoff`  | `iteration`, `variant`, `action_kind`, `blob` (prompt body)           |
 | `run_halted`         | `outcome` (variant name), `exit_code`                                 |
 | `domain_specific`    | `kind_suffix`, `payload` — observe / action / wait / tool-call frames |

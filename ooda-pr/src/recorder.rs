@@ -28,7 +28,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::json;
@@ -575,13 +575,10 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action) {
-        let interval_ms = match &action.effect {
-            crate::decide::action::ActionEffect::Wait { interval, .. } => {
-                u64::try_from(interval.as_duration().as_millis()).unwrap_or(u64::MAX)
-            }
-            _ => 0,
-        };
+    /// `elapsed` is the measured duration of the wait, not the
+    /// interval the action requested.
+    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action, elapsed: Duration) {
+        let interval_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         self.best_effort(|inner| {
             inner.writer.append(EventBody::IterationWaited {
                 iteration,
@@ -1080,6 +1077,28 @@ mod tests {
             legacy_trace: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn wait_end_records_measured_elapsed_not_requested_interval() {
+        let root = temp_root("wait-elapsed");
+        let recorder = open_recorder(&root);
+        let action = sample_action(ActionEffect::Wait {
+            interval: PollingInterval::from_secs(60),
+            log: "Waiting".into(),
+        });
+        recorder.record_wait_end(1, &action, Duration::from_millis(41_237));
+        recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
+
+        let run = fs::read_dir(root.join("runs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let body = fs::read_to_string(run.path().join("events.jsonl")).unwrap();
+        assert!(body.contains(r#""interval_ms":41237"#), "{body}");
+        assert!(!body.contains(r#""interval_ms":60000"#), "{body}");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

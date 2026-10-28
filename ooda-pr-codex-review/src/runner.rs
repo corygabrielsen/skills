@@ -525,9 +525,10 @@ fn run_iter(
             ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
+            let started = std::time::Instant::now();
             let act_result = act(&action, ctx);
             if act_result.is_ok() {
-                recorder.record_wait_end(iter, &action);
+                recorder.record_wait_end(iter, &action, started.elapsed());
             }
             recorder.record_action_end(
                 iter,
@@ -593,9 +594,10 @@ fn run_iter(
             if is_wait {
                 recorder.record_wait_start(iter, &action);
             }
+            let started = std::time::Instant::now();
             let act_result = act(&action, ctx);
             if is_wait && act_result.is_ok() {
-                recorder.record_wait_end(iter, &action);
+                recorder.record_wait_end(iter, &action, started.elapsed());
             }
             recorder.record_action_end(
                 iter,

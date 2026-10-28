@@ -30,7 +30,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ooda_state::{
     BlobRef, DecisionKind, Domain, DomainKind, EventBody, ObserveOutcome, OutcomeKind, PrDomain,
@@ -552,9 +552,11 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action) {
+    /// `elapsed` is the measured duration of the wait, not the
+    /// interval the action requested.
+    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action, elapsed: Duration) {
         self.best_effort(|inner| {
-            let interval_ms = wait_interval_ms(action).unwrap_or(0);
+            let interval_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
             inner.writer.append(EventBody::IterationWaited {
                 iteration,
                 action_kind: action.kind.name().to_string(),
@@ -726,15 +728,6 @@ fn handoff_action_projection(
         "prompt": &handoff.prompt,
         "description": handoff.prompt.to_string(),
     })
-}
-
-fn wait_interval_ms(action: &Action) -> Option<u64> {
-    match &action.effect {
-        crate::decide::action::ActionEffect::Wait { interval, .. } => {
-            u64::try_from(interval.as_duration().as_millis()).ok()
-        }
-        _ => None,
-    }
 }
 
 /// Project an [`Outcome`] onto its [`OutcomeKind`] discriminant.
@@ -1031,6 +1024,29 @@ mod tests {
             legacy_trace: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn wait_end_records_measured_elapsed_not_requested_interval() {
+        use std::fs;
+        let root = temp_root("wait-elapsed");
+        let recorder = open_recorder(&root);
+        let action = sample_action(ActionEffect::Wait {
+            interval: PollingInterval::from_secs(60),
+            log: "Waiting".into(),
+        });
+        recorder.record_wait_end(1, &action, Duration::from_millis(41_237));
+        recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
+
+        let run = fs::read_dir(root.join("runs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let body = fs::read_to_string(run.path().join("events.jsonl")).unwrap();
+        assert!(body.contains(r#""interval_ms":41237"#), "{body}");
+        assert!(!body.contains(r#""interval_ms":60000"#), "{body}");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

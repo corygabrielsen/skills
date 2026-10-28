@@ -142,12 +142,14 @@ impl<'a> EventSink<'a> {
         });
     }
 
-    fn acted(&mut self, iter: u32, action: &Action, success: bool) {
+    /// `elapsed` is the measured duration of `act`; for a wait it is
+    /// recorded in place of the interval the action requested.
+    fn acted(&mut self, iter: u32, action: &Action, success: bool, elapsed: std::time::Duration) {
         let body = match &action.effect {
-            ActionEffect::Wait { interval, .. } => EventBody::IterationWaited {
+            ActionEffect::Wait { .. } => EventBody::IterationWaited {
                 iteration: iter,
                 action_kind: action.kind.name().to_string(),
-                interval_ms: u64::try_from(interval.as_duration().as_millis()).unwrap_or(u64::MAX),
+                interval_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
             },
             ActionEffect::Full { .. } | ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
                 // `acted` is emitted regardless of the act stage's
@@ -467,9 +469,10 @@ fn run_iter(
             // intervening act event — readers cannot distinguish
             // "decided then failed to act" from "decided then never
             // tried".
+            let started = std::time::Instant::now();
             let act_result = act(&action, ctx);
             let success = act_result.is_ok();
-            events.acted(iter, &action, success);
+            events.acted(iter, &action, success, started.elapsed());
             act_result.map_err(LoopError::Act)?;
             Ok(IterStep::Executed(action))
         }
@@ -582,6 +585,33 @@ mod tests {
             })
             .unwrap();
         (tmp, writer)
+    }
+
+    #[test]
+    fn acted_wait_records_measured_elapsed_not_requested_interval() {
+        let (tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
+        let action = Action {
+            kind: crate::decide::action::ActionKind::AwaitReviews {
+                level: CodexReasoningLevel::Low,
+                pending: 1,
+            },
+            effect: ActionEffect::Wait {
+                interval: ooda_core::PollingInterval::from_secs(30),
+                log: "Waiting".into(),
+            },
+            target_effect: ooda_core::TargetEffect::Blocks,
+            urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::BlockingWait),
+            blocker: ooda_core::BlockerKey::from_static("await"),
+        };
+        sink.acted(1, &action, true, std::time::Duration::from_millis(30_417));
+        let run = std::fs::read_dir(tmp.path().join("runs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let body = std::fs::read_to_string(run.path().join("events.jsonl")).unwrap();
+        assert!(body.contains(r#""interval_ms":30417"#), "{body}");
     }
 
     // ── iter-1 guaranteed run ──

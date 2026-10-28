@@ -31,7 +31,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -601,14 +601,11 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action) {
+    /// `elapsed` is the measured duration of the wait, not the
+    /// interval the action requested.
+    pub(crate) fn record_wait_end(&self, iteration: u32, action: &Action, elapsed: Duration) {
         self.best_effort(|inner| {
-            let interval_ms = match &action.effect {
-                crate::decide::action::ActionEffect::Wait { interval, .. } => {
-                    u64::try_from(interval.as_duration().as_millis()).unwrap_or(u64::MAX)
-                }
-                _ => 0,
-            };
+            let interval_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
             inner.writer.append(EventBody::IterationWaited {
                 iteration,
                 action_kind: action.kind.name().to_string(),
@@ -1124,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn record_wait_end_emits_iteration_waited_with_interval_ms() {
+    fn record_wait_end_emits_measured_elapsed_as_interval_ms() {
         let root = temp_root("wait");
         let recorder = open_recorder(&root);
         recorder.set_iteration(Some(1));
@@ -1133,7 +1130,7 @@ mod tests {
             interval: PollingInterval::from_secs(30),
             log: "Waiting".into(),
         });
-        recorder.record_wait_end(1, &action);
+        recorder.record_wait_end(1, &action, Duration::from_millis(30_012));
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);
 
         let events_text = read_events(&root);
@@ -1142,7 +1139,7 @@ mod tests {
             "{events_text}",
         );
         assert!(
-            events_text.contains(r#""interval_ms":30000"#),
+            events_text.contains(r#""interval_ms":30012"#),
             "{events_text}"
         );
         let _ = std::fs::remove_dir_all(&root);

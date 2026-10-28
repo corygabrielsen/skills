@@ -257,6 +257,9 @@ enum IterStep {
     /// wait: it continues the earlier deadline and does not count
     /// toward the cap.
     Rechecked(Action),
+    /// A shutdown signal was trapped before a side effect could start;
+    /// the loop exits with this code.
+    Interrupted(u8),
 }
 
 /// Most free re-checks one wait deadline grants. Bounds the observes
@@ -322,6 +325,7 @@ pub(crate) fn run_loop(
         None,
     )? {
         IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+        IterStep::Interrupted(exit_code) => return Ok(LoopExit::SignalInterrupted { exit_code }),
         IterStep::Executed(action) | IterStep::Rechecked(action) => action,
     };
     // Wait does not seed the stall comparator. An axis that detects
@@ -368,6 +372,9 @@ pub(crate) fn run_loop(
         )?;
         match step {
             IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+            IterStep::Interrupted(exit_code) => {
+                return Ok(LoopExit::SignalInterrupted { exit_code });
+            }
             IterStep::Rechecked(action) => last_attempted = action,
             IterStep::Executed(action) => {
                 charged += 1;
@@ -396,52 +403,8 @@ pub(crate) fn run_loop(
         return Ok(LoopExit::SignalInterrupted { exit_code });
     }
 
-    // Cap-trip force-projection (mirrors ooda-codex-review's
-    // runner): if the cap fired while polling
-    // AwaitCodexReviewBatch, at least one pending slot was still
-    // streaming when the budget ran out. Surfacing the iter-cap as
-    // StuckCapReached would discard the completed verdicts that
-    // already landed — the partial-batch discard bug. Re-scan the
-    // batch (filesystem only, no network), project the Running
-    // levels to synthetic Completes with pending slots Abandoned,
-    // and route the projected axis report through its own decide.
-    // The Address arm carries an Agent effect, so the usual
-    // classification surfaces the partial findings as a handoff;
-    // Abandoned counts as non-clean, so the projection never
-    // silently claims fixed point on a partial sample.
-    if matches!(
-        last_attempted.kind,
-        crate::decide::action::ActionKind::AwaitCodexReviewBatch { .. }
-    ) && let (Some(codex_cfg), Some(codex_ctx)) = (codex_cfg.as_ref(), ctx.codex.as_ref())
-        && let Ok(codex_obs) = fetch_codex(
-            &codex_ctx.codex_pr_root,
-            codex_cfg.floor,
-            codex_cfg.ceiling,
-            codex_ctx.n,
-            &codex_ctx.head_sha,
-        )
-    {
-        let projected = crate::observe::codex::project_abandoning_pending(
-            &codex_obs,
-            "iteration cap reached while pending slots remained alive",
-        );
-        let report = crate::orient::codex_review::orient_codex_review(&projected);
-        if let Some(action) = crate::decide::codex_review::candidates(&report)
-            .into_iter()
-            .next()
-        {
-            match ooda_core::classify(action) {
-                Decision::Halt(halt) => return Ok(LoopExit::Halted(HaltReason::Decision(halt))),
-                Decision::Execute(action) => {
-                    // Decide projected to a non-handoff action —
-                    // e.g. a NotStarted level surfacing Spawn.
-                    // There is no budget left to run it; fall
-                    // through to CapReached carrying the would-be
-                    // action for typed diagnostics.
-                    return Ok(LoopExit::Halted(HaltReason::CapReached(action)));
-                }
-            }
-        }
+    if let Some(exit) = cap_trip_projection(&ctx, codex_cfg.as_ref(), &last_attempted) {
+        return Ok(exit);
     }
 
     // `last_attempted: Action` is the witness for the cap-reached
@@ -488,6 +451,60 @@ fn apply_stall_check(
         }
     }
     StallCheckOutcome::Proceed(action)
+}
+
+/// Cap-trip force-projection (mirrors ooda-codex-review's runner):
+/// if the cap fired while polling `AwaitCodexReviewBatch`, at least
+/// one pending slot was still streaming when the budget ran out.
+/// Surfacing the iter-cap as `StuckCapReached` would discard the
+/// completed verdicts that already landed — the partial-batch
+/// discard bug. Re-scan the batch (filesystem only, no network),
+/// project the Running levels to synthetic Completes with pending
+/// slots Abandoned, and route the projected axis report through its
+/// own decide. The Address arm carries an Agent effect, so the usual
+/// classification surfaces the partial findings as a handoff;
+/// Abandoned counts as non-clean, so the projection never silently
+/// claims fixed point on a partial sample. `None` leaves the cap.
+fn cap_trip_projection(
+    ctx: &ActContext,
+    codex_cfg: Option<&CodexReviewConfig>,
+    last_attempted: &Action,
+) -> Option<LoopExit> {
+    if matches!(
+        last_attempted.kind,
+        crate::decide::action::ActionKind::AwaitCodexReviewBatch { .. }
+    ) && let (Some(codex_cfg), Some(codex_ctx)) = (codex_cfg, ctx.codex.as_ref())
+        && let Ok(codex_obs) = fetch_codex(
+            &codex_ctx.codex_pr_root,
+            codex_cfg.floor,
+            codex_cfg.ceiling,
+            codex_ctx.n,
+            &codex_ctx.head_sha,
+        )
+    {
+        let projected = crate::observe::codex::project_abandoning_pending(
+            &codex_obs,
+            "iteration cap reached while pending slots remained alive",
+        );
+        let report = crate::orient::codex_review::orient_codex_review(&projected);
+        if let Some(action) = crate::decide::codex_review::candidates(&report)
+            .into_iter()
+            .next()
+        {
+            match ooda_core::classify(action) {
+                Decision::Halt(halt) => return Some(LoopExit::Halted(HaltReason::Decision(halt))),
+                Decision::Execute(action) => {
+                    // Decide projected to a non-handoff action —
+                    // e.g. a NotStarted level surfacing Spawn.
+                    // There is no budget left to run it; fall
+                    // through to CapReached carrying the would-be
+                    // action for typed diagnostics.
+                    return Some(LoopExit::Halted(HaltReason::CapReached(action)));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// One observe → orient → decide → act cycle. Returns an early-halt
@@ -606,6 +623,12 @@ fn run_iter(
                 StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
+            // A side effect started after a trapped signal would hold
+            // the shutdown for its whole run; waits end on the signal
+            // themselves.
+            if !is_wait && let Some(exit_code) = crate::signal::check_shutdown() {
+                return Ok(IterStep::Interrupted(exit_code));
+            }
             let recheck = charge_wait(pending, &action, ctx.probe_tick);
             if let Some(deadline) = pending.as_ref().map(|p| p.deadline)
                 && is_wait

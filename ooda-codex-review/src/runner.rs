@@ -183,6 +183,9 @@ impl<'a> EventSink<'a> {
 enum IterStep {
     Halt(HaltReason),
     Executed(Action),
+    /// A shutdown signal was trapped before a side effect could start;
+    /// the loop exits with this code.
+    Interrupted(u8),
 }
 
 /// Loop terminator. `Halted` is the ordinary exit path (decision /
@@ -245,6 +248,7 @@ pub(crate) fn run_loop(
         None,
     )? {
         IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+        IterStep::Interrupted(exit_code) => return Ok(LoopExit::SignalInterrupted { exit_code }),
         IterStep::Executed(action) => action,
     };
     let mut last_non_wait_key = if last_attempted.effect.is_wait() {
@@ -288,6 +292,9 @@ pub(crate) fn run_loop(
         )?;
         match step {
             IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+            IterStep::Interrupted(exit_code) => {
+                return Ok(LoopExit::SignalInterrupted { exit_code });
+            }
             IterStep::Executed(action) => {
                 let key = action.stall_key();
                 let is_wait = action.effect.is_wait();
@@ -466,6 +473,14 @@ fn run_iter(
                 StallCheckOutcome::Halt(reason) => return Ok(IterStep::Halt(reason)),
                 StallCheckOutcome::Proceed(a) => a,
             };
+            // A side effect started after a trapped signal would hold
+            // the shutdown for its whole run; waits end on the signal
+            // themselves.
+            if !action.effect.is_wait()
+                && let Some(exit_code) = crate::signal::check_shutdown()
+            {
+                return Ok(IterStep::Interrupted(exit_code));
+            }
             // Record `acted` regardless of `act()`'s result so a
             // failed act lands an `IterationExecuted { success: false }`
             // on the event stream BEFORE the loop bubbles the error.
@@ -715,6 +730,29 @@ mod tests {
             halt,
             HaltReason::Decision(crate::decide::decision::DecisionHalt::AgentNeeded(_))
         ));
+    }
+
+    #[test]
+    fn signal_during_observe_stops_the_spawn_it_decided() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let observe = |_: &RepoId, _: &ReviewTarget| {
+            crate::signal::set_for_test(143);
+            Ok(obs(BatchState::NotStarted))
+        };
+        let ctx = ctx();
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
+        let exit = run_loop(&repo_id(), &target(), loop_cfg(5), &ctx, observe, &mut sink).unwrap();
+        crate::signal::reset_for_test();
+        assert!(
+            matches!(exit, LoopExit::SignalInterrupted { exit_code: 143 }),
+            "{exit:?}"
+        );
+        assert!(
+            ctx.spawned_pgids.lock().unwrap().is_empty(),
+            "no review spawned"
+        );
     }
 
     #[test]

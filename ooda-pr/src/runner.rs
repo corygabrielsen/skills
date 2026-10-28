@@ -232,6 +232,9 @@ pub(crate) enum IterStep {
     /// wait: it continues the earlier deadline and does not count
     /// toward the cap.
     Rechecked(Action),
+    /// A shutdown signal was trapped before a side effect could start;
+    /// the loop exits with this code.
+    Interrupted(u8),
 }
 
 /// Most free re-checks one wait deadline grants. Bounds the observes
@@ -318,6 +321,7 @@ where
     // runs, and a stall comparator does not exist yet.
     let mut last_attempted: Action = match run_iter_fn(1, None, None)? {
         IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+        IterStep::Interrupted(exit_code) => return Ok(LoopExit::SignalInterrupted { exit_code }),
         IterStep::Executed(action) | IterStep::Rechecked(action) => action,
     };
     // Wait does not seed the stall comparator. An axis that detects
@@ -359,6 +363,9 @@ where
         )?;
         match step {
             IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+            IterStep::Interrupted(exit_code) => {
+                return Ok(LoopExit::SignalInterrupted { exit_code });
+            }
             IterStep::Rechecked(action) => last_attempted = action,
             IterStep::Executed(action) => {
                 charged += 1;
@@ -533,6 +540,12 @@ fn run_iter(
                 StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
+            // A side effect started after a trapped signal would hold
+            // the shutdown for its whole run; waits end on the signal
+            // themselves.
+            if !is_wait && let Some(exit_code) = crate::signal::check_shutdown() {
+                return Ok(IterStep::Interrupted(exit_code));
+            }
             let recheck = charge_wait(pending, &action, ctx.probe_tick);
             if let Some(deadline) = pending.as_ref().map(|p| p.deadline)
                 && is_wait
@@ -822,7 +835,9 @@ mod tests {
                     }
                     Ok(IterStep::Executed(action))
                 }
-                other @ (IterStep::Halt(_) | IterStep::Rechecked(_)) => Ok(other),
+                other @ (IterStep::Halt(_) | IterStep::Rechecked(_) | IterStep::Interrupted(_)) => {
+                    Ok(other)
+                }
             }
         }
     }
@@ -1132,6 +1147,28 @@ mod tests {
             LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 130),
             halt @ LoopExit::Halted(_) => panic!("expected SignalInterrupted(130), got {halt:?}"),
         }
+    }
+
+    #[test]
+    fn interrupted_step_exits_with_its_signal() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let calls = RefCell::new(0u32);
+        let mut script = scripted(vec![
+            IterStep::Executed(rebase()),
+            IterStep::Interrupted(143),
+            IterStep::Executed(rebase()),
+        ]);
+        let exit = run_loop_with(cfg(10), |iter, a, b| {
+            *calls.borrow_mut() += 1;
+            script(iter, a, b)
+        })
+        .unwrap();
+        assert!(matches!(
+            exit,
+            LoopExit::SignalInterrupted { exit_code: 143 }
+        ));
+        assert_eq!(*calls.borrow(), 2);
     }
 
     #[test]

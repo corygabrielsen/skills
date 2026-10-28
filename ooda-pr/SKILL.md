@@ -656,8 +656,8 @@ decide → act`. The first three always run; `act` runs only when
 `automation ∈ {Full, Wait { .. }}`). For `Wait` actions, `act`
 waits up to the interval and returns. An observing wait
 (`wake: OnChange`) polls the PR's REST surface every 5s with
-conditional requests and ends as soon as an endpoint's projected
-state changes; a backoff or propagation window (`wake: Elapsed`)
+conditional requests and ends once an endpoint's projected state
+changes, no sooner than 20s after the previous observe began; a backoff or propagation window (`wake: Elapsed`)
 runs in full. Every wait ends within 200 ms of a trapped signal.
 For `Full` actions, `act`
 invokes the action's side-effect. For `Agent` / `Human`

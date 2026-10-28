@@ -45,13 +45,36 @@ pub(crate) struct Escalation {
     pub verdict: Option<CopilotVerdict>,
 }
 
+/// What the attestation says about the latest verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing<'a> {
+    /// No entry answers it.
+    Open,
+    /// An entry answers it.
+    Recorded(&'a CopilotVerdictEntry),
+    /// The attestation file is unreadable, so whether an entry answers
+    /// it is unknown.
+    Unknown,
+}
+
 impl CopilotVerdictReport {
-    /// The latest verdict, when it is a concern no entry answers.
+    #[must_use]
+    pub(crate) fn standing(&self) -> Standing<'_> {
+        if self.unreadable.is_some() {
+            Standing::Unknown
+        } else {
+            self.latest_entry
+                .as_ref()
+                .map_or(Standing::Open, Standing::Recorded)
+        }
+    }
+
+    /// The latest verdict, when it is a concern known to be unanswered.
     #[must_use]
     pub(crate) fn pending(&self) -> Option<&CopilotVerdict> {
         self.latest
             .as_ref()
-            .filter(|v| v.stance == VerdictStance::Concern && self.latest_entry.is_none())
+            .filter(|v| v.stance == VerdictStance::Concern && self.standing() == Standing::Open)
     }
 }
 

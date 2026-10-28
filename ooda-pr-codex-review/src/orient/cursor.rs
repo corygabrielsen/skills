@@ -380,12 +380,13 @@ fn correlate_rounds(reviews: &[PullRequestReview]) -> Vec<CursorReviewRound> {
         .enumerate()
         .filter_map(|(i, r)| {
             let reviewed_at = r.submitted_at?;
+            let commit = r.commit_id.clone()?;
             Some(CursorReviewRound {
                 // Review-round index fits in u32: bounded by GitHub's
                 // per-PR review history (orders of magnitude < 4B).
                 round: u32::try_from(i).expect("review round index fits in u32") + 1,
                 reviewed_at,
-                commit: r.commit_id.clone(),
+                commit,
                 findings_count: parse_findings_count(&r.body),
             })
         })
@@ -397,7 +398,8 @@ fn correlate_rounds(reviews: &[PullRequestReview]) -> Vec<CursorReviewRound> {
 /// findings-present on the success arm.
 fn reviews_at_head(reviews: &[PullRequestReview], head: &GitCommitSha) -> bool {
     reviews.iter().any(|r| {
-        r.commit_id == *head && r.user.as_ref().is_some_and(|u| is_cursor(u.login.as_str()))
+        r.commit_id.as_ref() == Some(head)
+            && r.user.as_ref().is_some_and(|u| is_cursor(u.login.as_str()))
     })
 }
 
@@ -671,6 +673,7 @@ mod tests {
         CursorCheckRun, CursorCheckSuite, CursorRunOutput, CursorStatus,
     };
     use crate::observe::github::pull_request_view::PullRequestAuthor;
+    use crate::observe::github::requested_reviewers::UserType;
     use crate::observe::github::review_threads::{
         CommentAuthor, PageInfo, ReviewRequestsPage, ReviewThread, ReviewThreadsData,
         ReviewThreadsPage, ReviewThreadsPr, ReviewThreadsRepo, ReviewThreadsResponse,
@@ -705,10 +708,10 @@ mod tests {
             id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("cursor[bot]").unwrap(),
-                user_type: None,
+                user_type: UserType::Bot,
             }),
             state: ReviewState::Commented,
-            commit_id: GitCommitSha::parse(sha).unwrap(),
+            commit_id: Some(GitCommitSha::parse(sha).unwrap()),
             submitted_at: Some(ts(at)),
             body: body.into(),
             html_url: String::new(),

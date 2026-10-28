@@ -361,11 +361,6 @@ fn drain_comment_pages(thread: &mut ReviewThread) -> Result<(), GhError> {
     if !thread.comments.page_info.has_next_page {
         return Ok(());
     }
-    if thread.id.is_empty() {
-        // Defensive: a fixture without an id cannot be paginated;
-        // treat as end-of-stream rather than fail.
-        return Ok(());
-    }
     let mut cursor = next_cursor(thread.comments.page_info.clone());
     while let Some(c) = cursor {
         let page = fetch_thread_comments_page(&thread.id, &c)?;

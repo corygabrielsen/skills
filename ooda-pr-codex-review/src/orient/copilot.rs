@@ -66,8 +66,8 @@ const COPILOT_DISPLAY_LOGIN: &str = "Copilot";
 /// the host's `Bot` attestation: any plain-user account can register
 /// a bare name, but cannot carry the `Bot` type. Bot-form logins
 /// classify regardless of attestation ([`is_copilot`]).
-pub(crate) fn is_copilot_ref(login: &str, user_type: Option<UserType>) -> bool {
-    is_copilot(login) || (user_type == Some(UserType::Bot) && login == COPILOT_DISPLAY_LOGIN)
+pub(crate) fn is_copilot_ref(login: &str, user_type: UserType) -> bool {
+    is_copilot(login) || (user_type == UserType::Bot && login == COPILOT_DISPLAY_LOGIN)
 }
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -247,12 +247,20 @@ pub(crate) struct CopilotReviewRound {
 /// located findings, name a defect it never locates, or ask for
 /// verification no commit can supply; only an agent can tell which.
 ///
-/// | stance  | located findings | route                                        |
-/// |---------|------------------|----------------------------------------------|
-/// | Concern | some             | `AddressThreads`, assessment as frame + attest |
-/// | Concern | none             | `ResolveCopilotVerdict`                      |
-/// | Approve | some             | `AddressThreads`, assessment as frame        |
-/// | Approve | none             | —                                            |
+/// Routing by standing (see `orient::copilot_verdict::Standing`) and
+/// whether unresolved Copilot threads remain:
+///
+/// | stance  | standing | Copilot threads | route                                              |
+/// |---------|----------|-----------------|----------------------------------------------------|
+/// | Concern | open     | some            | `AddressThreads`: frame as work + attest step      |
+/// | Concern | open     | none            | `ResolveCopilotVerdict`                            |
+/// | any     | recorded | some            | `AddressThreads`: frame as context                 |
+/// | any     | unknown  | some            | `AddressThreads`: frame as context                 |
+/// | Approve | open     | some            | `AddressThreads`: frame as context                 |
+/// | any     | any      | none            | — (beyond the open-concern row)                    |
+///
+/// Escalations and an unreadable attestation raise their own human
+/// handoffs regardless of threads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct CopilotVerdict {
     pub review_id: u64,
@@ -592,9 +600,9 @@ struct DetailsBlock {
     /// rendered as links are inline review threads, which the visible
     /// channel counts; body-rendered findings never carry one.
     linked: bool,
-    /// The block holds nested `<details>` elements: a section whose
-    /// entries are findings, not a finding itself.
-    nests: bool,
+    /// No `<details>` element encloses the block: a section, never a
+    /// finding, which the host nests inside its section.
+    top_level: bool,
 }
 
 const DETAILS_CLOSE: &str = "</details>";
@@ -610,7 +618,7 @@ fn details_blocks(body: &str) -> Vec<DetailsBlock> {
         let at = cursor + rel;
         if body[at..].starts_with(DETAILS_CLOSE) {
             if let Some(start) = opens.pop() {
-                out.push(details_block(&body[start..at]));
+                out.push(details_block(&body[start..at], opens.is_empty()));
             }
             cursor = at + DETAILS_CLOSE.len();
         } else if let Some(after) = open_details_end(&body[at..]) {
@@ -620,8 +628,8 @@ fn details_blocks(body: &str) -> Vec<DetailsBlock> {
             cursor = at + 1;
         }
     }
-    for start in opens.into_iter().rev() {
-        out.push(details_block(&body[start..]));
+    for (depth, start) in opens.into_iter().enumerate().rev() {
+        out.push(details_block(&body[start..], depth == 0));
     }
     out
 }
@@ -637,17 +645,16 @@ fn open_details_end(s: &str) -> Option<usize> {
     Some(OPEN.len() + rest.find('>')? + 1)
 }
 
-fn details_block(inner: &str) -> DetailsBlock {
+fn details_block(inner: &str, top_level: bool) -> DetailsBlock {
     let (summary, rest) = split_summary(inner);
     let content = elide_nested_details(rest);
     let linked = summary.contains("](#") || content.contains("](#");
-    let nests = rest.contains("<details");
     DetailsBlock {
         summary: strip_tags(summary).trim().to_string(),
         severity: severity_of_markup(summary),
         content,
         linked,
-        nests,
+        top_level,
     }
 }
 
@@ -958,7 +965,7 @@ fn block_stated_count(block: &DetailsBlock) -> Option<u32> {
         .filter_map(|text| {
             // A leading digit run states a count only on a section
             // label; a finding's own title can open with a number.
-            paren_count(text).or_else(|| block.nests.then(|| leading_count(text)).flatten())
+            paren_count(text).or_else(|| block.top_level.then(|| leading_count(text)).flatten())
         })
         .max()
 }
@@ -1128,7 +1135,7 @@ fn correlate_rounds(
 
     let consume_review = |rev: &PullRequestReview, round: &mut CopilotReviewRound| {
         round.reviewed_at = rev.submitted_at;
-        round.commit = Some(rev.commit_id.clone());
+        round.commit.clone_from(&rev.commit_id);
         let signals = parse_copilot_review_body(&rev.body);
         round.comments_visible = signals.visible.max(structural_visible(rev));
         round.comments_suppressed = signals.suppressed;
@@ -1232,7 +1239,7 @@ fn synthetic_round(
         requested_at: anchor,
         ack_at: None,
         reviewed_at: rev.submitted_at,
-        commit: Some(rev.commit_id.clone()),
+        commit: rev.commit_id.clone(),
         comments_visible: signals.visible.max(structural_visible),
         comments_suppressed: signals.suppressed,
         suppressed_comments: signals.suppressed_comments,
@@ -1458,7 +1465,7 @@ fn currently_pending(requested: &RequestedReviewers) -> bool {
     requested
         .users
         .iter()
-        .any(|u| is_copilot_ref(u.login.as_str(), Some(u.user_type)))
+        .any(|u| is_copilot_ref(u.login.as_str(), u.user_type))
 }
 
 // ── Health computation ───────────────────────────────────────────────
@@ -1652,10 +1659,10 @@ mod tests {
             id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
-                user_type: None,
+                user_type: UserType::Bot,
             }),
             state: ReviewState::Commented,
-            commit_id: GitCommitSha::parse(sha).unwrap(),
+            commit_id: Some(GitCommitSha::parse(sha).unwrap()),
             submitted_at: Some(ts(at)),
             body: body.into(),
             html_url: String::new(),
@@ -1670,7 +1677,11 @@ mod tests {
             created_at: Some(ts(at)),
             requested_reviewer: Some(UserRef {
                 login: GitHubLogin::parse(login).unwrap(),
-                user_type: None,
+                user_type: if login.ends_with("[bot]") {
+                    UserType::Bot
+                } else {
+                    UserType::User
+                },
             }),
             requested_team: None,
             // review_requested events are NOT app-performed; only
@@ -1760,19 +1771,21 @@ mod tests {
     fn is_copilot_ref_accepts_bare_login_only_with_bot_attestation() {
         // The 2026-08 host migration: `requested_reviewer` carries the
         // bare display login with a host-attested account type.
-        assert!(is_copilot_ref("Copilot", Some(UserType::Bot)));
-        // No attestation (or non-Bot): a user-registrable bare name.
-        assert!(!is_copilot_ref("Copilot", None));
-        assert!(!is_copilot_ref("Copilot", Some(UserType::User)));
-        assert!(!is_copilot_ref("Copilot", Some(UserType::Unknown)));
+        assert!(is_copilot_ref("Copilot", UserType::Bot));
+        // Non-Bot attestation: a user-registrable bare name.
+        assert!(!is_copilot_ref("Copilot", UserType::User));
+        assert!(!is_copilot_ref("Copilot", UserType::Unknown));
         // Attestation does not admit other identities.
-        assert!(!is_copilot_ref("Cursor", Some(UserType::Bot)));
-        assert!(!is_copilot_ref("alice", Some(UserType::Bot)));
-        // Bot-form logins classify with or without attestation.
-        assert!(is_copilot_ref("copilot-pull-request-reviewer[bot]", None));
+        assert!(!is_copilot_ref("Cursor", UserType::Bot));
+        assert!(!is_copilot_ref("alice", UserType::Bot));
+        // Bot-form logins classify under any attestation.
         assert!(is_copilot_ref(
             "copilot-pull-request-reviewer[bot]",
-            Some(UserType::Bot)
+            UserType::User
+        ));
+        assert!(is_copilot_ref(
+            "copilot-pull-request-reviewer[bot]",
+            UserType::Bot
         ));
     }
 
@@ -1785,7 +1798,7 @@ mod tests {
         let mut e = req_event("2026-08-19T19:35:06Z", "alice");
         e.requested_reviewer = Some(UserRef {
             login: GitHubLogin::parse("Copilot").unwrap(),
-            user_type: Some(UserType::Bot),
+            user_type: UserType::Bot,
         });
         let events = [&e];
         let timeline = copilot_timeline(&events[..]);
@@ -2033,6 +2046,15 @@ Stub-only validation leaves custody-signer provisioning unverified against real 
                 "{heading}"
             );
         }
+    }
+
+    #[test]
+    fn a_finding_wrapping_its_own_collapsible_is_not_a_count() {
+        let body = "<details>\n<summary><strong>1 previously missed issue</strong></summary>\n\n\
+                    <details>\n<summary>404 page misses auth check</summary>\n\n\
+                    `src/a.rs:3`\n\nBody.\n\n<details><summary>Suggested fix</summary>\n\
+                    ```diff\n-a\n+b\n```\n</details>\n</details>\n</details>\n";
+        assert_eq!(parse_copilot_review_body(body).suppressed, 1);
     }
 
     #[test]

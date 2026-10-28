@@ -13,10 +13,10 @@ use std::path::Path;
 use ooda_core::{HandoffPrompt, NonEmpty, SafeUrl, SingleLineString, Witness};
 
 use crate::ids::PullRequestNumber;
-use ooda_core::attest::{CopilotVerdictEntry, VerdictDisposition};
+use ooda_core::attest::VerdictDisposition;
 
 use crate::orient::copilot::{CopilotVerdict, VerdictStance};
-use crate::orient::copilot_verdict::Escalation;
+use crate::orient::copilot_verdict::{Escalation, Standing};
 
 /// Append the verdict as the frame Copilot's threads are read
 /// through, worded by its standing: an unanswered concern is work, a
@@ -24,25 +24,28 @@ use crate::orient::copilot_verdict::Escalation;
 pub(crate) fn push_verdict_frame(
     prompt: &mut HandoffPrompt,
     verdict: &CopilotVerdict,
-    entry: Option<&CopilotVerdictEntry>,
+    standing: Standing<'_>,
 ) {
     prompt.push_heading(3, "Copilot's overall assessment");
     prompt.push_witnesses(NonEmpty::singleton(verdict_witness(verdict)));
-    prompt.push_paragraph(match (entry, verdict.stance) {
-        (None, VerdictStance::Concern) => "The Copilot threads below are instances of this \
-             assessment. Fix the concern it names, not only the anchored lines."
+    prompt.push_paragraph(match (standing, verdict.stance) {
+        (Standing::Open, VerdictStance::Concern) => "The Copilot threads below are instances \
+             of this assessment. Fix the concern it names, not only the anchored lines."
             .to_string(),
-        (None, VerdictStance::Approve) => {
+        (Standing::Open, VerdictStance::Approve) => {
             "Copilot recommends approval; the threads below are its remaining findings.".to_string()
         }
-        (Some(e), _) if e.disposition == VerdictDisposition::Escalate => format!(
+        (Standing::Recorded(e), _) if e.disposition == VerdictDisposition::Escalate => format!(
             "Escalated to a human, who decides it: {}. Do not act on the assessment.",
             e.note
         ),
-        (Some(e), _) => format!(
+        (Standing::Recorded(e), _) => format!(
             "Recorded as `{}`: {}. Shown for context.",
             e.disposition, e.note
         ),
+        (Standing::Unknown, _) => "Its recorded answer is unreadable until a human repairs \
+             the attestation file. Shown for context; do not act on the assessment."
+            .to_string(),
     });
 }
 

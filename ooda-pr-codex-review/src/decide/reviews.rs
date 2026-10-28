@@ -22,13 +22,12 @@ use crate::act::review_class::{
 use crate::observe::github::pull_request_view::ReviewDecision;
 use crate::orient::ci::CiReport;
 use crate::orient::copilot::{CopilotReport, CopilotVerdict};
-use crate::orient::copilot_verdict::CopilotVerdictReport;
+use crate::orient::copilot_verdict::{CopilotVerdictReport, Standing};
 use crate::orient::review_class::ReviewClass;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{
     BotName, FilePath, ReviewThread, ThreadAuthor, ThreadId, ThreadLocation, ThreadState,
 };
-use ooda_core::attest::CopilotVerdictEntry;
 
 use super::action::{Action, ActionEffect, ActionKind, MidTier, NonEmpty, TargetEffect, Urgency};
 use ooda_core::{HandoffPrompt, SingleLineString, Witness};
@@ -129,7 +128,7 @@ pub(crate) fn candidates(
     let pending_verdict = verdict
         .report
         .pending()
-        .filter(|_| verdict.attest_path.is_some() && verdict.report.unreadable.is_none());
+        .filter(|_| verdict.attest_path.is_some());
     let copilot_threads = unresolved_threads
         .iter()
         .any(|t| matches!(t.author, ThreadAuthor::Bot(BotName::Copilot)));
@@ -138,7 +137,7 @@ pub(crate) fn candidates(
         .latest
         .as_ref()
         .filter(|_| copilot_threads)
-        .map(|v| (v, verdict.report.latest_entry.as_ref()));
+        .map(|v| (v, verdict.report.standing()));
     let carried = pending_verdict.filter(|_| copilot_threads);
 
     let address_fired = if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads)
@@ -694,7 +693,7 @@ fn address_threads_prompt(
     history: &[ReviewThread],
     review_class: &ReviewClass,
     review_class_attest_path: Option<&Path>,
-    frame: Option<(&CopilotVerdict, Option<&CopilotVerdictEntry>)>,
+    frame: Option<(&CopilotVerdict, Standing<'_>)>,
     pending_verdict: Option<(&CopilotVerdict, Option<&Path>)>,
     pr: PullRequestNumber,
 ) -> ooda_core::HandoffPrompt {
@@ -720,8 +719,8 @@ fn address_threads_prompt(
         prompt.push_paragraph(format!("{}.", bits.join(" · ")));
     }
 
-    if let Some((v, entry)) = frame {
-        push_verdict_frame(&mut prompt, v, entry);
+    if let Some((v, standing)) = frame {
+        push_verdict_frame(&mut prompt, v, standing);
     }
 
     prompt.push_witnesses(thread_witnesses(threads, history));
@@ -1383,6 +1382,28 @@ mod tests {
         assert!(
             rendered.contains("needs a supervised live run"),
             "{rendered}"
+        );
+    }
+
+    #[test]
+    fn unreadable_attestation_frames_as_context_not_work() {
+        use crate::orient::copilot::VerdictStance;
+        let mut report = verdict_report(VerdictStance::Concern, vec![]);
+        report.unreadable = Some("attestation parse error".into());
+        let cs = cands_with_verdict(&[live_thread("src/a.rs", 1, "x")], &report);
+        let threads = cs
+            .iter()
+            .find(|c| matches!(c.kind, ActionKind::AddressThreads { .. }))
+            .unwrap()
+            .rendered_payload();
+        assert!(
+            threads.contains("recorded answer is unreadable"),
+            "{threads}"
+        );
+        assert!(!threads.contains("Fix the concern"), "{threads}");
+        assert!(
+            !threads.contains("ooda-attest copilot-verdict"),
+            "{threads}"
         );
     }
 

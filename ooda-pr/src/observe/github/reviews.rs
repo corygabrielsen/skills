@@ -29,7 +29,8 @@ pub(crate) struct PullRequestReview {
     /// Null when the author identity has been deleted.
     pub user: Option<ReviewUser>,
     pub state: ReviewState,
-    pub commit_id: GitCommitSha,
+    /// Null when the reviewed commit no longer exists.
+    pub commit_id: Option<GitCommitSha>,
     /// Absent for un-submitted (pending) reviews.
     #[serde(default)]
     pub submitted_at: Option<Timestamp>,
@@ -41,8 +42,8 @@ pub(crate) struct PullRequestReview {
 pub(crate) struct ReviewUser {
     pub login: GitHubLogin,
     /// Host-attested account type; see `UserRef::user_type`.
-    #[serde(rename = "type", default)]
-    pub user_type: Option<UserType>,
+    #[serde(rename = "type")]
+    pub user_type: UserType,
 }
 
 /// Per-review verdict. `Unknown` is the forward-compat fallback
@@ -84,7 +85,7 @@ mod tests {
     fn pending_review_has_null_submitted_at() {
         let json = r#"[{
             "id": 7,
-            "user": {"login": "alice"},
+            "user": {"login": "alice", "type": "User"},
             "state": "PENDING",
             "commit_id": "0123456789abcdef0123456789abcdef01234567",
             "submitted_at": null,
@@ -108,7 +109,7 @@ mod tests {
         ];
         for (s, expected) in cases {
             let json = format!(
-                r#"[{{"id":1,"user":{{"login":"a"}},"state":"{s}","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":"","html_url":"u"}}]"#,
+                r#"[{{"id":1,"user":{{"login":"a","type":"User"}},"state":"{s}","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":"","html_url":"u"}}]"#,
                 sha = "a".repeat(40),
             );
             let reviews: Vec<PullRequestReview> = serde_json::from_str(&json).unwrap();
@@ -123,7 +124,7 @@ mod tests {
         // downstream axes treat Unknown as "verdict observed but
         // unmodeled" rather than as "no review".
         let json = format!(
-            r#"[{{"id":1,"user":{{"login":"a"}},"state":"WEIRD","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":"","html_url":"u"}}]"#,
+            r#"[{{"id":1,"user":{{"login":"a","type":"User"}},"state":"WEIRD","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":"","html_url":"u"}}]"#,
             sha = "a".repeat(40),
         );
         let reviews: Vec<PullRequestReview> = serde_json::from_str(&json).unwrap();

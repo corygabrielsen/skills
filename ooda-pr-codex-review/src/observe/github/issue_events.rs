@@ -51,8 +51,8 @@ pub(crate) struct UserRef {
     /// host emits the bare display login `Copilot` on this surface,
     /// and only the `Bot` attestation distinguishes it from a
     /// user-registrable bare name.
-    #[serde(rename = "type", default)]
-    pub user_type: Option<UserType>,
+    #[serde(rename = "type")]
+    pub user_type: UserType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

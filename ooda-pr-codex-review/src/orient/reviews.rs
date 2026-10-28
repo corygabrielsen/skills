@@ -233,7 +233,7 @@ fn partition_approvals(reviews: &[PullRequestReview], head: &GitCommitSha) -> (u
         if r.state != ReviewState::Approved {
             continue;
         }
-        if &r.commit_id != head {
+        if r.commit_id.as_ref() != Some(head) {
             stale += 1;
         }
     }
@@ -261,7 +261,7 @@ fn distinct_human_approvers_on_head(
         if r.state != ReviewState::Approved {
             continue;
         }
-        if &r.commit_id != head {
+        if r.commit_id.as_ref() != Some(head) {
             continue;
         }
         let Some(user) = r.user.as_ref() else {
@@ -400,10 +400,14 @@ mod tests {
             id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse(login).unwrap(),
-                user_type: None,
+                user_type: if login.ends_with("[bot]") {
+                    UserType::Bot
+                } else {
+                    UserType::User
+                },
             }),
             state,
-            commit_id: GitCommitSha::parse(sha).unwrap(),
+            commit_id: Some(GitCommitSha::parse(sha).unwrap()),
             submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
             body: String::new(),
             html_url: String::new(),
@@ -788,10 +792,10 @@ mod tests {
                 id: 1,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("alice").unwrap(),
-                    user_type: None,
+                    user_type: UserType::User,
                 }),
                 state: ReviewState::ChangesRequested,
-                commit_id: GitCommitSha::parse(HEAD).unwrap(),
+                commit_id: Some(GitCommitSha::parse(HEAD).unwrap()),
                 submitted_at: Some(Timestamp::parse("2026-04-20T10:00:00Z").unwrap()),
                 body: "old feedback".into(),
                 html_url: String::new(),
@@ -801,10 +805,10 @@ mod tests {
                 id: 1,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("copilot[bot]").unwrap(),
-                    user_type: None,
+                    user_type: UserType::Bot,
                 }),
                 state: ReviewState::ChangesRequested,
-                commit_id: GitCommitSha::parse(HEAD).unwrap(),
+                commit_id: Some(GitCommitSha::parse(HEAD).unwrap()),
                 submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
                 body: "bot feedback".into(),
                 html_url: String::new(),
@@ -814,10 +818,10 @@ mod tests {
                 id: 1,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("bob").unwrap(),
-                    user_type: None,
+                    user_type: UserType::User,
                 }),
                 state: ReviewState::ChangesRequested,
-                commit_id: GitCommitSha::parse(HEAD).unwrap(),
+                commit_id: Some(GitCommitSha::parse(HEAD).unwrap()),
                 submitted_at: Some(Timestamp::parse("2026-04-22T10:00:00Z").unwrap()),
                 body: "newer feedback".into(),
                 html_url: String::new(),
@@ -844,10 +848,10 @@ mod tests {
             id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot[bot]").unwrap(),
-                user_type: None,
+                user_type: UserType::Bot,
             }),
             state: ReviewState::ChangesRequested,
-            commit_id: GitCommitSha::parse(HEAD).unwrap(),
+            commit_id: Some(GitCommitSha::parse(HEAD).unwrap()),
             submitted_at: Some(Timestamp::parse("2026-04-23T10:00:00Z").unwrap()),
             body: "bot feedback".into(),
             html_url: String::new(),

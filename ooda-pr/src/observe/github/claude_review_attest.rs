@@ -181,6 +181,7 @@ mod tests {
     use super::*;
     use crate::ids::{GitHubLogin, RepoSlug, Timestamp};
     use crate::observe::github::comments::{CommentUser, IssueComment};
+    use crate::observe::github::requested_reviewers::UserType;
     use crate::observe::github::review_threads::{
         CommentAuthor, PageInfo, ReviewRequestsPage, ReviewThread, ReviewThreadsData,
         ReviewThreadsPage, ReviewThreadsPr, ReviewThreadsRepo, ThreadComment, ThreadComments,
@@ -225,10 +226,10 @@ mod tests {
             id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("claude[bot]").unwrap(),
-                user_type: None,
+                user_type: UserType::Bot,
             }),
             state: ReviewState::Commented,
-            commit_id: GitCommitSha::parse(VALID_SHA).unwrap(),
+            commit_id: Some(GitCommitSha::parse(VALID_SHA).unwrap()),
             submitted_at: Some(Timestamp::parse(at).unwrap()),
             body: body.into(),
             html_url: url.into(),
@@ -465,10 +466,10 @@ mod tests {
             id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
-                user_type: None,
+                user_type: UserType::Bot,
             }),
             state: ReviewState::Commented,
-            commit_id: GitCommitSha::parse(VALID_SHA).unwrap(),
+            commit_id: Some(GitCommitSha::parse(VALID_SHA).unwrap()),
             submitted_at: Some(Timestamp::parse("2026-05-02T10:00:00Z").unwrap()),
             body: "copilot".into(),
             html_url: String::new(),

@@ -654,6 +654,8 @@ mod tests {
 
     #[test]
     fn rechecks_do_not_count_toward_the_cap() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
         let calls = RefCell::new(0u32);
         let mut seq = vec![IterStep::Executed(ci_wait())];
         seq.extend(std::iter::repeat_with(|| IterStep::Rechecked(ci_wait())).take(5));

@@ -17,9 +17,15 @@
 //! - **Frontier pages**: append-only lists are read at the page the
 //!   next item lands on, `count / per_page + 1`. Edits below the
 //!   frontier are not observed; the wait's deadline bounds that miss.
-//! - **Comments by recency**: issue comments are read `since` the
-//!   last observe began, so a new or edited comment is a non-empty
-//!   page.
+//! - **Comments by server time**: issue comments are read `since` the
+//!   newest update the last observe saw, and change iff an item is
+//!   newer or is an unseen comment updated at that same instant. The
+//!   cursor is GitHub's own timestamp, immune to local clock skew.
+//! - **Whole passes**: a pass refreshes every endpoint it reaches
+//!   before reporting the first change, so one event that moves
+//!   several endpoints wakes once.
+//! - **Budget, not failure**: a pass that runs out of the wait's time
+//!   ends quietly; only an endpoint's own error is a failure.
 //! - **REST only**: GraphQL has no conditional requests; review
 //!   thread resolution is not probed and surfaces at the deadline.
 
@@ -41,14 +47,54 @@ const PER_PAGE: usize = 100;
 /// remaining time.
 const CALL_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Least remaining time a pass starts another request with; a request
+/// cut shorter would time out on an endpoint that is merely slow.
+const MIN_CALL_BUDGET: Duration = Duration::from_secs(2);
+
+/// Most time [`GitHubProbe::prime`] spends establishing baselines.
+pub(crate) const PRIME_BUDGET: Duration = Duration::from_secs(10);
+
 /// What the last observe saw, which positions every endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProbeSeed {
     pub head: GitCommitSha,
     pub reviews: usize,
     pub events: usize,
-    /// When that observe began; comments are read from here.
-    pub observed_from: Timestamp,
+    /// `None` when the observe saw no comments.
+    pub comments: Option<CommentCursor>,
+}
+
+/// The newest comment update an observe saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommentCursor {
+    pub since: Timestamp,
+    /// Comments updated at exactly `since`.
+    pub seen: Vec<u64>,
+}
+
+impl CommentCursor {
+    /// The cursor over `comments`, or `None` when there are none.
+    pub(crate) fn over(comments: &[super::comments::IssueComment]) -> Option<Self> {
+        let since = comments.iter().map(|c| c.updated_at).max()?;
+        let seen = comments
+            .iter()
+            .filter(|c| c.updated_at == since)
+            .map(|c| c.id)
+            .collect();
+        Some(Self { since, seen })
+    }
+
+    fn since_param(&self) -> String {
+        self.since.at().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// Report the first endpoint whose projection moved.
+    Watch,
+    /// Establish baselines for endpoints never seen; report nothing.
+    Prime,
 }
 
 /// Conditional fetch, injected so the probe is testable offline.
@@ -76,6 +122,7 @@ pub(crate) struct GitHubProbe {
     seed: Option<ProbeSeed>,
     check_run_pages: usize,
     validators: HashMap<String, Validator>,
+    throttled_until: Option<Instant>,
     fetch: Box<Fetch>,
 }
 
@@ -102,6 +149,7 @@ impl GitHubProbe {
             seed: None,
             check_run_pages: 1,
             validators: HashMap::new(),
+            throttled_until: None,
             fetch,
         }
     }
@@ -109,6 +157,13 @@ impl GitHubProbe {
     /// Reposition the endpoints on what the latest observe saw.
     pub(crate) fn seed(&mut self, seed: ProbeSeed) {
         self.seed = Some(seed);
+    }
+
+    /// Establish baselines for endpoints the latest seed moved to (a
+    /// new head, a list crossing a page), so a change landing before
+    /// the first watch pass is not absorbed into the baseline.
+    pub(crate) fn prime(&mut self, budget: Duration, interrupted: &dyn Fn() -> bool) {
+        let _ = self.pass(budget, interrupted, Pass::Prime);
     }
 
     fn endpoints(&self, seed: &ProbeSeed) -> Vec<(&'static str, String, Projection)> {
@@ -142,12 +197,14 @@ impl GitHubProbe {
             ),
             Projection::Events,
         ));
+        let since = seed
+            .comments
+            .as_ref()
+            .map(|c| format!("&since={}", c.since_param()))
+            .unwrap_or_default();
         out.push((
             "comments",
-            format!(
-                "repos/{slug}/issues/{pr}/comments?per_page={PER_PAGE}&since={}",
-                seed.observed_from.at().format("%Y-%m-%dT%H:%M:%SZ")
-            ),
+            format!("repos/{slug}/issues/{pr}/comments?per_page={PER_PAGE}{since}"),
             Projection::CommentsSince,
         ));
         out
@@ -160,34 +217,72 @@ fn frontier(count: usize) -> usize {
 }
 
 impl ChangeProbe for GitHubProbe {
-    fn poll(&mut self, budget: Duration) -> ProbeResult {
+    fn poll(&mut self, budget: Duration, interrupted: &dyn Fn() -> bool) -> ProbeResult {
+        self.pass(budget, interrupted, Pass::Watch)
+    }
+}
+
+impl GitHubProbe {
+    fn pass(
+        &mut self,
+        budget: Duration,
+        interrupted: &dyn Fn() -> bool,
+        pass: Pass,
+    ) -> ProbeResult {
         let Some(seed) = self.seed.clone() else {
             return ProbeResult::Unchanged;
         };
+        if self.throttled_until.is_some_and(|t| Instant::now() < t) {
+            return ProbeResult::Unchanged;
+        }
         let started = Instant::now();
+        let mut first_change: Option<&'static str> = None;
+        let changed_or = |first: Option<&'static str>, otherwise: ProbeResult| {
+            first.map_or(otherwise, |s| {
+                ProbeResult::Changed(SingleLineString::new(s))
+            })
+        };
         for (source, path, projection) in self.endpoints(&seed) {
-            let remaining = budget.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                return ProbeResult::Unchanged;
+            if interrupted() {
+                break;
             }
+            if pass == Pass::Prime
+                && (self.validators.contains_key(&path)
+                    || matches!(projection, Projection::CommentsSince))
+            {
+                continue;
+            }
+            let remaining = budget.saturating_sub(started.elapsed());
+            if remaining < MIN_CALL_BUDGET {
+                break;
+            }
+            let call_deadline = CALL_DEADLINE.min(remaining);
             let prior = self.validators.get(&path);
-            let response = (self.fetch)(
-                &path,
-                prior.and_then(|v| v.etag.as_deref()),
-                CALL_DEADLINE.min(remaining),
-            );
+            let response =
+                (self.fetch)(&path, prior.and_then(|v| v.etag.as_deref()), call_deadline);
             let (etag, body) = match response {
                 Ok(Conditional::NotModified) => continue,
                 Ok(Conditional::Fresh { etag, body }) => (etag, body),
-                Err(GhError::RateLimited(hit)) => return ProbeResult::Throttled(hit),
+                Err(GhError::RateLimited(hit)) => {
+                    self.throttled_until = Some(Instant::now() + hit.retry_after.as_duration());
+                    return changed_or(first_change, ProbeResult::Throttled(hit));
+                }
+                // The wait's own deadline cut the request short.
+                Err(GhError::Timeout) if call_deadline < CALL_DEADLINE => break,
                 Err(e) => {
-                    return ProbeResult::Failed(SingleLineString::new(format!("{source}: {e}")));
+                    return changed_or(
+                        first_change,
+                        ProbeResult::Failed(SingleLineString::new(format!("{source}: {e}"))),
+                    );
                 }
             };
             let Ok(value) = serde_json::from_slice::<Value>(&body) else {
-                return ProbeResult::Failed(SingleLineString::new(format!(
-                    "{source}: response is not JSON"
-                )));
+                return changed_or(
+                    first_change,
+                    ProbeResult::Failed(SingleLineString::new(format!(
+                        "{source}: response is not JSON"
+                    ))),
+                );
             };
             if let Projection::CheckRuns = projection
                 && path.ends_with("&page=1")
@@ -200,8 +295,8 @@ impl ChangeProbe for GitHubProbe {
                 self.check_run_pages = frontier(total.saturating_sub(1)).max(1);
             }
             let projected = project(projection, &value);
-            let changed = match projection {
-                Projection::CommentsSince => projected.as_array().is_some_and(|a| !a.is_empty()),
+            let moved = match projection {
+                Projection::CommentsSince => comment_moved(&projected, seed.comments.as_ref()),
                 _ => prior.is_some_and(|v| v.projection != projected),
             };
             self.validators.insert(
@@ -211,12 +306,34 @@ impl ChangeProbe for GitHubProbe {
                     projection: projected,
                 },
             );
-            if changed {
-                return ProbeResult::Changed(SingleLineString::new(source));
+            if moved && pass == Pass::Watch && first_change.is_none() {
+                first_change = Some(source);
             }
         }
-        ProbeResult::Unchanged
+        changed_or(first_change, ProbeResult::Unchanged)
     }
+}
+
+/// Whether the comments page holds anything the observe did not see:
+/// an update newer than the cursor, or an unseen comment updated at
+/// the cursor's own instant.
+fn comment_moved(projected: &Value, cursor: Option<&CommentCursor>) -> bool {
+    items(Some(projected)).any(|c| {
+        let Some(cursor) = cursor else {
+            return true;
+        };
+        let updated = c
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .and_then(|t| Timestamp::parse(t).ok());
+        let id = c.get("id").and_then(Value::as_u64);
+        match updated {
+            Some(t) if t > cursor.since => true,
+            Some(t) if t == cursor.since => id.is_none_or(|id| !cursor.seen.contains(&id)),
+            Some(_) => false,
+            None => true,
+        }
+    })
 }
 
 fn project(projection: Projection, v: &Value) -> Value {
@@ -336,7 +453,10 @@ mod tests {
             head: GitCommitSha::parse(HEAD).unwrap(),
             reviews: 3,
             events: 250,
-            observed_from: Timestamp::parse("2026-10-28T13:07:00Z").unwrap(),
+            comments: Some(CommentCursor {
+                since: Timestamp::parse("2026-10-28T13:07:00Z").unwrap(),
+                seen: vec![1],
+            }),
         }
     }
 
@@ -400,32 +520,32 @@ mod tests {
     fn first_pass_establishes_baselines_without_waking() {
         let (responses, requested) = setup();
         let mut p = probe(&responses, &requested);
-        assert_eq!(p.poll(BUDGET), ProbeResult::Unchanged);
+        assert_eq!(p.poll(BUDGET, &|| false), ProbeResult::Unchanged);
     }
 
     #[test]
     fn embedded_neighbour_churn_does_not_wake() {
         let (responses, requested) = setup();
         let mut p = probe(&responses, &requested);
-        p.poll(BUDGET);
+        p.poll(BUDGET, &|| false);
         // Repository counters and the flapping `rebaseable` move;
         // the pull request's own fields do not.
         responses
             .borrow_mut()
             .insert("repos/o/r/pulls/7".into(), pull("t1", 11));
-        assert_eq!(p.poll(BUDGET), ProbeResult::Unchanged);
+        assert_eq!(p.poll(BUDGET, &|| false), ProbeResult::Unchanged);
     }
 
     #[test]
     fn own_field_change_wakes_naming_the_endpoint() {
         let (responses, requested) = setup();
         let mut p = probe(&responses, &requested);
-        p.poll(BUDGET);
+        p.poll(BUDGET, &|| false);
         responses
             .borrow_mut()
             .insert("repos/o/r/pulls/7".into(), pull("t2", 10));
         assert_eq!(
-            p.poll(BUDGET),
+            p.poll(BUDGET, &|| false),
             ProbeResult::Changed(SingleLineString::new("pull"))
         );
     }
@@ -443,14 +563,14 @@ mod tests {
             .borrow_mut()
             .insert(key.clone(), runs("in_progress", "a"));
         let mut p = probe(&responses, &requested);
-        p.poll(BUDGET);
+        p.poll(BUDGET, &|| false);
         responses
             .borrow_mut()
             .insert(key.clone(), runs("in_progress", "b"));
-        assert_eq!(p.poll(BUDGET), ProbeResult::Unchanged);
+        assert_eq!(p.poll(BUDGET, &|| false), ProbeResult::Unchanged);
         responses.borrow_mut().insert(key, runs("completed", "b"));
         assert_eq!(
-            p.poll(BUDGET),
+            p.poll(BUDGET, &|| false),
             ProbeResult::Changed(SingleLineString::new("check-runs"))
         );
     }
@@ -459,7 +579,7 @@ mod tests {
     fn lists_are_read_at_their_frontier_page() {
         let (responses, requested) = setup();
         let mut p = probe(&responses, &requested);
-        p.poll(BUDGET);
+        p.poll(BUDGET, &|| false);
         let paths = requested.borrow();
         assert!(
             paths
@@ -486,18 +606,120 @@ mod tests {
         assert_eq!(frontier(101), 2);
     }
 
-    #[test]
-    fn a_comment_since_the_observe_wakes_on_first_sight() {
+    fn comments_at(items: Value) -> (Responses, Rc<RefCell<Vec<String>>>) {
         let (responses, requested) = setup();
-        responses.borrow_mut().insert(
-            "repos/o/r/issues/7/comments".into(),
-            json!([{"id": 1, "updated_at": "2026-10-28T13:07:30Z", "body": "x"}]),
-        );
+        responses
+            .borrow_mut()
+            .insert("repos/o/r/issues/7/comments".into(), items);
+        (responses, requested)
+    }
+
+    #[test]
+    fn a_comment_newer_than_the_cursor_wakes() {
+        let (responses, requested) =
+            comments_at(json!([{"id": 2, "updated_at": "2026-10-28T13:07:30Z"}]));
         let mut p = probe(&responses, &requested);
         assert_eq!(
-            p.poll(BUDGET),
+            p.poll(BUDGET, &|| false),
             ProbeResult::Changed(SingleLineString::new("comments"))
         );
+    }
+
+    #[test]
+    fn the_comment_the_cursor_already_saw_does_not_wake() {
+        let (responses, requested) =
+            comments_at(json!([{"id": 1, "updated_at": "2026-10-28T13:07:00Z"}]));
+        let mut p = probe(&responses, &requested);
+        assert_eq!(p.poll(BUDGET, &|| false), ProbeResult::Unchanged);
+    }
+
+    #[test]
+    fn an_unseen_comment_at_the_cursor_instant_wakes() {
+        let (responses, requested) =
+            comments_at(json!([{"id": 3, "updated_at": "2026-10-28T13:07:00Z"}]));
+        let mut p = probe(&responses, &requested);
+        assert!(matches!(p.poll(BUDGET, &|| false), ProbeResult::Changed(_)));
+    }
+
+    #[test]
+    fn one_event_moving_two_endpoints_wakes_once() {
+        let (responses, requested) = setup();
+        let reviews = "repos/o/r/pulls/7/reviews".to_string();
+        responses.borrow_mut().insert(reviews.clone(), json!([]));
+        let mut p = probe(&responses, &requested);
+        p.poll(BUDGET, &|| false);
+        responses
+            .borrow_mut()
+            .insert("repos/o/r/pulls/7".into(), pull("t2", 10));
+        responses
+            .borrow_mut()
+            .insert(reviews, json!([{"id": 5, "state": "COMMENTED"}]));
+        assert_eq!(
+            p.poll(BUDGET, &|| false),
+            ProbeResult::Changed(SingleLineString::new("pull"))
+        );
+        assert_eq!(
+            p.poll(BUDGET, &|| false),
+            ProbeResult::Unchanged,
+            "the reviews baseline advanced in the same pass"
+        );
+    }
+
+    #[test]
+    fn interrupt_stops_the_pass_before_the_next_request() {
+        let (responses, requested) = setup();
+        let mut p = probe(&responses, &requested);
+        assert_eq!(p.poll(BUDGET, &|| true), ProbeResult::Unchanged);
+        assert!(requested.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_pass_short_of_budget_ends_quietly() {
+        let (responses, requested) = setup();
+        let mut p = probe(&responses, &requested);
+        assert_eq!(
+            p.poll(MIN_CALL_BUDGET / 2, &|| false),
+            ProbeResult::Unchanged
+        );
+        assert!(requested.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_budget_cut_timeout_is_not_a_failure() {
+        let mut p = GitHubProbe::with_fetch(
+            RepoSlug::parse("o/r").unwrap(),
+            PullRequestNumber::new(7).unwrap(),
+            Box::new(|_, _, _| Err(GhError::Timeout)),
+        );
+        p.seed(seed());
+        assert_eq!(
+            p.poll(Duration::from_secs(3), &|| false),
+            ProbeResult::Unchanged
+        );
+        assert!(matches!(p.poll(BUDGET, &|| false), ProbeResult::Failed(_)));
+    }
+
+    #[test]
+    fn prime_baselines_new_endpoints_without_waking() {
+        let (responses, requested) = setup();
+        let mut p = probe(&responses, &requested);
+        p.prime(BUDGET, &|| false);
+        let primed = requested.borrow().len();
+        assert!(primed > 0);
+        assert!(
+            !requested.borrow().iter().any(|q| q.contains("/comments")),
+            "comments compare against the cursor, not a baseline"
+        );
+        responses
+            .borrow_mut()
+            .insert("repos/o/r/pulls/7".into(), pull("t2", 10));
+        p.prime(BUDGET, &|| false);
+        assert_eq!(
+            requested.borrow().len(),
+            primed,
+            "known endpoints are not refetched"
+        );
+        assert!(matches!(p.poll(BUDGET, &|| false), ProbeResult::Changed(_)));
     }
 
     #[test]
@@ -512,7 +734,7 @@ mod tests {
                 Ok(Conditional::NotModified)
             }),
         );
-        assert_eq!(p.poll(BUDGET), ProbeResult::Unchanged);
+        assert_eq!(p.poll(BUDGET, &|| false), ProbeResult::Unchanged);
         assert!(requested.borrow().is_empty());
     }
 
@@ -529,21 +751,27 @@ mod tests {
             }),
         );
         throttled.seed(seed());
-        assert!(matches!(throttled.poll(BUDGET), ProbeResult::Throttled(_)));
+        assert!(matches!(
+            throttled.poll(BUDGET, &|| false),
+            ProbeResult::Throttled(_)
+        ));
         let mut failing = GitHubProbe::with_fetch(
             RepoSlug::parse("o/r").unwrap(),
             PullRequestNumber::new(7).unwrap(),
             Box::new(|_, _, _| Err(GhError::NotFound)),
         );
         failing.seed(seed());
-        assert!(matches!(failing.poll(BUDGET), ProbeResult::Failed(_)));
+        assert!(matches!(
+            failing.poll(BUDGET, &|| false),
+            ProbeResult::Failed(_)
+        ));
     }
 
     #[test]
     fn exhausted_budget_stops_the_pass() {
         let (responses, requested) = setup();
         let mut p = probe(&responses, &requested);
-        assert_eq!(p.poll(Duration::ZERO), ProbeResult::Unchanged);
+        assert_eq!(p.poll(Duration::ZERO, &|| false), ProbeResult::Unchanged);
         assert!(requested.borrow().is_empty());
     }
 }

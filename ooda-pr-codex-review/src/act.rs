@@ -168,7 +168,10 @@ pub(crate) struct CodexActContext {
 ///
 /// `probe` watches the pull request during an observing wait,
 /// polled every `probe_tick`; the runner reseeds it from every
-/// observe. `wait_deadline`, when set,
+/// observe. A change ends the wait no sooner than `wake_after` — the
+/// last observe's start plus `observe_spacing` — so a pull request
+/// that never stops changing cannot drive observes back to back.
+/// `wait_deadline`, when set,
 /// is the deadline the next wait resumes instead of starting a fresh
 /// interval; [`act`] consumes it.
 #[derive(Debug)]
@@ -180,6 +183,8 @@ pub(crate) struct ActContext {
     pub codex: Option<CodexActContext>,
     pub probe: GitHubProbe,
     pub probe_tick: Duration,
+    pub observe_spacing: Duration,
+    pub wake_after: Option<Instant>,
     pub wait_deadline: Option<Instant>,
 }
 
@@ -208,12 +213,8 @@ pub(crate) fn act(action: &Action, ctx: &mut ActContext) -> Result<Acted, ActErr
                 .wait_deadline
                 .take()
                 .unwrap_or_else(|| Instant::now() + interval.as_duration());
-            Ok(Acted::Waited(wait(
-                deadline,
-                *wake,
-                ctx.probe_tick,
-                &mut ctx.probe,
-            )))
+            let ended = wait(deadline, *wake, ctx.probe_tick, &mut ctx.probe);
+            Ok(Acted::Waited(hold_until(ended, ctx.wake_after, deadline)))
         }
         ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
             Err(ActError::UnsupportedAutomation)
@@ -224,6 +225,12 @@ pub(crate) fn act(action: &Action, ctx: &mut ActContext) -> Result<Acted, ActErr
 /// Start-to-start spacing of change-probe passes when one process
 /// watches one pull request.
 pub(crate) const PROBE_TICK: Duration = Duration::from_secs(5);
+
+/// Least spacing between observe starts a change can force when one
+/// process watches one pull request: at most three observes a minute,
+/// the rate a full observe's ~25 calls can sustain inside the hourly
+/// primary quota.
+pub(crate) const OBSERVE_SPACING: Duration = Duration::from_secs(20);
 
 /// Wait until `deadline`, ending early on a trapped shutdown signal
 /// or — for [`Wake::OnChange`] — on a change `probe` reports.
@@ -241,6 +248,21 @@ pub(crate) fn wait(
         &|| crate::signal::check_shutdown().is_some(),
         &wait::SystemClock,
     )
+}
+
+/// Hold a change-ended wait until `wake_after`, never past `deadline`.
+/// A shutdown signal during the hold ends it as interrupted.
+fn hold_until(ended: WaitEnd, wake_after: Option<Instant>, deadline: Instant) -> WaitEnd {
+    let WaitEnd::Changed { .. } = &ended else {
+        return ended;
+    };
+    let Some(until) = wake_after.map(|w| w.min(deadline)) else {
+        return ended;
+    };
+    match wait(until, Wake::Elapsed, PROBE_TICK, &mut wait::NeverChanges) {
+        WaitEnd::Interrupted => WaitEnd::Interrupted,
+        _ => ended,
+    }
 }
 
 fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {

@@ -562,13 +562,15 @@ impl Recorder {
         });
     }
 
-    pub(crate) fn record_wait_start(&self, iteration: u32, action: &Action) {
+    /// `recheck` marks a wait resuming an earlier deadline uncharged.
+    pub(crate) fn record_wait_start(&self, iteration: u32, action: &Action, recheck: bool) {
         self.best_effort(|inner| {
             inner.writer.append(domain_specific(
                 DomainKind::WaitStarted,
                 json!({
                     "iteration": iteration,
                     "action": action_projection(action),
+                    "recheck": recheck,
                 }),
             ))?;
             Ok(())

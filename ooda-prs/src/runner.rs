@@ -40,7 +40,7 @@ use crate::decide::action::{Action, ActionEffect, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{PullRequestNumber, Timestamp};
 use crate::observe::github::gh::GhError;
-use crate::observe::github::probe::ProbeSeed;
+use crate::observe::github::probe::{CommentCursor, PRIME_BUDGET, ProbeSeed};
 use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
@@ -462,7 +462,7 @@ fn run_iter(
     let sticky_path = recorder
         .last_seen_head_path()
         .map_err(LoopError::Recorder)?;
-    let observed_from = current_timestamp();
+    let observe_started = std::time::Instant::now();
     let obs = match fetch_all(
         &ctx.slug,
         ctx.pr,
@@ -486,8 +486,11 @@ fn run_iter(
                 head: obs.pull_request_view.head_ref_oid.clone(),
                 reviews: obs.reviews.len(),
                 events: obs.issue_events.len(),
-                observed_from,
+                comments: CommentCursor::over(&obs.issue_comments),
             });
+            ctx.probe
+                .prime(PRIME_BUDGET, &|| crate::signal::check_shutdown().is_some());
+            ctx.wake_after = Some(observe_started + ctx.observe_spacing);
             *obs
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
@@ -507,7 +510,7 @@ fn run_iter(
             // Nothing was observed, so no wait can resume through
             // this iteration.
             *pending = None;
-            act_recorded(ctx, recorder, iter, &action)?;
+            act_recorded(ctx, recorder, iter, &action, false)?;
             return Ok(IterStep::Executed(action));
         }
         Err(e) => {
@@ -530,13 +533,13 @@ fn run_iter(
                 StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
-            let recheck = charge_wait(pending, &action);
+            let recheck = charge_wait(pending, &action, ctx.probe_tick);
             if let Some(deadline) = pending.as_ref().map(|p| p.deadline)
                 && is_wait
             {
                 ctx.wait_deadline = Some(deadline);
             }
-            act_recorded(ctx, recorder, iter, &action)?;
+            act_recorded(ctx, recorder, iter, &action, recheck)?;
             Ok(if recheck {
                 IterStep::Rechecked(action)
             } else {
@@ -555,11 +558,12 @@ fn act_recorded(
     recorder: &Recorder,
     iter: u32,
     action: &Action,
+    recheck: bool,
 ) -> Result<(), LoopError> {
     ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
     recorder.record_action_start(iter, action);
     if action.effect.is_wait() {
-        recorder.record_wait_start(iter, action);
+        recorder.record_wait_start(iter, action, recheck);
     }
     let started = std::time::Instant::now();
     let act_result = act(action, ctx);
@@ -576,11 +580,15 @@ fn act_recorded(
 
 /// Decide whether executing `action` is a free re-check and update
 /// the pending wait to match. A wait re-checks iff it carries the
-/// pending wait's stall key, that wait's deadline is still ahead,
-/// and the deadline has re-checks left; it then keeps the deadline,
-/// clipped to its own interval. Any other wait starts a fresh
-/// deadline; any other action clears the pending wait.
-fn charge_wait(pending: &mut Option<PendingWait>, action: &Action) -> bool {
+/// pending wait's stall key, at least `min_left` of that wait's
+/// deadline remains, and the deadline has re-checks left; it then
+/// keeps the deadline, clipped to its own interval. Any other wait
+/// starts a fresh deadline; any other action clears the pending wait.
+fn charge_wait(
+    pending: &mut Option<PendingWait>,
+    action: &Action,
+    min_left: std::time::Duration,
+) -> bool {
     let now = std::time::Instant::now();
     let ActionEffect::Wait { interval, .. } = &action.effect else {
         *pending = None;
@@ -590,7 +598,7 @@ fn charge_wait(pending: &mut Option<PendingWait>, action: &Action) -> bool {
     let key = action.stall_key();
     if let Some(p) = pending.as_mut()
         && p.key == key
-        && now < p.deadline
+        && p.deadline.saturating_duration_since(now) >= min_left
         && p.rechecks < RECHECKS_PER_DEADLINE
     {
         p.rechecks += 1;
@@ -649,7 +657,11 @@ mod tests {
     }
 
     fn ci_wait() -> Action {
-        wait_action(ActionKind::WaitForMergeability, "ci_pending")
+        let mut a = wait_action(ActionKind::WaitForMergeability, "ci_pending");
+        if let ActionEffect::Wait { interval, .. } = &mut a.effect {
+            *interval = PollingInterval::from_secs(60);
+        }
+        a
     }
 
     #[test]
@@ -673,9 +685,16 @@ mod tests {
     #[test]
     fn a_wait_re_decided_before_its_deadline_rechecks() {
         let mut pending = None;
-        assert!(!charge_wait(&mut pending, &ci_wait()), "first wait charges");
+        assert!(
+            !charge_wait(&mut pending, &ci_wait(), crate::act::PROBE_TICK),
+            "first wait charges"
+        );
         let deadline = pending.as_ref().unwrap().deadline;
-        assert!(charge_wait(&mut pending, &ci_wait()));
+        assert!(charge_wait(
+            &mut pending,
+            &ci_wait(),
+            crate::act::PROBE_TICK
+        ));
         assert!(
             pending.as_ref().unwrap().deadline <= deadline,
             "never extended"
@@ -685,12 +704,16 @@ mod tests {
     #[test]
     fn rechecks_are_bounded_per_deadline() {
         let mut pending = None;
-        charge_wait(&mut pending, &ci_wait());
+        charge_wait(&mut pending, &ci_wait(), crate::act::PROBE_TICK);
         for _ in 0..RECHECKS_PER_DEADLINE {
-            assert!(charge_wait(&mut pending, &ci_wait()));
+            assert!(charge_wait(
+                &mut pending,
+                &ci_wait(),
+                crate::act::PROBE_TICK
+            ));
         }
         assert!(
-            !charge_wait(&mut pending, &ci_wait()),
+            !charge_wait(&mut pending, &ci_wait(), crate::act::PROBE_TICK),
             "budget spent: charges"
         );
         assert_eq!(pending.as_ref().unwrap().rechecks, 0, "fresh deadline");
@@ -699,11 +722,29 @@ mod tests {
     #[test]
     fn a_different_wait_or_any_other_action_charges() {
         let mut pending = None;
-        charge_wait(&mut pending, &ci_wait());
+        charge_wait(&mut pending, &ci_wait(), crate::act::PROBE_TICK);
         let other = wait_action(ActionKind::WaitForMergeability, "other_blocker");
-        assert!(!charge_wait(&mut pending, &other));
-        assert!(!charge_wait(&mut pending, &rebase()));
+        assert!(!charge_wait(&mut pending, &other, crate::act::PROBE_TICK));
+        assert!(!charge_wait(
+            &mut pending,
+            &rebase(),
+            crate::act::PROBE_TICK
+        ));
         assert!(pending.is_none(), "a non-wait clears the pending wait");
+    }
+
+    #[test]
+    fn a_wait_with_less_than_a_tick_left_charges() {
+        let mut pending = Some(PendingWait {
+            key: ci_wait().stall_key(),
+            deadline: std::time::Instant::now() + crate::act::PROBE_TICK / 2,
+            rechecks: 0,
+        });
+        assert!(!charge_wait(
+            &mut pending,
+            &ci_wait(),
+            crate::act::PROBE_TICK
+        ));
     }
 
     #[test]
@@ -713,7 +754,11 @@ mod tests {
             deadline: std::time::Instant::now(),
             rechecks: 0,
         });
-        assert!(!charge_wait(&mut pending, &ci_wait()));
+        assert!(!charge_wait(
+            &mut pending,
+            &ci_wait(),
+            crate::act::PROBE_TICK
+        ));
     }
 
     fn rebase() -> Action {
@@ -1023,6 +1068,8 @@ mod tests {
                 PullRequestNumber::new(7).unwrap(),
             ),
             probe_tick: crate::act::PROBE_TICK,
+            observe_spacing: crate::act::OBSERVE_SPACING,
+            wake_after: None,
             wait_deadline: None,
         };
         let wait = Action {

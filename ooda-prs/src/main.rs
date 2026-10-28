@@ -847,6 +847,8 @@ fn run_inspect(
 /// number in flight to hold the suite near 300 probe requests a
 /// minute (six endpoints per pass), well inside the 900-point
 /// secondary limit.
+/// Changes may force observes no closer than four ticks apart, which
+/// scales the observe rate down with the same factor.
 fn probe_tick(args: &Args) -> std::time::Duration {
     probe_tick_for(args.suite.len(), args.concurrency)
 }
@@ -884,6 +886,8 @@ fn run_full(
         repo_root: repo_root.to_path_buf(),
         probe: observe::github::probe::GitHubProbe::new(slug.clone(), pr),
         probe_tick: probe_tick(args),
+        observe_spacing: act::OBSERVE_SPACING.max(probe_tick(args) * 4),
+        wake_after: None,
         wait_deadline: None,
     };
     let mut snapshot: Option<HandoffSnapshot> = None;

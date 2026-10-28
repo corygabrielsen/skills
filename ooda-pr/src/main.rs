@@ -668,6 +668,8 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
         repo_root: repo_root.to_path_buf(),
         probe: observe::github::probe::GitHubProbe::new(args.slug.clone(), args.pr),
         probe_tick: act::PROBE_TICK,
+        observe_spacing: act::OBSERVE_SPACING,
+        wake_after: None,
         wait_deadline: None,
     };
     let mut snapshot: Option<HandoffSnapshot> = None;

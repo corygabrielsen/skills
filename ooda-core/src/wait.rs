@@ -9,7 +9,8 @@
 //! - **Elapsed never probes**: a [`Wake::Elapsed`] wait consults
 //!   only the clock and the interrupt predicate.
 //! - **Interrupt outranks**: the predicate is checked between
-//!   slices and after every probe, before its result is classified.
+//!   slices, handed to the probe to check between its requests, and
+//!   checked after every probe, before its result is classified.
 //! - **Failure degrades to sleeping**: after a failed or throttled
 //!   probe the wait stops probing and sleeps to its deadline, then
 //!   reports [`WaitEnd::CheckFailed`].
@@ -38,8 +39,9 @@ pub enum ProbeResult {
 /// A cheap check for whether the state a wait observes has changed
 /// since the probe's baseline.
 pub trait ChangeProbe {
-    /// Run one probe pass, finishing within `budget`.
-    fn poll(&mut self, budget: Duration) -> ProbeResult;
+    /// Run one probe pass, finishing within `budget` and stopping early
+    /// once `interrupted` holds.
+    fn poll(&mut self, budget: Duration, interrupted: &dyn Fn() -> bool) -> ProbeResult;
 }
 
 /// A probe that never reports a change: a wait with it is a plain
@@ -48,7 +50,7 @@ pub trait ChangeProbe {
 pub struct NeverChanges;
 
 impl ChangeProbe for NeverChanges {
-    fn poll(&mut self, _budget: Duration) -> ProbeResult {
+    fn poll(&mut self, _budget: Duration, _interrupted: &dyn Fn() -> bool) -> ProbeResult {
         ProbeResult::Unchanged
     }
 }
@@ -91,7 +93,8 @@ impl WaitClock for SystemClock {
 /// Wait until `deadline`, ending early on interruption or — for
 /// [`Wake::OnChange`] — on a change `probe` reports. Probe passes
 /// start every `tick`, measured start to start, the first one `tick`
-/// after the wait begins.
+/// after the wait begins; a tick shorter than [`SLICE`] is raised to
+/// it, so probing never spins.
 pub fn wait_until(
     deadline: Instant,
     wake: Wake,
@@ -100,6 +103,7 @@ pub fn wait_until(
     interrupted: &dyn Fn() -> bool,
     clock: &dyn WaitClock,
 ) -> WaitEnd {
+    let tick = tick.max(SLICE);
     let mut probing = wake == Wake::OnChange;
     let mut failure: Option<String> = None;
     let mut next_probe = clock.now() + tick;
@@ -113,7 +117,7 @@ pub fn wait_until(
         }
         if probing && now >= next_probe {
             next_probe = now + tick;
-            let result = probe.poll(deadline - now);
+            let result = probe.poll(deadline - now, interrupted);
             if interrupted() {
                 return WaitEnd::Interrupted;
             }
@@ -194,7 +198,7 @@ mod tests {
     }
 
     impl ChangeProbe for Scripted {
-        fn poll(&mut self, _budget: Duration) -> ProbeResult {
+        fn poll(&mut self, _budget: Duration, _interrupted: &dyn Fn() -> bool) -> ProbeResult {
             self.polls.set(self.polls.get() + 1);
             self.results
                 .borrow_mut()
@@ -300,10 +304,47 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_between_probe_ticks_ends_an_observing_wait() {
+        let clock = FakeClock::new();
+        let fired_at = clock.now() + Duration::from_secs(7);
+        let mut probe = Scripted::new(vec![]);
+        let end = wait_until(
+            clock.now() + INTERVAL,
+            Wake::OnChange,
+            TICK,
+            &mut probe,
+            &|| clock.now() >= fired_at,
+            &clock,
+        );
+        assert_eq!(end, WaitEnd::Interrupted);
+        assert!(clock.slept.get() <= Duration::from_secs(7) + SLICE);
+        assert_eq!(
+            probe.polls.get(),
+            1,
+            "the 5s tick ran; the 10s one never did"
+        );
+    }
+
+    #[test]
+    fn a_zero_tick_is_raised_to_one_slice() {
+        let clock = FakeClock::new();
+        let mut probe = Scripted::new(vec![]);
+        wait_until(
+            clock.now() + Duration::from_secs(1),
+            Wake::OnChange,
+            Duration::ZERO,
+            &mut probe,
+            &|| false,
+            &clock,
+        );
+        assert_eq!(probe.polls.get(), 4, "one poll per 200ms slice before 1s");
+    }
+
+    #[test]
     fn interrupt_outranks_a_change_reported_by_the_same_probe_pass() {
         struct ChangeAndInterrupt<'a>(&'a Cell<bool>);
         impl ChangeProbe for ChangeAndInterrupt<'_> {
-            fn poll(&mut self, _budget: Duration) -> ProbeResult {
+            fn poll(&mut self, _budget: Duration, _interrupted: &dyn Fn() -> bool) -> ProbeResult {
                 self.0.set(true);
                 ProbeResult::Changed(SingleLineString::new("reviews"))
             }
@@ -325,7 +366,7 @@ mod tests {
     fn probe_budget_is_the_time_left_before_the_deadline() {
         struct Budgets(Vec<Duration>);
         impl ChangeProbe for Budgets {
-            fn poll(&mut self, budget: Duration) -> ProbeResult {
+            fn poll(&mut self, budget: Duration, _interrupted: &dyn Fn() -> bool) -> ProbeResult {
                 self.0.push(budget);
                 ProbeResult::Unchanged
             }

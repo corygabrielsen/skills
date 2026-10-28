@@ -98,7 +98,18 @@ fn fetch_thread_comments_page(
     ... on PullRequestReviewThread {{
       comments(first:100,after:"{cursor}") {{
         pageInfo {{ hasNextPage endCursor }}
-        nodes {{ databaseId pullRequestReview {{ databaseId }} author {{ login }} createdAt body }}
+        nodes {{
+          databaseId
+          pullRequestReview {{ databaseId }}
+          author {{
+            __typename
+            ... on User {{ login }}
+            ... on Bot {{ login }}
+            ... on Mannequin {{ login }}
+          }}
+          createdAt
+          body
+        }}
       }}
     }}
   }}
@@ -160,20 +171,15 @@ pub(crate) struct ReviewThreadsPage {
 #[serde(rename_all = "camelCase")]
 pub struct ReviewThread {
     /// Node id for cross-iteration identity and follow-up
-    /// pagination. Default-empty for legacy fixtures.
-    #[serde(default)]
+    /// pagination.
     pub id: String,
     pub is_resolved: bool,
     /// Anchor moved off a live line (rebase/amend shifted lines).
     /// Excluded from the actionable count by the orient layer.
-    /// Default-false for legacy fixtures.
-    #[serde(default)]
     pub is_outdated: bool,
     /// Repo-relative file path the thread is anchored to.
-    #[serde(default)]
     pub path: String,
-    /// Anchored line at HEAD; absent on outdated threads.
-    #[serde(default)]
+    /// Anchored line at HEAD; null on outdated threads.
     pub line: Option<u32>,
     pub comments: ThreadComments,
 }
@@ -181,9 +187,6 @@ pub struct ReviewThread {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComments {
-    /// Default-empty pageInfo so fixtures decode as "no further
-    /// pages."
-    #[serde(default)]
     pub page_info: PageInfo,
     pub nodes: Vec<ThreadComment>,
 }
@@ -194,15 +197,12 @@ pub struct ThreadComment {
     /// Numeric REST id for this comment. The line-anchored-replies
     /// API (`POST /pulls/{n}/comments/{id}/replies`) is keyed by
     /// this id, NOT by line — required when replying to outdated /
-    /// null-line threads. Optional only because older fixtures
-    /// don't carry it.
-    #[serde(default)]
+    /// null-line threads. Null where the schema's nullable `Int`
+    /// cannot carry it.
     pub database_id: Option<u64>,
     /// The review this comment was submitted under. Joins the REST
     /// review stream's numeric `id` for the structural visible-count
-    /// channel. Optional: fixtures may omit it, and the host emits
-    /// `null` for comments whose review was deleted.
-    #[serde(default)]
+    /// channel. Null for comments whose review was deleted.
     pub pull_request_review: Option<CommentReviewRef>,
     /// Absent when the comment's authoring identity has been
     /// deleted.
@@ -216,7 +216,6 @@ pub struct ThreadComment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommentReviewRef {
-    #[serde(default)]
     pub database_id: Option<u64>,
 }
 
@@ -260,25 +259,9 @@ enum WireCommentAuthor {
 
 impl<'de> serde::Deserialize<'de> for CommentAuthor {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        // Untagged fallback: input without `__typename` carries
-        // only `{ login }`. Downstream classification remains
-        // structural — a bare login without type context is Human
-        // unless the login itself already carries the `[bot]`
-        // suffix — so this branch parses the login string as-is
-        // and defers to the classifier.
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Either {
-            Tagged(WireCommentAuthor),
-            Legacy { login: GitHubLogin },
-        }
-
-        let login = match Either::deserialize(d)? {
-            Either::Tagged(
-                WireCommentAuthor::User { login } | WireCommentAuthor::Mannequin { login },
-            )
-            | Either::Legacy { login } => login,
-            Either::Tagged(WireCommentAuthor::Bot { login }) => {
+        let login = match WireCommentAuthor::deserialize(d)? {
+            WireCommentAuthor::User { login } | WireCommentAuthor::Mannequin { login } => login,
+            WireCommentAuthor::Bot { login } => {
                 // Normalize: attach `[bot]` iff missing. Idempotent
                 // for a login that already carries the suffix
                 // (some hosts return the suffixed form even through
@@ -505,16 +488,12 @@ mod tests {
     }
 
     #[test]
-    fn untagged_shape_parses_login_as_is() {
-        // Input without `__typename` (fixtures or callers that
-        // don't select the union) parses the login string
-        // unchanged. No bot marker synthesis without type
-        // context: downstream classification defaults to Human
-        // unless the login itself already carries `[bot]`.
+    fn untyped_author_is_rejected() {
+        // Every query selects the actor union, so an author without
+        // `__typename` is a query that stopped selecting it: without
+        // the type a bare bot login would classify as human.
         let json = r#"{"login":"copilot-pull-request-reviewer"}"#;
-        let a: CommentAuthor = serde_json::from_str(json).unwrap();
-        assert_eq!(a.login.as_str(), "copilot-pull-request-reviewer");
-        assert!(!a.login.is_bot());
+        assert!(serde_json::from_str::<CommentAuthor>(json).is_err());
     }
 
     #[test]
@@ -573,7 +552,7 @@ mod tests {
                             "pageInfo":{"hasNextPage":false,"endCursor":null},
                             "nodes":[{
                                 "databaseId":3377501272,
-                                "author":{"login":"cursor"},
+                                "author":{"__typename":"Bot","login":"cursor"},
                                 "createdAt":"2026-04-23T00:00:00Z",
                                 "body":"x"
                             }]
@@ -589,9 +568,8 @@ mod tests {
     }
 
     #[test]
-    fn thread_comment_database_id_missing_decodes_as_none() {
-        // Fixtures that don't carry databaseId still decode — the
-        // field is optional and defaults to None.
+    fn thread_comment_null_database_id_decodes_as_none() {
+        // The schema's `databaseId` is a nullable `Int`.
         let json = r#"{
             "data":{"repository":{"pullRequest":{
                 "reviewThreads":{
@@ -605,7 +583,8 @@ mod tests {
                         "comments":{
                             "pageInfo":{"hasNextPage":false,"endCursor":null},
                             "nodes":[{
-                                "author":{"login":"alice"},
+                                "databaseId":null,
+                                "author":{"__typename":"User","login":"alice"},
                                 "createdAt":"2026-04-23T00:00:00Z",
                                 "body":"x"
                             }]
@@ -626,7 +605,8 @@ mod tests {
             "data":{"repository":{"pullRequest":{
                 "reviewThreads":{
                     "pageInfo":{"hasNextPage":false,"endCursor":null},
-                    "nodes":[{"isResolved":false,"comments":{"nodes":[
+                    "nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"a.rs","line":1,
+                        "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
                         {"author":null,"createdAt":"2026-04-23T00:00:00Z","body":"deleted account"}
                     ]}}]
                 },

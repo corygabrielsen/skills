@@ -397,7 +397,7 @@ mod tests {
 
     fn review(state: ReviewState, login: &str, sha: &str) -> PullRequestReview {
         PullRequestReview {
-            id: None,
+            id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse(login).unwrap(),
                 user_type: None,
@@ -418,6 +418,7 @@ mod tests {
             },
             body: String::new(),
             created_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
+            updated_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             html_url: String::new(),
         }
     }
@@ -784,7 +785,7 @@ mod tests {
         let revs = vec![
             // Old human change request.
             PullRequestReview {
-                id: None,
+                id: 1,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("alice").unwrap(),
                     user_type: None,
@@ -797,7 +798,7 @@ mod tests {
             },
             // Bot change request — must be ignored.
             PullRequestReview {
-                id: None,
+                id: 1,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("copilot[bot]").unwrap(),
                     user_type: None,
@@ -810,7 +811,7 @@ mod tests {
             },
             // Latest human change request — must win.
             PullRequestReview {
-                id: None,
+                id: 1,
                 user: Some(ReviewUser {
                     login: GitHubLogin::parse("bob").unwrap(),
                     user_type: None,
@@ -840,7 +841,7 @@ mod tests {
     #[test]
     fn latest_human_change_request_none_when_only_bot_change_request() {
         let revs = vec![PullRequestReview {
-            id: None,
+            id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot[bot]").unwrap(),
                 user_type: None,

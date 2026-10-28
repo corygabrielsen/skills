@@ -25,23 +25,15 @@ pub(crate) fn fetch_pull_request_reviews(
 pub(crate) struct PullRequestReview {
     /// Numeric REST id. Joins GraphQL `PullRequestReview.databaseId`
     /// on thread comments for the structural visible-count channel.
-    /// Optional so fixtures without it decode.
-    #[serde(default)]
-    pub id: Option<u64>,
-    /// Absent when the author identity has been deleted. Optional so
-    /// historical reviews do not abort the observe pass.
-    #[serde(default)]
+    pub id: u64,
+    /// Null when the author identity has been deleted.
     pub user: Option<ReviewUser>,
     pub state: ReviewState,
     pub commit_id: GitCommitSha,
     /// Absent for un-submitted (pending) reviews.
     #[serde(default)]
     pub submitted_at: Option<Timestamp>,
-    #[serde(default)]
     pub body: String,
-    /// Permalink to the review. Optional so test fixtures without
-    /// it decode; production responses always populate it.
-    #[serde(default)]
     pub html_url: String,
 }
 
@@ -91,11 +83,13 @@ mod tests {
     #[test]
     fn pending_review_has_null_submitted_at() {
         let json = r#"[{
+            "id": 7,
             "user": {"login": "alice"},
             "state": "PENDING",
             "commit_id": "0123456789abcdef0123456789abcdef01234567",
             "submitted_at": null,
-            "body": ""
+            "body": "",
+            "html_url": "https://github.com/o/r/pull/1#pullrequestreview-7"
         }]"#;
         let reviews: Vec<PullRequestReview> = serde_json::from_str(json).unwrap();
         assert_eq!(reviews[0].state, ReviewState::Pending);
@@ -114,7 +108,7 @@ mod tests {
         ];
         for (s, expected) in cases {
             let json = format!(
-                r#"[{{"user":{{"login":"a"}},"state":"{s}","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":""}}]"#,
+                r#"[{{"id":1,"user":{{"login":"a"}},"state":"{s}","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":"","html_url":"u"}}]"#,
                 sha = "a".repeat(40),
             );
             let reviews: Vec<PullRequestReview> = serde_json::from_str(&json).unwrap();
@@ -129,7 +123,7 @@ mod tests {
         // downstream axes treat Unknown as "verdict observed but
         // unmodeled" rather than as "no review".
         let json = format!(
-            r#"[{{"user":{{"login":"a"}},"state":"WEIRD","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":""}}]"#,
+            r#"[{{"id":1,"user":{{"login":"a"}},"state":"WEIRD","commit_id":"{sha}","submitted_at":"2026-04-23T00:00:00Z","body":"","html_url":"u"}}]"#,
             sha = "a".repeat(40),
         );
         let reviews: Vec<PullRequestReview> = serde_json::from_str(&json).unwrap();

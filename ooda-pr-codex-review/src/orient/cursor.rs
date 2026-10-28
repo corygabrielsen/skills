@@ -702,7 +702,7 @@ mod tests {
     }
     fn cursor_review(sha: &str, at: &str, body: &str) -> PullRequestReview {
         PullRequestReview {
-            id: None,
+            id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("cursor[bot]").unwrap(),
                 user_type: None,
@@ -806,6 +806,7 @@ mod tests {
             },
             body: body.into(),
             created_at: ts(at),
+            updated_at: ts(at),
             html_url: String::new(),
         }
     }

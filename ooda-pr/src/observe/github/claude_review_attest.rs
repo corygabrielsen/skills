@@ -222,7 +222,7 @@ mod tests {
 
     fn claude_review(at: &str, body: &str, url: &str) -> PullRequestReview {
         PullRequestReview {
-            id: None,
+            id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("claude[bot]").unwrap(),
                 user_type: None,
@@ -243,6 +243,7 @@ mod tests {
             },
             body: body.into(),
             created_at: Timestamp::parse(at).unwrap(),
+            updated_at: Timestamp::parse(at).unwrap(),
             html_url: url.into(),
         }
     }
@@ -255,6 +256,7 @@ mod tests {
             },
             body: "noise".into(),
             created_at: Timestamp::parse(at).unwrap(),
+            updated_at: Timestamp::parse(at).unwrap(),
             html_url: String::new(),
         }
     }
@@ -460,7 +462,7 @@ mod tests {
     #[test]
     fn non_claude_reviews_and_comments_are_filtered_out() {
         let r = PullRequestReview {
-            id: None,
+            id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: None,

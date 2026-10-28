@@ -236,8 +236,7 @@ pub(crate) struct CopilotReviewRound {
     /// Rung census of the findings this review reports as open,
     /// off the body's findings label.
     pub severity: SeverityBreakdown,
-    /// The review's overall verdict. `None` when the body states none
-    /// or the review carries no id to key a disposition on.
+    /// The review's overall verdict. `None` when the body states none.
     pub verdict: Option<CopilotVerdict>,
 }
 
@@ -423,14 +422,14 @@ pub(crate) struct StatedVerdict {
 }
 
 impl StatedVerdict {
-    fn keyed(self, rev: &PullRequestReview) -> Option<CopilotVerdict> {
-        Some(CopilotVerdict {
-            review_id: rev.id?,
+    fn keyed(self, rev: &PullRequestReview) -> CopilotVerdict {
+        CopilotVerdict {
+            review_id: rev.id,
             url: rev.html_url.clone(),
             stance: self.stance,
             heading: self.heading,
             assessment: self.assessment,
-        })
+        }
     }
 }
 
@@ -1111,12 +1110,8 @@ fn correlate_rounds(
     // stated "generated N" so either channel alone carries the
     // signal — same disjoint-failure-domain design as the suppressed
     // channels in `parse_copilot_review_body`.
-    let structural_visible = |rev: &PullRequestReview| {
-        rev.id
-            .and_then(|id| visible_by_review.get(&id))
-            .copied()
-            .unwrap_or(0)
-    };
+    let structural_visible =
+        |rev: &PullRequestReview| visible_by_review.get(&rev.id).copied().unwrap_or(0);
     let mut sorted_reviews: Vec<&PullRequestReview> = reviews.to_vec();
     sorted_reviews.sort_by_key(|a| a.submitted_at);
 
@@ -1139,7 +1134,7 @@ fn correlate_rounds(
         round.comments_suppressed = signals.suppressed;
         round.suppressed_comments = signals.suppressed_comments;
         round.severity = signals.severity;
-        round.verdict = signals.verdict.and_then(|v| v.keyed(rev));
+        round.verdict = signals.verdict.map(|v| v.keyed(rev));
     };
 
     for point in timeline {
@@ -1242,7 +1237,7 @@ fn synthetic_round(
         comments_suppressed: signals.suppressed,
         suppressed_comments: signals.suppressed_comments,
         severity: signals.severity,
-        verdict: signals.verdict.and_then(|v| v.keyed(rev)),
+        verdict: signals.verdict.map(|v| v.keyed(rev)),
     }
 }
 
@@ -1654,7 +1649,7 @@ mod tests {
     }
     fn copilot_review(sha: &str, at: &str, body: &str) -> PullRequestReview {
         PullRequestReview {
-            id: None,
+            id: 1,
             user: Some(ReviewUser {
                 login: GitHubLogin::parse("copilot-pull-request-reviewer[bot]").unwrap(),
                 user_type: None,
@@ -2104,10 +2099,7 @@ Stub-only validation leaves custody-signer provisioning unverified against real 
     #[test]
     fn round_keys_verdict_by_review_id() {
         let mut rev = copilot_review(HEAD_SHA, "2026-10-28T11:26:00Z", OVERVIEW_UNLOCATED_BODY);
-        let round = synthetic_round(&rev, 1, 0);
-        assert!(round.verdict.is_none(), "no id, no key to dispose on");
-
-        rev.id = Some(5_681_853_593);
+        rev.id = 5_681_853_593;
         rev.html_url = "https://github.com/o/r/pull/1#pullrequestreview-5681853593".into();
         let v = synthetic_round(&rev, 1, 0).verdict.unwrap();
         assert_eq!(v.review_id, 5_681_853_593);
@@ -2558,7 +2550,7 @@ Stub-only validation leaves custody-signer provisioning unverified against real 
             ack_event("2026-04-23T10:01:00Z"),
         ];
         let mut rev = copilot_review(HEAD_SHA, "2026-04-23T10:05:00Z", "reworded body");
-        rev.id = Some(42);
+        rev.id = 42;
         let linked_thread = |body: &str| ReviewThread {
             id: String::new(),
             is_resolved: false,

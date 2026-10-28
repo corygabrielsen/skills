@@ -3,24 +3,40 @@
         "id": 4151113986,
         "user": {
             "login": "corygabrielsen"
-        }
+        },
+        "body": "Starting review.",
+        "created_at": "2026-04-23T09:12:41Z",
+        "updated_at": "2026-04-23T09:12:41Z",
+        "html_url": "https://github.com/w3-io/infrastructure/pull/1#issuecomment-4151113986"
     },
     {
         "id": 4151927281,
         "user": {
             "login": "claude[bot]"
-        }
+        },
+        "body": "**Claude finished @corygabrielsen's task** \u2014 review posted.",
+        "created_at": "2026-04-23T10:40:05Z",
+        "updated_at": "2026-04-23T10:40:05Z",
+        "html_url": "https://github.com/w3-io/infrastructure/pull/1#issuecomment-4151927281"
     },
     {
         "id": 4151965172,
         "user": {
             "login": "corygabrielsen"
-        }
+        },
+        "body": "Thanks, addressing.",
+        "created_at": "2026-04-23T10:44:58Z",
+        "updated_at": "2026-04-23T10:44:58Z",
+        "html_url": "https://github.com/w3-io/infrastructure/pull/1#issuecomment-4151965172"
     },
     {
         "id": 4156247156,
         "user": {
             "login": "graphite-app[bot]"
-        }
+        },
+        "body": "How to use the Graphite Merge Queue",
+        "created_at": "2026-04-23T18:02:13Z",
+        "updated_at": "2026-04-23T18:02:13Z",
+        "html_url": "https://github.com/w3-io/infrastructure/pull/1#issuecomment-4156247156"
     }
 ]

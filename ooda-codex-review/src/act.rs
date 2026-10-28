@@ -102,7 +102,7 @@ impl std::error::Error for ActError {
 pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Wait { interval, .. } => {
-            std::thread::sleep(interval.as_duration());
+            crate::signal::sleep_unless_shutdown(interval.as_duration());
             Ok(())
         }
         ActionEffect::Full { .. } => dispatch_full(action, ctx),

@@ -24,7 +24,6 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::Duration;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind};
@@ -184,7 +183,7 @@ pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
             run_full(&action.kind, ctx)
         }
         ActionEffect::Wait { interval, .. } => {
-            thread::sleep(interval.as_duration());
+            crate::signal::sleep_unless_shutdown(interval.as_duration());
             Ok(())
         }
         ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {

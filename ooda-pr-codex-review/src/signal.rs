@@ -1,7 +1,8 @@
 //! Trapped-signal shutdown plumbing.
 //!
 //! `SIGINT` / `SIGTERM` set an atomic that the OODA loop polls at
-//! each iteration boundary. The loop owns the halt path — the
+//! each iteration boundary; waits poll it too and end early, so the
+//! next boundary is reached promptly. The loop owns the halt path — the
 //! handler never touches the recorder. This avoids racing the
 //! writer's lock from a signal context and keeps the terminal
 //! event + live-marker cleanup on the same code path as every
@@ -19,6 +20,7 @@
 
 use std::io;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
 
 use ooda_core::ExitCode;
 
@@ -71,6 +73,23 @@ pub(crate) fn check_shutdown() -> Option<u8> {
         // backstop, falling back to the SIGTERM token if the
         // atomic somehow holds an out-of-range value.
         Some(u8::try_from(sig).unwrap_or(ExitCode::SignalSigterm.as_u8()))
+    }
+}
+
+/// Granularity at which a sleep observes a trapped signal.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(200);
+
+/// Sleep for `duration`, returning early once a shutdown signal is
+/// trapped. The caller's next boundary poll routes the signal; this
+/// only bounds how long the wait holds it.
+pub(crate) fn sleep_unless_shutdown(duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while check_shutdown().is_none() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        std::thread::sleep(remaining.min(SHUTDOWN_POLL));
     }
 }
 

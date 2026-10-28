@@ -857,6 +857,55 @@ mod tests {
     static SIGNAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn sleep_returns_promptly_once_shutdown_is_trapped() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::set_for_test(130);
+        let started = std::time::Instant::now();
+        crate::signal::sleep_unless_shutdown(std::time::Duration::from_mins(1));
+        let elapsed = started.elapsed();
+        crate::signal::reset_for_test();
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
+    fn sleep_without_signal_runs_its_full_duration() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let requested = std::time::Duration::from_millis(30);
+        let started = std::time::Instant::now();
+        crate::signal::sleep_unless_shutdown(requested);
+        assert!(started.elapsed() >= requested);
+    }
+
+    #[test]
+    fn wait_action_ends_early_once_shutdown_is_trapped() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::set_for_test(143);
+        let ctx = crate::act::ActContext {
+            slug: crate::ids::RepoSlug::parse("example/widgets").unwrap(),
+            pr: PullRequestNumber::new(7).unwrap(),
+            action_lock_path: std::path::PathBuf::from("/nonexistent/.action.lock"),
+            repo_root: std::path::PathBuf::from("/nonexistent"),
+        };
+        let wait = Action {
+            kind: ActionKind::Rebase,
+            effect: ActionEffect::Wait {
+                interval: PollingInterval::from_secs(60),
+                log: "stub".into(),
+            },
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::Mid(MidTier::BlockingWait),
+            blocker: BlockerKey::for_test("wait"),
+        };
+        let started = std::time::Instant::now();
+        let result = act(&wait, &ctx);
+        let elapsed = started.elapsed();
+        crate::signal::reset_for_test();
+        assert!(result.is_ok(), "{result:?}");
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
     fn signal_interrupt_short_circuits_before_first_iteration() {
         // Direct-poke the shutdown atomic to simulate a `SIGTERM`
         // landing before the loop body runs. The driver must

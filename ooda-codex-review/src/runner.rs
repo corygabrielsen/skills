@@ -570,6 +570,27 @@ mod tests {
     /// poll doesn't observe a stray signal stored by another.
     static SIGNAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn sleep_returns_promptly_once_shutdown_is_trapped() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::set_for_test(130);
+        let started = std::time::Instant::now();
+        crate::signal::sleep_unless_shutdown(std::time::Duration::from_mins(1));
+        let elapsed = started.elapsed();
+        crate::signal::reset_for_test();
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
+    }
+
+    #[test]
+    fn sleep_without_signal_runs_its_full_duration() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let requested = std::time::Duration::from_millis(30);
+        let started = std::time::Instant::now();
+        crate::signal::sleep_unless_shutdown(requested);
+        assert!(started.elapsed() >= requested);
+    }
+
     /// Fresh state-root + started run for tests that need an
     /// `EventSink` but don't care about reading back what was
     /// written. Returns the temp dir so it lives for the test's

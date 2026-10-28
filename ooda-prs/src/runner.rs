@@ -364,6 +364,12 @@ where
             }
         }
     }
+    // Closing boundary poll. The cap is not a decision, so a signal
+    // trapped during the final iteration outranks it exactly as it
+    // outranks the next iteration at every earlier boundary.
+    if let Some(exit_code) = crate::signal::check_shutdown() {
+        return Ok(LoopExit::SignalInterrupted { exit_code });
+    }
     // `last_attempted: Action` is the witness for the cap-reached
     // path: the unrolled first iteration either returned a Halt or
     // populated it.
@@ -870,6 +876,40 @@ mod tests {
             LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 143),
             halt @ LoopExit::Halted(_) => panic!("expected SignalInterrupted, got {halt:?}"),
         }
+    }
+
+    #[test]
+    fn signal_trapped_in_final_iteration_outranks_cap() {
+        // A signal armed during the last capped iteration finds no
+        // further loop-top boundary; the closing poll must still
+        // route it to `SignalInterrupted`, not `CapReached`.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let exit = run_loop_with(cfg(1), |_, _, _| {
+            crate::signal::set_for_test(130);
+            Ok(IterStep::Executed(rebase()))
+        })
+        .unwrap();
+        crate::signal::reset_for_test();
+        match exit {
+            LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 130),
+            halt @ LoopExit::Halted(_) => panic!("expected SignalInterrupted(130), got {halt:?}"),
+        }
+    }
+
+    #[test]
+    fn halt_in_final_iteration_is_returned_despite_signal() {
+        // A halt is a decision; the closing poll guards only the
+        // cap path.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let exit = run_loop_with(cfg(1), |_, _, _| {
+            crate::signal::set_for_test(143);
+            Ok(IterStep::Halt(HaltReason::Decision(DecisionHalt::Success)))
+        })
+        .unwrap();
+        crate::signal::reset_for_test();
+        assert!(matches!(exit, LoopExit::Halted(_)), "{exit:?}");
     }
 
     #[test]

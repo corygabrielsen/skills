@@ -306,6 +306,15 @@ pub(crate) fn run_loop(
         }
     }
 
+    // Closing boundary poll. The cap is not a decision, so a signal
+    // trapped during the final iteration outranks it — and the
+    // cap-trip projection below, which only renders the cap —
+    // exactly as it outranks the next iteration at every earlier
+    // boundary.
+    if let Some(exit_code) = crate::signal::check_shutdown() {
+        return Ok(LoopExit::SignalInterrupted { exit_code });
+    }
+
     // Cap-trip force-projection: if the iter cap fired while we
     // were polling AwaitReviews, the alive/idle discriminator in
     // decide kept emitting Wait because at least one pending slot
@@ -649,6 +658,41 @@ mod tests {
             halt,
             HaltReason::Decision(crate::decide::decision::DecisionHalt::AgentNeeded(_))
         ));
+    }
+
+    #[test]
+    fn signal_trapped_in_final_iteration_outranks_cap() {
+        // The signal lands during the last capped iteration, so no
+        // loop-top boundary follows; the closing poll must route it
+        // to `SignalInterrupted` ahead of the cap-trip projection.
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        unsafe {
+            std::env::set_var("OODA_AWAIT_SECS", "1");
+        }
+        let mut pending = Some(obs(BatchState::running_alive(1, 3)));
+        let observe = move |_: &RepoId, _: &ReviewTarget| {
+            crate::signal::set_for_test(130);
+            pending
+                .take()
+                .ok_or_else(|| "cap-trip projection must not re-observe".to_string())
+        };
+        let (_tmp, mut writer) = fresh_writer();
+        let mut sink = EventSink::new(&mut writer);
+        let exit = run_loop(
+            &repo_id(),
+            &target(),
+            loop_cfg(1),
+            &ctx(),
+            observe,
+            &mut sink,
+        )
+        .unwrap();
+        crate::signal::reset_for_test();
+        match exit {
+            LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 130),
+            LoopExit::Halted(reason) => panic!("expected SignalInterrupted(130), got {reason:?}"),
+        }
     }
 
     // ── wait stall-exemption ──

@@ -359,6 +359,15 @@ pub(crate) fn run_loop(
         }
     }
 
+    // Closing boundary poll. The cap is not a decision, so a signal
+    // trapped during the final iteration outranks it — and the
+    // cap-trip projection below, which only renders the cap —
+    // exactly as it outranks the next iteration at every earlier
+    // boundary.
+    if let Some(exit_code) = crate::signal::check_shutdown() {
+        return Ok(LoopExit::SignalInterrupted { exit_code });
+    }
+
     // Cap-trip force-projection (mirrors ooda-codex-review's
     // runner): if the cap fired while polling
     // AwaitCodexReviewBatch, at least one pending slot was still

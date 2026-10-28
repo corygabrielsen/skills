@@ -24,8 +24,8 @@ pub(crate) mod review_class;
 pub(crate) mod review_docs;
 pub(crate) mod sync_pull_request_metadata;
 
-use ooda_core::wait::{self, WaitEnd};
-use ooda_core::{PollingInterval, Wake};
+use ooda_core::Wake;
+use ooda_core::wait::{self, ChangeProbe, WaitEnd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -34,6 +34,7 @@ use std::time::Instant;
 use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, RepoSlug};
 use crate::observe::github::gh::{GhError, gh_run};
+use crate::observe::github::probe::GitHubProbe;
 use crate::orient::state::WIP_LABEL;
 use ooda_core::{FileLock, SpawnError, SpawnLimits, run_with_limits};
 
@@ -116,12 +117,21 @@ impl From<GhError> for ActError {
 /// from a sibling repo cannot have `gt sync` rewrite that sibling's
 /// stack. See [`crate::resolve_repo_root`] for the resolution
 /// policy.
+///
+/// `probe` watches the pull request during an observing wait,
+/// polled every `probe_tick`; the runner reseeds it from every
+/// observe. `wait_deadline`, when set,
+/// is the deadline the next wait resumes instead of starting a fresh
+/// interval; [`act`] consumes it.
 #[derive(Debug)]
 pub(crate) struct ActContext {
     pub slug: RepoSlug,
     pub pr: PullRequestNumber,
     pub action_lock_path: PathBuf,
     pub repo_root: PathBuf,
+    pub probe: GitHubProbe,
+    pub probe_tick: Duration,
+    pub wait_deadline: Option<Instant>,
 }
 
 /// What [`act`] did: applied a side effect, or waited and ended for
@@ -137,30 +147,47 @@ pub(crate) enum Acted {
 /// `Full` actions acquire the per-PR action lock before dispatching;
 /// `Wait` actions skip it (sleeping has no side effect); handoff
 /// arms never reach this stage.
-pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<Acted, ActError> {
+pub(crate) fn act(action: &Action, ctx: &mut ActContext) -> Result<Acted, ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => {
             let _lock = FileLock::acquire(&ctx.action_lock_path).map_err(ActError::Lock)?;
             run_full(&action.kind, ctx).map(|()| Acted::Applied)
         }
-        ActionEffect::Wait { interval, wake, .. } => Ok(Acted::Waited(wait(*interval, *wake))),
+        ActionEffect::Wait { interval, wake, .. } => {
+            let deadline = ctx
+                .wait_deadline
+                .take()
+                .unwrap_or_else(|| Instant::now() + interval.as_duration());
+            Ok(Acted::Waited(wait(
+                deadline,
+                *wake,
+                ctx.probe_tick,
+                &mut ctx.probe,
+            )))
+        }
         ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
             Err(ActError::UnsupportedAutomation)
         }
     }
 }
 
-/// Start-to-start spacing of change-probe passes during an
-/// [`Wake::OnChange`] wait.
-const PROBE_TICK: Duration = Duration::from_secs(5);
+/// Start-to-start spacing of change-probe passes when one process
+/// watches one pull request.
+pub(crate) const PROBE_TICK: Duration = Duration::from_secs(5);
 
-/// Wait up to `interval`, ending early on a trapped shutdown signal.
-pub(crate) fn wait(interval: PollingInterval, wake: Wake) -> WaitEnd {
+/// Wait until `deadline`, ending early on a trapped shutdown signal
+/// or — for [`Wake::OnChange`] — on a change `probe` reports.
+pub(crate) fn wait(
+    deadline: Instant,
+    wake: Wake,
+    tick: Duration,
+    probe: &mut dyn ChangeProbe,
+) -> WaitEnd {
     wait::wait_until(
-        Instant::now() + interval.as_duration(),
+        deadline,
         wake,
-        PROBE_TICK,
-        &mut wait::NeverChanges,
+        tick,
+        probe,
         &|| crate::signal::check_shutdown().is_some(),
         &wait::SystemClock,
     )

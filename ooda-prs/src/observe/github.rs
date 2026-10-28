@@ -27,6 +27,7 @@ pub(crate) mod doc_review_attest;
 pub(crate) mod gh;
 pub(crate) mod issue_events;
 pub(crate) mod pr_commits;
+pub(crate) mod probe;
 pub(crate) mod pull_request_metadata_attestation;
 pub(crate) mod pull_request_view;
 pub(crate) mod rate_limit;

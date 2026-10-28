@@ -340,9 +340,129 @@ fn run_raw(args: &[&str]) -> Result<std::process::Output, GhError> {
     Ok(output)
 }
 
+/// Response to a conditional `GET`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Conditional {
+    /// The representation still matches the validator sent.
+    NotModified,
+    /// A fresh representation and the validator that identifies it.
+    Fresh { etag: Option<String>, body: Vec<u8> },
+}
+
+/// Conditional `GET` of the REST `path`, revalidated against `etag`
+/// and bounded by `deadline`. An unchanged representation costs no
+/// primary quota. Unrecorded: probe traffic is summarised by the wait
+/// that issues it, not logged per call.
+pub(crate) fn gh_conditional(
+    path: &str,
+    etag: Option<&str>,
+    deadline: Duration,
+) -> Result<Conditional, GhError> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", "-i"]);
+    if let Some(etag) = etag {
+        cmd.args(["-H", &format!("If-None-Match: {etag}")]);
+    }
+    cmd.arg(path);
+    let output = run_with_limits(
+        &mut cmd,
+        SpawnLimits {
+            deadline,
+            max_stdout_bytes: GH_MAX_BYTES,
+            max_stderr_bytes: GH_MAX_BYTES,
+        },
+    )
+    .map_err(lift_spawn_error)?;
+    let response = HttpResponse::parse(&output.stdout);
+    match response.status {
+        // The host CLI exits non-zero on 304; the status line is the
+        // authority.
+        Some(304) => Ok(Conditional::NotModified),
+        Some(200) if output.status.success() => Ok(Conditional::Fresh {
+            etag: response.header("etag").map(str::to_string),
+            body: response.body.to_vec(),
+        }),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            if stderr.contains("HTTP 404") {
+                return Err(GhError::NotFound);
+            }
+            if let Some(hit) = classify_rate_limit(&["api", path], &stderr) {
+                return Err(GhError::RateLimited(hit));
+            }
+            Err(GhError::NonZero {
+                code: output.status.code(),
+                stderr,
+            })
+        }
+    }
+}
+
+/// An HTTP response as `gh api -i` prints it: a status line, header
+/// lines, a blank line, then the body.
+struct HttpResponse<'a> {
+    status: Option<u16>,
+    headers: Vec<(&'a str, &'a str)>,
+    body: &'a [u8],
+}
+
+impl<'a> HttpResponse<'a> {
+    fn parse(raw: &'a [u8]) -> Self {
+        let split = raw.windows(4).position(|w| w == b"\r\n\r\n");
+        let (head, body) = match split {
+            Some(at) => (&raw[..at], &raw[at + 4..]),
+            None => (raw, &raw[raw.len()..]),
+        };
+        let head = std::str::from_utf8(head).unwrap_or("");
+        let mut lines = head.lines().map(|l| l.trim_end_matches('\r'));
+        let status = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse().ok());
+        let headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(k, v)| (k.trim(), v.trim()))
+            .collect();
+        Self {
+            status,
+            headers,
+            body,
+        }
+    }
+
+    fn header(&self, name: &str) -> Option<&'a str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| *v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn http_response_splits_status_headers_and_body() {
+        let raw = b"HTTP/2.0 200 OK\nEtag: W/\"abc\"\r\nX-Other: 1\r\n\r\n{\"a\":1}";
+        let r = HttpResponse::parse(raw);
+        assert_eq!(r.status, Some(200));
+        assert_eq!(r.header("ETag"), Some("W/\"abc\""));
+        assert_eq!(r.body, b"{\"a\":1}");
+    }
+
+    #[test]
+    fn http_response_without_body_reads_the_status() {
+        let r = HttpResponse::parse(b"HTTP/2.0 304 Not Modified\nEtag: \"x\"\r\n\r\n");
+        assert_eq!(r.status, Some(304));
+        assert!(r.body.is_empty());
+    }
+
+    #[test]
+    fn http_response_tolerates_unparseable_output() {
+        let r = HttpResponse::parse(b"");
+        assert_eq!(r.status, None);
+        assert!(r.header("etag").is_none());
+    }
 
     #[test]
     fn nonzero_error_displays_exit_code_and_stderr() {

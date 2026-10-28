@@ -36,10 +36,11 @@ use crate::axis_impls::pull_request_metadata::{
 };
 use crate::axis_impls::reviews::{ReviewsAxis, ReviewsObservation};
 use crate::axis_impls::state::{StateAxis, StateObservation};
-use crate::decide::action::{Action, rate_limit_wait_action};
+use crate::decide::action::{Action, ActionEffect, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{PullRequestNumber, Timestamp};
 use crate::observe::github::gh::GhError;
+use crate::observe::github::probe::ProbeSeed;
 use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
@@ -225,8 +226,25 @@ pub(crate) enum IterStep {
     /// Halt immediately with this reason.
     Halt(HaltReason),
     /// Executed; this action becomes last-attempted and (if not a
-    /// Wait) updates the stall comparator.
+    /// Wait) updates the stall comparator. Counts toward the cap.
     Executed(Action),
+    /// A wait resumed after an observed change re-decided the same
+    /// wait: it continues the earlier deadline and does not count
+    /// toward the cap.
+    Rechecked(Action),
+}
+
+/// Most free re-checks one wait deadline grants. Bounds the observes
+/// a stream of changes that move no decision can buy per charged
+/// iteration.
+const RECHECKS_PER_DEADLINE: u32 = 3;
+
+/// The charged wait whose deadline a re-decided wait may resume.
+#[derive(Debug)]
+pub(crate) struct PendingWait {
+    key: ooda_core::StallKey,
+    deadline: std::time::Instant,
+    rechecks: u32,
 }
 
 /// Loop terminator. `Halted` is the ordinary exit path (decision /
@@ -254,9 +272,11 @@ pub(crate) fn run_loop(
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<LoopExit, LoopError> {
+    let mut pending: Option<PendingWait> = None;
     run_loop_with(config, |iter, last_non_wait_key, auto_wait_used_for| {
         run_iter(
             &mut ctx,
+            &mut pending,
             state_root,
             recorder,
             &mut on_state,
@@ -298,7 +318,7 @@ where
     // runs, and a stall comparator does not exist yet.
     let mut last_attempted: Action = match run_iter_fn(1, None, None)? {
         IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
-        IterStep::Executed(action) => action,
+        IterStep::Executed(action) | IterStep::Rechecked(action) => action,
     };
     // Wait does not seed the stall comparator. An axis that detects
     // degradation must surface it as a non-Wait action; varying only
@@ -323,7 +343,12 @@ where
     // oscillation pattern (K1-Full → K2-Wait → K1-Full → …)
     // halts correctly on the second K1 reappearance.
     let mut auto_wait_used_for: Option<ooda_core::StallKey> = None;
-    for iter in 2..=max_iter {
+    // The cap counts charged iterations; observations are numbered
+    // by `iter`, which a re-check advances without charging.
+    let mut charged = 1;
+    let mut iter = 1;
+    while charged < max_iter {
+        iter += 1;
         if let Some(exit_code) = crate::signal::check_shutdown() {
             return Ok(LoopExit::SignalInterrupted { exit_code });
         }
@@ -334,7 +359,9 @@ where
         )?;
         match step {
             IterStep::Halt(reason) => return Ok(LoopExit::Halted(reason)),
+            IterStep::Rechecked(action) => last_attempted = action,
             IterStep::Executed(action) => {
+                charged += 1;
                 let key = action.stall_key();
                 let is_wait = action.effect.is_wait();
                 // Synthetic-Wait detection: a Wait whose key
@@ -422,6 +449,7 @@ fn apply_stall_check(
 #[allow(clippy::too_many_arguments)]
 fn run_iter(
     ctx: &mut ActContext,
+    pending: &mut Option<PendingWait>,
     state_root: Option<&std::path::Path>,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
@@ -434,6 +462,7 @@ fn run_iter(
     let sticky_path = recorder
         .last_seen_head_path()
         .map_err(LoopError::Recorder)?;
+    let observed_from = current_timestamp();
     let obs = match fetch_all(
         &ctx.slug,
         ctx.pr,
@@ -453,6 +482,12 @@ fn run_iter(
                 obs.pull_request_view.head_ref_oid.as_str(),
                 false,
             );
+            ctx.probe.seed(ProbeSeed {
+                head: obs.pull_request_view.head_ref_oid.clone(),
+                reviews: obs.reviews.len(),
+                events: obs.issue_events.len(),
+                observed_from,
+            });
             *obs
         }
         Ok(FetchOutcome::RateLimited(hit)) => {
@@ -469,28 +504,10 @@ fn run_iter(
                 },
             );
             let action = rate_limit_wait_action(hit);
-            // Pairing invariant: every `action_started` /
-            // `wait_started` event must be followed by a matching
-            // `action_end` / `wait_end` on the same iteration.
-            // Refresh the lock path *before* emitting started events
-            // — if `action_lock_path` errs (`RecorderError`), `?`
-            // propagates immediately, so no started events are ever
-            // written. The on-disk story stays consistent: either
-            // both halves of the pair are present, or neither is.
-            ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
-            recorder.record_action_start(iter, &action);
-            recorder.record_wait_start(iter, &action);
-            let started = std::time::Instant::now();
-            let act_result = act(&action, ctx);
-            if let Ok(Acted::Waited(ended)) = &act_result {
-                recorder.record_wait_end(iter, &action, started.elapsed(), ended);
-            }
-            recorder.record_action_end(
-                iter,
-                &action,
-                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
-            );
-            act_result.map_err(LoopError::Act)?;
+            // Nothing was observed, so no wait can resume through
+            // this iteration.
+            *pending = None;
+            act_recorded(ctx, recorder, iter, &action)?;
             return Ok(IterStep::Executed(action));
         }
         Err(e) => {
@@ -513,29 +530,79 @@ fn run_iter(
                 StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
-            // Pairing invariant — see rate-limit branch above. Lock
-            // path refreshes before any started event is emitted so a
-            // `RecorderError` here cannot leave a started↔end pair
-            // half-open.
-            ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
-            recorder.record_action_start(iter, &action);
-            if is_wait {
-                recorder.record_wait_start(iter, &action);
+            let recheck = charge_wait(pending, &action);
+            if let Some(deadline) = pending.as_ref().map(|p| p.deadline)
+                && is_wait
+            {
+                ctx.wait_deadline = Some(deadline);
             }
-            let started = std::time::Instant::now();
-            let act_result = act(&action, ctx);
-            if let Ok(Acted::Waited(ended)) = &act_result {
-                recorder.record_wait_end(iter, &action, started.elapsed(), ended);
-            }
-            recorder.record_action_end(
-                iter,
-                &action,
-                act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
-            );
-            act_result.map_err(LoopError::Act)?;
-            Ok(IterStep::Executed(action))
+            act_recorded(ctx, recorder, iter, &action)?;
+            Ok(if recheck {
+                IterStep::Rechecked(action)
+            } else {
+                IterStep::Executed(action)
+            })
         }
     }
+}
+
+/// Act on `action` with its started/finished events paired around it.
+/// The lock path refreshes before any started event is emitted, so a
+/// `RecorderError` leaves either both halves of a pair on disk or
+/// neither.
+fn act_recorded(
+    ctx: &mut ActContext,
+    recorder: &Recorder,
+    iter: u32,
+    action: &Action,
+) -> Result<(), LoopError> {
+    ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
+    recorder.record_action_start(iter, action);
+    if action.effect.is_wait() {
+        recorder.record_wait_start(iter, action);
+    }
+    let started = std::time::Instant::now();
+    let act_result = act(action, ctx);
+    if let Ok(Acted::Waited(ended)) = &act_result {
+        recorder.record_wait_end(iter, action, started.elapsed(), ended);
+    }
+    recorder.record_action_end(
+        iter,
+        action,
+        act_result.as_ref().map(|_| ()).map_err(ToString::to_string),
+    );
+    act_result.map(|_| ()).map_err(LoopError::Act)
+}
+
+/// Decide whether executing `action` is a free re-check and update
+/// the pending wait to match. A wait re-checks iff it carries the
+/// pending wait's stall key, that wait's deadline is still ahead,
+/// and the deadline has re-checks left; it then keeps the deadline,
+/// clipped to its own interval. Any other wait starts a fresh
+/// deadline; any other action clears the pending wait.
+fn charge_wait(pending: &mut Option<PendingWait>, action: &Action) -> bool {
+    let now = std::time::Instant::now();
+    let ActionEffect::Wait { interval, .. } = &action.effect else {
+        *pending = None;
+        return false;
+    };
+    let own = now + interval.as_duration();
+    let key = action.stall_key();
+    if let Some(p) = pending.as_mut()
+        && p.key == key
+        && now < p.deadline
+        && p.rechecks < RECHECKS_PER_DEADLINE
+    {
+        p.rechecks += 1;
+        p.deadline = p.deadline.min(own);
+        return true;
+    }
+    *pending = Some(PendingWait {
+        key,
+        deadline: own,
+        rechecks: 0,
+    });
+    false
 }
 
 #[cfg(test)]
@@ -579,6 +646,72 @@ mod tests {
             urgency: Urgency::Mid(MidTier::BlockingWait),
             blocker: BlockerKey::for_test(blocker),
         }
+    }
+
+    fn ci_wait() -> Action {
+        wait_action(ActionKind::WaitForMergeability, "ci_pending")
+    }
+
+    #[test]
+    fn rechecks_do_not_count_toward_the_cap() {
+        let calls = RefCell::new(0u32);
+        let mut seq = vec![IterStep::Executed(ci_wait())];
+        seq.extend(std::iter::repeat_with(|| IterStep::Rechecked(ci_wait())).take(5));
+        seq.push(IterStep::Executed(ci_wait()));
+        let mut script = scripted(seq);
+        let exit = run_loop_with(cfg(2), |iter, a, b| {
+            *calls.borrow_mut() += 1;
+            script(iter, a, b)
+        })
+        .unwrap();
+        assert!(matches!(unwrap_halt(exit), HaltReason::CapReached(_)));
+        assert_eq!(*calls.borrow(), 7, "2 charged + 5 rechecks");
+    }
+
+    #[test]
+    fn a_wait_re_decided_before_its_deadline_rechecks() {
+        let mut pending = None;
+        assert!(!charge_wait(&mut pending, &ci_wait()), "first wait charges");
+        let deadline = pending.as_ref().unwrap().deadline;
+        assert!(charge_wait(&mut pending, &ci_wait()));
+        assert!(
+            pending.as_ref().unwrap().deadline <= deadline,
+            "never extended"
+        );
+    }
+
+    #[test]
+    fn rechecks_are_bounded_per_deadline() {
+        let mut pending = None;
+        charge_wait(&mut pending, &ci_wait());
+        for _ in 0..RECHECKS_PER_DEADLINE {
+            assert!(charge_wait(&mut pending, &ci_wait()));
+        }
+        assert!(
+            !charge_wait(&mut pending, &ci_wait()),
+            "budget spent: charges"
+        );
+        assert_eq!(pending.as_ref().unwrap().rechecks, 0, "fresh deadline");
+    }
+
+    #[test]
+    fn a_different_wait_or_any_other_action_charges() {
+        let mut pending = None;
+        charge_wait(&mut pending, &ci_wait());
+        let other = wait_action(ActionKind::WaitForMergeability, "other_blocker");
+        assert!(!charge_wait(&mut pending, &other));
+        assert!(!charge_wait(&mut pending, &rebase()));
+        assert!(pending.is_none(), "a non-wait clears the pending wait");
+    }
+
+    #[test]
+    fn a_wait_past_its_deadline_charges() {
+        let mut pending = Some(PendingWait {
+            key: ci_wait().stall_key(),
+            deadline: std::time::Instant::now(),
+            rechecks: 0,
+        });
+        assert!(!charge_wait(&mut pending, &ci_wait()));
     }
 
     fn rebase() -> Action {
@@ -642,7 +775,7 @@ mod tests {
                     }
                     Ok(IterStep::Executed(action))
                 }
-                halt @ IterStep::Halt(_) => Ok(halt),
+                other @ (IterStep::Halt(_) | IterStep::Rechecked(_)) => Ok(other),
             }
         }
     }
@@ -863,8 +996,10 @@ mod tests {
         crate::signal::set_for_test(130);
         let started = std::time::Instant::now();
         let end = crate::act::wait(
-            ooda_core::PollingInterval::from_secs(60),
+            std::time::Instant::now() + std::time::Duration::from_mins(1),
             ooda_core::Wake::Elapsed,
+            crate::act::PROBE_TICK,
+            &mut ooda_core::wait::NeverChanges,
         );
         let elapsed = started.elapsed();
         crate::signal::reset_for_test();
@@ -876,11 +1011,17 @@ mod tests {
     fn wait_action_ends_early_once_shutdown_is_trapped() {
         let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
         crate::signal::set_for_test(143);
-        let ctx = crate::act::ActContext {
+        let mut ctx = crate::act::ActContext {
             slug: crate::ids::RepoSlug::parse("example/widgets").unwrap(),
             pr: PullRequestNumber::new(7).unwrap(),
             action_lock_path: std::path::PathBuf::from("/nonexistent/.action.lock"),
             repo_root: std::path::PathBuf::from("/nonexistent"),
+            probe: crate::observe::github::probe::GitHubProbe::new(
+                crate::ids::RepoSlug::parse("example/widgets").unwrap(),
+                PullRequestNumber::new(7).unwrap(),
+            ),
+            probe_tick: crate::act::PROBE_TICK,
+            wait_deadline: None,
         };
         let wait = Action {
             kind: ActionKind::Rebase,
@@ -894,7 +1035,7 @@ mod tests {
             blocker: BlockerKey::for_test("wait"),
         };
         let started = std::time::Instant::now();
-        let result = act(&wait, &ctx);
+        let result = act(&wait, &mut ctx);
         let elapsed = started.elapsed();
         crate::signal::reset_for_test();
         assert!(result.is_ok(), "{result:?}");

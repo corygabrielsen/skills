@@ -168,8 +168,9 @@ agent mistakes; the binary is not at fault.
   unless you have a specific reason; if exit 7 fires from a
   wait-heavy run, re-invoke with a higher cap, not a lower one.
 - **Inferring "stuck" from long wait runs.** A run that spends
-  minutes in `Wait(1m)` polling for a CI check or a bot review is
-  working correctly. The wait is the action. Let it finish.
+  minutes in `Wait(1m)` waiting on a CI check or a bot review is
+  working correctly: each wait ends as soon as the PR changes. The
+  wait is the action. Let it finish.
 
 **After a `Handoff*` (exit 3 or 4).** Surface the handoff to the
 user (header + iter-log + handoff blob; see `Handoff*` prompt
@@ -624,7 +625,7 @@ agent's next user-visible response MUST expose the handoff content
 to the human. At minimum, surface: (1) the final variant block
 (stderr header + `  see:` pointer line), (2) the per-iteration
 stderr trail emitted during the run (bounded by `--max-iter`;
-default cap yields ~50 `[iter N] ...` lines, surface in full), and
+charged iterations plus their re-checks, surface in full), and
 (3) the handoff blob body in full. The body already carries the
 dashboard preamble (tier-grouped candidates, per-axis signals,
 blockers) and the per-action prompt — surfacing the file verbatim
@@ -731,7 +732,12 @@ Each iteration consists of four stages: `observe → orient →
 decide → act`. The first three always run; `act` runs only when
 `decide` selects an `Execute(action)` decision (i.e. when
 `automation ∈ {Full, Wait { .. }}`). For `Wait` actions, `act`
-sleeps the interval and returns; for `Full` actions, `act`
+waits up to the interval and returns. An observing wait
+(`wake: OnChange`) polls the PR's REST surface every 5s with
+conditional requests and ends as soon as an endpoint's projected
+state changes; a backoff or propagation window (`wake: Elapsed`)
+runs in full. Every wait ends within 200 ms of a trapped signal.
+For `Full` actions, `act`
 invokes the action's side-effect. For `Agent` / `Human`
 automations, `decide` returns a `Halt(...)` directly so `act`
 is not called under correct control flow. `act` additionally
@@ -750,12 +756,12 @@ variant respectively (stderr `DoneMerged` / `DoneClosed`)
 Otherwise `decide` selects a candidate action from the `orient`
 output and inspects its `automation` field:
 
-| Automation       | `decide` returns            | Loop behavior                                                          |
-| ---------------- | --------------------------- | ---------------------------------------------------------------------- |
-| `Full`           | `Execute(action)`           | `act` runs the action immediately; loop continues to next iteration    |
-| `Wait{interval}` | `Execute(action)`           | `act` sleeps `interval`; loop re-observes (counts toward `--max-iter`) |
-| `Agent`          | `Halt(AgentNeeded(action))` | Loop exits with `Outcome::HandoffAgent(action)` (exit 4)               |
-| `Human`          | `Halt(HumanNeeded(action))` | Loop exits with `Outcome::HandoffHuman(action)` (exit 3)               |
+| Automation       | `decide` returns            | Loop behavior                                                       |
+| ---------------- | --------------------------- | ------------------------------------------------------------------- |
+| `Full`           | `Execute(action)`           | `act` runs the action immediately; loop continues to next iteration |
+| `Wait{interval}` | `Execute(action)`           | `act` waits up to `interval`; loop re-observes                      |
+| `Agent`          | `Halt(AgentNeeded(action))` | Loop exits with `Outcome::HandoffAgent(action)` (exit 4)            |
+| `Human`          | `Halt(HumanNeeded(action))` | Loop exits with `Outcome::HandoffHuman(action)` (exit 3)            |
 
 `effect` is a flat 4-variant enum on `Action`
 (`ActionEffect`): `Full{log, upstream} | Wait{interval, log, wake} |
@@ -804,9 +810,14 @@ The loop additionally exits if:
   The action shown is the last action `act` ran successfully
   (Wait or non-Wait); iterations whose `act` returned an error
   exit with `BinaryError` and never reach `StuckCapReached`.
-  `Wait` iterations count toward the cap. The loop is
-  iteration-bounded, not wall-clock-bounded; callers needing a
-  wall-clock deadline must impose it externally.
+  The cap counts charged iterations. A wait ended early by an
+  observed change whose next observe re-decides the same wait
+  (same stall key) is a re-check: it resumes the earlier deadline
+  and is not charged, up to 3 re-checks per deadline. Iteration
+  numbers count observations, so they can exceed `--max-iter`.
+  Wall time per charged iteration stays bounded by its wait
+  interval. The loop is iteration-bounded, not wall-clock-bounded;
+  callers needing a wall-clock deadline must impose it externally.
 - A caught external failure occurs (`BinaryError(msg)` — exit
   70). Internal taxonomy: errors during observe (gh subprocess
   / network / IO), errors during codex observation, and errors

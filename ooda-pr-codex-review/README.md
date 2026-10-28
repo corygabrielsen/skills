@@ -771,7 +771,7 @@ ActError =
 act(a, ctx) =
     case a.effect of
         Full{..}         → with FileLock(ctx.action_lock_path): run_full(a.kind, ctx)
-        Wait{interval, wake,..}→ wait_until(now + interval, wake, …, interrupted = shutdown trapped); Ok(())
+        Wait{interval, wake,..}→ Waited(wait_until(ctx.wait_deadline ∨ now + interval, wake, probe = ctx.probe, interrupted = shutdown trapped))
         Agent | Human    → Err(UnsupportedAutomation)
 
 run_full : ActionKind × ActContext → Result⟨(), ActError⟩
@@ -833,7 +833,17 @@ scans.
 
 ```
 LoopConfig = max_iterations: NonZeroU32 × codex_review: Option⟨CodexReviewConfig⟩
-IterStep   = Halt(HaltReason) ⊕ Executed(Action)
+IterStep   = Halt(HaltReason) ⊕ Executed(Action) ⊕ Rechecked(Action)
+
+-- A wait re-decided after an observed change, with the pending wait's
+-- stall key and its deadline still ahead, is a re-check: it resumes
+-- that deadline and is not charged, at most 3 per deadline.
+charged(step) ⟺ step = Executed(_)          -- --max-iter caps charged steps
+
+-- GitHubProbe (observe/github/probe.rs): one conditional GET per
+-- endpoint per 5s pass, seeded from each observe; changed ⟺ the
+-- endpoint's projection differs from its baseline.
+--   pull · check-runs (every page) · status · reviews, events (frontier page) · comments (since observe)
 
 HaltReason =                                ⟶ exit_code()
     Decision(DecisionHalt)                  ⟶ delegate

@@ -600,7 +600,7 @@ ActError =
 act(a, slug, pr, lock, root) =
     case a.effect of
         Full{..}         → with FileLock(lock): run_full(a.kind, slug, pr, root)
-        Wait{interval, wake,..}→ wait_until(now + interval, wake, …, interrupted = shutdown trapped); Ok(())
+        Wait{interval, wake,..}→ Waited(wait_until(ctx.wait_deadline ∨ now + interval, wake, probe = ctx.probe, interrupted = shutdown trapped))
         Agent | Human    → Err(UnsupportedAutomation)
 
 run_full : ActionKind × RepoSlug × PullRequestNumber × RepoRoot → Result⟨(), ActError⟩
@@ -634,7 +634,17 @@ whole suite: `ooda-prs` drives many PRs but one local working tree.
 
 ```
 LoopConfig = max_iterations: NonZeroU32
-IterStep   = Halt(HaltReason) ⊕ Executed(Action)
+IterStep   = Halt(HaltReason) ⊕ Executed(Action) ⊕ Rechecked(Action)
+
+-- A wait re-decided after an observed change, with the pending wait's
+-- stall key and its deadline still ahead, is a re-check: it resumes
+-- that deadline and is not charged, at most 3 per deadline.
+charged(step) ⟺ step = Executed(_)          -- --max-iter caps charged steps
+
+-- GitHubProbe (observe/github/probe.rs): one conditional GET per
+-- endpoint per 5s pass, seeded from each observe; changed ⟺ the
+-- endpoint's projection differs from its baseline.
+--   pull · check-runs (every page) · status · reviews, events (frontier page) · comments (since observe)
 
 HaltReason =                                ⟶ exit_code()
     Decision(DecisionHalt)                  ⟶ delegate

@@ -842,6 +842,21 @@ fn run_inspect(
     decorate_handoff_human(Outcome::from(decision), slug, pr, Some(&snapshot))
 }
 
+/// Probe-pass spacing per pull request. Every in-flight PR probes
+/// concurrently on one token, so the spacing stretches with the
+/// number in flight to hold the suite near 300 probe requests a
+/// minute (six endpoints per pass), well inside the 900-point
+/// secondary limit.
+fn probe_tick(args: &Args) -> std::time::Duration {
+    probe_tick_for(args.suite.len(), args.concurrency)
+}
+
+fn probe_tick_for(suite: usize, concurrency: Option<u32>) -> std::time::Duration {
+    let in_flight = concurrency.map_or(suite, |k| suite.min(k as usize));
+    let per_pr = std::time::Duration::from_millis(1200);
+    act::PROBE_TICK.max(per_pr * u32::try_from(in_flight).unwrap_or(u32::MAX))
+}
+
 fn run_full(
     slug: &RepoSlug,
     pr: PullRequestNumber,
@@ -867,6 +882,9 @@ fn run_full(
         pr,
         action_lock_path,
         repo_root: repo_root.to_path_buf(),
+        probe: observe::github::probe::GitHubProbe::new(slug.clone(), pr),
+        probe_tick: probe_tick(args),
+        wait_deadline: None,
     };
     let mut snapshot: Option<HandoffSnapshot> = None;
     let on_state = |i: u32,
@@ -1357,6 +1375,16 @@ fn format_duration(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_tick_stretches_with_pull_requests_in_flight() {
+        use std::time::Duration;
+        assert_eq!(probe_tick_for(1, None), act::PROBE_TICK);
+        assert_eq!(probe_tick_for(4, None), act::PROBE_TICK);
+        assert_eq!(probe_tick_for(10, None), Duration::from_secs(12));
+        assert_eq!(probe_tick_for(10, Some(2)), act::PROBE_TICK);
+        assert_eq!(probe_tick_for(3, Some(20)), act::PROBE_TICK);
+    }
     use ooda_core::MidTier;
 
     fn handoff(blocker: &str) -> ooda_core::HandoffAction<decide::action::ActionKind> {

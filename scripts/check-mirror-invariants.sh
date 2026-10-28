@@ -83,6 +83,7 @@ STRICT_FILES=(
     "src/observe/github/requested_reviewers.rs"
     "src/observe/github/review_class_attest.rs"
     "src/observe/github/pr_commits.rs"
+    "src/observe/github/probe.rs"
     "src/observe/github/reviews.rs"
     "src/observe/github/review_threads.rs"
     "src/observe/github.rs"

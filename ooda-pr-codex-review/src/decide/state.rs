@@ -88,6 +88,7 @@ pub(crate) fn blocking_candidates(
             effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
                 log: "GitHub is still computing mergeability — wait and re-observe".into(),
+                wake: ooda_core::Wake::OnChange,
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingWait),

@@ -1129,6 +1129,7 @@ mod tests {
         let action = sample_action(ActionEffect::Wait {
             interval: PollingInterval::from_secs(30),
             log: "Waiting".into(),
+            wake: ooda_core::Wake::OnChange,
         });
         recorder.record_wait_end(1, &action, Duration::from_millis(30_012));
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);

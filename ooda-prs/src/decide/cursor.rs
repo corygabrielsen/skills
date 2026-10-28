@@ -36,6 +36,7 @@ pub(crate) fn candidates(report: &CursorReport) -> Vec<Action> {
                 effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(60),
                     log: "Waiting for Cursor Bugbot to finish reviewing".into(),
+                    wake: ooda_core::Wake::OnChange,
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::Mid(MidTier::BlockingWait),

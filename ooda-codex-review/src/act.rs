@@ -16,12 +16,15 @@
 //! (log directory, target, working directory, subprocess binary
 //! path). The runner threads one through per invocation.
 
+use ooda_core::wait::{self, WaitEnd};
+use ooda_core::{PollingInterval, Wake};
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind, CodexReasoningLevel};
 use crate::ids::ReviewTarget;
@@ -101,8 +104,8 @@ impl std::error::Error for ActError {
 /// per-effect behaviour table.
 pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
-        ActionEffect::Wait { interval, .. } => {
-            crate::signal::sleep_unless_shutdown(interval.as_duration());
+        ActionEffect::Wait { interval, wake, .. } => {
+            wait(*interval, *wake);
             Ok(())
         }
         ActionEffect::Full { .. } => dispatch_full(action, ctx),
@@ -110,6 +113,22 @@ pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
             Err(ActError::UnsupportedAutomation)
         }
     }
+}
+
+/// Start-to-start spacing of change-probe passes during an
+/// [`Wake::OnChange`] wait.
+const PROBE_TICK: Duration = Duration::from_secs(5);
+
+/// Wait up to `interval`, ending early on a trapped shutdown signal.
+pub(crate) fn wait(interval: PollingInterval, wake: Wake) -> WaitEnd {
+    wait::wait_until(
+        Instant::now() + interval.as_duration(),
+        wake,
+        PROBE_TICK,
+        &mut wait::NeverChanges,
+        &|| crate::signal::check_shutdown().is_some(),
+        &wait::SystemClock,
+    )
 }
 
 fn dispatch_full(action: &Action, ctx: &ActContext) -> Result<(), ActError> {

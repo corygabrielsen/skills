@@ -481,7 +481,9 @@ Action =
 
 ActionEffect =
     Full{log: String, upstream: UpstreamConsistency}   (we run it)
-  ⊕ Wait{interval: PollingInterval, log: String}       ("Wait without duration" unrepresentable)
+  ⊕ Wait{interval: PollingInterval, log: String, wake: Wake}   ("Wait without duration" unrepresentable)
+
+Wake = Elapsed (backoff, propagation window: runs in full) ⊕ OnChange (observing: may end early)
   ⊕ Agent{prompt: HandoffPrompt}
   ⊕ Human{prompt: HandoffPrompt}
 
@@ -598,7 +600,7 @@ ActError =
 act(a, slug, pr, lock, root) =
     case a.effect of
         Full{..}         → with FileLock(lock): run_full(a.kind, slug, pr, root)
-        Wait{interval,..}→ thread::sleep(interval); Ok(())
+        Wait{interval, wake,..}→ wait_until(now + interval, wake, …, interrupted = shutdown trapped); Ok(())
         Agent | Human    → Err(UnsupportedAutomation)
 
 run_full : ActionKind × RepoSlug × PullRequestNumber × RepoRoot → Result⟨(), ActError⟩

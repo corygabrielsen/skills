@@ -105,6 +105,7 @@ fn mk_await(level: CodexReasoningLevel, pending: u32) -> Action {
                 "Polling: {pending} codex review(s) still streaming at level {}.",
                 level.as_str()
             ),
+            wake: ooda_core::Wake::OnChange,
         },
         // `Blocks`: the axis gates merge until ladder satisfaction.
         // `Neutral` would misclassify the await as non-advancing,

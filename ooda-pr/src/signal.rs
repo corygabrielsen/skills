@@ -20,7 +20,6 @@
 
 use std::io;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant};
 
 use ooda_core::ExitCode;
 
@@ -73,23 +72,6 @@ pub(crate) fn check_shutdown() -> Option<u8> {
         // backstop, falling back to the SIGTERM token if the
         // atomic somehow holds an out-of-range value.
         Some(u8::try_from(sig).unwrap_or(ExitCode::SignalSigterm.as_u8()))
-    }
-}
-
-/// Granularity at which a sleep observes a trapped signal.
-const SHUTDOWN_POLL: Duration = Duration::from_millis(200);
-
-/// Sleep for `duration`, returning early once a shutdown signal is
-/// trapped. The caller's next boundary poll routes the signal; this
-/// only bounds how long the wait holds it.
-pub(crate) fn sleep_unless_shutdown(duration: Duration) {
-    let deadline = Instant::now() + duration;
-    while check_shutdown().is_none() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return;
-        }
-        std::thread::sleep(remaining.min(SHUTDOWN_POLL));
     }
 }
 

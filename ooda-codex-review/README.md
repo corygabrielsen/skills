@@ -282,7 +282,7 @@ ActError = UnsupportedAutomation | UnsupportedTarget(String) | NotImplemented
 
 Dispatch on `effect`:
 
-- `Wait { interval }` → sleep `interval`.
+- `Wait { interval, wake }` → wait up to `interval`; a trapped shutdown signal ends it early.
 - `Full` ∧ `RunReviews { level, n }` → `spawn_codex_reviews`.
 - `Full` ∧ any other kind → `NotImplemented`.
 - `Agent` / `Human` → `UnsupportedAutomation` (invariant violation;
@@ -340,7 +340,7 @@ Stall comparator on a non-Wait repeat of `last_non_wait_key`:
 
 ```
 auto_wait_used_for == key                       → Halt(Stalled)
-effect.synthetic_wait_on_repeat() = Some(wait)  → substitute Wait{interval, log}, proceed
+effect.synthetic_wait_on_repeat() = Some(wait)  → substitute Wait{interval, log, wake: Elapsed}, proceed
    (Full with upstream = Eventual(interval))
 otherwise (Full with Sync)                      → Halt(Stalled)
 ```

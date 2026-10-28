@@ -50,10 +50,11 @@ pub mod safe_url;
 pub mod single_line_string;
 pub mod spawn;
 pub mod stall_key;
+pub mod wait;
 
 pub use action::{
     Action, ActionEffect, ActionKindName, HandoffAction, MidTier, TargetEffect,
-    UpstreamConsistency, Urgency,
+    UpstreamConsistency, Urgency, Wake,
 };
 pub use axis::Axis;
 pub use blocker::{BlockerKey, BlockerKeyError, GateIdentity};

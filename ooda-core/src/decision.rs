@@ -64,9 +64,17 @@ pub fn classify<K>(action: Action<K>) -> Decision<K> {
             urgency,
             blocker,
         }),
-        ActionEffect::Wait { interval, log } => Decision::Execute(Action {
+        ActionEffect::Wait {
+            interval,
+            log,
+            wake,
+        } => Decision::Execute(Action {
             kind,
-            effect: ActionEffect::Wait { interval, log },
+            effect: ActionEffect::Wait {
+                interval,
+                log,
+                wake,
+            },
             target_effect,
             urgency,
             blocker,
@@ -332,6 +340,7 @@ mod tests {
         let d = classify(dummy_with_effect(ActionEffect::Wait {
             interval: crate::PollingInterval::from_secs(30),
             log: "x".into(),
+            wake: crate::Wake::OnChange,
         }));
         assert!(matches!(
             d,

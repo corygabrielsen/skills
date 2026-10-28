@@ -37,6 +37,7 @@ pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
                 effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(15),
                     log: "Waiting for Copilot to start reviewing".into(),
+                    wake: ooda_core::Wake::OnChange,
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::Mid(MidTier::BlockingWait),
@@ -52,6 +53,7 @@ pub(crate) fn candidates(report: &CopilotReport) -> Vec<Action> {
                 effect: ActionEffect::Wait {
                     interval: ooda_core::PollingInterval::from_secs(60),
                     log: "Waiting for Copilot to finish reviewing".into(),
+                    wake: ooda_core::Wake::OnChange,
                 },
                 target_effect: TargetEffect::Blocks,
                 urgency: Urgency::Mid(MidTier::BlockingWait),

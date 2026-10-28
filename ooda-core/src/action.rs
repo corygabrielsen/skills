@@ -83,11 +83,13 @@ pub enum ActionEffect {
         log: String,
         upstream: UpstreamConsistency,
     },
-    /// Driven inside the loop after sleeping `interval`. Same
-    /// audience for `log` as [`Self::Full`].
+    /// Driven inside the loop after waiting up to `interval`. Same
+    /// audience for `log` as [`Self::Full`]. `wake` states whether
+    /// the wait may end early on an observed change.
     Wait {
         interval: PollingInterval,
         log: String,
+        wake: Wake,
     },
     /// Halts the loop and surfaces the prompt to an agent.
     Agent { prompt: HandoffPrompt },
@@ -134,6 +136,21 @@ pub enum UpstreamConsistency {
     /// completion). On a repeat the runner converts to a synthetic
     /// Wait of `interval` rather than halting.
     Eventual(PollingInterval),
+}
+
+/// Whether a [`ActionEffect::Wait`] may end before its interval.
+///
+/// Stated where the wait is constructed, because only that site knows
+/// why it waits; no default exists, so every new wait declares one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wake {
+    /// The interval is itself the purpose — a backoff or a
+    /// propagation window — and must elapse in full.
+    Elapsed,
+    /// The wait observes an external state and ends as soon as a
+    /// change probe reports one.
+    OnChange,
 }
 
 impl ActionEffect {
@@ -185,6 +202,7 @@ impl ActionEffect {
             } => Some(Self::Wait {
                 interval: *interval,
                 log: log.clone(),
+                wake: Wake::Elapsed,
             }),
             _ => None,
         }
@@ -515,6 +533,7 @@ mod tests {
         let wait = ActionEffect::Wait {
             interval: PollingInterval::from_secs(30),
             log: "x".into(),
+            wake: Wake::OnChange,
         };
         assert!(agent.is_handoff());
         assert!(human.is_handoff());
@@ -552,6 +571,7 @@ mod tests {
         let wait = ActionEffect::Wait {
             interval,
             log: "x".into(),
+            wake: Wake::OnChange,
         };
         let agent = ActionEffect::Agent {
             prompt: HandoffPrompt::new("p"),
@@ -560,12 +580,16 @@ mod tests {
         let Some(ActionEffect::Wait {
             interval: out_interval,
             log: out_log,
+            wake: out_wake,
         }) = eventual.synthetic_wait_on_repeat()
         else {
             panic!("expected synthetic Wait from Eventual Full");
         };
         assert_eq!(out_interval, interval);
         assert_eq!(out_log, "rerequest");
+        // A propagation window must run in full: a change probe
+        // ending it early would re-arm the repeat it exists to absorb.
+        assert_eq!(out_wake, Wake::Elapsed);
 
         assert!(sync.synthetic_wait_on_repeat().is_none());
         assert!(wait.synthetic_wait_on_repeat().is_none());

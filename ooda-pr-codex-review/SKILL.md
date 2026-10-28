@@ -758,7 +758,7 @@ output and inspects its `automation` field:
 | `Human`          | `Halt(HumanNeeded(action))` | Loop exits with `Outcome::HandoffHuman(action)` (exit 3)               |
 
 `effect` is a flat 4-variant enum on `Action`
-(`ActionEffect`): `Full{log, upstream} | Wait{interval, log} |
+(`ActionEffect`): `Full{log, upstream} | Wait{interval, log, wake} |
 Agent{prompt} | Human{prompt}`. There is no separate `Disposition`
 type — the effect IS the dispatch selector. The `<Effect>`
 placeholder in stderr headers renders the effect's variant name.

@@ -204,6 +204,7 @@ fn wait_merge_state_unknown() -> Action {
         effect: ActionEffect::Wait {
             interval: ooda_core::PollingInterval::from_secs(30),
             log: "GitHub is still computing merge state — wait and re-observe".into(),
+            wake: ooda_core::Wake::OnChange,
         },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingWait),
@@ -217,6 +218,7 @@ fn wait_merge_state_has_hooks() -> Action {
         effect: ActionEffect::Wait {
             interval: ooda_core::PollingInterval::from_secs(30),
             log: "Commit hooks are still running — wait and re-observe".into(),
+            wake: ooda_core::Wake::OnChange,
         },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingWait),
@@ -312,6 +314,7 @@ fn merge_blocked_by_check_pending() -> Action {
         effect: ActionEffect::Wait {
             interval: ooda_core::PollingInterval::from_secs(30),
             log: "Required checks are still pending on HEAD — wait and re-observe".into(),
+            wake: ooda_core::Wake::OnChange,
         },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::BlockingWait),

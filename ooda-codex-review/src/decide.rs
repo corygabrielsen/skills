@@ -195,6 +195,7 @@ fn mk_await_reviews(level: CodexReasoningLevel, pending: u32) -> Action {
                 "Polling: {pending} review(s) still streaming at level {}.",
                 level.as_str()
             ),
+            wake: ooda_core::Wake::OnChange,
         },
         target_effect: TargetEffect::Neutral,
         urgency: Urgency::Mid(MidTier::BlockingWait),

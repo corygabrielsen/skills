@@ -24,9 +24,12 @@ pub(crate) mod review_class;
 pub(crate) mod review_docs;
 pub(crate) mod sync_pull_request_metadata;
 
+use ooda_core::wait::{self, WaitEnd};
+use ooda_core::{PollingInterval, Wake};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::decide::action::{Action, ActionEffect, ActionKind};
 use crate::ids::{PullRequestNumber, RepoSlug};
@@ -132,14 +135,30 @@ pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
             let _lock = FileLock::acquire(&ctx.action_lock_path).map_err(ActError::Lock)?;
             run_full(&action.kind, ctx)
         }
-        ActionEffect::Wait { interval, .. } => {
-            crate::signal::sleep_unless_shutdown(interval.as_duration());
+        ActionEffect::Wait { interval, wake, .. } => {
+            wait(*interval, *wake);
             Ok(())
         }
         ActionEffect::Agent { .. } | ActionEffect::Human { .. } => {
             Err(ActError::UnsupportedAutomation)
         }
     }
+}
+
+/// Start-to-start spacing of change-probe passes during an
+/// [`Wake::OnChange`] wait.
+const PROBE_TICK: Duration = Duration::from_secs(5);
+
+/// Wait up to `interval`, ending early on a trapped shutdown signal.
+pub(crate) fn wait(interval: PollingInterval, wake: Wake) -> WaitEnd {
+    wait::wait_until(
+        Instant::now() + interval.as_duration(),
+        wake,
+        PROBE_TICK,
+        &mut wait::NeverChanges,
+        &|| crate::signal::check_shutdown().is_some(),
+        &wait::SystemClock,
+    )
 }
 
 fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {

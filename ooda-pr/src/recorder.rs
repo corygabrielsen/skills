@@ -983,13 +983,18 @@ mod tests {
                     },
                 }
             }),
-            ActionEffect::Wait { interval, log } => json!({
+            ActionEffect::Wait {
+                interval,
+                log,
+                wake,
+            } => json!({
                 "Wait": {
                     "interval": {
                         "secs": interval.as_duration().as_secs(),
                         "nanos": interval.as_duration().subsec_nanos(),
                     },
                     "log": log,
+                    "wake": wake,
                 }
             }),
             ActionEffect::Agent { prompt } => json!({
@@ -1029,6 +1034,7 @@ mod tests {
             ActionEffect::Wait {
                 interval: PollingInterval::from_secs(30),
                 log: "Waiting for CI".into(),
+                wake: ooda_core::Wake::OnChange,
             },
             ActionEffect::Agent {
                 prompt: HandoffPrompt::new("Address review threads"),
@@ -1086,6 +1092,7 @@ mod tests {
         let action = sample_action(ActionEffect::Wait {
             interval: PollingInterval::from_secs(60),
             log: "Waiting".into(),
+            wake: ooda_core::Wake::OnChange,
         });
         recorder.record_wait_end(1, &action, Duration::from_millis(41_237));
         recorder.record_outcome(&Outcome::Paused, ExitCode::Paused, "Paused", None);

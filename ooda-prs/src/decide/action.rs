@@ -57,6 +57,7 @@ pub(crate) fn rate_limit_wait_action(hit: RateLimitHit) -> Action {
         effect: ActionEffect::Wait {
             interval: hit.retry_after,
             log,
+            wake: ooda_core::Wake::Elapsed,
         },
         target_effect: TargetEffect::Blocks,
         urgency: Urgency::Mid(MidTier::Critical),
@@ -379,9 +380,17 @@ mod tests {
             retry_after: PollingInterval::from_secs(120),
         };
         let action = rate_limit_wait_action(hit);
-        let ActionEffect::Wait { log, interval } = &action.effect else {
+        let ActionEffect::Wait {
+            log,
+            interval,
+            wake,
+        } = &action.effect
+        else {
             panic!("expected Wait effect");
         };
+        // A backoff must run in full: probing while throttled
+        // defeats the point of the wait.
+        assert_eq!(*wake, ooda_core::Wake::Elapsed);
         assert!(log.contains("github/graphql/primary"), "log: {log}");
         assert!(log.contains("120"), "log: {log}");
         assert_eq!(*interval, hit.retry_after);

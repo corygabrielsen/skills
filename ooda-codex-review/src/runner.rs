@@ -571,24 +571,18 @@ mod tests {
     static SIGNAL_TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn sleep_returns_promptly_once_shutdown_is_trapped() {
+    fn wait_ends_promptly_once_shutdown_is_trapped() {
         let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
         crate::signal::set_for_test(130);
         let started = std::time::Instant::now();
-        crate::signal::sleep_unless_shutdown(std::time::Duration::from_mins(1));
+        let end = crate::act::wait(
+            ooda_core::PollingInterval::from_secs(60),
+            ooda_core::Wake::Elapsed,
+        );
         let elapsed = started.elapsed();
         crate::signal::reset_for_test();
+        assert_eq!(end, ooda_core::wait::WaitEnd::Interrupted);
         assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
-    }
-
-    #[test]
-    fn sleep_without_signal_runs_its_full_duration() {
-        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
-        crate::signal::reset_for_test();
-        let requested = std::time::Duration::from_millis(30);
-        let started = std::time::Instant::now();
-        crate::signal::sleep_unless_shutdown(requested);
-        assert!(started.elapsed() >= requested);
     }
 
     /// Fresh state-root + started run for tests that need an
@@ -620,6 +614,7 @@ mod tests {
             effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
                 log: "Waiting".into(),
+                wake: ooda_core::Wake::OnChange,
             },
             target_effect: ooda_core::TargetEffect::Blocks,
             urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::BlockingWait),
@@ -908,6 +903,7 @@ mod tests {
             effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
                 log: "stub".into(),
+                wake: ooda_core::Wake::OnChange,
             },
             target_effect: crate::decide::action::TargetEffect::Neutral,
             urgency: ooda_core::Urgency::Mid(ooda_core::MidTier::BlockingWait),

@@ -261,6 +261,7 @@ pub(crate) fn candidates(
             effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(60),
                 log: format!("Wait for bot review from {names}"),
+                wake: ooda_core::Wake::OnChange,
             },
             target_effect: TargetEffect::Blocks,
             urgency: Urgency::Mid(MidTier::BlockingWait),

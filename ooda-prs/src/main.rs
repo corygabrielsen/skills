@@ -1422,6 +1422,7 @@ mod tests {
             format_effect(&ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
                 log: String::new(),
+                wake: ooda_core::Wake::OnChange,
             }),
             "Wait(30s)"
         );
@@ -1561,6 +1562,7 @@ mod tests {
             effect: ActionEffect::Wait {
                 interval: ooda_core::PollingInterval::from_secs(30),
                 log: "x".into(),
+                wake: ooda_core::Wake::OnChange,
             },
             target_effect: decide::action::TargetEffect::Blocks,
             urgency: decide::action::Urgency::Mid(MidTier::BlockingWait),
@@ -1692,6 +1694,7 @@ mod tests {
         would_advance_action.effect = ActionEffect::Wait {
             interval: ooda_core::PollingInterval::from_secs(60),
             log: "Wait for 2 pending checks".into(),
+            wake: ooda_core::Wake::OnChange,
         };
         // Handoff variants carry `HandoffAction` (typed projection
         // with a direct `prompt` field). Construct directly — the

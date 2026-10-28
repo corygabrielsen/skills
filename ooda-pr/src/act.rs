@@ -24,7 +24,7 @@ pub(crate) mod review_class;
 pub(crate) mod review_docs;
 pub(crate) mod sync_pull_request_metadata;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
@@ -99,29 +99,39 @@ impl From<GhError> for ActError {
     }
 }
 
-/// Realise one action's side effect; the caller re-iterates on Ok.
+/// Act-stage context: the target PR and the per-PR side-effect
+/// surface.
 ///
 /// `action_lock_path` is the per-PR sidecar path obtained from
-/// [`crate::recorder::Recorder::action_lock_path`]; an advisory
-/// [`FileLock`] is acquired on it before any side-effecting work
-/// runs and released when this function returns.
+/// [`crate::recorder::Recorder::action_lock_path`]; the runner
+/// refreshes it every iteration, which re-creates the per-PR index
+/// directory it lives in. An advisory [`FileLock`] is acquired on it
+/// before any side-effecting work runs and released when [`act`]
+/// returns.
 ///
 /// `repo_root` is the resolved working tree the driver targets.
 /// Every `gt` subprocess pins to it so a caller invoking the binary
 /// from a sibling repo cannot have `gt sync` rewrite that sibling's
 /// stack. See [`crate::resolve_repo_root`] for the resolution
 /// policy.
-pub(crate) fn act(
-    action: &Action,
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    action_lock_path: &Path,
-    repo_root: &Path,
-) -> Result<(), ActError> {
+#[derive(Debug)]
+pub(crate) struct ActContext {
+    pub slug: RepoSlug,
+    pub pr: PullRequestNumber,
+    pub action_lock_path: PathBuf,
+    pub repo_root: PathBuf,
+}
+
+/// Realise one action's side effect; the caller re-iterates on Ok.
+///
+/// `Full` actions acquire the per-PR action lock before dispatching;
+/// `Wait` actions skip it (sleeping has no side effect); handoff
+/// arms never reach this stage.
+pub(crate) fn act(action: &Action, ctx: &ActContext) -> Result<(), ActError> {
     match &action.effect {
         ActionEffect::Full { .. } => {
-            let _lock = FileLock::acquire(action_lock_path).map_err(ActError::Lock)?;
-            run_full(&action.kind, slug, pr, repo_root)
+            let _lock = FileLock::acquire(&ctx.action_lock_path).map_err(ActError::Lock)?;
+            run_full(&action.kind, ctx)
         }
         ActionEffect::Wait { interval, .. } => {
             thread::sleep(interval.as_duration());
@@ -133,16 +143,11 @@ pub(crate) fn act(
     }
 }
 
-fn run_full(
-    kind: &ActionKind,
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
-    repo_root: &Path,
-) -> Result<(), ActError> {
+fn run_full(kind: &ActionKind, ctx: &ActContext) -> Result<(), ActError> {
     // Borrow targets for the subprocess's borrowed argv must
     // outlive the call.
-    let pr_s = pr.to_string();
-    let slug_s = slug.to_string();
+    let pr_s = ctx.pr.to_string();
+    let slug_s = ctx.slug.to_string();
     match kind {
         ActionKind::MarkReady => gh_run(&["pr", "ready", &pr_s, "-R", &slug_s])?,
         ActionKind::RemoveWipLabel => gh_run(&[
@@ -154,15 +159,15 @@ fn run_full(
             "--remove-label",
             WIP_LABEL,
         ])?,
-        ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(slug, pr)?,
+        ActionKind::RerequestCopilot { .. } => copilot::rerequest_copilot(&ctx.slug, ctx.pr)?,
         ActionKind::ReRunWorkflow { checks } => {
             // Fail-fast on the first per-check error; the next
             // iteration re-observes from a fresh upstream state.
             for c in checks {
-                ci::rerun_workflow(slug, &c.run_id)?;
+                ci::rerun_workflow(&ctx.slug, &c.run_id)?;
             }
         }
-        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync(repo_root)?,
+        ActionKind::SyncGraphiteStack { .. } => run_graphite_sync(&ctx.repo_root)?,
         _ => return Err(ActError::UnsupportedAutomation),
     }
     Ok(())

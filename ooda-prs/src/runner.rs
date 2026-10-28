@@ -23,7 +23,7 @@
 
 use std::num::NonZeroU32;
 
-use crate::act::{ActError, act};
+use crate::act::{ActContext, ActError, act};
 use crate::axis_impls::branch_sync::BranchSyncAxis;
 use crate::axis_impls::ci::{CiAxis, CiObservation};
 use crate::axis_impls::claude_review::{ClaudeReviewAxis, ClaudeReviewObservation};
@@ -38,7 +38,7 @@ use crate::axis_impls::reviews::{ReviewsAxis, ReviewsObservation};
 use crate::axis_impls::state::{StateAxis, StateObservation};
 use crate::decide::action::{Action, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
-use crate::ids::{PullRequestNumber, RepoSlug, Timestamp};
+use crate::ids::{PullRequestNumber, Timestamp};
 use crate::observe::github::gh::GhError;
 use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
@@ -248,20 +248,16 @@ pub(crate) enum LoopExit {
 /// posting, and run-bundle recording hang off it without further
 /// coupling to the driver.
 pub(crate) fn run_loop(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
+    mut ctx: ActContext,
     state_root: Option<&std::path::Path>,
-    repo_root: &std::path::Path,
     config: LoopConfig,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
 ) -> Result<LoopExit, LoopError> {
     run_loop_with(config, |iter, last_non_wait_key, auto_wait_used_for| {
         run_iter(
-            slug,
-            pr,
+            &mut ctx,
             state_root,
-            repo_root,
             recorder,
             &mut on_state,
             iter,
@@ -419,10 +415,8 @@ fn apply_stall_check(
 /// bubble as `LoopError`.
 #[allow(clippy::too_many_arguments)]
 fn run_iter(
-    slug: &RepoSlug,
-    pr: PullRequestNumber,
+    ctx: &mut ActContext,
     state_root: Option<&std::path::Path>,
-    repo_root: &std::path::Path,
     recorder: &Recorder,
     mut on_state: impl FnMut(u32, &GitHubObservations, &OrientedState, &[Action], &Decision),
     iter: u32,
@@ -434,7 +428,13 @@ fn run_iter(
     let sticky_path = recorder
         .last_seen_head_path()
         .map_err(LoopError::Recorder)?;
-    let obs = match fetch_all(slug, pr, state_root, Some(&sticky_path), repo_root) {
+    let obs = match fetch_all(
+        &ctx.slug,
+        ctx.pr,
+        state_root,
+        Some(&sticky_path),
+        &ctx.repo_root,
+    ) {
         Ok(FetchOutcome::Observations(obs)) => {
             recorder.record_observe_end(iter, ObserveOutcome::Ok);
             // Post-observe sticky update: record the current
@@ -466,15 +466,15 @@ fn run_iter(
             // Pairing invariant: every `action_started` /
             // `wait_started` event must be followed by a matching
             // `action_end` / `wait_end` on the same iteration.
-            // Resolve the lock path *before* emitting started events
+            // Refresh the lock path *before* emitting started events
             // — if `action_lock_path` errs (`RecorderError`), `?`
             // propagates immediately, so no started events are ever
             // written. The on-disk story stays consistent: either
             // both halves of the pair are present, or neither is.
-            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
+            ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
-            let act_result = act(&action, slug, pr, &lock_path, repo_root);
+            let act_result = act(&action, ctx);
             if act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
             }
@@ -493,7 +493,7 @@ fn run_iter(
     };
     let now = current_timestamp();
     let oriented = orient(&obs, None, now);
-    let candidates = drive(&oriented, pr);
+    let candidates = drive(&oriented, ctx.pr);
     let decision = decide_from_candidates(candidates.clone(), obs.pull_request_view.state);
     on_state(iter, &obs, &oriented, &candidates, &decision);
 
@@ -507,15 +507,15 @@ fn run_iter(
             }
             let is_wait = action.effect.is_wait();
             // Pairing invariant — see rate-limit branch above. Lock
-            // path resolves before any started event is emitted so a
+            // path refreshes before any started event is emitted so a
             // `RecorderError` here cannot leave a started↔end pair
             // half-open.
-            let lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
+            ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             if is_wait {
                 recorder.record_wait_start(iter, &action);
             }
-            let act_result = act(&action, slug, pr, &lock_path, repo_root);
+            let act_result = act(&action, ctx);
             if is_wait && act_result.is_ok() {
                 recorder.record_wait_end(iter, &action);
             }

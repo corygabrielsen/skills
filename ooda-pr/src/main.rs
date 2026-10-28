@@ -19,6 +19,7 @@ mod runner;
 mod signal;
 mod text;
 
+use act::ActContext;
 use dashboard::Dashboard;
 use decide::action::{ActionEffect, rate_limit_wait_action};
 use decide::decision::{Decision, DecisionHalt};
@@ -650,11 +651,21 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
     let cfg = LoopConfig {
         max_iterations: args.max_iter,
     };
+    let action_lock_path = match recorder.action_lock_path() {
+        Ok(p) => p,
+        Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
+    };
     // Attestation reads resolve against the recorder's root, not
     // the raw `--state-root` slot — see [`Recorder::state_root`].
     let state_root = match recorder.state_root() {
         Ok(p) => p,
         Err(e) => return Outcome::binary_error(format!("recorder: {e}")),
+    };
+    let ctx = ActContext {
+        slug: args.slug.clone(),
+        pr: args.pr,
+        action_lock_path,
+        repo_root: repo_root.to_path_buf(),
     };
     let mut snapshot: Option<HandoffSnapshot> = None;
     let on_state = |i: u32,
@@ -694,15 +705,7 @@ fn run_full(args: &Args, repo_root: &Path, recorder: &Recorder) -> Outcome {
         eprintln!("{} {line}", loop_prefix(&args.slug, args.pr, Some(&run_id)));
         recorder.write_trace_line(&line);
     };
-    let outcome = match run_loop(
-        &args.slug,
-        args.pr,
-        Some(state_root.as_path()),
-        repo_root,
-        cfg,
-        recorder,
-        on_state,
-    ) {
+    let outcome = match run_loop(ctx, Some(state_root.as_path()), cfg, recorder, on_state) {
         Ok(LoopExit::Halted(reason)) => Outcome::from(reason),
         Ok(LoopExit::SignalInterrupted { exit_code }) => Outcome::SignalInterrupted { exit_code },
         Err(e) => Outcome::from(e),

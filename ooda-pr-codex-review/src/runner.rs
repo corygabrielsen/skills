@@ -505,6 +505,15 @@ fn run_iter(
                 },
             );
             let action = rate_limit_wait_action(hit);
+            // Pairing invariant: every `action_started` /
+            // `wait_started` event must be followed by a matching
+            // `action_end` / `wait_end` on the same iteration.
+            // Refresh the lock path *before* emitting started events
+            // — if `action_lock_path` errs (`RecorderError`), `?`
+            // propagates immediately, so no started events are ever
+            // written. The on-disk story stays consistent: either
+            // both halves of the pair are present, or neither is.
+            ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             recorder.record_wait_start(iter, &action);
             let act_result = act(&action, ctx);
@@ -566,6 +575,11 @@ fn run_iter(
                 StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
+            // Pairing invariant — see rate-limit branch above. Lock
+            // path refreshes before any started event is emitted so a
+            // `RecorderError` here cannot leave a started↔end pair
+            // half-open.
+            ctx.action_lock_path = recorder.action_lock_path().map_err(LoopError::Recorder)?;
             recorder.record_action_start(iter, &action);
             if is_wait {
                 recorder.record_wait_start(iter, &action);

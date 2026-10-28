@@ -1,22 +1,28 @@
 //! Review-axis candidates.
 //!
-//! Four families: per-thread remediation (drives agent work on
+//! Five families: per-thread remediation (drives agent work on
 //! unresolved feedback), the review-class attestation gate (the
 //! sweep witness that must be newer than every thread before the
-//! loop moves on), per-reviewer wait (bot and human), and
-//! decision-derived candidates that close the review loop
-//! (approval request, summary-only change-request).
+//! loop moves on), the reviewer-verdict gate (an answer recorded
+//! against the latest review's overall assessment), per-reviewer
+//! wait (bot and human), and decision-derived candidates that close
+//! the review loop (approval request, summary-only change-request).
 
 use std::path::Path;
 
 use crate::ids::{BlockerKey, PullRequestNumber, Timestamp};
 
+use crate::act::copilot_verdict::{
+    build_decide_escalated_prompt, build_resolve_copilot_verdict_prompt, push_verdict_attest_step,
+    push_verdict_frame,
+};
 use crate::act::review_class::{
     build_attest_review_class_prompt, push_attest_step, push_prior_classes,
 };
 use crate::observe::github::pull_request_view::ReviewDecision;
 use crate::orient::ci::CiReport;
-use crate::orient::copilot::CopilotReport;
+use crate::orient::copilot::{CopilotReport, CopilotVerdict};
+use crate::orient::copilot_verdict::CopilotVerdictReport;
 use crate::orient::review_class::ReviewClass;
 use crate::orient::reviews::{HumanReview, ReviewSummary};
 use crate::orient::thread::{
@@ -35,11 +41,24 @@ fn join_display<T: std::fmt::Display>(items: &[T]) -> String {
         .join(", ")
 }
 
+/// Reviewer-verdict obligations and the file their answers land in.
+/// A `None` path leaves the gate dormant.
+#[derive(Clone, Copy)]
+pub(crate) struct VerdictGate<'a> {
+    pub report: &'a CopilotVerdictReport,
+    pub attest_path: Option<&'a Path>,
+}
+
 /// Declared deps: own review report + CI report (for
 /// `ci_clean` gate) + bot-review-axis presence (for shadow
 /// filter) + threads + review-class attestation report and path
-/// (for the class-sweep gate) + PR number (for prompt rendering).
-#[allow(clippy::too_many_lines)]
+/// (for the class-sweep gate) + reviewer-verdict obligations (for
+/// the verdict gate) + PR number (for prompt rendering).
+///
+/// The parameter list is long by design: each gate is a declared
+/// dependency, and the struct form would shift the surface without
+/// shrinking it.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(crate) fn candidates(
     reviews: &ReviewSummary,
     ci: &CiReport,
@@ -47,6 +66,7 @@ pub(crate) fn candidates(
     threads: &[ReviewThread],
     review_class: &ReviewClass,
     review_class_attest_path: Option<&Path>,
+    verdict: VerdictGate<'_>,
     pr: PullRequestNumber,
 ) -> Vec<Action> {
     let ci = &ci.summary;
@@ -101,6 +121,19 @@ pub(crate) fn candidates(
         unresolved_threads.extend(suppressed);
     }
 
+    // Verdict routing. An unanswered concern frames the threads and
+    // travels on their handoff with its attest step; otherwise the
+    // latest verdict frames Copilot's own threads as context only.
+    let pending_verdict = verdict
+        .report
+        .pending()
+        .filter(|_| verdict.attest_path.is_some());
+    let copilot_threads = unresolved_threads
+        .iter()
+        .any(|t| matches!(t.author, ThreadAuthor::Bot(BotName::Copilot)));
+    let frame =
+        pending_verdict.or_else(|| verdict.report.latest.as_ref().filter(|_| copilot_threads));
+
     let address_fired = if let Some(unresolved_threads) = NonEmpty::try_from_vec(unresolved_threads)
     {
         let prompt = address_threads_prompt(
@@ -108,6 +141,8 @@ pub(crate) fn candidates(
             &history,
             review_class,
             review_class_attest_path,
+            frame,
+            pending_verdict.map(|v| (v, verdict.attest_path)),
             pr,
         );
         out.push(Action {
@@ -155,6 +190,49 @@ pub(crate) fn candidates(
             // attestation". Thread counts and timestamps travel on
             // the report, never in the key.
             blocker: BlockerKey::from_static("review_class_unattested"),
+        });
+    }
+
+    // Reviewer-verdict gate. The assessment names no locator, so no
+    // thread carries it once the threads are gone; this candidate holds
+    // the iteration at `BlockingFix` — ahead of the re-request the
+    // Copilot axis emits at the same tier, and ahead of `Post` closeout
+    // — until an entry answers the latest review. When `AddressThreads`
+    // fired the attest step already travels on that prompt.
+    if !address_fired
+        && let Some(v) = pending_verdict
+        && let Some(attest_path) = verdict.attest_path
+    {
+        out.push(Action {
+            kind: ActionKind::ResolveCopilotVerdict {
+                review_id: v.review_id,
+                attest_path: attest_path.to_path_buf(),
+            },
+            effect: ActionEffect::Agent {
+                prompt: build_resolve_copilot_verdict_prompt(pr, v, Some(attest_path)),
+            },
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::Mid(MidTier::BlockingFix),
+            blocker: BlockerKey::from_static("copilot_verdict_unanswered"),
+        });
+    }
+
+    // Escalations hold for a human whatever later reviews say; the
+    // human records the final disposition against the same review.
+    if let Some(escalations) = NonEmpty::try_from_vec(verdict.report.escalated.clone())
+        && let Some(attest_path) = verdict.attest_path
+    {
+        out.push(Action {
+            kind: ActionKind::DecideEscalatedCopilotVerdict {
+                review_id: escalations.first().entry.review_id,
+                attest_path: attest_path.to_path_buf(),
+            },
+            effect: ActionEffect::Human {
+                prompt: build_decide_escalated_prompt(pr, &escalations, Some(attest_path)),
+            },
+            target_effect: TargetEffect::Blocks,
+            urgency: Urgency::Mid(MidTier::BlockingHuman),
+            blocker: BlockerKey::from_static("copilot_verdict_escalated"),
         });
     }
 
@@ -590,6 +668,8 @@ fn address_threads_prompt(
     history: &[ReviewThread],
     review_class: &ReviewClass,
     review_class_attest_path: Option<&Path>,
+    frame: Option<&CopilotVerdict>,
+    pending_verdict: Option<(&CopilotVerdict, Option<&Path>)>,
     pr: PullRequestNumber,
 ) -> ooda_core::HandoffPrompt {
     use ooda_core::HandoffPrompt;
@@ -612,6 +692,10 @@ fn address_threads_prompt(
             })
             .collect();
         prompt.push_paragraph(format!("{}.", bits.join(" · ")));
+    }
+
+    if let Some(v) = frame {
+        push_verdict_frame(&mut prompt, v);
     }
 
     prompt.push_witnesses(thread_witnesses(threads, history));
@@ -683,12 +767,23 @@ fn address_threads_prompt(
     {
         push_prior_classes(&mut prompt, prior);
     }
+    let mut next_step = 3;
     if review_class_attest_path.is_some() {
         push_attest_step(
             &mut prompt,
             "Step 3 — attest the class sweep",
             pr,
             review_class_attest_path,
+        );
+        next_step += 1;
+    }
+    if let Some((v, verdict_attest_path)) = pending_verdict {
+        push_verdict_attest_step(
+            &mut prompt,
+            &format!("Step {next_step} — answer Copilot's assessment"),
+            pr,
+            v,
+            verdict_attest_path,
         );
     }
 
@@ -757,8 +852,22 @@ mod tests {
             threads,
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         )
+    }
+
+    static NO_VERDICT: CopilotVerdictReport = CopilotVerdictReport {
+        latest: None,
+        latest_entry: None,
+        escalated: Vec::new(),
+    };
+
+    fn no_verdict() -> VerdictGate<'static> {
+        VerdictGate {
+            report: &NO_VERDICT,
+            attest_path: None,
+        }
     }
 
     fn pr() -> crate::ids::PullRequestNumber {
@@ -812,6 +921,7 @@ mod tests {
             &threads,
             &fresh_review_class(None),
             Some(&path),
+            no_verdict(),
             pr(),
         );
         assert_eq!(cs.len(), 1, "{cs:?}");
@@ -842,6 +952,7 @@ mod tests {
             &threads,
             &fresh_review_class(None),
             Some(&path),
+            no_verdict(),
             pr(),
         );
         assert_eq!(cs.len(), 1, "{cs:?}");
@@ -873,6 +984,7 @@ mod tests {
             &threads,
             &fresh_review_class(Some(prior_attestation())),
             Some(&path),
+            no_verdict(),
             pr(),
         );
         let rendered = cs[0].rendered_payload();
@@ -898,6 +1010,7 @@ mod tests {
             &threads,
             &fresh_review_class(None),
             None,
+            no_verdict(),
             pr(),
         );
         assert!(!cs[0].rendered_payload().contains("Step 3"));
@@ -920,6 +1033,7 @@ mod tests {
             &threads,
             &attested,
             Some(&path),
+            no_verdict(),
             pr(),
         );
         assert!(cs.is_empty(), "{cs:?}");
@@ -935,6 +1049,7 @@ mod tests {
             &threads,
             &fresh_review_class(None),
             None,
+            no_verdict(),
             pr(),
         );
         assert!(cs.is_empty(), "{cs:?}");
@@ -957,6 +1072,7 @@ mod tests {
             &threads,
             &fresh_review_class(None),
             Some(&path),
+            no_verdict(),
             pr(),
         );
         cs.sort_by_key(|a| a.urgency);
@@ -1016,6 +1132,192 @@ mod tests {
         thread_in_state(path, line, body, ThreadState::Resolved, id)
     }
 
+    // ── reviewer-verdict gate ──
+
+    fn verdict_report(
+        stance: crate::orient::copilot::VerdictStance,
+        entries: Vec<ooda_core::attest::CopilotVerdictEntry>,
+    ) -> CopilotVerdictReport {
+        use ooda_core::attest::VerdictDisposition;
+        let latest = CopilotVerdict {
+            review_id: 9,
+            url: "https://github.com/o/r/pull/753#pullrequestreview-9".into(),
+            stance,
+            heading: "\u{1f535} Needs a closer look".into(),
+            assessment: "Approval digests vary with preview ordering.".into(),
+        };
+        let latest_entry = entries.iter().find(|e| e.review_id == 9).cloned();
+        let escalated = entries
+            .into_iter()
+            .filter(|e| e.disposition == VerdictDisposition::Escalate)
+            .map(|entry| crate::orient::copilot_verdict::Escalation {
+                verdict: (entry.review_id == 9).then(|| latest.clone()),
+                entry,
+            })
+            .collect();
+        CopilotVerdictReport {
+            latest: Some(latest),
+            latest_entry,
+            escalated,
+        }
+    }
+
+    fn verdict_entry(
+        review_id: u64,
+        disposition: ooda_core::attest::VerdictDisposition,
+    ) -> ooda_core::attest::CopilotVerdictEntry {
+        ooda_core::attest::CopilotVerdictEntry {
+            review_id,
+            disposition,
+            note: "needs a supervised live run".into(),
+            attested_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            attested_at: chrono::Utc::now(),
+        }
+    }
+
+    fn verdict_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("/state/753/copilot_verdict_attest.json")
+    }
+
+    fn cands_with_verdict(threads: &[ReviewThread], report: &CopilotVerdictReport) -> Vec<Action> {
+        let path = verdict_path();
+        candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            threads,
+            &ReviewClass::NoThreads,
+            None,
+            VerdictGate {
+                report,
+                attest_path: Some(&path),
+            },
+            pr(),
+        )
+    }
+
+    #[test]
+    fn unlocated_concern_emits_resolve_verdict_at_blocking_fix() {
+        use crate::orient::copilot::VerdictStance;
+        let report = verdict_report(VerdictStance::Concern, vec![]);
+        let cs = cands_with_verdict(&[], &report);
+        assert_eq!(cs.len(), 1);
+        let ActionKind::ResolveCopilotVerdict {
+            review_id,
+            attest_path,
+        } = &cs[0].kind
+        else {
+            panic!("expected ResolveCopilotVerdict, got {:?}", cs[0].kind);
+        };
+        assert_eq!(*review_id, 9);
+        assert_eq!(attest_path, &verdict_path());
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingFix));
+        assert_eq!(cs[0].target_effect, TargetEffect::Blocks);
+        assert_eq!(cs[0].blocker.as_str(), "copilot_verdict_unanswered");
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Approval digests vary"), "{rendered}");
+        assert!(rendered.contains("--review 9"), "{rendered}");
+    }
+
+    #[test]
+    fn concern_with_threads_rides_address_threads_as_frame_and_attest_step() {
+        use crate::orient::copilot::VerdictStance;
+        let report = verdict_report(VerdictStance::Concern, vec![]);
+        let cs = cands_with_verdict(&[live_thread("src/a.rs", 1, "x")], &report);
+        assert_eq!(
+            cs.len(),
+            1,
+            "standalone gate suppressed while threads carry it"
+        );
+        assert!(matches!(cs[0].kind, ActionKind::AddressThreads { .. }));
+        let rendered = cs[0].rendered_payload();
+        let frame = rendered
+            .find("Approval digests vary")
+            .expect("frame present");
+        let thread = rendered.find("src/a.rs").expect("thread present");
+        assert!(frame < thread, "frame precedes the threads:\n{rendered}");
+        assert!(
+            rendered.contains("answer Copilot's assessment"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("--review 9"), "{rendered}");
+    }
+
+    #[test]
+    fn approval_frames_copilot_threads_without_attest_step() {
+        use crate::orient::copilot::VerdictStance;
+        let report = verdict_report(VerdictStance::Approve, vec![]);
+        let cs = cands_with_verdict(&[live_thread("src/a.rs", 1, "x")], &report);
+        assert_eq!(cs.len(), 1);
+        let rendered = cs[0].rendered_payload();
+        assert!(rendered.contains("Approval digests vary"), "{rendered}");
+        assert!(
+            !rendered.contains("ooda-attest copilot-verdict"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn approval_without_threads_emits_nothing() {
+        use crate::orient::copilot::VerdictStance;
+        let report = verdict_report(VerdictStance::Approve, vec![]);
+        assert!(cands_with_verdict(&[], &report).is_empty());
+    }
+
+    #[test]
+    fn answered_concern_emits_nothing() {
+        use crate::orient::copilot::VerdictStance;
+        use ooda_core::attest::VerdictDisposition;
+        let report = verdict_report(
+            VerdictStance::Concern,
+            vec![verdict_entry(9, VerdictDisposition::NoChange)],
+        );
+        assert!(cands_with_verdict(&[], &report).is_empty());
+    }
+
+    #[test]
+    fn escalation_emits_human_handoff_at_blocking_human() {
+        use crate::orient::copilot::VerdictStance;
+        use ooda_core::attest::VerdictDisposition;
+        let report = verdict_report(
+            VerdictStance::Concern,
+            vec![verdict_entry(9, VerdictDisposition::Escalate)],
+        );
+        let cs = cands_with_verdict(&[], &report);
+        assert_eq!(cs.len(), 1);
+        assert!(matches!(
+            cs[0].kind,
+            ActionKind::DecideEscalatedCopilotVerdict { review_id: 9, .. }
+        ));
+        assert!(matches!(cs[0].effect, ActionEffect::Human { .. }));
+        assert_eq!(cs[0].urgency, Urgency::Mid(MidTier::BlockingHuman));
+        let rendered = cs[0].rendered_payload();
+        assert!(
+            rendered.contains("needs a supervised live run"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn verdict_gate_is_dormant_without_attest_path() {
+        use crate::orient::copilot::VerdictStance;
+        let report = verdict_report(VerdictStance::Concern, vec![]);
+        let cs = candidates(
+            &clean_reviews(),
+            &clean_ci(),
+            None,
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            VerdictGate {
+                report: &report,
+                attest_path: None,
+            },
+            pr(),
+        );
+        assert!(cs.is_empty());
+    }
+
     #[test]
     fn clean_reviews_yield_no_candidates() {
         assert!(cands_with(&clean_reviews()).is_empty());
@@ -1034,6 +1336,7 @@ mod tests {
         };
         let round = CopilotReviewRound {
             severity: crate::orient::thread::SeverityBreakdown::default(),
+            verdict: None,
             round: 1,
             requested_at: Timestamp::parse("2026-04-23T10:00:00Z").unwrap(),
             ack_at: Some(Timestamp::parse("2026-04-23T10:01:00Z").unwrap()),
@@ -1084,6 +1387,7 @@ mod tests {
             &[],
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         let address = cs
@@ -1135,6 +1439,7 @@ mod tests {
             &[],
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         let text = prompt_text(find_address_threads(&cs));
@@ -1163,6 +1468,7 @@ mod tests {
             &host,
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         let text = prompt_text(find_address_threads(&cs));
@@ -1200,6 +1506,7 @@ mod tests {
             &[],
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         assert!(
@@ -1226,6 +1533,7 @@ mod tests {
             &[],
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         assert!(
@@ -1252,6 +1560,7 @@ mod tests {
             &inline,
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         match &cs[0].kind {
@@ -1542,6 +1851,7 @@ mod tests {
             &[],
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         )
     }
@@ -1753,7 +2063,16 @@ mod tests {
             description: String::new(),
             link: String::new(),
         }];
-        let cs = candidates(&r, &ci, None, &[], &ReviewClass::NoThreads, None, pr());
+        let cs = candidates(
+            &r,
+            &ci,
+            None,
+            &[],
+            &ReviewClass::NoThreads,
+            None,
+            no_verdict(),
+            pr(),
+        );
         assert!(
             cs.iter()
                 .any(|a| matches!(a.kind, ActionKind::AddressChangeRequest))
@@ -2087,6 +2406,7 @@ mod tests {
             history,
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         cs.iter()
@@ -2267,6 +2587,7 @@ mod tests {
             &[],
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         let rendered = cs
@@ -2309,6 +2630,7 @@ mod tests {
             &history,
             &ReviewClass::NoThreads,
             None,
+            no_verdict(),
             pr(),
         );
         let rendered = cs

@@ -108,6 +108,117 @@ fn expected_review_class_path(state_root: &Path, pr_id: &str) -> PathBuf {
         .join("review_class_attest.json")
 }
 
+fn expected_copilot_verdict_path(state_root: &Path, pr_id: &str) -> PathBuf {
+    state_root
+        .canonicalize()
+        .unwrap()
+        .join(pr_id)
+        .join("copilot_verdict_attest.json")
+}
+
+// ─── copilot-verdict ────────────────────────────────────────────
+
+fn copilot_verdict(
+    repo: &Path,
+    state_root: &Path,
+    review: &str,
+    disposition: &str,
+    note: &str,
+) -> assert_cmd::assert::Assert {
+    bin()
+        .current_dir(repo)
+        .args(["copilot-verdict", "--pr-id", "42", "--state-root"])
+        .arg(state_root)
+        .args([
+            "--review",
+            review,
+            "--disposition",
+            disposition,
+            "--note",
+            note,
+        ])
+        .assert()
+}
+
+#[test]
+fn copilot_verdict_happy_path_writes_entry_for_review() {
+    let repo = TempDir::new().unwrap();
+    let head = init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    copilot_verdict(
+        repo.path(),
+        state_root.path(),
+        "5681853593",
+        "no-change",
+        "needs live setup",
+    )
+    .success();
+
+    let json = read_attestation(&expected_copilot_verdict_path(state_root.path(), "42"));
+    assert_eq!(json["version"].as_u64().unwrap(), 1);
+    let entries = json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["review_id"].as_u64().unwrap(), 5_681_853_593);
+    assert_eq!(entries[0]["disposition"], "no-change");
+    assert_eq!(entries[0]["note"], "needs live setup");
+    assert_eq!(entries[0]["attested_sha"].as_str().unwrap(), head);
+}
+
+#[test]
+fn copilot_verdict_keeps_escalation_for_other_review_and_replaces_same_review() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    copilot_verdict(
+        repo.path(),
+        state_root.path(),
+        "1",
+        "escalate",
+        "needs a human",
+    )
+    .success();
+    copilot_verdict(repo.path(), state_root.path(), "2", "patched", "fixed").success();
+    let json = read_attestation(&expected_copilot_verdict_path(state_root.path(), "42"));
+    assert_eq!(json["entries"].as_array().unwrap().len(), 2);
+
+    copilot_verdict(
+        repo.path(),
+        state_root.path(),
+        "1",
+        "no-change",
+        "human judged it fine",
+    )
+    .success();
+    let json = read_attestation(&expected_copilot_verdict_path(state_root.path(), "42"));
+    let entries = json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let first = entries.iter().find(|e| e["review_id"] == 1).unwrap();
+    assert_eq!(first["disposition"], "no-change");
+}
+
+#[test]
+fn copilot_verdict_blank_note_exits_64_and_writes_nothing() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    copilot_verdict(repo.path(), state_root.path(), "1", "patched", "  ").code(64);
+    assert!(!expected_copilot_verdict_path(state_root.path(), "42").exists());
+}
+
+#[test]
+fn copilot_verdict_rejects_zero_review_and_unknown_disposition() {
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    let state_root = TempDir::new().unwrap();
+
+    copilot_verdict(repo.path(), state_root.path(), "0", "patched", "n").failure();
+    copilot_verdict(repo.path(), state_root.path(), "1", "ignored", "n").failure();
+    assert!(!expected_copilot_verdict_path(state_root.path(), "42").exists());
+}
+
 // ─── review-class ───────────────────────────────────────────────
 
 #[test]

@@ -48,6 +48,7 @@ use crate::orient::ci::CiReport;
 use crate::orient::claude_review::ClaudeReview;
 use crate::orient::closeout::Closeout;
 use crate::orient::copilot::CopilotReport;
+use crate::orient::copilot_verdict::CopilotVerdictReport;
 use crate::orient::cursor::CursorReport;
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
@@ -115,6 +116,8 @@ pub(crate) struct RecorderInputs<'a> {
     pub closeout_attest_path: Option<&'a Path>,
     pub review_class: &'a ReviewClass,
     pub review_class_attest_path: Option<&'a Path>,
+    pub copilot_verdict: &'a CopilotVerdictReport,
+    pub copilot_verdict_attest_path: Option<&'a Path>,
 }
 
 impl<'a> From<&'a OrientedState> for RecorderInputs<'a> {
@@ -137,6 +140,8 @@ impl<'a> From<&'a OrientedState> for RecorderInputs<'a> {
             closeout_attest_path: o.closeout_attest_path.as_deref(),
             review_class: &o.review_class,
             review_class_attest_path: o.review_class_attest_path.as_deref(),
+            copilot_verdict: &o.copilot_verdict,
+            copilot_verdict_attest_path: o.copilot_verdict_attest_path.as_deref(),
         }
     }
 }
@@ -405,6 +410,7 @@ impl Recorder {
                 doc_review: inputs.doc_review,
                 claude_review: inputs.claude_review,
                 review_class: inputs.review_class,
+                copilot_verdict: inputs.copilot_verdict,
             },
             candidates,
             decision,
@@ -1462,6 +1468,8 @@ mod tests {
             closeout_attest_path: None,
             review_class: ReviewClass::NoThreads,
             review_class_attest_path: None,
+            copilot_verdict: crate::orient::copilot_verdict::CopilotVerdictReport::default(),
+            copilot_verdict_attest_path: None,
             branch_sync: crate::observe::branch::BranchSyncObservation {
                 divergence: None,
                 branch_graphite_tracked: false,

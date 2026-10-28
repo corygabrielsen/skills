@@ -236,6 +236,41 @@ pub(crate) struct CopilotReviewRound {
     /// Rung census of the findings this review reports as open,
     /// off the body's findings label.
     pub severity: SeverityBreakdown,
+    /// The review's overall verdict. `None` when the body states none
+    /// or the review carries no id to key a disposition on.
+    pub verdict: Option<CopilotVerdict>,
+}
+
+/// A review's overall verdict: a heading and the one-paragraph
+/// assessment beneath it, stated before any finding.
+///
+/// The assessment is free text with no locator. It may summarise the
+/// located findings, name a defect it never locates, or ask for
+/// verification no commit can supply; only an agent can tell which.
+///
+/// | stance  | located findings | route                                        |
+/// |---------|------------------|----------------------------------------------|
+/// | Concern | some             | `AddressThreads`, assessment as frame + attest |
+/// | Concern | none             | `ResolveCopilotVerdict`                      |
+/// | Approve | some             | `AddressThreads`, assessment as frame        |
+/// | Approve | none             | —                                            |
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct CopilotVerdict {
+    pub review_id: u64,
+    pub url: String,
+    pub stance: VerdictStance,
+    /// Heading text, markup and leading hashes removed.
+    pub heading: String,
+    pub assessment: String,
+}
+
+/// `Approve` iff the heading's leading glyph is the approval glyph.
+/// Every other heading — another glyph, no glyph, reworded — is
+/// `Concern`: an unrecognised verdict is never read as approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum VerdictStance {
+    Approve,
+    Concern,
 }
 
 /// One finding rendered in the review body's `<details>` block
@@ -375,6 +410,28 @@ pub(crate) struct ReviewBodySignals {
     pub suppressed_comments: Vec<SuppressedComment>,
     /// Rung census of the findings the body reports as open.
     pub severity: SeverityBreakdown,
+    pub verdict: Option<StatedVerdict>,
+}
+
+/// Verdict as the body states it, before round assembly keys it by
+/// review id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatedVerdict {
+    pub stance: VerdictStance,
+    pub heading: String,
+    pub assessment: String,
+}
+
+impl StatedVerdict {
+    fn keyed(self, rev: &PullRequestReview) -> Option<CopilotVerdict> {
+        Some(CopilotVerdict {
+            review_id: rev.id?,
+            url: rev.html_url.clone(),
+            stance: self.stance,
+            heading: self.heading,
+            assessment: self.assessment,
+        })
+    }
 }
 
 /// Parse a review body into its signals.
@@ -403,7 +460,72 @@ pub(crate) fn parse_copilot_review_body(body: &str) -> ReviewBodySignals {
         suppressed: witnesses.max(stated_suppressed_count(&blocks)),
         suppressed_comments,
         severity: stated_severity_census(body),
+        verdict: stated_verdict(body),
     }
+}
+
+/// Approval glyph (U+1F7E2 LARGE GREEN CIRCLE).
+const APPROVAL_GLYPH: char = '\u{1f7e2}';
+
+/// The verdict a body states ahead of its findings.
+///
+/// The prelude is the body up to the first `<details>` element or
+/// bold label line. The verdict heading is the last heading in the
+/// prelude preceding a prose line; the assessment is that prose block,
+/// ending at the first blank line. Anchored on position, never on
+/// heading wording, which the host owns and has reworded. A prelude
+/// whose prose has no heading above it states no verdict.
+///
+/// A heading is a verdict iff the prelude carries a comment marker or
+/// the heading leads with a glyph. Two channels with disjoint failure
+/// domains: either alone survives a format revision that drops the
+/// other. The pre-verdict overview format carries neither.
+fn stated_verdict(body: &str) -> Option<StatedVerdict> {
+    let prelude = body.find("<details").map_or(body, |at| &body[..at]);
+    let mut marked = false;
+    let mut heading: Option<String> = None;
+    let mut assessment: Vec<String> = Vec::new();
+    for raw in prelude.lines() {
+        let line = strip_invisible(raw.trim());
+        if !assessment.is_empty() {
+            if line.is_empty() || is_heading(&line) || bold_label(&line).is_some() {
+                break;
+            }
+            assessment.push(line);
+            continue;
+        }
+        if bold_label(&line).is_some() {
+            break;
+        }
+        if line.starts_with("<!--") {
+            marked = true;
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if is_heading(&line) {
+            heading = Some(strip_tags(line.trim_start_matches('#')).trim().to_string());
+            continue;
+        }
+        heading.as_ref()?;
+        assessment.push(line);
+    }
+    let heading = heading?;
+    let glyph_led = heading.chars().next().is_some_and(|c| !c.is_alphanumeric());
+    if !marked && !glyph_led {
+        return None;
+    }
+    let stance = if heading.starts_with(APPROVAL_GLYPH) {
+        VerdictStance::Approve
+    } else {
+        VerdictStance::Concern
+    };
+    Some(StatedVerdict {
+        stance,
+        heading,
+        assessment: assessment.join(" "),
+    })
 }
 
 // ── Markup reduction ─────────────────────────────────────────────────
@@ -818,8 +940,18 @@ fn block_stated_count(block: &DetailsBlock) -> Option<u32> {
             let lower = text.to_ascii_lowercase();
             STEMS.iter().any(|stem| lower.contains(stem))
         })
-        .filter_map(paren_count)
+        .filter_map(|text| paren_count(text).or_else(|| leading_count(text)))
         .max()
+}
+
+/// Digit-run opening the text (`2 previously missed issues` → 2).
+fn leading_count(text: &str) -> Option<u32> {
+    let digits: String = text
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 /// Digit-run immediately after the first `(` that opens onto digits.
@@ -987,6 +1119,7 @@ fn correlate_rounds(
         round.comments_suppressed = signals.suppressed;
         round.suppressed_comments = signals.suppressed_comments;
         round.severity = signals.severity;
+        round.verdict = signals.verdict.and_then(|v| v.keyed(rev));
     };
 
     for point in timeline {
@@ -1023,6 +1156,7 @@ fn correlate_rounds(
                     comments_suppressed: 0,
                     suppressed_comments: Vec::new(),
                     severity: SeverityBreakdown::default(),
+                    verdict: None,
                 });
                 paired = false;
             }
@@ -1088,6 +1222,7 @@ fn synthetic_round(
         comments_suppressed: signals.suppressed,
         suppressed_comments: signals.suppressed_comments,
         severity: signals.severity,
+        verdict: signals.verdict.and_then(|v| v.keyed(rev)),
     }
 }
 
@@ -1653,9 +1788,11 @@ mod tests {
     /// intact: its geometry attributes are the false-digit hazard the
     /// count channels must not read.
     const NESTED_BODY: &str = "\
+<!-- ccr-overview-v2 -->
+
 ## Copilot review overview
 
-### Needs a closer look
+### \u{1f535} Needs a closer look
 
 Runtime validation is missing for bare units and rounding modes.
 
@@ -1697,9 +1834,11 @@ An invalid runtime rounding value silently falls through as `half-even` on ties.
     /// the findings label, and the section renders each finding as an
     /// anchor link rather than as text.
     const NESTED_LINKED_BODY: &str = "\
+<!-- ccr-overview-v2 -->
+
 ## Copilot review overview
 
-### Changes recommended
+### \u{1f7e1} Changes recommended
 
 Structural inputs can bypass primitive validation.
 
@@ -1718,7 +1857,7 @@ Structural inputs can bypass primitive validation.
     /// `<details>` holding a markdown heading per section, bold-header
     /// entries, and the per-review totals as bold label lines.
     const FLAT_BODY: &str = "\
-### Changes recommended
+### \u{1f7e1} Changes recommended
 
 Checksum validation and implicit rounding need correction.
 
@@ -1738,6 +1877,189 @@ Checksum validation and implicit rounding need correction.
 - **Review effort level:** Balanced
 </details>
 ";
+
+    /// Overview grammar without the title heading (observed
+    /// 2026-10-28, w3-io/infrastructure#1541 review 5681029163):
+    /// the verdict heading follows the marker comment, section
+    /// summaries state counts as leading digit runs, and the review
+    /// effort trails the sections.
+    const OVERVIEW_BODY: &str = "\
+<!-- ccr-overview-v2 -->
+
+### \u{1f535} Needs a closer look
+
+A surviving tmux shell can mask provisioning failure and prevent recovery, while bring-up accepts token/key pairs without verifying that they belong to the same user.
+
+**No open issues** \u{1f389}
+
+<details>
+<summary><strong>2 previously missed issues</strong></summary>
+
+In code that hasn't changed since last review
+
+<details>
+<summary><picture><img src=\"medium-v2.png\" alt=\"Medium severity\" width=\"62\" height=\"18\"></picture> Verify bearer token identity matches the selected user</summary>
+
+`iac/\u{200b}fordefi-signer/\u{200b}bring-up-signer.sh:219`
+
+This checks the named user's key, but never establishes that the stored bearer token belongs to that user.
+</details>
+<details>
+<summary><picture><img src=\"medium-v2.png\" alt=\"Medium severity\" width=\"62\" height=\"18\"></picture> Run the menu command directly so tmux tracks process lifetime</summary>
+
+`iac/\u{200b}fordefi-signer/\u{200b}lib.sh:191`
+
+The session starts an interactive shell and sends the menu command into it.
+</details>
+</details>
+
+<details>
+<summary><strong>7 resolved since last review</strong></summary>
+
+- [Require storage mounts before opening menus](https://github.com/o/r/pull/1#discussion_r4399203163)
+</details>
+
+<sub>Review effort: Balanced</sub>
+";
+
+    /// Overview grammar, a verdict with no located finding
+    /// (w3-io/infrastructure#1541 review 5681853593): the assessment
+    /// is the only signal the review carries.
+    const OVERVIEW_UNLOCATED_BODY: &str = "\
+<!-- ccr-overview-v2 -->
+
+### \u{1f535} Needs a closer look
+
+Stub-only validation leaves custody-signer provisioning unverified against real AWS/ForDefi behavior, requiring a supervised live setup to confirm TUI/API states, key persistence, activation, and restart handling.
+
+**No open issues** \u{1f389}
+
+<sub>Review effort: Balanced</sub>
+";
+
+    // ── verdict ──
+
+    #[test]
+    fn overview_grammar_states_concern_verdict_with_assessment() {
+        let v = parse_copilot_review_body(OVERVIEW_BODY).verdict.unwrap();
+        assert_eq!(v.stance, VerdictStance::Concern);
+        assert_eq!(v.heading, "\u{1f535} Needs a closer look");
+        assert!(v.assessment.starts_with("A surviving tmux shell"));
+        assert!(v.assessment.ends_with("belong to the same user."));
+    }
+
+    #[test]
+    fn overview_grammar_reads_leading_digit_section_counts() {
+        let s = parse_copilot_review_body(OVERVIEW_BODY);
+        assert_eq!(s.suppressed, 2);
+        assert_eq!(s.suppressed_comments.len(), 2);
+        assert_eq!(
+            s.suppressed_comments[0].path,
+            "iac/fordefi-signer/bring-up-signer.sh"
+        );
+        assert_eq!(s.visible, 0);
+        // The stated channel alone carries the count when the entries
+        // fail to parse.
+        let blocks = details_blocks(OVERVIEW_BODY);
+        assert_eq!(stated_suppressed_count(&blocks), 2);
+    }
+
+    #[test]
+    fn unlocated_concern_carries_verdict_and_no_findings() {
+        let s = parse_copilot_review_body(OVERVIEW_UNLOCATED_BODY);
+        assert_eq!(s.visible, 0);
+        assert_eq!(s.suppressed, 0);
+        let v = s.verdict.unwrap();
+        assert_eq!(v.stance, VerdictStance::Concern);
+        assert!(v.assessment.starts_with("Stub-only validation"));
+    }
+
+    #[test]
+    fn approval_glyph_alone_classifies_approve() {
+        let body = "### \u{1f7e2} Approval recommended\n\nNo unresolved findings.\n";
+        let v = parse_copilot_review_body(body).verdict.unwrap();
+        assert_eq!(v.stance, VerdictStance::Approve);
+        assert_eq!(v.assessment, "No unresolved findings.");
+    }
+
+    #[test]
+    fn unrecognised_heading_classifies_concern() {
+        for body in [
+            "### \u{1f7e1} Changes recommended\n\nProse.\n",
+            "### \u{1f7e3} Something new\n\nProse.\n",
+            "<!-- marker -->\n### Needs a closer look\n\nProse.\n",
+            "<!-- marker -->\n### Approval recommended\n\nProse.\n",
+        ] {
+            let v = parse_copilot_review_body(body).verdict.unwrap();
+            assert_eq!(v.stance, VerdictStance::Concern, "{body}");
+        }
+    }
+
+    #[test]
+    fn either_channel_alone_states_a_verdict() {
+        let marker_only = "<!-- ccr-overview-v3 -->\n### Needs a closer look\n\nProse.\n";
+        assert!(parse_copilot_review_body(marker_only).verdict.is_some());
+        let glyph_only = "### \u{1f535} Needs a closer look\n\nProse.\n";
+        assert!(parse_copilot_review_body(glyph_only).verdict.is_some());
+    }
+
+    #[test]
+    fn pre_verdict_overview_states_no_verdict() {
+        let body = "## Pull request overview\n\n\
+                    Refactors the orchestrator targets.\n\n\
+                    **Changes:**\n- Introduces a registry.\n";
+        assert!(parse_copilot_review_body(body).verdict.is_none());
+    }
+
+    #[test]
+    fn verdict_follows_title_heading_in_nested_grammar() {
+        let v = parse_copilot_review_body(NESTED_BODY).verdict.unwrap();
+        assert_eq!(v.heading, "\u{1f535} Needs a closer look");
+        assert_eq!(
+            v.assessment,
+            "Runtime validation is missing for bare units and rounding modes."
+        );
+    }
+
+    #[test]
+    fn verdict_opens_flat_grammar() {
+        let v = parse_copilot_review_body(FLAT_BODY).verdict.unwrap();
+        assert_eq!(v.heading, "\u{1f7e1} Changes recommended");
+        assert_eq!(
+            v.assessment,
+            "Checksum validation and implicit rounding need correction."
+        );
+    }
+
+    #[test]
+    fn assessment_ends_at_blank_line_before_call_to_action() {
+        let body = "### \u{1f7e1} Changes recommended\n\nOne defect.\n\n\
+                    *Get a fresh assessment by requesting another Copilot review.*\n\n\
+                    <details>\n<summary>Review details</summary>\n</details>\n";
+        let v = parse_copilot_review_body(body).verdict.unwrap();
+        assert_eq!(v.assessment, "One defect.");
+    }
+
+    #[test]
+    fn prose_without_heading_states_no_verdict() {
+        let body = "Copilot encountered an error and was unable to review this pull request.";
+        assert!(parse_copilot_review_body(body).verdict.is_none());
+        assert!(parse_copilot_review_body("").verdict.is_none());
+    }
+
+    #[test]
+    fn round_keys_verdict_by_review_id() {
+        let mut rev = copilot_review(HEAD_SHA, "2026-10-28T11:26:00Z", OVERVIEW_UNLOCATED_BODY);
+        let round = synthetic_round(&rev, 1, 0);
+        assert!(round.verdict.is_none(), "no id, no key to dispose on");
+
+        rev.id = Some(5_681_853_593);
+        rev.html_url = "https://github.com/o/r/pull/1#pullrequestreview-5681853593".into();
+        let v = synthetic_round(&rev, 1, 0).verdict.unwrap();
+        assert_eq!(v.review_id, 5_681_853_593);
+        assert_eq!(v.url, rev.html_url);
+        assert_eq!(v.stance, VerdictStance::Concern);
+    }
 
     #[test]
     fn nested_grammar_extracts_body_rendered_findings() {

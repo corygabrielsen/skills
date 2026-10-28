@@ -185,6 +185,7 @@ GitHubObservations =
   × claude_review          : ClaudeReviewObservation             (attestation file + reviewer content)
   × closeout               : CloseoutObservation                 (attestation file + HEAD)
   × review_class           : ReviewClassObservation              (attestation file; threads joined in orient)
+  × copilot_verdict        : CopilotVerdictObservation           (attestation file; reviews joined in orient)
   × branch_sync            : BranchSyncObservation               (local git, not gh)
 ```
 
@@ -287,6 +288,8 @@ OrientedState =
   × closeout_attest_path      : Option⟨PathBuf⟩
   × review_class              : ReviewClass                 (attestation axis, content-keyed over every thread)
   × review_class_attest_path  : Option⟨PathBuf⟩
+  × copilot_verdict           : CopilotVerdictReport        (attestation axis, id-keyed per review)
+  × copilot_verdict_attest_path : Option⟨PathBuf⟩
   × branch_sync               : BranchSyncObservation       (passed through untransformed)
 ```
 
@@ -359,6 +362,17 @@ CopilotActivity =
   ⊕ Working{requested_at: Timestamp, ack_at: Timestamp, health: InFlightHealth}
   ⊕ Reviewed{latest: CopilotReviewRound}
 
+CopilotReviewRound.verdict : Option⟨CopilotVerdict⟩    -- None ⟺ neither a prelude marker nor a glyph-led heading, or no review id
+
+CopilotVerdict =
+    review_id  : u64
+  × url        : String
+  × stance     : VerdictStance
+  × heading    : String
+  × assessment : String          -- one paragraph, no locator
+
+VerdictStance = Approve ⊕ Concern  -- Approve ⟺ heading glyph is U+1F7E2
+
 CursorReport =
     activity         : CursorActivity
   × rounds           : Vec⟨CursorReviewRound⟩
@@ -415,6 +429,14 @@ ReviewClass         = NoThreads
                     ⊕ Attested{attested_at, class_count}
                     ⊕ Fresh{latest_thread_at, fresh_thread_count,
                             prior: Option⟨ReviewClassAttestation⟩}
+
+-- Id-keyed over reviews: an entry discharges exactly the review it
+-- names. Pending draws on the latest reviewed round only; escalated
+-- entries persist across later reviews until re-recorded.
+CopilotVerdictReport = latest       : Option⟨CopilotVerdict⟩
+                     × latest_entry : Option⟨CopilotVerdictEntry⟩
+                     × escalated    : Vec⟨Escalation⟩
+pending(r) = r.latest  ⟺  r.latest.stance = Concern ∧ r.latest_entry = None
 ```
 
 ---
@@ -451,7 +473,7 @@ witness loop-only halts (`Stalled`, `CapReached`).
 
 ```
 Action =
-    kind          : ActionKind     (sum over 36 variants)
+    kind          : ActionKind     (sum over 39 variants)
   × effect        : ActionEffect   (who runs it, fused with its payload)
   × target_effect : TargetEffect   (Blocks ⊕ Advances ⊕ Neutral)
   × urgency       : Urgency        (Pre ⊕ Mid(MidTier) ⊕ Post — total-ordered tier)
@@ -473,7 +495,7 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
            (payload-free — Action.stall_key() projects it)
 ```
 
-### `ActionKind` taxonomy (36 variants — the funnel basins, all payloads typed)
+### `ActionKind` taxonomy (39 variants — the funnel basins, all payloads typed)
 
 ```
                 ┌─ FixCi{check_name: CheckName}
@@ -510,6 +532,8 @@ StallKey = kind_name: &'static str × blocker: BlockerKey
             ├─ ReviewDocs{attest_path: PathBuf}                (SHA-keyed)
             ├─ AddressClaudeReview{attest_path: PathBuf}       (content-keyed)
             ├─ AttestReviewClass{attest_path: PathBuf}         (content-keyed — sweep witness with enumerated sites)
+            ├─ ResolveCopilotVerdict{review_id: u64, attest_path: PathBuf}          (id-keyed — Agent, BlockingFix)
+            ├─ DecideEscalatedCopilotVerdict{review_id: u64, attest_path: PathBuf}  (id-keyed — Human, BlockingHuman)
             └─ Closeout{attest_path: PathBuf}                  (convergence gate — Urgency::Post)
 
    Branch   ┌─ SyncGraphiteStack{from_sha: String, to_sha: String}   (Full — `gt sync`)

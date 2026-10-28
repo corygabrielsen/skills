@@ -4,13 +4,15 @@
 //! `ci_clean` approval gate) + bot-review-axis presence (for
 //! the bot-review shadow filter) + threads (for the
 //! `threads_clean` approval gate) + review-class attestation
-//! report and path (for the class-sweep gate) + PR number (for
-//! prompt rendering).
+//! report and path (for the class-sweep gate) + reviewer-verdict
+//! report and path (for the verdict gate) + PR number (for prompt
+//! rendering).
 
 use crate::decide::action::{Action, ActionKind};
 use crate::ids::PullRequestNumber;
 use crate::orient::ci::CiReport;
 use crate::orient::copilot::CopilotReport;
+use crate::orient::copilot_verdict::CopilotVerdictReport;
 use crate::orient::review_class::ReviewClass;
 use crate::orient::reviews::ReviewSummary;
 use crate::orient::thread::ReviewThread;
@@ -23,6 +25,8 @@ pub(crate) struct ReviewsObservation<'a> {
     pub threads: &'a [ReviewThread],
     pub review_class: &'a ReviewClass,
     pub review_class_attest_path: Option<&'a std::path::Path>,
+    pub copilot_verdict: &'a CopilotVerdictReport,
+    pub copilot_verdict_attest_path: Option<&'a std::path::Path>,
     pub pr: PullRequestNumber,
 }
 
@@ -39,6 +43,10 @@ impl<'a> Axis<ReviewsObservation<'a>> for ReviewsAxis {
             obs.threads,
             obs.review_class,
             obs.review_class_attest_path,
+            crate::decide::reviews::VerdictGate {
+                report: obs.copilot_verdict,
+                attest_path: obs.copilot_verdict_attest_path,
+            },
             obs.pr,
         )
     }

@@ -232,6 +232,22 @@ pub enum ActionKind {
         attest_path: std::path::PathBuf,
     },
 
+    // ── Reviewer-verdict attestation ──
+    /// The latest review's verdict is a concern no recorded
+    /// disposition answers, and no address-threads handoff carries
+    /// it. Agent handoff: judge the assessment, patch if it calls for
+    /// a change, and record the disposition keyed to the review.
+    ResolveCopilotVerdict {
+        review_id: u64,
+        attest_path: std::path::PathBuf,
+    },
+    /// An agent escalated a review's verdict. Human handoff: decide,
+    /// and record `patched` or `no-change` for the same review.
+    DecideEscalatedCopilotVerdict {
+        review_id: u64,
+        attest_path: std::path::PathBuf,
+    },
+
     // ── Closeout attestation ──
     /// Convergence-gate attestation. Emitted at the least-urgent
     /// tier so it wins only on global quiescence; the agent
@@ -305,6 +321,8 @@ impl ActionKindName for ActionKind {
             Self::ReviewDocs { .. } => "ReviewDocs",
             Self::AddressClaudeReview { .. } => "AddressClaudeReview",
             Self::AttestReviewClass { .. } => "AttestReviewClass",
+            Self::ResolveCopilotVerdict { .. } => "ResolveCopilotVerdict",
+            Self::DecideEscalatedCopilotVerdict { .. } => "DecideEscalatedCopilotVerdict",
             Self::Closeout { .. } => "Closeout",
             Self::SyncGraphiteStack { .. } => "SyncGraphiteStack",
             Self::InvestigatePush { .. } => "InvestigatePush",

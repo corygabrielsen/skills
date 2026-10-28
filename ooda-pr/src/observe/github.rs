@@ -21,6 +21,7 @@ pub(crate) mod closeout_attest;
 pub(crate) mod comments;
 pub(crate) mod compare;
 pub(crate) mod copilot_config;
+pub(crate) mod copilot_verdict_attest;
 pub(crate) mod cursor_status;
 pub(crate) mod doc_review_attest;
 pub(crate) mod gh;
@@ -52,6 +53,7 @@ use closeout_attest::{CloseoutObservation, observe_closeout};
 use comments::{IssueComment, fetch_issue_comments};
 use compare::{MergeBaseDelta, fetch_merge_base_delta};
 use copilot_config::fetch_copilot_config;
+use copilot_verdict_attest::{CopilotVerdictObservation, observe_copilot_verdict};
 use cursor_status::{CursorStatus, fetch_cursor_status};
 use doc_review_attest::{DocReviewObservation, observe_doc_review};
 use gh::GhError;
@@ -152,6 +154,9 @@ pub(crate) struct GitHubObservations {
     /// The threads it is compared against are already in the bundle;
     /// orient performs the join.
     pub review_class: ReviewClassObservation,
+    /// Id-keyed attestation snapshot for reviewer verdicts. Orient
+    /// joins each entry to the review it names.
+    pub copilot_verdict: CopilotVerdictObservation,
     /// Branch-sync observation: divergence between the per-PR
     /// sticky head SHA and the live remote head, plus the
     /// graphite-availability probe results. Drives the
@@ -237,6 +242,7 @@ pub(crate) fn fetch_all(
     let doc_review = observe_doc_review(state_root, slug, pr, &pull_request_view.head_ref_oid);
     let closeout = observe_closeout(state_root, pr, &pull_request_view.head_ref_oid);
     let review_class = observe_review_class(state_root, pr, &pull_request_view.head_ref_oid);
+    let copilot_verdict = observe_copilot_verdict(state_root, pr);
     // Branch-level fetches must target the protected root, not the
     // intermediate stack branch. Resolve before fan-out.
     let stack_root_branch = try_fetch!(resolve_stack_root(slug, &pull_request_view.base_ref_name));
@@ -357,6 +363,7 @@ pub(crate) fn fetch_all(
             claude_review,
             closeout,
             review_class,
+            copilot_verdict,
             branch_sync,
         })))
     })
@@ -455,6 +462,10 @@ fn terminal_observations(
         review_class: ReviewClassObservation {
             attestation: None,
             head_sha,
+            attest_path: None,
+        },
+        copilot_verdict: CopilotVerdictObservation {
+            attestation: None,
             attest_path: None,
         },
         // Terminal PRs skip branch-sync detection: the branch is

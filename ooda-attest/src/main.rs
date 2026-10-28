@@ -29,9 +29,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use ooda_core::attest::{
-    AttestError, ReviewClassEntry, ReviewSite, validate_review_classes, write_claude_review_atomic,
+    AttestError, ReviewClassEntry, ReviewSite, VerdictDisposition, upsert_copilot_verdict_atomic,
+    validate_review_classes, validate_verdict_note, write_claude_review_atomic,
     write_closeout_atomic, write_doc_review_atomic, write_pull_request_metadata_atomic,
     write_review_class_atomic,
 };
@@ -69,6 +70,25 @@ const DOC_REVIEW_FILE: &str = "doc_review_attest.json";
 const CLAUDE_REVIEW_FILE: &str = "claude_review_attest.json";
 const CLOSEOUT_FILE: &str = "closeout_attest.json";
 const REVIEW_CLASS_FILE: &str = "review_class_attest.json";
+const COPILOT_VERDICT_FILE: &str = "copilot_verdict_attest.json";
+
+/// CLI spelling of [`VerdictDisposition`].
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Disposition {
+    Patched,
+    NoChange,
+    Escalate,
+}
+
+impl From<Disposition> for VerdictDisposition {
+    fn from(d: Disposition) -> Self {
+        match d {
+            Disposition::Patched => Self::Patched,
+            Disposition::NoChange => Self::NoChange,
+            Disposition::Escalate => Self::Escalate,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "ooda-attest", about = "Write OODA attestation files", version)]
@@ -179,6 +199,38 @@ enum SubCmd {
         #[arg(long = "sites", action = ArgAction::Append, required = true)]
         sites: Vec<String>,
     },
+
+    /// Record a disposition for one Copilot review's verdict. Keyed by
+    /// review id: the entry answers that review only, and replaces any
+    /// prior entry for it.
+    #[command(name = "copilot-verdict")]
+    CopilotVerdict {
+        /// PR number (digits only).
+        #[arg(long)]
+        pr_id: String,
+
+        /// State-root directory; see `pr-meta`.
+        #[arg(long)]
+        state_root: Option<PathBuf>,
+
+        /// Target working tree; see `pr-meta`.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+
+        /// Numeric id of the review whose verdict this answers.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        review: u64,
+
+        /// `patched`: a commit addresses the concern. `no-change`: the
+        /// concern needs no change. `escalate`: a human must decide;
+        /// holds until a human records `patched` or `no-change`.
+        #[arg(long, value_enum)]
+        disposition: Disposition,
+
+        /// The decision's grounds.
+        #[arg(long)]
+        note: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -245,6 +297,27 @@ fn main() -> ExitCode {
                 repo_root,
                 REVIEW_CLASS_FILE,
                 move |path, sha| write_review_class_atomic(path, sha, entries),
+            )
+        }
+        SubCmd::CopilotVerdict {
+            pr_id,
+            state_root,
+            repo_root,
+            review,
+            disposition,
+            note,
+        } => {
+            if let Err(e) = validate_verdict_note(&note) {
+                return fail(EXIT_VALIDATION, &format!("--note: {e}"));
+            }
+            run_attest(
+                &pr_id,
+                state_root.as_deref(),
+                repo_root,
+                COPILOT_VERDICT_FILE,
+                move |path, sha| {
+                    upsert_copilot_verdict_atomic(path, sha, review, disposition.into(), note)
+                },
             )
         }
     }

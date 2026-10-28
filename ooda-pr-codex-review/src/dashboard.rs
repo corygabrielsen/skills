@@ -20,6 +20,7 @@ use crate::ids::BlockerKey;
 use crate::orient::ci::{CiReport, ci_signal};
 use crate::orient::claude_review::ClaudeReview;
 use crate::orient::copilot::{CopilotReport, copilot_signal};
+use crate::orient::copilot_verdict::{CopilotVerdictReport, copilot_verdict_signal};
 use crate::orient::cursor::{CursorReport, cursor_signal};
 use crate::orient::doc_review::DocReview;
 use crate::orient::pull_request_metadata::PullRequestMetadata;
@@ -109,6 +110,7 @@ pub(crate) enum AxisName {
     DocReview,
     ClaudeReview,
     ReviewClass,
+    CopilotVerdict,
 }
 
 impl AxisName {
@@ -121,6 +123,7 @@ impl AxisName {
             Self::DocReview => "doc_review",
             Self::ClaudeReview => "claude_review",
             Self::ReviewClass => "review_class",
+            Self::CopilotVerdict => "copilot_verdict",
         }
     }
 }
@@ -138,7 +141,7 @@ pub(crate) struct Blocker {
 
 /// Per-consumer input slice for [`Dashboard::from_iteration`]. Each
 /// field declares a typed dep ref. The struct is the function
-/// signature reified; scope is exactly the seven axes the dashboard
+/// signature reified; scope is exactly the eight axes the dashboard
 /// projects.
 pub(crate) struct DashboardInputs<'a> {
     pub ci: &'a CiReport,
@@ -148,6 +151,7 @@ pub(crate) struct DashboardInputs<'a> {
     pub doc_review: &'a DocReview,
     pub claude_review: &'a ClaudeReview,
     pub review_class: &'a ReviewClass,
+    pub copilot_verdict: &'a CopilotVerdictReport,
 }
 
 impl<'a> From<&'a crate::orient::OrientedState> for DashboardInputs<'a> {
@@ -160,6 +164,7 @@ impl<'a> From<&'a crate::orient::OrientedState> for DashboardInputs<'a> {
             doc_review: &o.doc_review,
             claude_review: &o.claude_review,
             review_class: &o.review_class,
+            copilot_verdict: &o.copilot_verdict,
         }
     }
 }
@@ -221,6 +226,9 @@ fn collect_signals(inputs: &DashboardInputs<'_>) -> Vec<AxisSignal> {
     if let Some(c) = inputs.copilot
         && let Some(sig) = copilot_signal(&c.activity)
     {
+        out.push(sig);
+    }
+    if let Some(sig) = copilot_verdict_signal(inputs.copilot_verdict) {
         out.push(sig);
     }
     if let Some(sig) = ci_signal(&inputs.ci.activity) {
@@ -1067,6 +1075,7 @@ mod tests {
         let sha = GitCommitSha::parse(&"a".repeat(40)).unwrap();
         let round = CopilotReviewRound {
             severity: SeverityBreakdown::default(),
+            verdict: None,
             round: 1,
             requested_at: ts,
             ack_at: None,

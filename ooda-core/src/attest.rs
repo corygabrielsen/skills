@@ -35,11 +35,17 @@ pub const DOC_REVIEW_SCHEMA_VERSION: u32 = 1;
 pub const CLAUDE_REVIEW_SCHEMA_VERSION: u32 = 1;
 pub const CLOSEOUT_SCHEMA_VERSION: u32 = 1;
 pub const REVIEW_CLASS_SCHEMA_VERSION: u32 = 1;
+pub const COPILOT_VERDICT_SCHEMA_VERSION: u32 = 1;
 
 /// Upper bound on a review-class name. Names render on one prompt
 /// line and one dashboard line; anything longer is a body, not a
 /// name.
 pub const REVIEW_CLASS_NAME_MAX_BYTES: usize = 200;
+
+/// Upper bound on a verdict disposition note. The note renders in
+/// handoff prompts and the dashboard; it states a decision and its
+/// grounds, not a report.
+pub const COPILOT_VERDICT_NOTE_MAX_BYTES: usize = 2000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestMetadataAttestation {
@@ -211,6 +217,135 @@ pub fn validate_review_classes(classes: &[ReviewClassEntry]) -> Result<(), Attes
     Ok(())
 }
 
+/// Disposition of one reviewer verdict.
+///
+/// - `Patched` — the concern was real and a commit addresses it.
+/// - `NoChange` — the concern needs no change; the note is the
+///   grounds.
+/// - `Escalate` — the concern needs a human. The entry persists until
+///   a human records `Patched` or `NoChange` for the same review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VerdictDisposition {
+    Patched,
+    NoChange,
+    Escalate,
+}
+
+impl VerdictDisposition {
+    /// Stable kebab-case token, identical to the serialized form and
+    /// the CLI value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Patched => "patched",
+            Self::NoChange => "no-change",
+            Self::Escalate => "escalate",
+        }
+    }
+}
+
+impl std::fmt::Display for VerdictDisposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One recorded disposition, keyed by the review it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopilotVerdictEntry {
+    pub review_id: u64,
+    pub disposition: VerdictDisposition,
+    pub note: String,
+    pub attested_sha: String,
+    pub attested_at: DateTime<Utc>,
+}
+
+impl CopilotVerdictEntry {
+    fn validate(&self) -> Result<(), AttestError> {
+        if self.review_id == 0 {
+            return Err(AttestError::InvalidCopilotVerdict(
+                "review id must be positive".to_string(),
+            ));
+        }
+        validate_verdict_note(&self.note)?;
+        if !is_valid_sha(&self.attested_sha) {
+            return Err(AttestError::BadShaFormat(self.attested_sha.clone()));
+        }
+        Ok(())
+    }
+}
+
+/// Reviewer-verdict attestation: one entry per answered review.
+///
+/// Id-keyed, not time-keyed: an entry discharges exactly the review
+/// it names, so a review submitted after the entry was written is
+/// never discharged by it. Review ids are unique within `entries`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopilotVerdictAttestation {
+    pub version: u32,
+    pub entries: Vec<CopilotVerdictEntry>,
+}
+
+impl CopilotVerdictAttestation {
+    /// The entry answering `review_id`, if any.
+    #[must_use]
+    pub fn entry(&self, review_id: u64) -> Option<&CopilotVerdictEntry> {
+        self.entries.iter().find(|e| e.review_id == review_id)
+    }
+
+    /// Entries whose disposition is [`VerdictDisposition::Escalate`].
+    pub fn escalated(&self) -> impl Iterator<Item = &CopilotVerdictEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.disposition == VerdictDisposition::Escalate)
+    }
+}
+
+/// Validate a disposition note: non-blank, bounded, free of ASCII
+/// control bytes other than newline and tab. Shared by the CLI (before
+/// reading HEAD), the writer, and the reader.
+///
+/// # Errors
+///
+/// Returns [`AttestError::InvalidCopilotVerdict`] naming the violated
+/// rule.
+pub fn validate_verdict_note(note: &str) -> Result<(), AttestError> {
+    if note.trim().is_empty() {
+        return Err(AttestError::InvalidCopilotVerdict(
+            "note is empty".to_string(),
+        ));
+    }
+    if note.len() > COPILOT_VERDICT_NOTE_MAX_BYTES {
+        return Err(AttestError::InvalidCopilotVerdict(format!(
+            "note exceeds {COPILOT_VERDICT_NOTE_MAX_BYTES} bytes"
+        )));
+    }
+    if note
+        .bytes()
+        .any(|b| (b < 0x20 && b != b'\n' && b != b'\t') || b == 0x7f)
+    {
+        return Err(AttestError::InvalidCopilotVerdict(
+            "note contains an ASCII control byte".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_copilot_verdict(attestation: &CopilotVerdictAttestation) -> Result<(), AttestError> {
+    let mut seen = std::collections::HashSet::new();
+    for entry in &attestation.entries {
+        entry.validate()?;
+        if !seen.insert(entry.review_id) {
+            return Err(AttestError::InvalidCopilotVerdict(format!(
+                "review {} has more than one entry",
+                entry.review_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub enum AttestError {
     Io(io::Error),
@@ -224,6 +359,9 @@ pub enum AttestError {
     /// class list, empty class name, class without sites, malformed
     /// site).
     InvalidReviewClass(String),
+    /// A reviewer-verdict payload violated its invariants (zero review
+    /// id, malformed note, duplicate review entry).
+    InvalidCopilotVerdict(String),
 }
 
 impl std::fmt::Display for AttestError {
@@ -240,6 +378,9 @@ impl std::fmt::Display for AttestError {
                 "attestation sha must be 40 lowercase hex characters: {s:?}"
             ),
             Self::InvalidReviewClass(s) => write!(f, "invalid review-class attestation: {s}"),
+            Self::InvalidCopilotVerdict(s) => {
+                write!(f, "invalid copilot-verdict attestation: {s}")
+            }
         }
     }
 }
@@ -249,9 +390,10 @@ impl std::error::Error for AttestError {
         match self {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
-            Self::SchemaVersion { .. } | Self::BadShaFormat(_) | Self::InvalidReviewClass(_) => {
-                None
-            }
+            Self::SchemaVersion { .. }
+            | Self::BadShaFormat(_)
+            | Self::InvalidReviewClass(_)
+            | Self::InvalidCopilotVerdict(_) => None,
         }
     }
 }
@@ -571,6 +713,77 @@ pub fn read_review_class(path: &Path) -> Result<Option<ReviewClassAttestation>, 
         return Err(AttestError::BadShaFormat(attestation.attested_sha));
     }
     validate_review_classes(&attestation.classes)?;
+    Ok(Some(attestation))
+}
+
+/// Record a disposition for one review, replacing any prior entry for
+/// the same review and keeping every other entry.
+///
+/// The read, the upsert, and the write run under one
+/// [`attest_lock`], so concurrent invocations cannot drop each
+/// other's entries. An existing file that fails to read is an error,
+/// never overwritten: overwriting would discard escalations.
+///
+/// # Errors
+///
+/// - [`AttestError::BadShaFormat`] — `attested_sha` violates the
+///   40-lowercase-hex discipline.
+/// - [`AttestError::InvalidCopilotVerdict`] — zero `review_id` or a
+///   malformed `note`, or an existing file violating the invariants.
+/// - [`AttestError::Io`] / [`AttestError::Parse`] /
+///   [`AttestError::SchemaVersion`] — the existing file is
+///   unreadable, or the write failed.
+pub fn upsert_copilot_verdict_atomic(
+    path: &Path,
+    attested_sha: String,
+    review_id: u64,
+    disposition: VerdictDisposition,
+    note: String,
+) -> Result<CopilotVerdictAttestation, AttestError> {
+    if !is_valid_sha(&attested_sha) {
+        return Err(AttestError::BadShaFormat(attested_sha));
+    }
+    let entry = CopilotVerdictEntry {
+        review_id,
+        disposition,
+        note,
+        attested_sha,
+        attested_at: Utc::now(),
+    };
+    entry.validate()?;
+    let _lock = attest_lock(path)?;
+    let mut attestation = read_copilot_verdict(path)?.unwrap_or(CopilotVerdictAttestation {
+        version: COPILOT_VERDICT_SCHEMA_VERSION,
+        entries: Vec::new(),
+    });
+    attestation.entries.retain(|e| e.review_id != review_id);
+    attestation.entries.push(entry);
+    let json = serde_json::to_vec_pretty(&attestation)?;
+    crate::atomic_io::write_atomic(path, &json)?;
+    Ok(attestation)
+}
+
+/// Read the reviewer-verdict attestation at `path`. Missing file is
+/// `Ok(None)`; every entry is re-validated.
+///
+/// # Errors
+///
+/// See [`read_pull_request_metadata`], plus
+/// [`AttestError::InvalidCopilotVerdict`] for an invariant violation.
+pub fn read_copilot_verdict(path: &Path) -> Result<Option<CopilotVerdictAttestation>, AttestError> {
+    let bytes = match fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(AttestError::Io(e)),
+    };
+    let attestation: CopilotVerdictAttestation = serde_json::from_slice(&bytes)?;
+    if attestation.version != COPILOT_VERDICT_SCHEMA_VERSION {
+        return Err(AttestError::SchemaVersion {
+            found: attestation.version,
+            expected: COPILOT_VERDICT_SCHEMA_VERSION,
+        });
+    }
+    validate_copilot_verdict(&attestation)?;
     Ok(Some(attestation))
 }
 
@@ -1229,5 +1442,171 @@ mod tests {
         assert!(!path.parent().unwrap().exists());
         write_closeout_atomic(&path, VALID_SHA.to_string()).unwrap();
         assert!(path.exists());
+    }
+
+    // ── CopilotVerdictAttestation ──
+
+    fn upsert(
+        path: &Path,
+        review_id: u64,
+        disposition: VerdictDisposition,
+    ) -> Result<CopilotVerdictAttestation, AttestError> {
+        upsert_copilot_verdict_atomic(
+            path,
+            VALID_SHA.to_string(),
+            review_id,
+            disposition,
+            "grounds".to_string(),
+        )
+    }
+
+    #[test]
+    fn copilot_verdict_round_trip_write_then_read() {
+        let dir = tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("nested")
+            .join("copilot_verdict_attest.json");
+        let written = upsert(&path, 7, VerdictDisposition::Patched).unwrap();
+        let read = read_copilot_verdict(&path).unwrap().unwrap();
+        assert_eq!(read, written);
+        assert_eq!(read.version, COPILOT_VERDICT_SCHEMA_VERSION);
+        assert_eq!(
+            read.entry(7).unwrap().disposition,
+            VerdictDisposition::Patched
+        );
+        assert!(read.entry(8).is_none());
+    }
+
+    #[test]
+    fn copilot_verdict_upsert_keeps_other_reviews_and_replaces_same_review() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("copilot_verdict_attest.json");
+        upsert(&path, 1, VerdictDisposition::Escalate).unwrap();
+        upsert(&path, 2, VerdictDisposition::NoChange).unwrap();
+        let read = read_copilot_verdict(&path).unwrap().unwrap();
+        assert_eq!(read.entries.len(), 2);
+        assert_eq!(
+            read.escalated().map(|e| e.review_id).collect::<Vec<_>>(),
+            [1]
+        );
+
+        upsert(&path, 1, VerdictDisposition::NoChange).unwrap();
+        let read = read_copilot_verdict(&path).unwrap().unwrap();
+        assert_eq!(read.entries.len(), 2);
+        assert_eq!(read.escalated().count(), 0);
+        assert_eq!(
+            read.entry(1).unwrap().disposition,
+            VerdictDisposition::NoChange
+        );
+    }
+
+    #[test]
+    fn copilot_verdict_disposition_serializes_kebab_case() {
+        for d in [
+            VerdictDisposition::Patched,
+            VerdictDisposition::NoChange,
+            VerdictDisposition::Escalate,
+        ] {
+            let json = serde_json::to_string(&d).unwrap();
+            assert_eq!(json, format!("\"{}\"", d.as_str()));
+        }
+    }
+
+    #[test]
+    fn copilot_verdict_write_rejects_bad_inputs_and_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("copilot_verdict_attest.json");
+        assert!(matches!(
+            upsert(&path, 0, VerdictDisposition::Patched),
+            Err(AttestError::InvalidCopilotVerdict(_))
+        ));
+        for note in [
+            "",
+            "   ",
+            "a\u{0}b",
+            &"x".repeat(COPILOT_VERDICT_NOTE_MAX_BYTES + 1),
+        ] {
+            let r = upsert_copilot_verdict_atomic(
+                &path,
+                VALID_SHA.to_string(),
+                1,
+                VerdictDisposition::Patched,
+                note.to_string(),
+            );
+            assert!(
+                matches!(r, Err(AttestError::InvalidCopilotVerdict(_))),
+                "{note:?}: {r:?}"
+            );
+        }
+        assert!(matches!(
+            upsert_copilot_verdict_atomic(
+                &path,
+                "abc".to_string(),
+                1,
+                VerdictDisposition::Patched,
+                "n".to_string()
+            ),
+            Err(AttestError::BadShaFormat(_))
+        ));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn copilot_verdict_note_admits_newline_and_tab() {
+        validate_verdict_note("line one\n\tline two").unwrap();
+    }
+
+    #[test]
+    fn copilot_verdict_upsert_refuses_to_clobber_malformed_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("copilot_verdict_attest.json");
+        fs::write(&path, b"{not json").unwrap();
+        assert!(matches!(
+            upsert(&path, 1, VerdictDisposition::Patched),
+            Err(AttestError::Parse(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"{not json");
+    }
+
+    #[test]
+    fn copilot_verdict_read_missing_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("absent.json");
+        assert!(read_copilot_verdict(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn copilot_verdict_read_rejects_duplicate_review_entries() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("copilot_verdict_attest.json");
+        let entry = serde_json::json!({
+            "review_id": 5,
+            "disposition": "patched",
+            "note": "n",
+            "attested_sha": VALID_SHA,
+            "attested_at": "2026-10-28T00:00:00Z",
+        });
+        let doc = serde_json::json!({
+            "version": COPILOT_VERDICT_SCHEMA_VERSION,
+            "entries": [entry.clone(), entry],
+        });
+        fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(matches!(
+            read_copilot_verdict(&path),
+            Err(AttestError::InvalidCopilotVerdict(_))
+        ));
+    }
+
+    #[test]
+    fn copilot_verdict_read_wrong_schema_version_returns_typed_error() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("copilot_verdict_attest.json");
+        let doc = serde_json::json!({ "version": 99, "entries": [] });
+        fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(matches!(
+            read_copilot_verdict(&path),
+            Err(AttestError::SchemaVersion { found: 99, .. })
+        ));
     }
 }

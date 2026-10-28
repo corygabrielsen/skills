@@ -246,6 +246,7 @@ mod tests {
         };
         let round = CopilotReviewRound {
             severity: crate::orient::thread::SeverityBreakdown::default(),
+            verdict: None,
             round: 1,
             requested_at: Timestamp::parse(reviewed_at).unwrap(),
             ack_at: None,

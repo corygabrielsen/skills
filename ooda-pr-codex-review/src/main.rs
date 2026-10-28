@@ -1680,12 +1680,80 @@ mod tests {
             closeout_attest_path: None,
             review_class: orient::review_class::ReviewClass::NoThreads,
             review_class_attest_path: None,
+            copilot_verdict: crate::orient::copilot_verdict::CopilotVerdictReport::default(),
+            copilot_verdict_attest_path: None,
             branch_sync: crate::observe::branch::BranchSyncObservation {
                 divergence: None,
                 branch_graphite_tracked: false,
                 gt_available: false,
             },
         }
+    }
+
+    /// The verdict gate outranks the Copilot re-request it shares a
+    /// tier with, and the closeout it must precede, on axis order and
+    /// urgency alone.
+    #[test]
+    fn unanswered_verdict_outranks_rerequest_and_closeout() {
+        use crate::ids::{GitCommitSha, Timestamp};
+        use crate::observe::github::copilot_verdict_attest::CopilotVerdictObservation;
+        use crate::orient::bot_threads::BotThreadSummary;
+        use crate::orient::copilot::{
+            CopilotActivity, CopilotRepoConfig, CopilotReport, CopilotReviewRound, CopilotTier,
+            CopilotVerdict, VerdictStance,
+        };
+        let at = Timestamp::parse("2026-10-28T11:26:00Z").unwrap();
+        let round = CopilotReviewRound {
+            round: 1,
+            requested_at: at,
+            ack_at: Some(at),
+            reviewed_at: Some(at),
+            commit: Some(GitCommitSha::parse(&"b".repeat(40)).unwrap()),
+            comments_visible: 0,
+            comments_suppressed: 0,
+            suppressed_comments: vec![],
+            severity: crate::orient::thread::SeverityBreakdown::default(),
+            verdict: Some(CopilotVerdict {
+                review_id: 5_681_853_593,
+                url: String::new(),
+                stance: VerdictStance::Concern,
+                heading: "\u{1f535} Needs a closer look".into(),
+                assessment: "Stub-only validation leaves provisioning unverified.".into(),
+            }),
+        };
+        let copilot = CopilotReport {
+            config: CopilotRepoConfig {
+                enabled: true,
+                review_on_push: true,
+                review_draft_pull_requests: false,
+            },
+            activity: CopilotActivity::Reviewed {
+                latest: round.clone(),
+            },
+            rounds: vec![round],
+            threads: BotThreadSummary::default(),
+            tier: CopilotTier::Gold,
+            fresh: false,
+        };
+        let attest_path = std::path::PathBuf::from("/state/1541/copilot_verdict_attest.json");
+        let mut oriented = stub_oriented();
+        oriented.copilot_verdict = orient::copilot_verdict::orient_copilot_verdict(
+            &CopilotVerdictObservation {
+                attestation: None,
+                attest_path: Some(attest_path.clone()),
+            },
+            Some(&copilot),
+        );
+        oriented.copilot_verdict_attest_path = Some(attest_path);
+        oriented.copilot = Some(copilot);
+        oriented.closeout = orient::closeout::Closeout::NeverAttested;
+        oriented.closeout_attest_path = Some("/state/1541/closeout_attest.json".into());
+
+        let cs = runner::drive(&oriented, ids::PullRequestNumber::parse("1541").unwrap());
+        let names: Vec<&str> = cs.iter().map(|a| a.kind.name()).collect();
+        assert_eq!(names.first(), Some(&"ResolveCopilotVerdict"), "{names:?}");
+        assert!(names.contains(&"RerequestCopilot"), "{names:?}");
+        assert!(names.contains(&"Closeout"), "{names:?}");
     }
 
     fn rebase_action() -> decide::action::Action {

@@ -13,6 +13,7 @@ pub(crate) mod claude_review;
 pub(crate) mod closeout;
 pub(crate) mod codex_review;
 pub(crate) mod copilot;
+pub(crate) mod copilot_verdict;
 pub(crate) mod cursor;
 pub(crate) mod doc_review;
 pub(crate) mod pull_request_metadata;
@@ -34,6 +35,7 @@ use closeout::{Closeout, orient_closeout};
 pub(crate) use codex_review::CodexReviewReport;
 use codex_review::orient_codex_review;
 use copilot::{CopilotRepoConfig, CopilotReport, orient_copilot};
+use copilot_verdict::{CopilotVerdictReport, orient_copilot_verdict};
 use cursor::{CursorReport, orient_cursor};
 use doc_review::{DocReview, orient_doc_review};
 use pull_request_metadata::{PullRequestMetadata, orient_pull_request_metadata};
@@ -122,6 +124,11 @@ pub(crate) struct OrientedState {
     pub review_class: ReviewClass,
     /// Attestation-file path for the review-class axis.
     pub review_class_attest_path: Option<std::path::PathBuf>,
+    /// Id-keyed obligations raised by reviewer verdicts: the latest
+    /// unanswered concern and every escalation awaiting a human.
+    pub copilot_verdict: CopilotVerdictReport,
+    /// Attestation-file path for the reviewer-verdict axis.
+    pub copilot_verdict_attest_path: Option<std::path::PathBuf>,
     /// Branch-sync observation passed through verbatim. The
     /// classification is purely deterministic from the upstream
     /// SHA delta and local-tool probes; no projection is needed,
@@ -225,6 +232,8 @@ pub(crate) fn orient(
     let closeout_attest_path = obs.closeout.attest_path.clone();
     let review_class = orient_review_class(&obs.review_class, &threads, copilot.as_ref());
     let review_class_attest_path = obs.review_class.attest_path.clone();
+    let copilot_verdict = orient_copilot_verdict(&obs.copilot_verdict, copilot.as_ref());
+    let copilot_verdict_attest_path = obs.copilot_verdict.attest_path.clone();
 
     OrientedState {
         ci,
@@ -245,6 +254,8 @@ pub(crate) fn orient(
         closeout_attest_path,
         review_class,
         review_class_attest_path,
+        copilot_verdict,
+        copilot_verdict_attest_path,
         branch_sync: obs.branch_sync.clone(),
     }
 }

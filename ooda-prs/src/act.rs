@@ -202,7 +202,11 @@ pub(crate) fn wait(
 
 /// Hold a change-ended wait until `wake_after`, never past `deadline`.
 /// A shutdown signal during the hold ends it as interrupted.
-fn hold_until(ended: WaitEnd, wake_after: Option<Instant>, deadline: Instant) -> WaitEnd {
+pub(crate) fn hold_until(
+    ended: WaitEnd,
+    wake_after: Option<Instant>,
+    deadline: Instant,
+) -> WaitEnd {
     let WaitEnd::Changed { .. } = &ended else {
         return ended;
     };

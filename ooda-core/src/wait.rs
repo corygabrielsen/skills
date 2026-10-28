@@ -10,7 +10,9 @@
 //!   only the clock and the interrupt predicate.
 //! - **Interrupt outranks**: the predicate is checked between
 //!   slices, handed to the probe to check between its requests, and
-//!   checked after every probe, before its result is classified.
+//!   checked after every probe, before its result is classified. A
+//!   request already in flight delays it by at most that request's
+//!   own deadline.
 //! - **Failure degrades to sleeping**: after a failed or throttled
 //!   probe the wait stops probing and sleeps to its deadline, then
 //!   reports [`WaitEnd::CheckFailed`].

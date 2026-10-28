@@ -740,19 +740,30 @@ mod tests {
             crate::signal::set_for_test(143);
             Ok(obs(BatchState::NotStarted))
         };
-        let ctx = ctx();
-        let (_tmp, mut writer) = fresh_writer();
+        let (tmp, mut writer) = fresh_writer();
         let mut sink = EventSink::new(&mut writer);
-        let exit = run_loop(&repo_id(), &target(), loop_cfg(5), &ctx, observe, &mut sink).unwrap();
+        let exit = run_loop(
+            &repo_id(),
+            &target(),
+            loop_cfg(5),
+            &ctx(),
+            observe,
+            &mut sink,
+        )
+        .unwrap();
         crate::signal::reset_for_test();
         assert!(
             matches!(exit, LoopExit::SignalInterrupted { exit_code: 143 }),
             "{exit:?}"
         );
-        assert!(
-            ctx.spawned_pgids.lock().unwrap().is_empty(),
-            "no review spawned"
-        );
+        let run = std::fs::read_dir(tmp.path().join("runs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let body = std::fs::read_to_string(run.path().join("events.jsonl")).unwrap();
+        assert!(body.contains(r#""decision_kind":"RunReviews""#), "{body}");
+        assert!(!body.contains("iteration_executed"), "{body}");
     }
 
     #[test]

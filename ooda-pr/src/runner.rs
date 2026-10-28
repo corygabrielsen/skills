@@ -40,7 +40,7 @@ use crate::decide::action::{Action, ActionEffect, rate_limit_wait_action};
 use crate::decide::decision::{Decision, HaltReason};
 use crate::ids::{PullRequestNumber, Timestamp};
 use crate::observe::github::gh::GhError;
-use crate::observe::github::probe::{CommentCursor, PRIME_BUDGET, ProbeSeed};
+use crate::observe::github::probe::{CommentCursor, MIN_CALL_BUDGET, PRIME_BUDGET, ProbeSeed};
 use crate::observe::github::{FetchOutcome, GitHubObservations, fetch_all};
 use crate::orient::OrientedState;
 use crate::orient::orient;
@@ -540,13 +540,10 @@ fn run_iter(
                 StallCheckOutcome::Proceed(a) => action = a,
             }
             let is_wait = action.effect.is_wait();
-            // A side effect started after a trapped signal would hold
-            // the shutdown for its whole run; waits end on the signal
-            // themselves.
-            if !is_wait && let Some(exit_code) = crate::signal::check_shutdown() {
+            if let Some(exit_code) = interrupt_before(&action) {
                 return Ok(IterStep::Interrupted(exit_code));
             }
-            let recheck = charge_wait(pending, &action, ctx.probe_tick);
+            let recheck = charge_wait(pending, &action, ctx.probe_tick + MIN_CALL_BUDGET);
             if let Some(deadline) = pending.as_ref().map(|p| p.deadline)
                 && is_wait
             {
@@ -559,6 +556,17 @@ fn run_iter(
                 IterStep::Executed(action)
             })
         }
+    }
+}
+
+/// The trapped signal, if any, that forbids starting `action`. A side
+/// effect started after a signal would hold the shutdown for its whole
+/// run; a wait ends on the signal itself, so it never needs this.
+fn interrupt_before(action: &Action) -> Option<u8> {
+    if action.effect.is_wait() {
+        None
+    } else {
+        crate::signal::check_shutdown()
     }
 }
 
@@ -594,9 +602,10 @@ fn act_recorded(
 /// Decide whether executing `action` is a free re-check and update
 /// the pending wait to match. A wait re-checks iff it carries the
 /// pending wait's stall key, at least `min_left` of that wait's
-/// deadline remains, and the deadline has re-checks left; it then
-/// keeps the deadline, clipped to its own interval. Any other wait
-/// starts a fresh deadline; any other action clears the pending wait.
+/// deadline remains (enough for a probe pass to run), and the
+/// deadline has re-checks left; it then keeps the deadline, clipped
+/// to its own interval. Any other wait starts a fresh deadline; any
+/// other action clears the pending wait.
 fn charge_wait(
     pending: &mut Option<PendingWait>,
     action: &Action,
@@ -1147,6 +1156,62 @@ mod tests {
             LoopExit::SignalInterrupted { exit_code } => assert_eq!(exit_code, 130),
             halt @ LoopExit::Halted(_) => panic!("expected SignalInterrupted(130), got {halt:?}"),
         }
+    }
+
+    #[test]
+    fn a_trapped_signal_forbids_side_effects_but_not_waits() {
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::set_for_test(143);
+        let side_effect = interrupt_before(&rebase());
+        let wait = interrupt_before(&ci_wait());
+        crate::signal::reset_for_test();
+        assert_eq!(side_effect, Some(143));
+        assert_eq!(wait, None);
+        assert_eq!(interrupt_before(&rebase()), None, "no signal, no veto");
+    }
+
+    #[test]
+    fn hold_until_delays_only_a_change_and_only_until_wake_after() {
+        use ooda_core::wait::WaitEnd;
+        use std::time::{Duration, Instant};
+        let _guard = SIGNAL_TEST_GUARD.lock().unwrap();
+        crate::signal::reset_for_test();
+        let changed = || WaitEnd::Changed {
+            source: "reviews".into(),
+        };
+        let far = Instant::now() + Duration::from_mins(1);
+
+        let started = Instant::now();
+        assert_eq!(
+            crate::act::hold_until(WaitEnd::Elapsed, Some(far), far),
+            WaitEnd::Elapsed
+        );
+        assert_eq!(crate::act::hold_until(changed(), None, far), changed());
+        assert_eq!(
+            crate::act::hold_until(changed(), Some(Instant::now()), far),
+            changed()
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "nothing held"
+        );
+
+        let started = Instant::now();
+        let held = Duration::from_millis(250);
+        assert_eq!(
+            crate::act::hold_until(changed(), Some(Instant::now() + held), far),
+            changed()
+        );
+        assert!(started.elapsed() >= held);
+
+        let deadline = Instant::now() + held;
+        crate::act::hold_until(changed(), Some(far), deadline);
+        assert!(Instant::now() < far, "never held past the deadline");
+
+        crate::signal::set_for_test(130);
+        let end = crate::act::hold_until(changed(), Some(far), far);
+        crate::signal::reset_for_test();
+        assert_eq!(end, WaitEnd::Interrupted);
     }
 
     #[test]

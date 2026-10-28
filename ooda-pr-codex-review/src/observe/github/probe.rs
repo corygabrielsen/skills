@@ -49,7 +49,7 @@ const CALL_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Least remaining time a pass starts another request with; a request
 /// cut shorter would time out on an endpoint that is merely slow.
-const MIN_CALL_BUDGET: Duration = Duration::from_secs(2);
+pub(crate) const MIN_CALL_BUDGET: Duration = Duration::from_secs(2);
 
 /// Most time [`GitHubProbe::prime`] spends establishing baselines.
 pub(crate) const PRIME_BUDGET: Duration = Duration::from_secs(10);
@@ -122,7 +122,8 @@ pub(crate) struct GitHubProbe {
     seed: Option<ProbeSeed>,
     check_run_pages: usize,
     validators: HashMap<String, Validator>,
-    throttled_until: Option<Instant>,
+    /// Until when a rate-limit response forbids requests, and why.
+    throttled: Option<(Instant, ooda_core::RateLimitScope)>,
     fetch: Box<Fetch>,
 }
 
@@ -149,19 +150,28 @@ impl GitHubProbe {
             seed: None,
             check_run_pages: 1,
             validators: HashMap::new(),
-            throttled_until: None,
+            throttled: None,
             fetch,
         }
     }
 
-    /// Reposition the endpoints on what the latest observe saw.
+    /// Reposition the endpoints on what the latest observe saw, and
+    /// drop the baselines of endpoints it moved away from.
     pub(crate) fn seed(&mut self, seed: ProbeSeed) {
+        let live: std::collections::HashSet<String> = self
+            .endpoints(&seed)
+            .into_iter()
+            .map(|(_, path, _)| path)
+            .collect();
+        self.validators.retain(|path, _| live.contains(path));
         self.seed = Some(seed);
     }
 
     /// Establish baselines for endpoints the latest seed moved to (a
-    /// new head, a list crossing a page), so a change landing before
-    /// the first watch pass is not absorbed into the baseline.
+    /// new head, a list crossing a page). This narrows, not closes, the
+    /// window in which a change lands before any baseline exists: one
+    /// landing between the observe's read and the prime is absorbed and
+    /// surfaces at the wait's deadline.
     pub(crate) fn prime(&mut self, budget: Duration, interrupted: &dyn Fn() -> bool) {
         let _ = self.pass(budget, interrupted, Pass::Prime);
     }
@@ -232,8 +242,15 @@ impl GitHubProbe {
         let Some(seed) = self.seed.clone() else {
             return ProbeResult::Unchanged;
         };
-        if self.throttled_until.is_some_and(|t| Instant::now() < t) {
-            return ProbeResult::Unchanged;
+        if let Some((until, scope)) = self.throttled {
+            let left = until.saturating_duration_since(Instant::now());
+            if !left.is_zero() {
+                return ProbeResult::Throttled(ooda_core::RateLimitHit {
+                    scope,
+                    retry_after: ooda_core::PollingInterval::from_secs(left.as_secs().max(1)),
+                });
+            }
+            self.throttled = None;
         }
         let started = Instant::now();
         let mut first_change: Option<&'static str> = None;
@@ -264,7 +281,8 @@ impl GitHubProbe {
                 Ok(Conditional::NotModified) => continue,
                 Ok(Conditional::Fresh { etag, body }) => (etag, body),
                 Err(GhError::RateLimited(hit)) => {
-                    self.throttled_until = Some(Instant::now() + hit.retry_after.as_duration());
+                    self.throttled =
+                        Some((Instant::now() + hit.retry_after.as_duration(), hit.scope));
                     return changed_or(first_change, ProbeResult::Throttled(hit));
                 }
                 // The wait's own deadline cut the request short.
@@ -472,11 +490,12 @@ mod tests {
             PullRequestNumber::new(7).unwrap(),
             Box::new(move |path, etag, _| {
                 requested.borrow_mut().push(path.to_string());
+                let resource = path.split('?').next().unwrap_or(path);
                 let body = responses
                     .borrow()
-                    .iter()
-                    .find(|(prefix, _)| path.starts_with(prefix.as_str()))
-                    .map_or(json!([]), |(_, v)| v.clone());
+                    .get(resource)
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
                 let tag = {
                     use std::hash::{Hash, Hasher};
                     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -740,10 +759,13 @@ mod tests {
 
     #[test]
     fn rate_limit_throttles_and_other_errors_fail() {
+        let calls = Rc::new(RefCell::new(0u32));
+        let counted = Rc::clone(&calls);
         let mut throttled = GitHubProbe::with_fetch(
             RepoSlug::parse("o/r").unwrap(),
             PullRequestNumber::new(7).unwrap(),
-            Box::new(|_, _, _| {
+            Box::new(move |_, _, _| {
+                *counted.borrow_mut() += 1;
                 Err(GhError::RateLimited(ooda_core::RateLimitHit {
                     scope: ooda_core::RateLimitScope::GitHubSecondary,
                     retry_after: ooda_core::PollingInterval::from_secs(60),
@@ -755,6 +777,11 @@ mod tests {
             throttled.poll(BUDGET, &|| false),
             ProbeResult::Throttled(_)
         ));
+        assert!(
+            matches!(throttled.poll(BUDGET, &|| false), ProbeResult::Throttled(_)),
+            "inside retry_after the probe reports the throttle"
+        );
+        assert_eq!(*calls.borrow(), 1, "without another request");
         let mut failing = GitHubProbe::with_fetch(
             RepoSlug::parse("o/r").unwrap(),
             PullRequestNumber::new(7).unwrap(),

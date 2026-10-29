@@ -1,137 +1,23 @@
 ---
 name: mission-control
-description: Coordinate complex multi-step work using task graphs and parallel background agents. Use when work requires decomposition, delegation, and long-running operations that may survive context compaction.
+description: Coordinate multi-step work through delegated agents with a plan that survives context compaction. Use when work splits into several independent units, or when handed a context blob from /fork.
 args:
-  - name: --fg
-    description: Foreground mode. Launch agents and block on them (parallel launch, blocking wait).
-  - name: --bg
-    description: Background mode (default). Launch agents, return control to human, notify on completion.
   - name: --auto
-    description: Skip human checkpoints in foreground mode. If used with --bg, forces --fg.
+    description: Skip plan approval; a FAIL still goes to the human.
 ---
 
 # Mission Control
 
-You are mission control, not the astronaut. Coordinate, delegate, verify.
+Coordinate and verify; agents do the work.
 
-**HIL** = Human-In-the-Loop checkpoint (human decision required).
-**HIL_GATE** = Pure gate (no side effects, skippable in `--auto`).
+The work is the arguments, else the conversation; from /fork, the "Continue with" line is the work and the rest is context. One unit is a one-task plan.
 
-## Prerequisites
+Missions live in `~/.local/state/mission-control/<cwd-slug>/<mission>/`; resume an open one there before starting another, and print the absolute path when creating one. PLAN.md holds the tasks (scope, files touched, done-when), their dependencies, each task's status (pending, running with agent name, PASS, FAIL), and decisions as they are made. After compaction, reread it before acting.
 
-**Required tools:** `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `Task`, `TaskOutput`, `AskUserQuestion`
+Get approval on the plan unless `--auto`. Agents run in the background; dispatch each task once its dependencies pass, and keep advancing as completions arrive until the graph completes or what remains waits on the human. Concurrent writers to one repo get separate worktrees unless their files are disjoint, counting shared lockfiles and manifests; merge passing branches back and rerun the done-when checks on the merged tree.
 
-## Mindset
+Give each agent the absolute path `results/<task>.md` in the mission dir; first line PASS or FAIL. A finished agent with no result file is a FAIL. Read only the FAILs. A worker's PASS is a claim: confirm it against real state before marking the task PASS. A FAIL holds its dependents and goes to the human; independent tasks continue.
 
-- **Task system is source of truth** (context compacts; tasks persist)
-- After compaction, reconstruct state from `TaskList` before acting
-- You manage agents; you don't do their jobs
+A task citing `[[decision:<memo>#<qid>]]` first runs /drift-scan on that memo and qid; dispatch only if the decision is locked and the verdict is clean. Anything else goes to the human with the report.
 
-## Modes
-
-| Mode             | Behavior                                                            |
-| ---------------- | ------------------------------------------------------------------- |
-| `--bg` (default) | Launch agents, return control to human, resume on notification      |
-| `--fg`           | Launch agents, block until complete, continue to next batch         |
-| `--auto`         | With `--fg`: skip HIL on nominal; exits to HIL on any failure/NO-GO |
-
-## Rules
-
-@RULES.md
-
-## Phases (Hierarchical)
-
-@lib/setup/PHASE.md
-@lib/preflight/PHASE.md
-@lib/execution/PHASE.md
-@lib/control/PHASE.md
-
----
-
-## Quick Reference
-
-| Phase         | Sub-phases                                                            | Purpose                        |
-| ------------- | --------------------------------------------------------------------- | ------------------------------ |
-| **setup**     | INITIALIZE, BOOTSTRAP, DECOMPOSE, HIL_GATE_PLAN_APPROVAL, MATERIALIZE | Initialize and plan work       |
-| **preflight** | EVALUATE, HIL_HOLD, FIX                                               | Go/no-go checks before launch  |
-| **execution** | DELEGATE, MONITOR, VERIFY                                             | Launch agents, collect results |
-| **control**   | HIL_ANOMALY, CHECKPOINT, REPORT, HIL_NEXT_ACTION, HANDOFF             | Handle failures, decide next   |
-
-## Mission Flow (Top Level)
-
-```
-┌─────────┐     ┌────────────┐     ┌───────────┐     ┌─────────┐
-│  SETUP  │ ──► │ PREFLIGHT  │ ──► │ EXECUTION │ ──► │ CONTROL │
-└─────────┘     └────────────┘     └───────────┘     └─────────┘
-     │                │                  │                │
-     │                │                  │                │
-     │           (loop on               (--bg mode       (loop on
-     │            NO-GO fix)             returns to       continue)
-     │                │                  human)           │
-     │                │                  │                │
-     └────────────────┴──────────────────┴────────────────┘
-                            ▲
-                            │
-                      (resume points)
-```
-
-**Normal flow:** SETUP → PREFLIGHT → EXECUTION → CONTROL → (continue?) → PREFLIGHT...
-
-**Entry points after resume (first match wins):**
-
-- Tasks in-progress → execution/MONITOR
-- Ready tasks (pending with empty blockedBy) → preflight/EVALUATE
-- Tasks pending but all blocked → control/REPORT
-- All tasks completed/ABORTED → control/REPORT
-- No tasks + work-related history → setup/BOOTSTRAP
-  _(Work-related = action requests, file paths for requested work, or recorded decisions)_
-- No tasks + no work-related history → setup/DECOMPOSE
-
-See each phase's PHASE.md for internal flow details.
-
----
-
-## Task Lifecycle
-
-```
-pending --> in_progress --> completed
-   ^                   \-> ABORTED - [reason]
-   └─── (on Retry)
-```
-
-- To abort: update subject to `ABORTED - [reason]`, mark completed
-  Example: `TaskUpdate(taskId: X, subject: "ABORTED - reason", status: "completed")`
-- Never delete task data; always leave a trail in descriptions/metadata
-
-## Delegation Philosophy
-
-**Default to delegating.** Delegate tasks that involve:
-
-- Writing or editing files
-- Running commands to verify something
-- Research or exploration
-- Any substantive work
-
-**Do directly:**
-
-- Checking if a file exists
-- Reading a single line to confirm content
-- Other trivial verification checks
-
-**You are the coordinator, not the worker.**
-
-## Anti-patterns
-
-- Doing work yourself that an agent could do
-- Trusting agent summaries without verification
-- Forgetting to check `TaskList` after compaction
-- Creating tasks too large or vague for a single agent
-- Sequential execution when parallel is possible
-- Losing state by relying on context instead of tasks
-- Downgrading agents to cheaper/faster models
-
----
-
-Begin at setup/INITIALIZE. Follow phase flows. Honor HIL unless `--auto` with all GO.
-
-**Note:** Example task IDs ("T-001") are placeholders; actual IDs are system-generated.
+When nothing more can run, report and stop for the human's next call.

@@ -12,7 +12,7 @@ Focus on issues FIXABLE by improving the document:
 - Easy-to-miss qualifiers or conditions
 
 Do NOT flag issues outside the document's control:
-- Tool behavior (assume standard tools work correctly—Task returns IDs in order, TaskOutput blocks, Edit produces unstaged changes)
+- Tool behavior (assume standard tools work correctly—background subagents report completion, Edit produces unstaged changes)
 - User actions outside the skill's flow
 - Environment variations
 - Misreadings that require ignoring explicit statements in surrounding context

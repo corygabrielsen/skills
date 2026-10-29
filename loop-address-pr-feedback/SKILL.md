@@ -132,14 +132,8 @@ gh api graphql -f query='
 
 **Spawn agents to fix valid issues.**
 
-```
-Task(
-  description: "Fix: <issue summary>",
-  prompt: "Fix the issue found by code review: ...",
-  subagent_type: "general-purpose",
-  run_in_background: true
-)
-```
+One background subagent per fix, prompted with the issue: "Fix the
+issue found by code review: ...".
 
 Group by file or PR. Parallelize independent fixes.
 
@@ -248,7 +242,7 @@ Run /loop-address-pr-feedback again when new reviews arrive.
 
 ## State Tracking
 
-Persist in task descriptions for compaction survival:
+Persist to `$(git rev-parse --git-common-dir)/loop-address-pr-feedback/state.yaml` for compaction survival:
 
 ```yaml
 prs:
@@ -275,10 +269,9 @@ iteration: 1
 
 After compaction:
 
-1. `TaskList` — find tracking task
-2. Read task description for state
-3. `gt ls` — check stack state
-4. Resume from appropriate phase
+1. Read the state file
+2. `gt ls` — check stack state
+3. Resume from appropriate phase
 
 ---
 

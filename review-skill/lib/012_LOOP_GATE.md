@@ -5,7 +5,7 @@
 ## Do:
 
 - Check if current pass < N
-- If looping: (1) increment pass counter, (2) re-read target file, (3) reset per-pass state (clear tracker and reviewer results), (4) jump to Fan Out
+- If looping: (1) increment pass counter, (2) re-read target file, (3) reset per-pass state (clear tracker and reviewer results), (4) jump to Fan Out, which creates a fresh pass directory
 - If not looping: continue to Epilogue
 
 ## Don't:

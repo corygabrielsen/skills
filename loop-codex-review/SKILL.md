@@ -30,14 +30,14 @@ This loop creates a proof: when n independent reviews at each reasoning level (l
 ```
 ┌─────────────────┐     ┌───────────────────┐
 │  codex review   │────▶│  Claude addresses │
-│   (OpenAI CLI)  │     │   (Task agents)   │
+│   (OpenAI CLI)  │     │    (subagents)    │
 └─────────────────┘     └───────────────────┘
          │                       │
          └───────── loop ────────┘
 ```
 
 - **Review**: Run `codex review` command via Bash — this is OpenAI's Codex doing analysis
-- **Address**: Spawn Claude Task agents to address issues (fix code OR clarify with comments/refactoring)
+- **Address**: Spawn background Claude subagents to address issues (fix code OR clarify with comments/refactoring)
 - **Value**: Two different frontier LLMs catch different things
 
 ## Reasoning Levels
@@ -111,7 +111,7 @@ Why progressive?
 
 ## State Schema
 
-Track across iterations. Store in task descriptions for compaction survival.
+Track across iterations. Persist to `$REVIEW_DIR/state.md` for compaction survival.
 
 ```yaml
 iteration_count: 0
@@ -147,7 +147,7 @@ issue_tracker: []
 
 - Detect base branch properly (check for Graphite stack first)
 - Parse review mode from args
-- Initialize state and create tracking task
+- Initialize state in `$REVIEW_DIR/state.md`
 
 ### Don't:
 
@@ -182,9 +182,9 @@ issue_tracker: []
    mkdir -p "$REVIEW_DIR"
    ```
 
-   Store the `REVIEW_DIR` path in the tracking task description so it survives compaction.
+   State lives in `$REVIEW_DIR/state.md` so it survives compaction.
 
-5. Initialize state, create tracking task
+5. Initialize state, write `$REVIEW_DIR/state.md`
 
 **Base branch detection:**
 
@@ -252,15 +252,14 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 - Use `Bash` tool directly with `run_in_background: true`
 - Launch all n reviews in a **single message** (parallel)
 - Always set `-c model_reasoning_effort` explicitly
-- Record all task IDs for polling later
 
 ### Don't:
 
-- ❌ Use Task agents for review — they interpret prompts unpredictably (e.g., `tail -f` blocking forever)
+- ❌ Use subagents for review — they interpret prompts unpredictably (e.g., `tail -f` blocking forever)
 - ❌ Run reviews sequentially — always parallel
 - ❌ Forget `-c model_reasoning_effort` — Codex defaults are unpredictable
 - ❌ Use `tail -f` to check output — it blocks forever; use `tail -n` or `cat`
-- ❌ Use `TaskOutput` to read review results — dumps ~800 lines per review into context (see "Reading Review Results")
+- ❌ Read a background review's full output into context — dumps ~800 lines per review (see "Reading Review Results")
 - ❌ Read full log files — extract the `codex` verdict block only
 - ❌ **NEVER use shell `&` to background codex reviews** — `for i in 1..5; do codex review ... & done` corrupts output even with `tee`. The `&` detaches the process from the pipe, truncating logs. Always use separate `Bash` tool calls with `run_in_background: true`.
 - ❌ **NEVER combine review launch + polling in one Bash call** — e.g., `for i in ...; do codex ... & done; while ...; done` mixes codex stderr with polling output, producing megabytes of noise. Launch reviews and poll in **separate** Bash calls.
@@ -269,7 +268,7 @@ In this case, reviewing feature-c should use --base feature-b, NOT --base master
 
 ```
 # If n=3 (default), launch 3 in a single message.
-# Use tee -a to write logs AND keep output visible for TaskOutput status polling.
+# Use tee -a to write each review's log to $REVIEW_DIR.
 Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1 | tee -a \"$REVIEW_DIR/low-1.log\"", run_in_background: true, description: "Codex review 1/3 (low)")
 Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1 | tee -a \"$REVIEW_DIR/low-2.log\"", run_in_background: true, description: "Codex review 2/3 (low)")
 Bash(command: "codex review --base master -c model_reasoning_effort=\"low\" 2>&1 | tee -a \"$REVIEW_DIR/low-3.log\"", run_in_background: true, description: "Codex review 3/3 (low)")
@@ -281,7 +280,7 @@ Bash(command: "codex review ... 2>&1 | tee -a \"$REVIEW_DIR/low-1.log\"", run_in
 
 **File naming convention:** `{level}-{n}.log` for first pass (e.g., `low-1.log`, `high-3.log`). For re-reviews after addressing issues, use `{level}{pass}-{n}.log` (e.g., `medium2-1.log`, `medium3-2.log`) to avoid overwriting previous results.
 
-Each call returns a `task_id` and `output_file` path. Record the `task_id` for polling completion status (but NOT for reading output — read from `$REVIEW_DIR` files instead).
+Each background command notifies on completion. Treat that only as a done signal — read results from `$REVIEW_DIR` files, never from the command's own output.
 
 **Fixed point = all n clean.** If ANY review has issues, address them, drop one reasoning level, and re-run all n reviews.
 
@@ -297,17 +296,17 @@ Each call returns a `task_id` and `output_file` path. Record the `task_id` for p
 
 **Important:** When in a Graphite stack, always review against the parent branch, not master.
 
-**Polling:** Use the polling one-liner below (NOT `tail -f`, NOT `TaskOutput`).
+**Polling:** Use the polling one-liner below (NOT `tail -f`), or wait for each background review's completion notification.
 
 ## Reading Review Results (Context Management)
 
-⚠️ **This section exists to prevent context blowup.** Each codex review produces ~800 lines of `thinking`/`exec`/`codex` output. At n=5, that's ~4000 lines per level. Using `TaskOutput` to read results dumps all of this into context, which can push past compaction limits in long sessions.
+⚠️ **This section exists to prevent context blowup.** Each codex review produces ~800 lines of `thinking`/`exec`/`codex` output. At n=5, that's ~4000 lines per level. Reading a background review's full output dumps all of this into context, which can push past compaction limits in long sessions.
 
 **The protocol: file-based output, verdict extraction only.**
 
 ### 1. Poll for Completion
 
-**Use this one-liner.** It produces a clean timestamped ledger — one line per tick, immediate first check, clean exit when all done.
+**Use this one-liner.** It produces a clean timestamped ledger — one line per tick, immediate first check, clean exit when all done. Run it in the background; its exit is the completion signal.
 
 ```bash
 L=high N=5 S=30 DIR="$REVIEW_DIR"; printf '%-10s  %-8s  %s\n' TIME LEVEL DONE; printf '%-10s  %-8s  %s\n' ---------- -------- ----; while true; do n=$(grep -rl '^codex$' "$DIR/$L"-*.log 2>/dev/null | wc -l); printf '%-10s  %-8s  %d/%d\n' "$(date +%H:%M:%S)" "$L" "$n" "$N"; [ "$n" -eq "$N" ] && break; sleep "$S"; done
@@ -344,7 +343,7 @@ TIME        LEVEL     DONE
 
 **Don't:**
 
-- ❌ Use `TaskOutput` to poll — pulls full output into context
+- ❌ Poll by reading background review output — pulls full output into context
 - ❌ Use `tail -f` — blocks forever
 - ❌ Use `while sleep` as the loop condition — delays first check by S seconds
 - ❌ Use dots/heartbeats — just print a line every tick, it's a ledger
@@ -385,14 +384,13 @@ Only read specific sections of the full log when you need to understand a partic
 ### Do:
 
 - Extract and read only the `codex` verdict block (not the full `thinking`/`exec` output)
-- Poll `TaskOutput` with `block: false` for completion status only
+- Use background completion notifications for completion status only
 - Reference full log paths for traceability
 
 ### Don't:
 
-- ❌ **Use `TaskOutput` to read review results** — it dumps ~800 lines per review into context
+- ❌ **Read a background review's full output into context** — it dumps ~800 lines per review
 - ❌ **Read full log files into context** — extract the verdict block only
-- ❌ **Use `TaskOutput(block: true)`** to join on review completion — this pulls full output into context
 
 ## Phase: Parse Output
 
@@ -544,19 +542,14 @@ Context matters: Default drop-one-level works for most cases. A fundamental issu
 
 ### Spawn Claude Address Agents
 
-**Spawn address agents in parallel** via Task tool:
+**Spawn address agents in parallel** as background subagents:
 
 - One agent per issue (or grouped by file)
-- `run_in_background: true` for parallel execution
 - Agent prompt includes issue details from Codex's review
 
 ```
-Task(
-  description: "Address CR-001: SQL injection",
-  prompt: "Address the SQL injection issue from code review...",
-  subagent_type: "general-purpose",
-  run_in_background: true
-)
+Background subagent "Address CR-001: SQL injection":
+  "Address the SQL injection issue from code review..."
 ```
 
 ## Phase: Verify
@@ -812,10 +805,10 @@ See Core Philosophy: every issue results in code change (fix OR clarify).
 
 ## Resumption (Post-Compaction)
 
-1. Run `TaskList` to find review loop task
-2. Read task description for persisted state (includes `REVIEW_DIR` path)
+1. Find `REVIEW_DIR`: `ls -td /tmp/codex-review-$(basename $(pwd))-* | head -1`
+2. Read `$REVIEW_DIR/state.md` for persisted state
 3. **Recover review workspace**: Verify `$REVIEW_DIR` exists and contains log files. If reviews were in progress, check which `.log` files are present and whether they contain complete verdicts (have a `codex` block). Re-extract verdicts from any completed logs.
-4. Check for running background Bash (codex review) or Task agents
+4. Check for running background Bash (codex review) or address subagents
 5. Resume from appropriate phase
 
 ## Contradictory Issues
@@ -834,19 +827,19 @@ Contradictory issues usually indicate underspecified requirements, not wrong rev
 
 Pre-flight checklist. Details are inline in each section above.
 
-| Section                | Don't                                                                                                                                |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Initialize             | Assume master is base, skip base branch detection                                                                                    |
-| Review                 | Use Task agents, run sequentially, forget `-c model_reasoning_effort`, use `tail -f`, dump full output into context via `TaskOutput` |
-| Parse Output           | Read full log files instead of verdict blocks, skip issues because they seem minor, combine multiple issues into one                 |
-| Verification of Issues | Address without verifying, dismiss without improving code, blame reviewer                                                            |
-| Address                | Skip exit check, address without user strategy input, run agents sequentially                                                        |
-| Verify                 | Skip tests, proceed if tests fail                                                                                                    |
-| Retrospective          | Skip to save time, feed the diff instead of issue history, propose cosmetic changes, force patterns that aren't there                |
-| Approval               | Skip checkpoint, commit without explicit approval                                                                                    |
-| Commit                 | Commit without approval, commit before addressing all issues                                                                         |
-| Fixed Point            | Trust low/medium as done, stop at first fixed point, declare fixed point if ANY review has issues                                    |
-| Issue Tracker          | Use "wontfix" status, leave issues unaddressed                                                                                       |
+| Section                | Don't                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Initialize             | Assume master is base, skip base branch detection                                                                     |
+| Review                 | Use subagents, run sequentially, forget `-c model_reasoning_effort`, use `tail -f`, dump full output into context     |
+| Parse Output           | Read full log files instead of verdict blocks, skip issues because they seem minor, combine multiple issues into one  |
+| Verification of Issues | Address without verifying, dismiss without improving code, blame reviewer                                             |
+| Address                | Skip exit check, address without user strategy input, run agents sequentially                                         |
+| Verify                 | Skip tests, proceed if tests fail                                                                                     |
+| Retrospective          | Skip to save time, feed the diff instead of issue history, propose cosmetic changes, force patterns that aren't there |
+| Approval               | Skip checkpoint, commit without explicit approval                                                                     |
+| Commit                 | Commit without approval, commit before addressing all issues                                                          |
+| Fixed Point            | Trust low/medium as done, stop at first fixed point, declare fixed point if ANY review has issues                     |
+| Issue Tracker          | Use "wontfix" status, leave issues unaddressed                                                                        |
 
 ---
 

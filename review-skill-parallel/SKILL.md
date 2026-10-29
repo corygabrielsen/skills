@@ -43,18 +43,9 @@ Track state:
 ```yaml
 target_file: "" # Path to skill file being edited
 parallel_review_count: 3 # -n flag (default 3)
-task_ids: [] # Task IDs for result collection (working context, not persisted)
+run_dir: "" # Fresh directory holding one result file per reviewer
 # issue_tracker: markdown table (see Parse Output phase); working context, not persisted
 ```
-
-### Tools Assumed
-
-This skill uses standard Claude Code tools without detailed explanation:
-
-- `Task` — Launch background agents; takes `description`, `prompt`, `subagent_type`, `run_in_background`; returns `task_id`
-- `TaskOutput` — Retrieve agent results (`task_id`, `block`, `timeout`)
-- `Edit` — Modify files (`file_path`, `old_string`, `new_string`)
-- `AskUserQuestion` — Present options to user; takes `questions` array (always an array, even for single questions) containing objects with `question`, `header`, `options` (array of `{label, description}`), `multiSelect`
 
 ---
 
@@ -93,14 +84,13 @@ This skill uses standard Claude Code tools without detailed explanation:
 
 ## Phase: Review
 
-**Launch n parallel reviewers. All reviewers are fungible — identical prompt.**
+**Launch n parallel reviewers. All reviewers are fungible — identical prompt apart from the result file.**
 
 ### Do:
 
-- Use `Task` tool with `run_in_background: true`
-- Launch all n reviewers in a **single message** (parallel)
-- Use identical prompt for all reviewers
-- Record all task IDs for result collection
+- Create `run_dir=$(mktemp -d "${TMPDIR:-/tmp}/review-skill-parallel.XXXXXX")`
+- Launch all n reviewers as background subagents in a **single message** (parallel), named `reviewer-1` … `reviewer-n`
+- Use identical prompt for all reviewers, substituting `{target_file}` and `{result_file}` (`<run_dir>/<i>.md`)
 
 ### Don't:
 
@@ -136,32 +126,10 @@ FINDINGS:
 OR
 
 NO FINDINGS - document is internally consistent.
-```
 
-### Example: Launch n=3 Reviewers in a Single Message
-
+Write your output, in exactly the format above, to {result_file}.
+Your final message is `written`.
 ```
-Task(
-  description: "Review {target_file} (1/3)",
-  prompt: "[review prompt with {target_file} substituted]",
-  subagent_type: "general-purpose",
-  run_in_background: true
-)
-Task(
-  description: "Review {target_file} (2/3)",
-  prompt: "[same review prompt]",
-  subagent_type: "general-purpose",
-  run_in_background: true
-)
-Task(
-  description: "Review {target_file} (3/3)",
-  prompt: "[same review prompt]",
-  subagent_type: "general-purpose",
-  run_in_background: true
-)
-```
-
-Each Task tool invocation returns a task_id (store these in `task_ids` for use in Parse Output).
 
 ---
 
@@ -171,11 +139,10 @@ Each Task tool invocation returns a task_id (store these in `task_ids` for use i
 
 ### Do:
 
-- Use `TaskOutput` tool to collect results from each reviewer:
-  ```
-  TaskOutput(task_id: "task_id_here", block: true, timeout: 120000)
-  ```
-- Extract findings from each reviewer's output
+- Wait for a completion notification from every reviewer; do not poll `run_dir`, since a reviewer that dies without writing would stall the wait
+- Stop a reviewer still running long after the others; a reviewer with no result file counts as a finding ("Reviewer output error")
+- Read the first line of each result file; read the full file only when it is not `NO FINDINGS`
+- Extract findings from each reviewer's result file
 - Merge into issue tracker, deduplicating similar findings (same line + similar description = one finding)
 - Record which reviewers found each issue
 

@@ -12,7 +12,7 @@ Flag issues where the document assumes:
 - Hardcoded model references
 
 Do NOT flag:
-- Generic tool names that any agent framework might implement (Task, Read, Edit, Bash)
+- Generic tool names that any agent framework might implement (Read, Edit, Bash)
 - Standard programming concepts
 - Conventions that are clearly customizable
 

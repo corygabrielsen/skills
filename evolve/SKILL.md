@@ -74,7 +74,7 @@ LLMs make vastly better mutation operators than random perturbation. They unders
 
 ## State Schema
 
-Track in task description for compaction survival.
+Persist to `$(git rev-parse --git-common-dir)/evolve/state.yaml` for compaction survival. Rewrite it whenever state changes.
 
 ```yaml
 # Parameters
@@ -116,7 +116,7 @@ history:
 - Validate fitness command: run it once, confirm it exits 0 and the last line of stdout parses as a number
 - Record baseline fitness (the seed's score)
 - Create seed branch: `git checkout -b evolve/gen0-seed`
-- Create tracking task with full state schema
+- Write the state file with full state schema
 
 ### Don't:
 
@@ -527,11 +527,10 @@ At any moment: at most k (current population) + seed (1) = k+1 branches. Elimina
 
 ## Resumption (Post-Compaction)
 
-1. Run `TaskList` to find the evolve tracking task
-2. Read task description for persisted state
-3. Verify branches exist: `git branch --list 'evolve/*'`
-4. Check for running background agents (breeding phase)
-5. Resume from appropriate phase:
+1. Read the state file
+2. Verify branches exist: `git branch --list 'evolve/*'`
+3. Check for running background agents (breeding phase)
+4. Resume from appropriate phase:
    - Breeding agents still running → wait, then Evaluate
    - Population has fitness but no selection → Select
    - Selection done, no breeding yet → Report or Breed

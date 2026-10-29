@@ -4,7 +4,9 @@
 
 ## Do:
 
-- Use `TaskOutput` with `task_id: <id>` for each reviewer that launched, **in a single turn with parallel calls** (up to 8). TaskOutput blocks until completion.
+- Wait for a completion notification from every reviewer that launched. Do not poll the directory: a reviewer that dies without writing would stall the wait.
+- A reviewer still running long after the others is stopped and recorded as an output error.
+- Read the first line of each `<PASS_DIR>/<reviewer>.md`; read the full file only when that line is not `NO ISSUES`.
 - Parse each reviewer's output into tracker rows. For each numbered issue:
   - If it starts with "Line X:", extract X into Line column and the text after the colon into Issue column
   - If no "Line X:" prefix (some reviewers like checklist omit line numbers), use "-" for Line column
@@ -22,7 +24,7 @@
 - Exactly `NO ISSUES` (reviewer found nothing)
 - `ISSUES:` followed by numbered items (`1. ...`, `2. ...`, etc.)—items may or may not have "Line X:" prefix
 
-**Malformed output or task error**: record tracker entry with Issue="Reviewer output error: [description]", Line="-", then proceed to Synthesize.
+**Missing file, malformed output, or reviewer error**: record tracker entry with Issue="Reviewer output error: [description]", Line="-", then proceed to Synthesize.
 
 ```
 if ALL successfully-launched reviewers output NO ISSUES AND no launch failures were recorded:

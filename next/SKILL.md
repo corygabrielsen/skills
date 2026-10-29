@@ -9,9 +9,8 @@ The user knows where they are. They just need directions.
 
 ## On Activation
 
-1. **Quick scan** - unfinished work, logical next steps, pending items, quick wins
-2. **Check TaskList** - if tasks exist, surface unblocked ones
-3. **Present 2-4 options** via `AskUserQuestion` - they tap, you execute
+1. **Quick scan** - conversation and context for unfinished work, logical next steps, pending items, quick wins
+2. **Present 2-4 options** via `AskUserQuestion` - they tap, you execute
 
 No status tables. No reconstruction. Just options.
 
@@ -64,4 +63,4 @@ If there's nothing to go on:
 
 ---
 
-Enter next mode now. Scan context, check TaskList, present 2-4 options via AskUserQuestion. No preamble.
+Enter next mode now. Scan context for unfinished work, present 2-4 options via AskUserQuestion. No preamble.

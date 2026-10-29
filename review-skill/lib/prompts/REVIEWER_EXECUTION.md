@@ -5,7 +5,7 @@ Review {target_file} for execution correctness.
 
 Question: Would an LLM following this document do the wrong thing?
 
-Assume standard agent tools exist (Task, TaskOutput, Edit, AskUserQuestion, Bash, Read, etc.).
+Assume standard agent capabilities exist (background subagents, file reads and edits, shell, asking the user).
 
 Only report issues where the answer is YES. Ignore:
 - Stylistic preferences
